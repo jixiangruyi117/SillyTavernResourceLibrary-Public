@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   appearanceScopes,
   compileAppearancePreset,
   parseAppearancePreset,
   type AppearanceScope,
 } from '../core/AppearanceScopes'
-import { isOfficialAppId } from '../types/OfficialApp'
-
 import { confirmAction } from '../composables/UseConfirmDialog'
 import { usePreviewBudget } from '../composables/UsePreviewBudget'
 import { usePreviewPolicy } from '../composables/UsePreviewPolicy'
@@ -135,24 +133,8 @@ const activeScopedCss = computed({
     draft.value.scopedCss[activeScope.value] = value
   },
 })
-const installedIds = ref(new Set<string>())
-const installationsLoaded = ref(false)
-const installationError = ref('')
-onMounted(async () => {
-  try {
-    const { officialAppService } = await import('../core/OfficialAppRuntime')
-    installedIds.value = new Set((await officialAppService.list()).map((app) => app.id))
-    installationsLoaded.value = true
-  } catch {
-    installationError.value = '暂时无法读取安装状态；已有样式仍保留。'
-  }
-})
-function available(scope: AppearanceScope): boolean {
-  return !scope.appId || !isOfficialAppId(scope.appId) || installedIds.value.has(scope.appId)
-}
-const activeScopes = computed(() => scopes.filter(available))
+const activeScopes = computed(() => scopes)
 const inactiveScopes = computed<AppearanceScope[]>(() => [
-  ...scopes.filter((scope) => !available(scope)),
   ...Object.keys(draft.value.scopedCss ?? {})
     .filter((key) => !scopes.some((scope) => scope.value === key))
     .map((key) => ({
@@ -355,7 +337,7 @@ function exportEditablePreset(): void {
     ),
     `${(draft.value.name || '外观预设').replace(/[\\/:*?"<>|]/g, '-')}.srl-style.json`,
   )
-  flash('可编辑预设已导出，包含未安装 APP 的局部样式')
+  flash('可编辑预设已导出，包含各功能页面的局部样式')
 }
 
 async function importPresets(event: Event): Promise<void> {
@@ -403,7 +385,7 @@ const previewDocument = computed(() => {
     ? "default-src 'none'; style-src 'unsafe-inline' https: http:; img-src data: https: http:; font-src data: https: http:; script-src 'none'"
     : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; script-src 'none'"
   const featurePage = selectedScope.value?.appId ?? 'home'
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>:root{--color-paper:#f4f0e6;--color-ink:#17231f;--color-accent:#17604c;--color-line:#c9c9bf}*{box-sizing:border-box}body{margin:0;background:var(--color-paper);color:var(--color-ink);font:14px/1.5 system-ui}.app-shell{display:grid;grid-template-columns:8rem 1fr;min-height:100vh}.sidebar{padding:1rem;border-right:1px solid var(--color-line)}.sidebar span{display:block;padding:.55rem}.library{padding:1rem}.toolbar{display:flex;gap:.5rem;margin-bottom:1rem}.toolbar input{min-width:0;flex:1;padding:.7rem}.resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.resource-card{min-height:8rem;padding:.8rem;border:1px solid var(--color-line);background:#fff}.resource-card i{display:block;height:4rem;margin:-.8rem -.8rem .7rem;background:linear-gradient(135deg,#bdcfca,#345f52)}@media(max-width:520px){.app-shell{grid-template-columns:1fr}.sidebar{display:none}.library{padding:.75rem}}${css}</style></head><body><div class="app-shell"><aside class="sidebar"><strong>SRL</strong><span>全部资源</span><span>角色卡</span><span>世界书</span></aside><main class="library resource-detail-sheet feature-hub layout-settings-sheet" data-feature-page="${featurePage}"><span hidden data-official-app-ready="${featurePage}"></span><div class="toolbar"><input value="搜索名称或文件名"><button>导入</button></div><section class="resource-grid"><article class="resource-card"><i></i><strong>示例角色</strong><small>角色卡 · 收藏</small></article><article class="resource-card"><i></i><strong>城市设定</strong><small>世界书 · 12 条</small></article><article class="resource-card"><strong>界面正则</strong><small>正则 · HTML / CSS</small></article></section></main></div></body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>:root{--color-paper:#f4f0e6;--color-ink:#17231f;--color-accent:#17604c;--color-line:#c9c9bf}*{box-sizing:border-box}body{margin:0;background:var(--color-paper);color:var(--color-ink);font:14px/1.5 system-ui}.app-shell{display:grid;grid-template-columns:8rem 1fr;min-height:100vh}.sidebar{padding:1rem;border-right:1px solid var(--color-line)}.sidebar span{display:block;padding:.55rem}.library{padding:1rem}.toolbar{display:flex;gap:.5rem;margin-bottom:1rem}.toolbar input{min-width:0;flex:1;padding:.7rem}.resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.resource-card{min-height:8rem;padding:.8rem;border:1px solid var(--color-line);background:#fff}.resource-card i{display:block;height:4rem;margin:-.8rem -.8rem .7rem;background:linear-gradient(135deg,#bdcfca,#345f52)}@media(max-width:520px){.app-shell{grid-template-columns:1fr}.sidebar{display:none}.library{padding:.75rem}}${css}</style></head><body><div class="app-shell"><aside class="sidebar"><strong>SRL</strong><span>全部资源</span><span>角色卡</span><span>世界书</span></aside><main class="library resource-detail-sheet feature-hub layout-settings-sheet" data-feature-page="${featurePage}"><div class="toolbar"><input value="搜索名称或文件名"><button>导入</button></div><section class="resource-grid"><article class="resource-card"><i></i><strong>示例角色</strong><small>角色卡 · 收藏</small></article><article class="resource-card"><i></i><strong>城市设定</strong><small>世界书 · 12 条</small></article><article class="resource-card"><strong>界面正则</strong><small>正则 · HTML / CSS</small></article></section></main></div></body></html>`
 })
 </script>
 
@@ -629,12 +611,10 @@ const previewDocument = computed(() => {
               {{ scope.title }}<i v-if="draft.scopedCss[scope.value]">●</i>
             </button>
           </div>
-          <p v-if="installationError" role="status">{{ installationError }}</p>
-          <p v-else-if="!installationsLoaded" role="status">正在读取 APP 安装状态…</p>
           <details v-if="inactiveScopes.length">
-            <summary>未安装 APP / 待恢复的样式（{{ inactiveScopes.length }}）</summary>
-            <p>样式保留在预设与备份中，安装后自动恢复。可在这里提前编辑。</p>
-            <div class="appearance-scope-tabs" role="tablist" aria-label="未安装 APP 的样式">
+            <summary>待恢复的样式（{{ inactiveScopes.length }}）</summary>
+            <p>样式保留在预设与备份中，可在这里提前编辑。</p>
+            <div class="appearance-scope-tabs" role="tablist" aria-label="待恢复的样式">
               <button
                 v-for="scope in inactiveScopes"
                 :key="scope.value"

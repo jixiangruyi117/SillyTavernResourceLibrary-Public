@@ -1,5 +1,4 @@
 import { FEATURE_APP_REGISTRY, type FeatureAppDescriptor } from './FeatureAppRegistry'
-import { isOfficialAppId } from '../types/OfficialApp'
 import type { CustomCssPreset, CustomCssScope } from '../types/BrowserPreferences'
 
 export const SCOPED_CSS_REMOVED_EVENT = 'srl:scoped-css-removed'
@@ -48,7 +47,7 @@ export function appearanceScopes(
         value: appAppearanceKey(app.id),
         title: app.name,
         appId: app.id,
-        selector: `.feature-hub[data-feature-page="${app.page}"]${isOfficialAppId(app.id) ? `:has([data-official-app-ready="${app.id}"])` : ''}`,
+        selector: `.feature-hub[data-feature-page="${app.page}"]`,
         hint: app.description,
       })),
     {
@@ -73,7 +72,7 @@ export function compileAppearancePreset(preset: CustomCssPreset): string {
 
 export function upgradeLegacyAppearanceCss(css: string, presets: CustomCssPreset[]): string {
   for (const scope of appearanceScopes()) {
-    if (!scope.appId || !isOfficialAppId(scope.appId)) continue
+    if (!scope.appId) continue
     const legacy = { ...scope, selector: `.feature-hub[data-feature-page="${scope.appId}"]` }
     for (const preset of presets) {
       const value = preset.scopedCss?.[scope.value]
@@ -169,10 +168,11 @@ export function removeAppAppearanceCss(
 ): string {
   const scope = appearanceScopes().find((item) => item.appId === appId)
   if (!scope) return css
-  const legacy = {
-    ...scope,
-    selector: scope.selector.replace(/:has\(\[data-official-app-ready="[^"]+"\]\)$/, ''),
-  }
+  const legacySelectors = [
+    scope.selector,
+    `.feature-hub[data-feature-page="${scope.appId}"]`,
+    `.feature-hub[data-feature-page="${scope.appId}"]:has([data-official-app-ready="${scope.appId}"])`,
+  ]
   const global =
     presets
       .map((preset) => preset.globalCss.trim())
@@ -182,7 +182,7 @@ export function removeAppAppearanceCss(
     global +
     removeScopedBlocks(
       css.slice(global.length),
-      [scope, legacy].map((definition) => `@scope (${definition.selector}) {\n`),
+      legacySelectors.map((selector) => `@scope (${selector}) {\n`),
     )
   ).trim()
 }

@@ -1,9 +1,6 @@
 /** @vitest-environment jsdom */
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-vi.mock('../core/OfficialAppRuntime', () => ({
-  officialAppService: { list: async () => [{ id: 'imageAlbum' }] },
-}))
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { BrowserStorageService } from '../services/BrowserStorageService'
 import AppearanceOriginalCssActions from './AppearanceOriginalCssActions.vue'
@@ -30,7 +27,7 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.get('[data-cabinet-columns="2"]').attributes('aria-checked')).toBe('true')
   })
 
-  it('offers every feature app and separates installed APPs from dormant scopes', async () => {
+  it('offers every bundled feature app without an installation check', async () => {
     const wrapper = mount(AppearanceStudio, {
       props: { theme: 'light', layoutMode: 'grid', uiFontScale: 'standard', customCss: '' },
     })
@@ -42,8 +39,8 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.text()).toContain('user才是老大')
     await flushPromises()
     expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('生图相册')
-    expect(wrapper.get('[aria-label="未安装 APP 的样式"]').text()).toContain('AI 生图')
-    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).not.toContain('AI 生图')
+    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('AI 生图')
+    expect(wrapper.text()).not.toContain('正在读取 APP 安装状态')
   })
 
   it('shares official CSS actions without passing user CSS', () => {

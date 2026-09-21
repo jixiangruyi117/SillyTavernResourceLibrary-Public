@@ -38,7 +38,6 @@ const {
   desktopFilterActions,
   selectDesktopFilter,
   DrawApp,
-  OfficialAppManager,
   AppearanceStudio,
   TavernBridgeCenter,
   bundleSendIds,
@@ -68,13 +67,6 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
     <template v-if="activePage === 'home'">
       <FeatureShell title="功能" back-label="返回资源库" @back="emit('close')">
         <template #actions>
-          <button
-            class="feature-header-action feature-header-action--ghost"
-            type="button"
-            @click="activePage = 'officialApps'"
-          >
-            APP 管理
-          </button>
           <button
             class="feature-header-action feature-header-action--ghost"
             type="button"
@@ -170,7 +162,6 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
       />
     </template>
 
-    <OfficialAppManager v-else-if="activePage === 'officialApps'" @back="activePage = 'home'" />
     <DrawApp
       v-else-if="activePage === 'draw'"
       v-bind="props"

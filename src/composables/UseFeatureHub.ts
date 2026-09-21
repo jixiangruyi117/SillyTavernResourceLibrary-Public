@@ -24,8 +24,6 @@ import {
   type FeatureAppDescriptorContext,
 } from '../core/FeatureAppRegistry'
 import { getFeatureAppLoader } from '../core/FeatureAppLoaders'
-import { officialAppService } from '../core/OfficialAppRuntime'
-import { isOfficialAppId } from '../types/OfficialApp'
 import { featureAppUsageStore } from '../core/FeatureAppUsageStore'
 import type { LayoutMode, UiFontScale } from '../services/BrowserStorageService'
 import {
@@ -36,7 +34,7 @@ import type { InstalledExternalAppSummary } from '../types/ExternalApp'
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import { getHiddenCategoryIds, isResourceHiddenByCategory } from '../utils/CategoryVisibility'
 
-export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp' | 'officialApps'
+export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp'
 
 export type FeatureDesktopEntry =
   | { kind: 'builtIn'; app: FeatureAppDescriptor }
@@ -85,11 +83,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     const descriptor = getFeatureAppDescriptor(id)
     return createAsyncPanel(descriptor.name, getFeatureAppLoader(id))
   }
-
-  const OfficialAppManager = createAsyncPanel(
-    'APP 管理',
-    () => import('../components/OfficialAppManager.vue'),
-  )
 
   const DrawApp = createRegisteredAsyncPanel('draw')
 
@@ -143,10 +136,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const bundleSendIds = ref<string[]>([])
 
   const externalApps = ref<InstalledExternalAppSummary[]>([])
-  const installedOfficialIds = ref(new Set<string>())
-  async function reloadOfficialApps() {
-    installedOfficialIds.value = new Set((await officialAppService.list()).map((app) => app.id))
-  }
 
   const activeExternalAppId = ref('')
 
@@ -169,9 +158,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const enabledExternalApps = computed(() => externalApps.value.filter((app) => app.enabled))
 
   const visibleBuiltInFeatureApps = computed(() =>
-    FEATURE_APP_REGISTRY.filter(
-      (app) => app.visible && (!isOfficialAppId(app.id) || installedOfficialIds.value.has(app.id)),
-    )
+    FEATURE_APP_REGISTRY.filter((app) => app.visible)
       .slice()
       .sort((left, right) => left.sortOrder - right.sortOrder),
   )
@@ -442,7 +429,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     activePage,
     (page) => {
       emit('feature-app-active', page !== 'home')
-      if (page === 'home') void reloadOfficialApps().catch(() => {})
       document.body.classList.toggle('folder-desktop-open', page === 'folders')
       if (resumeTrackingReady)
         writeAppResumeState({
@@ -458,7 +444,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   })
 
   onMounted(async () => {
-    await reloadOfficialApps().catch(() => {})
     window.addEventListener('keydown', handleKeydown)
     window.addEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest)
     window.addEventListener('srl:native-shortcut', handleNativeShortcut)
@@ -523,7 +508,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     desktopFilterActions,
     selectDesktopFilter,
     DrawApp,
-    OfficialAppManager,
     AppearanceStudio,
     TavernBridgeCenter,
     bundleSendIds,

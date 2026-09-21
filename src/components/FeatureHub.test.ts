@@ -7,16 +7,6 @@ import type { InstalledExternalApp } from '../types/ExternalApp'
 import FeatureHub from './FeatureHub.vue'
 import FolderLibraryView from './FolderLibraryView.vue'
 import ActionSheet from './ActionSheet.vue'
-vi.mock('../core/OfficialAppRuntime', () => ({
-  officialAppService: { ready: async () => true, list: () => listOfficialApps() },
-  acquireOfficialAppUse: async () => () => {},
-  loadOfficialApp: async (id: string) => {
-    if (id === 'draw') return (await import('./DrawApp.vue')).default
-    if (id === 'imageGeneration') return (await import('./ImageGenerationApp.vue')).default
-    if (id === 'imageAlbum') return (await import('./GeneratedImageAlbumApp.vue')).default
-    throw new Error('Unexpected test app')
-  },
-}))
 
 vi.mock('./ImageGenerationApp.vue', () => ({
   __esModule: true,
@@ -33,19 +23,7 @@ vi.mock('./GeneratedImageAlbumApp.vue', () => ({
   },
 }))
 
-const { loadDrawState, listExternalApps, listOfficialApps } = vi.hoisted(() => ({
-  listOfficialApps: vi.fn(async () =>
-    [
-      'draw',
-      'stitch',
-      'frontendWorkshop',
-      'imageGeneration',
-      'imageAlbum',
-      'userPersona',
-      'resourceBundle',
-      'tavernBridge',
-    ].map((id) => ({ id })),
-  ),
+const { loadDrawState, listExternalApps } = vi.hoisted(() => ({
   loadDrawState: vi.fn(),
   listExternalApps: vi.fn<() => Promise<InstalledExternalApp[]>>(async () => []),
 }))
@@ -237,18 +215,12 @@ describe('FeatureHub', () => {
     ])
   })
 
-  it('removes uninstalled apps from the desktop while keeping management available', async () => {
-    listOfficialApps.mockResolvedValueOnce([{ id: 'draw' }]).mockResolvedValueOnce([{ id: 'draw' }])
+  it('shows every visible built-in app without an installed official app state', async () => {
     const wrapper = render()
     await flushPromises()
-    expect(wrapper.find('.feature-app--draw').exists()).toBe(true)
-    expect(wrapper.find('.feature-app--stitch').exists()).toBe(false)
-    await wrapper.get('.feature-app--folders').trigger('click')
-    listOfficialApps.mockResolvedValueOnce([])
-    await wrapper.get('.feature-app-header__back').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('.feature-app--draw').exists()).toBe(false)
-    expect(wrapper.text()).toContain('APP 管理')
+    expect(wrapper.findAll('.feature-desktop > .feature-app')).toHaveLength(12)
+    expect(wrapper.find('.feature-app--stitch').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('APP 管理')
     wrapper.unmount()
   })
 

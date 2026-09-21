@@ -44,9 +44,10 @@ describe('registry-owned appearance scopes', () => {
       'app:future',
     )
   })
-  it('gates optional APP styles on a successfully opened APP and preserves unrelated/global content on deletion', () => {
+  it('scopes bundled APP styles to their feature page and preserves unrelated/global content', () => {
     const css = compileAppearancePreset(preset)
-    expect(css).toContain(':has([data-official-app-ready="frontendWorkshop"])')
+    expect(css).toContain('.feature-hub[data-feature-page="frontendWorkshop"]')
+    expect(css).not.toContain('data-official-app-ready')
     expect(css).not.toContain('--future')
     const next = removeAppAppearanceCss(css, [preset], 'frontendWorkshop')
     expect(next).not.toContain('color: red')
@@ -58,7 +59,8 @@ describe('registry-owned appearance scopes', () => {
     const old =
       ':root { --test: 1; }\n@scope (.feature-hub[data-feature-page="frontendWorkshop"]) {\n.panel { color: red; }\n}'
     const next = upgradeLegacyAppearanceCss(old, [preset])
-    expect(next).toContain(':has([data-official-app-ready="frontendWorkshop"])')
+    expect(next).toContain('.feature-hub[data-feature-page="frontendWorkshop"]')
+    expect(next).not.toContain('data-official-app-ready')
     expect(next).toContain('.panel { color: red; }')
     expect(upgradeLegacyAppearanceCss(next, [preset])).toBe(next)
     expect(removeAppAppearanceCss(old, [preset], 'frontendWorkshop')).toBe(':root { --test: 1; }')
