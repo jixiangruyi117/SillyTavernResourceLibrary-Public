@@ -1,0 +1,252 @@
+.tavern-bridge-install {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-line);
+  text-align: left;
+}
+
+.tavern-bridge-install > header {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.tavern-bridge-install > header small {
+  color: var(--color-accent);
+  font-family: var(--font-label);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.tavern-bridge-install > header p {
+  margin: 0.2rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.tavern-bridge-install__git,
+.tavern-bridge-install__server,
+.tavern-bridge-install__offline {
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-surface-raised);
+}
+
+.tavern-bridge-install__git,
+.tavern-bridge-install__server {
+  padding: clamp(0.85rem, 2vw, 1.1rem);
+}
+
+.tavern-bridge-install__section-heading {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.tavern-bridge-install__section-heading span {
+  color: var(--color-accent);
+  font-family: var(--font-label);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.tavern-bridge-install__section-heading h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.tavern-bridge-install__section-note {
+  margin: 0.2rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+}
+
+.tavern-bridge-install__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tavern-bridge-install__steps li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: center;
+  min-height: 4rem;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+}
+
+.tavern-bridge-install__steps b {
+  color: var(--color-accent);
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.tavern-bridge-install__steps span,
+.tavern-bridge-install__steps small {
+  display: block;
+}
+
+.tavern-bridge-install__steps strong {
+  font-size: 0.75rem;
+}
+
+.tavern-bridge-install__steps small {
+  margin-top: 0.15rem;
+  color: var(--color-ink-soft);
+  font-size: 0.625rem;
+  line-height: 1.45;
+}
+
+.tavern-bridge-install__offline > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.tavern-bridge-install__offline a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 4.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  text-decoration: none;
+}
+
+.tavern-bridge-install__offline a span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.tavern-bridge-install__offline a small {
+  color: var(--color-ink-soft);
+  font-size: 0.625rem;
+}
+
+.tavern-bridge-install__offline a i {
+  color: var(--color-accent);
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-style: normal;
+}
+
+.tavern-bridge-install__offline a:hover,
+.tavern-bridge-install__offline a:focus-visible {
+  border-color: var(--color-accent);
+  outline: 0;
+}
+
+@media (max-width: 53.75rem) {
+  .tavern-bridge-install__steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tavern-bridge-install__offline > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tavern-bridge-install__copyline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.tavern-bridge-install__copyline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: stretch;
+  margin-top: 0.65rem;
+}
+
+.tavern-bridge-install__copyline code,
+.tavern-bridge-install__copyline > a {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  color: var(--color-ink);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tavern-bridge-install__copyline > a:hover,
+.tavern-bridge-install__copyline > a:focus-visible {
+  border-color: var(--color-accent);
+  outline: 0;
+}
+
+.tavern-bridge-install__copyline button {
+  min-height: 44px;
+  padding: 0 0.85rem;
+  border: 1px solid var(--color-line-strong);
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tavern-bridge-install__notes {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.7;
+  list-style: none;
+}
+
+.tavern-bridge-install__notes a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding-inline: 0.25rem;
+  color: var(--color-accent);
+}
+
+.tavern-bridge-install__verify {
+  margin: 0.65rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--color-accent);
+  color: var(--color-ink-soft);
+  background: var(--color-accent-soft);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.tavern-bridge-install__copy-error {
+  margin: 0.5rem 0 0;
+  color: #a4362b;
+  font-size: 0.82rem;
+}
+
+.tavern-bridge-install__offline {
+  padding: 0 clamp(0.85rem, 2vw, 1.1rem) 0.85rem;
+}
+
+.tavern-bridge-install__offline summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tavern-bridge-install__offline > p {
+  margin: 0.4rem 0 0.6rem;
+  font-size: 0.82rem;
+  opacity: 0.7;
+}

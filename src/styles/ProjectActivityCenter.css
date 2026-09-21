@@ -1,0 +1,197 @@
+.activity-center {
+  position: fixed;
+  z-index: 1180;
+  right: max(0.75rem, var(--safe-right));
+  bottom: var(--bottom-notice-offset);
+  width: min(24rem, calc(100vw - 1.5rem));
+  color: var(--color-ink);
+}
+
+.activity-center__trigger {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  box-shadow: 0 0.8rem 2rem var(--color-shadow);
+  color: inherit;
+  text-align: left;
+  backdrop-filter: blur(18px);
+}
+
+.activity-center__trigger > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.activity-center__trigger strong {
+  display: grid;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 0.7rem;
+}
+
+.activity-center__signal {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 50%;
+  background: var(--color-warning);
+  box-shadow: 0 0 0 0.22rem color-mix(in srgb, var(--color-warning) 14%, transparent);
+}
+
+.activity-center__signal.is-running {
+  background: var(--color-accent);
+  animation: activity-pulse 1.5s ease-in-out infinite;
+}
+
+.activity-center__panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.55rem);
+  width: 100%;
+  max-height: min(34rem, calc(var(--app-viewport-height) - 8rem));
+  overflow: auto;
+  padding: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: 0 1.2rem 3rem var(--color-shadow);
+}
+
+.activity-center__panel > header,
+.activity-card > div,
+.activity-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.activity-card > div {
+  align-items: flex-start;
+}
+
+.activity-card > div > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.activity-card > div > small {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.activity-center__panel > header {
+  position: sticky;
+  top: -0.8rem;
+  z-index: 1;
+  margin: -0.8rem -0.8rem 0.75rem;
+  padding: 0.75rem 0.8rem;
+  border-bottom: 1px solid var(--color-line);
+  background: inherit;
+}
+
+.activity-center__panel small,
+.activity-card small {
+  color: var(--color-ink-soft);
+  font-size: 0.68rem;
+}
+
+.activity-center__panel > header small,
+.activity-center__panel > header strong {
+  display: block;
+}
+
+.activity-center__panel button {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.65rem;
+  background: transparent;
+  color: inherit;
+}
+
+.activity-center__group + .activity-center__group {
+  margin-top: 0.9rem;
+}
+
+.activity-center__group h3 {
+  margin: 0 0 0.4rem;
+  color: var(--color-ink-soft);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.activity-card {
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-accent) 3%);
+}
+
+.activity-card + .activity-card {
+  margin-top: 0.45rem;
+}
+
+.activity-card progress {
+  width: 100%;
+  height: 0.32rem;
+  margin-top: 0.55rem;
+  accent-color: var(--color-accent);
+}
+
+.activity-card p {
+  margin: 0.45rem 0 0;
+  color: var(--color-danger);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.activity-card p.activity-card__transfer {
+  color: var(--color-ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-card footer {
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.activity-card.is-error,
+.activity-card.is-data-risk {
+  border-color: color-mix(in srgb, var(--color-danger) 30%, transparent);
+}
+
+@media (max-width: 53.75rem) {
+  .activity-center {
+    right: 0.65rem;
+    width: min(22rem, calc(100vw - 1.3rem));
+  }
+}
+
+@keyframes activity-pulse {
+  50% {
+    box-shadow: 0 0 0 0.4rem color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-center__signal.is-running {
+    animation: none;
+  }
+}

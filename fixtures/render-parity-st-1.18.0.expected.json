@@ -1,0 +1,27 @@
+{
+  "oracle": {
+    "sillyTavernVersion": "1.18.0",
+    "sillyTavernCommit": "51ad27fb86d39a3daca3adaa970375c9670c12df",
+    "tavernHelperVersion": "4.8.19",
+    "tavernHelperCommit": "3cae54c1d61779ffdc4079f6e2a87c22c9a6a97a"
+  },
+  "messages": [
+    {
+      "index": 0,
+      "html": "<p>城堡的外墙塌了大半，剩下的部分长满暗绿色的苔藓。</p>\n<p>.status-card { color: red; padding: 12px; }</p>\n<p>这是一段正文，不是 CSS。</p>"
+    },
+    {
+      "index": 1,
+      "html": "<div class=\"custom-status-bar-lock\" style=\"display:block!important;width:100%!important;margin-bottom:15px;clear:both;overflow:hidden;font-family:sans-serif\"><div style=\"width:96%;max-width:600px;margin:5px auto 0;padding:15px 12px 8px;box-sizing:border-box;border:2px solid #281812;border-radius:10px;background:linear-gradient(160deg,#4e342e,#3e2723);color:#d7ccc8\"><strong style=\"font-size:2.4em;color:#ffecb3\">18:55</strong><span style=\"margin-left:12px\">无名之馆 · 霜降月第一日 · 托内拉雪林</span></div></div>\n<p>这里是状态栏之后的正常正文。</p>\n<p>[角色状态] 你在大厅<br>[当前余额：20铜币]</p>\n<div style=\"display:none\">&lt;%<em> setvar(\"stat_data\", {}) </em>%&gt;</div>"
+    },
+    {
+      "index": 2,
+      "html": "<p>前置正文。</p>\n<pre><code class=\"custom-html custom-language-html\">&lt;!doctype html&gt;\n&lt;html&gt;&lt;head&gt;&lt;style&gt;html,body{margin:0;background:transparent}.viewport{min-height:100vh;background:#315f50;color:white;padding:8px}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&lt;div class=\"viewport\"&gt;TavernHelper 主窗口视口块&lt;a id=\"jump-opening\" href=\"javascript:void(0)\" onclick=\"setChatMessages([{message_id:0,swipe_id:3}])\"&gt;跳转显示正则开场白&lt;/a&gt;&lt;/div&gt;&lt;/body&gt;&lt;/html&gt;\n</code></pre>\n<p>后置正文。</p>"
+    },
+    {
+      "index": 3,
+      "regexed": "<section class=\"status-card\"><strong>状态</strong><span>角色状态正常，正文不应被正则吞掉。</span></section><style>.status-card{display:flex;gap:8px;padding:10px;border:1px solid #315f50}</style>",
+      "html": "<section class=\"custom-status-card\"><strong>状态</strong><span>角色状态正常，正文不应被正则吞掉。</span></section>\n<style>.mes_text .custom-status-card {\n  display: flex;\n  gap: 8px;\n  padding: 10px;\n  border: 1px solid #315f50;\n}</style>"
+    }
+  ]
+}

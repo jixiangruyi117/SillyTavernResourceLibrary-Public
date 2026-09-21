@@ -1,0 +1,56 @@
+/*
+ * SRL 正式 UI 收敛层。
+ * 只定义产品级 token / 环境材质 / 通用可读性底线；具体 Feature 布局由各自 Owner 负责。
+ * FrontendWorkshop Preview、外部 Source HTML/CSS、角色卡富内容仍按作者样式渲染。
+ */
+@import url('https://registry.npmmirror.com/@lobehub/webfont-harmony-sans-sc-mini/latest/files/css/index.css');
+
+:root {
+  --font-ui:
+    'HarmonyOS Sans SC', 'HarmonyOS Sans', system-ui, -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  --font-code: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Cascadia Mono', monospace;
+  --font-display: var(--font-ui);
+  --font-body: var(--font-ui);
+  --font-label: var(--font-ui);
+  --feature-title-font: var(--font-ui);
+}
+
+html,
+body,
+#app {
+  font-family: var(--font-ui);
+}
+
+body {
+  background:
+    radial-gradient(circle at 8% 4%, rgba(102, 207, 213, 0.31), transparent 27rem),
+    radial-gradient(circle at 94% 14%, rgba(123, 160, 228, 0.2), transparent 28rem),
+    radial-gradient(circle at 51% 94%, rgba(132, 222, 208, 0.16), transparent 31rem),
+    radial-gradient(circle at 78% 72%, rgba(196, 170, 235, 0.09), transparent 24rem),
+    linear-gradient(160deg, #effbfc 0%, #eaf3fb 48%, #f6fbfb 100%);
+}
+
+:root[data-theme='dark'] body {
+  background:
+    radial-gradient(circle at 10% 2%, rgba(91, 190, 194, 0.17), transparent 27rem),
+    radial-gradient(circle at 96% 13%, rgba(105, 137, 198, 0.15), transparent 29rem),
+    radial-gradient(circle at 72% 76%, rgba(138, 104, 175, 0.07), transparent 24rem),
+    linear-gradient(160deg, #1a2b33 0%, #223841 52%, #17262d 100%);
+}
+
+#app :where(button, input, select, textarea) {
+  font-family: inherit;
+}
+#app :where(button, [role='button'], [role='tab']) {
+  font-weight: var(--weight-ui);
+}
+#app :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-title);
+}
+#app :where(code, pre, kbd, samp) {
+  font-family: var(--font-code);
+}
+
+/* FrontendWorkshop 的 10/11/12/14px 层级由各正式 Owner 按工具语义决定。 */

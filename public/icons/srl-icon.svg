@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SRL">
+  <rect width="512" height="512" rx="112" fill="#f3efe5"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#1f5b49" stroke-width="18"/>
+  <circle cx="256" cy="256" r="134" fill="none" stroke="#cbd9cf" stroke-width="8"/>
+  <path d="M142 340h228" stroke="#1f5b49" stroke-width="16" stroke-linecap="round"/>
+  <path d="M155 190c31-34 69-51 114-51 36 0 66 10 90 31 21 18 32 42 32 72 0 28-10 51-31 69-22 19-52 29-90 29H154V190Z" fill="#1f5b49" opacity=".12"/>
+  <text x="256" y="293" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="104" letter-spacing="10" fill="#1f5b49">SRL</text>
+</svg>

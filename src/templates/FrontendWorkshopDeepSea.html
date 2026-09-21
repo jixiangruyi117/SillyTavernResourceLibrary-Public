@@ -1,0 +1,681 @@
+<style>
+.abyss{--deep:#03070d;--deep-2:#071322;--deep-3:#0b1e30;--ink:#e9eff2;--ink-2:#a6bac5;--ink-3:#6d8593;--gold:#c9a165;--line:rgba(201,161,101,.24);--line-soft:rgba(150,180,195,.14);--serif:'Noto Serif SC','Source Han Serif SC','Songti SC','SimSun',Georgia,serif;--sans:'Noto Sans SC','PingFang SC','Hiragino Sans GB','Microsoft YaHei',system-ui,-apple-system,sans-serif;--mono:ui-monospace,'SFMono-Regular',Menlo,Consolas,'Courier New',monospace;--sy:0px;--px:0;--py:0;position:relative;isolation:isolate;display:block;width:100%;max-width:100%;margin:0;background:radial-gradient(120% 70% at 10% -4%,rgba(22,62,92,.5),transparent 60%),radial-gradient(90% 60% at 100% 6%,rgba(11,32,52,.55),transparent 62%),linear-gradient(180deg,#03070d 0%,#050e1a 45%,#03080f 100%);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.75;overflow-x:clip;-webkit-font-smoothing:antialiased;text-size-adjust:100%;}
+.abyss *,.abyss *::before,.abyss *::after{box-sizing:border-box;}
+.abyss h1,.abyss h2,.abyss h3,.abyss h4,.abyss p,.abyss ul,.abyss ol,.abyss dl,.abyss dd,.abyss dt,.abyss figure,.abyss blockquote{margin:0;padding:0;}
+.abyss ul,.abyss ol{list-style:none;}
+.abyss img{display:block;max-width:100%;}
+.abyss button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.abyss b{font-weight:600;color:#dcb47b;}
+.abyss :focus-visible{outline:1px solid var(--gold);outline-offset:3px;}
+.abyss .wrap{width:100%;max-width:1200px;margin:0 auto;padding-left:clamp(16px,4vw,44px);padding-right:clamp(16px,4vw,44px);}
+.abyss .atmo{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;}
+.abyss .atmo__base{position:absolute;inset:0;background:radial-gradient(60% 50% at 50% 0%,rgba(30,90,130,.2),transparent 70%);}
+.abyss .atmo__glow{position:absolute;top:-18%;left:-10%;width:80%;height:86%;background:radial-gradient(circle at 40% 40%,rgba(40,120,170,.22),transparent 62%),radial-gradient(circle at 68% 64%,rgba(201,161,101,.1),transparent 60%);filter:blur(5px);will-change:transform;transform:translate3d(calc(var(--px) * -26px),calc(var(--py) * -18px + var(--sy) * .24),0);}
+.abyss .atmo__rays{position:absolute;top:-30%;left:0;width:100%;height:130%;background:repeating-linear-gradient(102deg,rgba(140,200,225,.055) 0 1px,transparent 1px 74px);will-change:transform;transform:translate3d(calc(var(--px) * 9px),calc(var(--py) * 7px + var(--sy) * .08),0);}
+.abyss .atmo__grid{position:absolute;inset:-12%;background-image:linear-gradient(rgba(140,190,215,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(140,190,215,.05) 1px,transparent 1px);background-size:64px 64px;will-change:transform;transform:translate3d(calc(var(--px) * -13px),calc(var(--py) * -9px + var(--sy) * .15),0);-webkit-mask-image:radial-gradient(70% 62% at 50% 40%,#000,transparent 78%);mask-image:radial-gradient(70% 62% at 50% 40%,#000,transparent 78%);}
+.abyss .atmo__noise{position:absolute;inset:0;opacity:.4;background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px);background-size:3px 3px;}
+.abyss .atmo__scan{position:absolute;top:0;bottom:0;left:0;width:34%;background:linear-gradient(90deg,transparent,rgba(126,196,214,.1) 45%,rgba(201,161,101,.14) 55%,transparent);animation:abyss-scan 1.9s cubic-bezier(.4,0,.2,1) .1s 1 both;}
+.abyss .atmo__boot{position:absolute;inset:0;background:#03070d;pointer-events:none;animation:abyss-boot 1.7s ease forwards;}
+@keyframes abyss-scan{0%{transform:translateX(-90%);opacity:0}15%{opacity:1}100%{transform:translateX(320%);opacity:0}}
+@keyframes abyss-boot{0%{opacity:.9}60%{opacity:.3}100%{opacity:0;visibility:hidden}}
+@keyframes abyss-rise{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+@keyframes abyss-shimmer{from{opacity:.32}to{opacity:1}}
+@keyframes abyss-pulse{0%{box-shadow:0 0 0 0 rgba(95,208,166,.45)}70%{box-shadow:0 0 0 7px rgba(95,208,166,0)}100%{box-shadow:0 0 0 0 rgba(95,208,166,0)}}
+@keyframes abyss-pscan{0%{transform:translateY(0)}100%{transform:translateY(560%)}}
+.abyss .rv{opacity:0;animation:abyss-rise .95s cubic-bezier(.22,.72,.24,1) both;animation-delay:var(--d,0s);}
+.abyss .reveal{transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .95s cubic-bezier(.2,.7,.2,1);}
+.abyss .reveal.will-reveal{opacity:0;transform:translateY(26px);}
+.abyss .reveal.will-reveal.is-in{opacity:1;transform:none;}
+.abyss .topbar{position:relative;z-index:3;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;justify-content:space-between;padding:14px clamp(16px,4vw,44px);border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;color:var(--ink-3);}
+.abyss .topbar__meta{display:inline-flex;align-items:center;gap:8px;}
+.abyss .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#5fd0a6;vertical-align:middle;animation:abyss-pulse 2.8s ease-out infinite;}
+.abyss .hero{position:relative;z-index:2;display:grid;grid-template-columns:minmax(0,.94fr) minmax(0,1.06fr);gap:clamp(20px,3.6vw,56px);align-items:start;width:100%;max-width:1200px;margin:0 auto;padding:clamp(26px,4.5vw,58px) clamp(16px,4vw,44px) clamp(30px,4vw,54px);}
+.abyss .portrait__frame{position:relative;overflow:hidden;border:1px solid var(--line);background:linear-gradient(160deg,#0a1a29,#04090f 72%);aspect-ratio:4/5;will-change:transform;transform:translate3d(calc(var(--px) * 7px),calc(var(--py) * 5px),0);}
+.abyss .portrait__ph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(160deg,#0a1a29,#04090f 72%);transition:opacity .6s ease;}
+.abyss .portrait__ph::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(115deg,rgba(120,170,200,.07) 0 2px,transparent 2px 9px);}
+.abyss .portrait__phText{font-family:var(--mono);font-size:10.5px;letter-spacing:.28em;color:var(--ink-3);}
+.abyss .portrait__phBar{width:44%;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent);animation:abyss-shimmer 1.5s ease-in-out infinite alternate;}
+.abyss .portrait__ghost{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity .5s ease;}
+.abyss .portrait__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 20%;opacity:0;transform:scale(1.05);transition:opacity 1s ease,transform 1.7s cubic-bezier(.2,.7,.2,1);filter:saturate(.86) contrast(1.05) brightness(.94);}
+.abyss .portrait__frame.is-loaded .portrait__img{opacity:1;transform:none;}
+.abyss .portrait__frame.is-loaded .portrait__ph,.abyss .portrait__frame.is-error .portrait__ph{opacity:0;}
+.abyss .portrait__frame.is-error .portrait__ghost{opacity:.55;}
+.abyss .portrait__scan{position:absolute;left:0;right:0;top:-25%;height:22%;background:linear-gradient(180deg,transparent,rgba(126,196,214,.16),transparent);animation:abyss-pscan 2.6s ease-in-out .35s 2;}
+.abyss .portrait__err{position:absolute;left:0;right:0;bottom:0;padding:12px 14px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;line-height:1.8;color:#dcb47b;background:linear-gradient(180deg,transparent,rgba(6,14,22,.92));opacity:0;transition:opacity .5s ease;text-align:center;}
+.abyss .portrait__frame.is-error .portrait__err{opacity:1;}
+.abyss .portrait__cap{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px;font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--ink-3);}
+.abyss .portrait__cap span:first-child{color:var(--gold);}
+.abyss .plate{position:relative;padding-top:4px;will-change:transform;transform:translate3d(calc(var(--px) * -4px),calc(var(--py) * -3px),0);}
+.abyss .plate__kicker{font-family:var(--mono);font-size:10.5px;letter-spacing:.28em;color:var(--gold);}
+.abyss .plate__name{font-family:var(--serif);font-weight:600;font-size:clamp(40px,7.2vw,74px);line-height:1.05;letter-spacing:.06em;margin-top:12px;}
+.abyss .plate__roman{display:block;font-family:var(--mono);font-size:clamp(9.5px,1.4vw,12px);font-weight:400;letter-spacing:.42em;color:var(--ink-3);margin-top:12px;line-height:1.6;}
+.abyss .plate__code{margin-top:14px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;color:var(--ink-2);line-height:2;}
+.abyss .facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin-top:24px;background:var(--line-soft);border:1px solid var(--line-soft);}
+.abyss .fact{background:rgba(5,14,24,.78);padding:12px 14px;}
+.abyss .fact dt{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--ink-3);}
+.abyss .fact dd{margin:6px 0 0;font-size:13.5px;line-height:1.65;color:var(--ink);}
+.abyss .plate__quote{margin-top:24px;padding-left:16px;border-left:2px solid var(--gold);font-family:var(--serif);font-size:clamp(15px,1.9vw,18px);line-height:1.95;color:#dae5ec;}
+.abyss .sec{position:relative;z-index:2;padding:clamp(34px,5.4vw,66px) 0;}
+.abyss .sec-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;padding-bottom:14px;border-bottom:1px solid var(--line-soft);margin-bottom:clamp(20px,3vw,32px);}
+.abyss .sec-head__num{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--gold);}
+.abyss .sec-head__title{font-family:var(--serif);font-size:clamp(20px,3vw,28px);letter-spacing:.1em;font-weight:600;}
+.abyss .sec-head__en{font-family:var(--mono);font-size:9.5px;letter-spacing:.3em;color:var(--ink-3);margin-left:auto;text-transform:uppercase;}
+.abyss .profile{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,.9fr);gap:clamp(20px,3.6vw,48px);}
+.abyss .profile__text p{font-size:clamp(14.5px,1.6vw,16px);line-height:2.05;color:#cfdae1;}
+.abyss .profile__text p+p{margin-top:16px;}
+.abyss .profile__text p:first-of-type::first-letter{font-family:var(--serif);font-size:3em;float:left;line-height:.88;padding:4px 10px 0 0;color:var(--gold);}
+.abyss .notes{border:1px solid var(--line-soft);background:rgba(5,14,24,.6);padding:18px;}
+.abyss .notes__h{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:var(--gold);}
+.abyss .notes__list{margin-top:14px;display:grid;gap:10px;}
+.abyss .notes__list li{display:grid;gap:3px;padding-bottom:10px;border-bottom:1px dashed var(--line-soft);}
+.abyss .notes__list li:last-child{border-bottom:0;padding-bottom:0;}
+.abyss .notes__k{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);}
+.abyss .notes__v{font-size:12.5px;line-height:1.8;color:var(--ink-2);}
+.abyss .stage{--card-w:min(320px,74vw);--stage-r:clamp(180px,24vw,300px);position:relative;display:flex;align-items:center;justify-content:center;height:clamp(330px,46vw,410px);perspective:1500px;perspective-origin:50% 46%;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none;}
+.abyss .stage:active{cursor:grabbing;}
+.abyss .stage__inner{position:relative;width:var(--card-w);height:100%;transform-style:preserve-3d;transition:transform .8s cubic-bezier(.25,.8,.25,1);}
+.abyss .stage.is-dragging .stage__inner{transition:none;}
+.abyss .stage__card{position:absolute;inset:0;display:flex;flex-direction:column;padding:clamp(16px,2.4vw,22px);background:linear-gradient(165deg,rgba(12,32,50,.96),rgba(4,10,18,.97));border:1px solid var(--line);box-shadow:0 40px 70px -46px #000;backface-visibility:hidden;-webkit-backface-visibility:hidden;}
+.abyss .stage__card:nth-child(1){transform:rotateY(0deg) translateZ(var(--stage-r));}
+.abyss .stage__card:nth-child(2){transform:rotateY(90deg) translateZ(var(--stage-r));}
+.abyss .stage__card:nth-child(3){transform:rotateY(180deg) translateZ(var(--stage-r));}
+.abyss .stage__card:nth-child(4){transform:rotateY(270deg) translateZ(var(--stage-r));}
+.abyss .sc-idx{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--gold);}
+.abyss .sc-title{font-family:var(--serif);font-size:clamp(19px,2.6vw,24px);letter-spacing:.08em;margin-top:8px;}
+.abyss .sc-en{font-family:var(--mono);font-size:9px;letter-spacing:.24em;color:var(--ink-3);text-transform:uppercase;margin-top:6px;}
+.abyss .bars{display:flex;align-items:flex-end;gap:3px;height:44px;margin-top:auto;}
+.abyss .bars i{flex:1;height:var(--h,40%);background:linear-gradient(180deg,rgba(126,196,214,.7),rgba(201,161,101,.22));}
+.abyss .sc-body{margin-top:14px;font-size:12.5px;line-height:1.8;color:var(--ink-2);}
+.abyss .stage-read{margin-top:26px;padding-top:18px;border-top:1px solid var(--line-soft);}
+.abyss .stage-read__h{font-family:var(--serif);font-size:clamp(16px,2.2vw,20px);letter-spacing:.08em;}
+.abyss .stage-read__k{font-family:var(--mono);font-size:9.5px;letter-spacing:.22em;color:var(--gold);margin-right:10px;}
+.abyss .stage-read p{margin-top:8px;font-size:13.5px;line-height:1.95;color:var(--ink-2);max-width:76ch;}
+.abyss .stage-ctrl{display:flex;align-items:center;gap:14px;margin-top:16px;flex-wrap:wrap;}
+.abyss .stage-ctrl__idx{font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--ink-2);}
+.abyss .stage-ctrl__hint{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);margin-left:auto;}
+.abyss .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:9px 16px;border:1px solid var(--line);background:rgba(8,20,33,.7);color:var(--ink);font-family:var(--mono);font-size:11px;letter-spacing:.16em;transition:background .25s ease,border-color .25s ease,color .25s ease,transform .18s ease;}
+.abyss .btn:hover{border-color:var(--gold);color:#fff;background:rgba(20,44,64,.82);}
+.abyss .btn:active{transform:translateY(1px) scale(.985);}
+.abyss .btn[disabled]{opacity:.45;cursor:not-allowed;}
+.abyss .btn--gold{background:linear-gradient(120deg,rgba(201,161,101,.92),rgba(160,124,70,.88));color:#0a0f16;border-color:transparent;font-weight:600;}
+.abyss .btn--gold:hover{background:linear-gradient(120deg,#dcb47b,#b08a4e);color:#0a0f16;}
+.abyss .btn--ghost{background:transparent;}
+.abyss .btn--round{width:42px;padding:0;font-size:14px;letter-spacing:0;}
+.abyss .acc{border-top:1px solid var(--line-soft);}
+.abyss .acc__item{border-bottom:1px solid var(--line-soft);}
+.abyss .acc__btn{display:flex;align-items:center;gap:14px;width:100%;padding:clamp(16px,2.2vw,22px) 0;text-align:left;}
+.abyss .acc__btn:hover .acc__name{color:#fff;}
+.abyss .acc__idx{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--gold);flex:none;}
+.abyss .acc__name{font-family:var(--serif);font-size:clamp(17px,2.3vw,21px);letter-spacing:.1em;transition:color .3s ease;}
+.abyss .acc__en{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.24em;color:var(--ink-3);margin-top:5px;text-transform:uppercase;}
+.abyss .acc__mark{position:relative;width:16px;height:16px;margin-left:auto;flex:none;}
+.abyss .acc__mark::before,.abyss .acc__mark::after{content:'';position:absolute;background:var(--gold);transition:transform .4s cubic-bezier(.3,.8,.3,1),opacity .3s ease;}
+.abyss .acc__mark::before{left:0;top:7.5px;width:16px;height:1px;}
+.abyss .acc__mark::after{left:7.5px;top:0;width:1px;height:16px;}
+.abyss .acc__btn[aria-expanded='true'] .acc__mark::after{transform:rotate(90deg);opacity:0;}
+.abyss.js .acc__panel{max-height:0;overflow:hidden;transition:max-height .5s cubic-bezier(.3,.8,.3,1);}
+.abyss .acc__body{padding:0 0 24px 0;display:grid;gap:12px;max-width:78ch;}
+.abyss .acc__body p{font-size:14px;line-height:2;color:var(--ink-2);}
+.abyss .acc__cost{display:grid;gap:6px;padding:12px 14px;border-left:2px solid rgba(214,124,92,.65);background:rgba(62,20,14,.26);color:#e4cabc;font-size:13px;line-height:1.95;}
+.abyss .acc__cost b{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:#e8a17a;font-weight:600;}
+.abyss .acc__tags{display:flex;gap:8px;flex-wrap:wrap;}
+.abyss .acc__tags li{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);border:1px solid var(--line-soft);padding:3px 8px;}
+.abyss .tl{position:relative;padding-left:38px;}
+.abyss .tl__line{position:absolute;left:11px;top:8px;bottom:8px;width:1px;background:var(--line-soft);overflow:hidden;}
+.abyss .tl__line i{position:absolute;inset:0;background:linear-gradient(180deg,var(--gold),rgba(201,161,101,.18));transform:scaleY(0);transform-origin:top;transition:transform 1.6s cubic-bezier(.3,.8,.3,1) .15s;}
+.abyss .tl.is-in .tl__line i{transform:scaleY(1);}
+.abyss .tl__list{display:grid;gap:clamp(16px,2.4vw,24px);}
+.abyss .tl.will-reveal .tl__item{opacity:0;transform:translateY(18px);transition:opacity .8s ease,transform .8s ease;}
+.abyss .tl.will-reveal.is-in .tl__item{opacity:1;transform:none;}
+.abyss .tl.will-reveal.is-in .tl__item:nth-child(1){transition-delay:.05s}
+.abyss .tl.will-reveal.is-in .tl__item:nth-child(2){transition-delay:.13s}
+.abyss .tl.will-reveal.is-in .tl__item:nth-child(3){transition-delay:.21s}
+.abyss .tl.will-reveal.is-in .tl__item:nth-child(4){transition-delay:.29s}
+.abyss .tl.will-reveal.is-in .tl__item:nth-child(5){transition-delay:.37s}
+.abyss .tl__item{position:relative;}
+.abyss .tl__dot{position:absolute;left:-32px;top:9px;width:9px;height:9px;border-radius:50%;background:var(--deep);border:1px solid var(--gold);box-shadow:0 0 0 4px rgba(201,161,101,.07);transition:background .5s ease;}
+.abyss .tl.is-in .tl__dot{background:var(--gold);}
+.abyss .tl__date{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:var(--gold);}
+.abyss .tl__h{font-family:var(--serif);font-size:clamp(15.5px,2vw,18px);letter-spacing:.08em;margin-top:6px;}
+.abyss .tl__p{margin-top:8px;font-size:13.5px;line-height:1.95;color:var(--ink-2);max-width:68ch;}
+.abyss .rel{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:clamp(14px,2vw,22px);margin-top:clamp(28px,4vw,44px);}
+.abyss .rel__card{border:1px solid var(--line-soft);background:linear-gradient(170deg,rgba(8,20,33,.72),rgba(4,10,18,.72));padding:18px;transition:border-color .35s ease,transform .35s ease;}
+.abyss .rel__card:hover{border-color:var(--line);transform:translateY(-3px);}
+.abyss .rel__role{font-family:var(--mono);font-size:9.5px;letter-spacing:.22em;color:var(--gold);}
+.abyss .rel__name{font-family:var(--serif);font-size:17px;letter-spacing:.08em;margin-top:8px;}
+.abyss .rel__link{font-size:12px;line-height:1.8;color:var(--ink-3);margin-top:6px;}
+.abyss .rel__p{margin-top:12px;font-size:13px;line-height:1.95;color:var(--ink-2);}
+.abyss .archive-duo{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr);gap:clamp(20px,3.4vw,44px);align-items:start;}
+.abyss .flip{perspective:1700px;}
+.abyss .flip__inner{display:grid;transform-style:preserve-3d;transition:transform .95s cubic-bezier(.3,.85,.3,1);}
+.abyss .flip__face{grid-area:1/1;backface-visibility:hidden;-webkit-backface-visibility:hidden;border:1px solid var(--line);padding:clamp(20px,3vw,30px);background:linear-gradient(165deg,rgba(10,26,42,.95),rgba(4,10,18,.96));}
+.abyss .flip__face--back{transform:rotateY(180deg);}
+.abyss .flip.is-flipped .flip__inner{transform:rotateY(180deg);}
+.abyss .flip:not(.is-flipped) .flip__face--back{pointer-events:none;}
+.abyss .flip.is-flipped .flip__face--front{pointer-events:none;}
+.abyss:not(.js) .flip__inner{display:block;}
+.abyss:not(.js) .flip__face--front{display:none;}
+.abyss:not(.js) .flip__face--back{transform:none;}
+.abyss .seal{font-family:var(--mono);font-size:10px;letter-spacing:.26em;color:#dcb47b;}
+.abyss .flip__title{font-family:var(--serif);font-size:clamp(19px,2.6vw,24px);letter-spacing:.12em;margin-top:10px;}
+.abyss .flip__warn{margin-top:14px;font-size:13px;line-height:1.95;color:var(--ink-2);}
+.abyss .flip__meta{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line-soft);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;line-height:2.1;color:var(--ink-3);}
+.abyss .flip__act{margin-top:20px;}
+.abyss .flip__body{font-family:var(--serif);font-size:clamp(14.5px,1.8vw,16.5px);line-height:2.1;color:#dfe8ed;}
+.abyss .flip__foot{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line-soft);font-size:12.5px;line-height:1.95;color:#d9b48c;}
+.abyss .quotes{display:grid;gap:14px;}
+.abyss .quotes li{border-left:2px solid var(--line);padding:2px 0 2px 16px;transition:border-color .3s ease;}
+.abyss .quotes li:hover{border-color:var(--gold);}
+.abyss .quotes p{font-family:var(--serif);font-size:clamp(14.5px,1.9vw,17px);line-height:1.95;color:#dfe8ed;}
+.abyss .quotes span{display:block;margin-top:6px;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);}
+.abyss .deck{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(14px,2vw,22px);}
+.abyss .gcard{display:flex;flex-direction:column;cursor:pointer;border:1px solid var(--line-soft);background:linear-gradient(170deg,rgba(8,20,33,.76),rgba(4,10,18,.8));padding:clamp(16px,2.4vw,22px);transition:border-color .35s ease,transform .35s ease;}
+.abyss .gcard:hover{border-color:var(--line);transform:translateY(-2px);}
+.abyss .gcard.is-active{border-color:var(--gold);}
+.abyss .gcard__idx{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--gold);}
+.abyss .gcard__title{font-family:var(--serif);font-size:clamp(17px,2.3vw,21px);letter-spacing:.1em;margin-top:8px;}
+.abyss .gcard__tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+.abyss .gcard__tags li{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--ink-3);border:1px solid var(--line-soft);padding:2px 8px;}
+.abyss .gcard__abs{margin-top:12px;font-size:13px;line-height:1.9;color:var(--ink-2);}
+.abyss .gcard__act{display:flex;flex-wrap:wrap;gap:10px;margin-top:auto;padding-top:16px;}
+.abyss .gcard__preview{margin-top:14px;padding:14px;border:1px dashed var(--line-soft);background:rgba(3,8,14,.7);}
+.abyss .gcard__preview p{font-family:var(--serif);font-size:13.5px;line-height:2.05;color:#d5e0e7;white-space:pre-wrap;}
+.abyss .gcard__preview .peek-note{display:block;margin-top:10px;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--ink-3);}
+.abyss .deck-status{margin-top:18px;padding:12px 14px;border:1px solid var(--line-soft);background:rgba(5,14,24,.62);font-family:var(--mono);font-size:11px;line-height:1.95;letter-spacing:.04em;color:var(--ink-2);}
+.abyss .deck-status.is-ok{color:#9fd9c2;border-color:rgba(95,208,166,.32);}
+.abyss .deck-status.is-warn{color:#e6bd8f;border-color:rgba(201,161,101,.35);}
+.abyss .deck-status.is-err{color:#e8a58a;border-color:rgba(214,124,92,.4);}
+.abyss .colophon{position:relative;z-index:2;margin-top:clamp(30px,5vw,60px);border-top:1px solid var(--line-soft);}
+.abyss .colophon__in{max-width:1200px;margin:0 auto;padding:clamp(28px,4vw,48px) clamp(16px,4vw,44px) clamp(40px,6vw,72px);display:grid;gap:14px;}
+.abyss .colophon h2{font-family:var(--serif);font-size:clamp(18px,2.6vw,24px);letter-spacing:.14em;}
+.abyss .colophon p{font-size:13.5px;line-height:2;color:var(--ink-2);max-width:82ch;}
+.abyss .colophon__warn{color:#e6bd8f;border-left:2px solid var(--gold);padding-left:14px;}
+.abyss .colophon__sig{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--ink-3);}
+@media (max-width:900px){.abyss .hero{grid-template-columns:1fr;}.abyss .profile{grid-template-columns:1fr;}.abyss .archive-duo{grid-template-columns:1fr;}.abyss .rel{grid-template-columns:1fr;}.abyss .deck{grid-template-columns:1fr;}.abyss .portrait__frame{aspect-ratio:4/3;}.abyss .stage-ctrl__hint{margin-left:0;}}
+@media (max-width:560px){.abyss .facts{grid-template-columns:1fr;}.abyss .stage{height:360px;--stage-r:clamp(150px,32vw,190px);}.abyss .topbar{font-size:9.5px;letter-spacing:.14em;}.abyss .profile__text p:first-of-type::first-letter{font-size:2.4em;}.abyss .sec-head__en{margin-left:0;}}
+@media (prefers-reduced-motion: reduce){.abyss .rv,.abyss .reveal.will-reveal,.abyss .tl.will-reveal .tl__item{opacity:1 !important;transform:none !important;animation:none !important;}.abyss .atmo__scan,.abyss .portrait__scan,.abyss .atmo__boot,.abyss .portrait__phBar,.abyss .dot{animation:none !important;}.abyss .atmo__boot{display:none;}.abyss .tl__line i{transform:scaleY(1) !important;}.abyss *{transition-duration:.01ms !important;}}
+</style>
+<div class='abyss' id='abyss-root'>
+<div class='atmo' data-fw-layer='hero-backdrop' data-fw-layer-name='背景氛围' aria-hidden='true'>
+<div class='atmo__base'></div>
+<div class='atmo__glow'></div>
+<div class='atmo__rays'></div>
+<div class='atmo__grid'></div>
+<div class='atmo__noise'></div>
+<div class='atmo__scan'></div>
+<div class='atmo__boot' id='abyss-boot'></div>
+</div>
+<header class='topbar rv' style='--d:.05s'>
+<span>DEEP-SEA OBSERVATION ARCHIVE / FILE D-114-07</span>
+<span class='topbar__meta'><span class='dot'></span>状态：在役 · 观测中 · REV.2026.03</span>
+</header>
+<section class='hero' id='abyss-hero'>
+<figure class='hero__media rv' style='--d:.2s' data-fw-layer='hero-portrait' data-fw-layer-name='人物影像'>
+<div class='portrait__frame' id='portrait-frame'>
+<div class='portrait__ph' aria-hidden='true'><span class='portrait__phText'>影像解码中 · DECODING</span><span class='portrait__phBar'></span></div>
+<svg class='portrait__ghost' viewBox='0 0 300 400' preserveAspectRatio='xMidYMax meet' aria-hidden='true'><path d='M150 92c27 0 46 21 46 50 0 19-6 34-15 44 31 11 54 36 62 71l9 43H48l9-43c8-35 31-60 62-71-9-10-15-25-15-44 0-29 19-50 46-50z' fill='rgba(150,190,210,.2)'/></svg>
+<img class='portrait__img' id='portrait-img' src='https://example.invalid/srl-workshop/dO7Rhmep.png' alt='沈砚潮 · 深海观测局第三观测所调查员档案影像' decoding='async'>
+<span class='portrait__scan' aria-hidden='true'></span>
+<span class='portrait__err'>影像信号丢失 · 以剪影替代 · 档案文字仍可完整阅读</span>
+</div>
+<figcaption class='portrait__cap'><span>FIG.01</span><span>第三观测所 · D-114-07</span><span>影像 1 / 1</span></figcaption>
+</figure>
+<div class='hero__info rv' style='--d:.32s' data-fw-layer='dossier-facts' data-fw-layer-name='资料档案'>
+<p class='plate__kicker rv' style='--d:.36s'>深海观测局 / 第三观测所 / 异常现象调查员</p>
+<h1 class='plate__name rv' style='--d:.48s'>沈砚潮<span class='plate__roman'>SHEN YANCHAO · TIDE-07</span></h1>
+<p class='plate__code rv' style='--d:.6s'>代号 <b>潮汐-07</b> · 档案编号 <b>D-114-07</b> · 权限 B-2</p>
+<dl class='facts rv' style='--d:.72s'>
+<div class='fact'><dt>姓名</dt><dd>沈砚潮</dd></div>
+<div class='fact'><dt>代号</dt><dd>潮汐-07 / TIDE-07</dd></div>
+<div class='fact'><dt>身份</dt><dd>第三观测所 · 二级异常现象调查员</dd></div>
+<div class='fact'><dt>年龄</dt><dd>34 岁 · 从业 12 年</dd></div>
+<div class='fact'><dt>阵营</dt><dd>深海观测局（民间挂牌「潮汐档案室」）</dd></div>
+<div class='fact'><dt>状态</dt><dd><span class='dot'></span>在役 · 左耳听阈下移 12 dB</dd></div>
+</dl>
+<p class='plate__quote rv' style='--d:.86s'>「我记性不好，只记得住海里的东西。岸上的事，你们替我记。」</p>
+</div>
+</section>
+<section class='sec'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>01</span><h2 class='sec-head__title'>人物简介</h2><span class='sec-head__en'>Profile</span></header>
+<div class='profile reveal' data-fw-layer='dossier-facts' data-fw-layer-name='资料档案'>
+<div class='profile__text'>
+<p>沈砚潮在这行干了十二年，最先学会的不是写字，而是在手套结冰的时候把铅笔叼在嘴里——因为记录比说话更需要手。他的观测本上，每次下潜只写三行：入水时间、盐度、回来的人。前两行是数据，第三行是命。</p>
+<p>2021 年 11 月，回声海沟二号观测舱失去联系。第三次信号中断之后，他没有等调度批准，独自下潜四十分钟。上来时手里只有两样东西：一枚被锈吃掉一半的铭牌，和一段二十七秒的录音。他不谈那四十分钟里发生了什么，只反复提起录音里那串声音——有人在数数，从七开始，倒着数。</p>
+<p>同事说他记性好得可疑：他记得三年前某个下午舱内的气压值，也记得某个人说话时指尖在抖。左耳听阈下移十二分贝之后，他反而听得更清楚一些——海里的声音比岸上的好认。海不会撒谎，只是没人肯听。</p>
+</div>
+<aside class='notes'>
+<h3 class='notes__h'>OBSERVATION LOG / 观测手记选录</h3>
+<ul class='notes__list'>
+<li><span class='notes__k'>入水时间 04:12</span><span class='notes__v'>盐度 34.8‰ · 水深 1,120 m · 回来的人：2 / 2</span></li>
+<li><span class='notes__k'>装备检查</span><span class='notes__v'>左耳声呐单元第二次更换。登记员问原因，他答：听得太清楚了，不太习惯。</span></li>
+<li><span class='notes__k'>待办</span><span class='notes__v'>把 D-114 失物目录整理完。第七格空着，标签已经写好名字。</span></li>
+<li><span class='notes__k'>备注</span><span class='notes__v'>再下一次水，多带一根绳。上一根断了，断口很平。</span></li>
+</ul>
+</aside>
+</div>
+</div>
+</section>
+<section class='sec' data-fw-layer='archive-stage' data-fw-layer-name='档案舞台'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>02</span><h2 class='sec-head__title'>档案舞台</h2><span class='sec-head__en'>Archive Stage</span></header>
+<div class='reveal'>
+<div class='stage' id='stage' tabindex='0' role='group' aria-label='可旋转的三维档案舞台，共四张档案卡。可拖动旋转，或使用左右方向键与下方按钮切换。'>
+<div class='stage__inner' id='stage-inner'>
+<article class='stage__card' data-title='OBS-27 · 二十七秒' data-desc='2021 年 11 月回收的回声海沟底噪录音。频谱在 11.4 秒处出现有节奏的脉冲，间隔 0.8 秒，共七次；之后是长时间的气泡噪声与一次明显的金属摩擦音。完整文件已封存，只保留这一小段用于比对。'>
+<span class='sc-idx'>ARCHIVE 01 / 04</span>
+<h3 class='sc-title'>二十七秒</h3>
+<p class='sc-en'>Echo Trench · Noise Log</p>
+<div class='bars' aria-hidden='true'><i style='--h:26%'></i><i style='--h:52%'></i><i style='--h:34%'></i><i style='--h:78%'></i><i style='--h:44%'></i><i style='--h:92%'></i><i style='--h:38%'></i><i style='--h:64%'></i><i style='--h:22%'></i><i style='--h:48%'></i><i style='--h:86%'></i><i style='--h:30%'></i></div>
+<p class='sc-body'>第十二秒之后，水里的温度掉了四度。</p>
+</article>
+<article class='stage__card' data-title='MK-IV · 装备清单' data-desc='头灯、防水笔记板、机械压力表、声呐耳机（左耳单元已更换两次）、备用呼吸管、半截铅笔。清单末尾用铅笔补了一行：多带一根绳。没有人签收这份补充说明。'>
+<span class='sc-idx'>ARCHIVE 02 / 04</span>
+<h3 class='sc-title'>装备清单</h3>
+<p class='sc-en'>Dive Kit · MK-IV</p>
+<div class='bars' aria-hidden='true'><i style='--h:64%'></i><i style='--h:30%'></i><i style='--h:82%'></i><i style='--h:46%'></i><i style='--h:58%'></i><i style='--h:24%'></i><i style='--h:70%'></i><i style='--h:38%'></i><i style='--h:90%'></i><i style='--h:28%'></i><i style='--h:52%'></i><i style='--h:44%'></i></div>
+<p class='sc-body'>清单第七项被涂改过三次，最后写成：绳。</p>
+</article>
+<article class='stage__card' data-title='WHALE-14 · 气泡雨' data-desc='2017 年在白鲸浅滩记录到的上浮气泡群，密度高到能托住一枚硬币。一千二百小时潜航里，这是唯一一次让沈砚潮在舱内笑出声的景象。档案照片已霉，只剩一行手写描述。'>
+<span class='sc-idx'>ARCHIVE 03 / 04</span>
+<h3 class='sc-title'>气泡雨</h3>
+<p class='sc-en'>Whale Shoal · Rising Bubbles</p>
+<div class='bars' aria-hidden='true'><i style='--h:36%'></i><i style='--h:44%'></i><i style='--h:56%'></i><i style='--h:68%'></i><i style='--h:80%'></i><i style='--h:88%'></i><i style='--h:74%'></i><i style='--h:62%'></i><i style='--h:50%'></i><i style='--h:40%'></i><i style='--h:32%'></i><i style='--h:26%'></i></div>
+<p class='sc-body'>它们往上走，像一场不会下落的雨。</p>
+</article>
+<article class='stage__card' data-title='VOC-07 · 声纹对照' data-desc='把二十七秒录音里的倒数声与观测局在册人员声纹逐一比对，无匹配。但把波形降速四倍之后，它听上去更像一个人的呼吸——吸气很长，呼气很短，像在忍着什么。'>
+<span class='sc-idx'>ARCHIVE 04 / 04</span>
+<h3 class='sc-title'>声纹对照</h3>
+<p class='sc-en'>Voiceprint · Unmatched</p>
+<div class='bars' aria-hidden='true'><i style='--h:20%'></i><i style='--h:46%'></i><i style='--h:72%'></i><i style='--h:96%'></i><i style='--h:58%'></i><i style='--h:34%'></i><i style='--h:66%'></i><i style='--h:88%'></i><i style='--h:42%'></i><i style='--h:24%'></i><i style='--h:54%'></i><i style='--h:76%'></i></div>
+<p class='sc-body'>比对结果一栏写着：无匹配。备注：再听一次。</p>
+</article>
+</div>
+</div>
+<div class='stage-read'>
+<h3 class='stage-read__h'><span class='stage-read__k'>READING</span><span id='stage-read-title'>OBS-27 · 二十七秒</span></h3>
+<p id='stage-read-desc'>2021 年 11 月回收的回声海沟底噪录音。频谱在 11.4 秒处出现有节奏的脉冲，间隔 0.8 秒，共七次；之后是长时间的气泡噪声与一次明显的金属摩擦音。完整文件已封存，只保留这一小段用于比对。</p>
+</div>
+<div class='stage-ctrl'>
+<button class='btn btn--round' type='button' data-stage='prev' aria-label='上一张档案'>←</button>
+<span class='stage-ctrl__idx' id='stage-idx'>01 / 04</span>
+<button class='btn btn--round' type='button' data-stage='next' aria-label='下一张档案'>→</button>
+<span class='stage-ctrl__hint'>拖动旋转 · 方向键切换</span>
+</div>
+</div>
+</div>
+</section>
+<section class='sec' data-fw-layer='ability-panel' data-fw-layer-name='能力与代价'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>03</span><h2 class='sec-head__title'>能力与代价</h2><span class='sec-head__en'>Capability &amp; Cost</span></header>
+<div class='acc reveal'>
+<article class='acc__item'>
+<h3><button class='acc__btn' type='button' aria-expanded='false' aria-controls='acc-p1' id='acc-h1'><span class='acc__idx'>A-01</span><span class='acc__name'>潮声阈听<span class='acc__en'>Sub-audible hearing</span></span><span class='acc__mark' aria-hidden='true'></span></button></h3>
+<div class='acc__panel' id='acc-p1' role='region' aria-labelledby='acc-h1'>
+<div class='acc__body'>
+<p>左耳听阈下移之后，他能分辨 0.5Hz 到 40kHz 之间的细微振动：金属焊缝的疲劳、舱壁渗漏的气泡、远处螺旋桨螺距的变化。在水下，这项能力约等于提前十分钟知道灾难要来。潜得越深，岸上的声音就越遥远。</p>
+<p class='acc__cost'><b>代价</b>陆地上持续耳鸣，睡眠依赖白噪音；在人群密集处会因声压过载而偏头痛，严重时短暂失去平衡感，需要扶住固定物二十秒以上。</p>
+<ul class='acc__tags'><li>被动</li><li>常时开启</li><li>水下增益</li></ul>
+</div>
+</div>
+</article>
+<article class='acc__item'>
+<h3><button class='acc__btn' type='button' aria-expanded='false' aria-controls='acc-p2' id='acc-h2'><span class='acc__idx'>A-02</span><span class='acc__name'>静水压<span class='acc__en'>Hydrostatic grip</span></span><span class='acc__mark' aria-hidden='true'></span></button></h3>
+<div class='acc__panel' id='acc-p2' role='region' aria-labelledby='acc-h2'>
+<div class='acc__body'>
+<p>短时间内提高周围水体的局部密度，形成一层约三米范围的「水壁」，可以减速、挡下碎片，甚至托住一枚正在下沉的仪器。持续不超过二十秒。</p>
+<p class='acc__cost'><b>代价</b>每次使用后关节腔出血，二十四小时内手指无法握笔；连续使用两次以上会诱发减压症状，必须立刻返回舱内进行加压。</p>
+<ul class='acc__tags'><li>主动</li><li>二十秒</li><li>近距</li></ul>
+</div>
+</div>
+</article>
+<article class='acc__item'>
+<h3><button class='acc__btn' type='button' aria-expanded='false' aria-controls='acc-p3' id='acc-h3'><span class='acc__idx'>A-03</span><span class='acc__name'>层析<span class='acc__en'>Memory tomography</span></span><span class='acc__mark' aria-hidden='true'></span></button></h3>
+<div class='acc__panel' id='acc-p3' role='region' aria-labelledby='acc-h3'>
+<div class='acc__body'>
+<p>把观测记忆归档成可以「回放」的片段，精确到气压、盐度、快门声与说话人的呼吸间隔。回放时他几乎重现当时的全部感官输入，这也是他能背出三年前某个下午舱压值的原因。</p>
+<p class='acc__cost'><b>代价</b>回放会挤占当下的记忆，事后出现数小时空白期；长期使用会导致情感钝化——他会延迟两秒才认出熟人的脸。</p>
+<ul class='acc__tags'><li>主动</li><li>需安静环境</li><li>不可逆损耗</li></ul>
+</div>
+</div>
+</article>
+<article class='acc__item'>
+<h3><button class='acc__btn' type='button' aria-expanded='false' aria-controls='acc-p4' id='acc-h4'><span class='acc__idx'>A-04</span><span class='acc__name'>七分钟<span class='acc__en'>Seven minutes</span></span><span class='acc__mark' aria-hidden='true'></span></button></h3>
+<div class='acc__panel' id='acc-p4' role='region' aria-labelledby='acc-h4'>
+<div class='acc__body'>
+<p>无装备在一百米深度停留七分钟。心率降至每分钟三十四次，耗氧量接近冬眠状态。观测局档案里，这项数据被标了三次红。</p>
+<p class='acc__cost'><b>代价</b>出水后体温下降约三摄氏度，需六小时热水浴恢复；低温中他会不受控地打寒颤，等于向任何捕食者暴露位置。</p>
+<ul class='acc__tags'><li>被动</li><li>极限七分钟</li><li>高危</li></ul>
+</div>
+</div>
+</article>
+</div>
+</div>
+</section>
+<section class='sec' data-fw-layer='timeline-relations' data-fw-layer-name='履历与人物关系'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>04</span><h2 class='sec-head__title'>履历与人物关系</h2><span class='sec-head__en'>Record &amp; Relations</span></header>
+<div class='tl reveal'>
+<span class='tl__line' aria-hidden='true'><i></i></span>
+<ol class='tl__list'>
+<li class='tl__item'><span class='tl__dot' aria-hidden='true'></span><span class='tl__date'>2014</span><h3 class='tl__h'>入选潮汐青年观测计划</h3><p class='tl__p'>完成白鲸浅滩基础测绘，第一次记录到「不会下落的雨」——一群持续上浮的气泡。同年体检基线数据里，左耳听阈已经低了 12 dB，这份报告从未进入正式档案。</p></li>
+<li class='tl__item'><span class='tl__dot' aria-hidden='true'></span><span class='tl__date'>2017</span><h3 class='tl__h'>溯流号 · 1,200 小时潜航</h3><p class='tl__p'>与牟承海搭档完成连续潜航纪录。第 847 小时，他在舱内第一次听见自己的耳鸣，把它当成设备自噪记录了三天。</p></li>
+<li class='tl__item'><span class='tl__dot' aria-hidden='true'></span><span class='tl__date'>2021.11</span><h3 class='tl__h'>回声海沟事故</h3><p class='tl__p'>二号观测舱三次信号中断。他独自下潜四十分钟，带回半枚铭牌与二十七秒录音。官方结论：无人生还。他没在结论上签字，也没反驳。</p></li>
+<li class='tl__item'><span class='tl__dot' aria-hidden='true'></span><span class='tl__date'>2023</span><h3 class='tl__h'>转入第三观测所</h3><p class='tl__p'>接手编号 D-114 的失物档案，开始整理一份本不该存在的目录：海底失物，全部登记为「无人认领」，其中第七格的标签早已写好名字。</p></li>
+<li class='tl__item'><span class='tl__dot' aria-hidden='true'></span><span class='tl__date'>2026.03</span><h3 class='tl__h'>深潜事故与停职调查</h3><p class='tl__p'>在鲸落浅滩的非法下潜被记录，停职待查。档案仍在继续更新，笔迹是他自己的。</p></li>
+</ol>
+</div>
+<div class='rel reveal'>
+<article class='rel__card'><p class='rel__role'>RELATION 01</p><h3 class='rel__name'>温礼</h3><p class='rel__link'>第三观测所调度员 · 唯一能校准他的人</p><p class='rel__p'>耳压过载时他会短暂失去语言能力，只有温礼知道用三短一长的敲击把他从水里叫回来。她替他压下过两份事故报告，条件是：他必须活着回来签字。</p></article>
+<article class='rel__card'><p class='rel__role'>RELATION 02</p><h3 class='rel__name'>牟承海</h3><p class='rel__link'>退休潜航员 · 教他用肋骨听海的人</p><p class='rel__p'>老牟教他的第一课是：耳朵会被水骗，肋骨不会。如今老人住在岸上，拒绝再下水，却每月寄来一盘旧磁带，从不留言。</p></article>
+<article class='rel__card'><p class='rel__role'>RELATION 03</p><h3 class='rel__name'>「回声」</h3><p class='rel__link'>未识别信号源 · 他等了三年的第二次开口</p><p class='rel__p'>二十七秒录音中的倒数声。观测局结论是设备自噪，他不接受，也不反驳。他不愿承认的是：他一直等在它第二次开口，而这一次，他打算回答。</p></article>
+</div>
+</div>
+</section>
+<section class='sec' data-fw-layer='secret-file' data-fw-layer-name='秘密档案与台词'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>05</span><h2 class='sec-head__title'>秘密档案与代表台词</h2><span class='sec-head__en'>Sealed File &amp; Lines</span></header>
+<div class='archive-duo'>
+<div class='flip reveal' id='flip'>
+<div class='flip__inner'>
+<div class='flip__face flip__face--front'>
+<p class='seal'>SEALED · 未授权者禁止转录</p>
+<h3 class='flip__title'>D-114 秘密档案</h3>
+<p class='flip__warn'>本页内容未经理事会授权不得转录。开启后将记录访问者编号与时间戳。观测局提醒：档案中部分内容来自未经验证的现场录音，不具备技术鉴定效力。</p>
+<p class='flip__meta'>装订日期 2021.11.19<br>页码 07 / 21<br>状态：封存 · 一次开启记录</p>
+<div class='flip__act'><button class='btn btn--gold' type='button' data-flip='open' aria-expanded='false'>开启档案</button></div>
+</div>
+<div class='flip__face flip__face--back'>
+<p class='seal'>RECORD 07 / 21 · 现场录音转录</p>
+<p class='flip__body'>「我听见回声里有人在数数，从七开始倒着数。数到三的时候，水温降了四度；数到我名字的时候，海面结冰了。」<br>——2021.11.16 转录，转录人签名处空白。</p>
+<p class='flip__foot'>附注（字迹不同，笔压更重）：他的左耳听阈下移不是事故造成的。2014 年第一次下潜的基线数据就已经是 12 dB，这份体检报告从来没有进过正式档案。</p>
+<div class='flip__act'><button class='btn' type='button' data-flip='close' aria-expanded='true'>合上档案</button></div>
+</div>
+</div>
+</div>
+<ul class='quotes reveal'>
+<li><p>「海不会撒谎，只是没人肯听。」</p><span>观测间隙 · 记录人：温礼</span></li>
+<li><p>「我不是不怕。我是把怕记在本子上了，所以它得排队。」</p><span>面对新入队的观测员</span></li>
+<li><p>「你听，第七秒之后水就不一样了。别问我为什么知道。」</p><span>深潜中 · 通讯记录 00:11:24</span></li>
+<li><p>「如果哪天我没上来，别来找我。把录音听完就行。」</p><span>出航前 · 未经登记的叮嘱</span></li>
+</ul>
+</div>
+</div>
+</section>
+<section class='sec' data-fw-layer='greeting-deck' data-fw-layer-name='开场白目录'>
+<div class='wrap'>
+<header class='sec-head'><span class='sec-head__num'>06</span><h2 class='sec-head__title'>开场白目录</h2><span class='sec-head__en'>Alternate Greetings</span></header>
+<p class='deck__note'>每一则都可以作为故事起点。点击卡片或「载入此开场白」，会向酒馆请求切换第 0 条消息的真实备用开场白（swipe）；「展开试读」只在本地展示文本，不发送任何请求。</p>
+<div class='deck reveal' id='deck'>
+<article class='gcard' data-gi='0'>
+<p class='gcard__idx'>G-01</p>
+<h3 class='gcard__title'>暴雨码头</h3>
+<ul class='gcard__tags'><li>初遇</li><li>雨夜</li><li>交接任务</li></ul>
+<p class='gcard__abs'>深夜十一点四十分，防洪堤三号泊位。他把伞递过来，同时递来一份不该存在的任务书：编号 D-114，签发日期是三年前的今天。</p>
+<div class='gcard__act'><button class='btn btn--gold' type='button' data-load='0'>载入此开场白</button><button class='btn btn--ghost' type='button' data-peek='0' aria-expanded='false'>展开试读</button></div>
+<div class='gcard__preview' hidden><p></p><span class='peek-note'></span></div>
+</article>
+<article class='gcard' data-gi='1'>
+<p class='gcard__idx'>G-02</p>
+<h3 class='gcard__title'>深潜事故</h3>
+<ul class='gcard__tags'><li>危机</li><li>舱壁渗漏</li><li>十二分钟</li></ul>
+<p class='gcard__abs'>深度一千一百二十米。警报先从他的左耳开始；他要求再多十二分钟，去取回那只正在下沉的记录仪。</p>
+<div class='gcard__act'><button class='btn btn--gold' type='button' data-load='1'>载入此开场白</button><button class='btn btn--ghost' type='button' data-peek='1' aria-expanded='false'>展开试读</button></div>
+<div class='gcard__preview' hidden><p></p><span class='peek-note'></span></div>
+</article>
+<article class='gcard' data-gi='2'>
+<p class='gcard__idx'>G-03</p>
+<h3 class='gcard__title'>失物档案</h3>
+<ul class='gcard__tags'><li>日常</li><li>档案室</li><li>诡异线索</li></ul>
+<p class='gcard__abs'>地下三层的除湿机像一头老实的动物。他取出一个牛皮纸盒，盒盖上写着你的名字——签收日期在三年后。</p>
+<div class='gcard__act'><button class='btn btn--gold' type='button' data-load='2'>载入此开场白</button><button class='btn btn--ghost' type='button' data-peek='2' aria-expanded='false'>展开试读</button></div>
+<div class='gcard__preview' hidden><p></p><span class='peek-note'></span></div>
+</article>
+<article class='gcard' data-gi='3'>
+<p class='gcard__idx'>G-04</p>
+<h3 class='gcard__title'>黎明返航</h3>
+<ul class='gcard__tags'><li>收束</li><li>甲板</li><li>试探性信任</li></ul>
+<p class='gcard__abs'>凌晨五点二十分，海面从铁灰变成锡灰。他摘下耳机，把那枚锈蚀的铭牌放进你的掌心，说了一句只讲一次的话。</p>
+<div class='gcard__act'><button class='btn btn--gold' type='button' data-load='3'>载入此开场白</button><button class='btn btn--ghost' type='button' data-peek='3' aria-expanded='false'>展开试读</button></div>
+<div class='gcard__preview' hidden><p></p><span class='peek-note'></span></div>
+</article>
+</div>
+<p class='deck-status' id='deck-status' role='status' aria-live='polite'>接口状态检测中…</p>
+</div>
+</section>
+<footer class='colophon' data-fw-layer='author-colophon' data-fw-layer-name='作者说明'>
+<div class='colophon__in'>
+<h2>深海观测档案 · 测试创作</h2>
+<p>角色 沈砚潮 / 文本与前端：本作品为作者的个人测试创作，用于练习酒馆助手中的消息前端与角色卡导入流程。人物、机构、地名、档案编号均为虚构，与任何现实组织无关。</p>
+<p>技术说明：单文件 HTML / CSS / JavaScript，未引入任何外部脚本库；四则备用开场白随角色卡数据一同导出，目录中的「载入此开场白」会调用酒馆助手接口请求切换第 0 条消息的真实 swipe，不会在本页内伪造文字替换。</p>
+<p class='colophon__warn'>个人学习展示；未经作者许可请勿二传、商用或冒署名。</p>
+<p class='colophon__sig'>DEEP-SEA OBSERVATION ARCHIVE · D-114-07 · END OF RECORD</p>
+</div>
+</footer>
+</div>
+<script type='application/json' data-tavern-character>{"name":"沈砚潮","description":"沈砚潮（SHEN YANCHAO），代号「潮汐-07」，档案编号 D-114-07，34 岁男性，深海观测局第三观测所二级异常现象调查员。外观：身高 186cm，惯穿深灰防水工装与旧呢大衣，左耳常年挂着声呐耳机，右手食指有旧疤；说话简短，先给数据再给结论。性格克制、固执、对海里的东西近乎虔诚，对岸上的人事则保持一段安全距离。能力四项：阈听（分辨 0.5Hz 到 40kHz 的细微振动）、静水压（局部提高水体密度形成水壁）、层析（把观测记忆归档并回放）、七分钟（无装备百米停留七分钟）；每一项都有明确的生理代价，描写使用时请体现耳鸣、关节出血、记忆空白或体温下降。关系：调度员温礼是唯一能校准他的人；退休潜航员牟承海教他用肋骨听海；二十七秒录音里的倒数声「回声」是他等了三年的第二次开口。秘密：他的左耳听阈下移并非事故所致，2014 年第一次下潜时的基线数据就已经是 12dB，这份体检报告从未进入正式档案。说话风格：先给数据、再给结论、很少解释情绪；称呼对方时直呼名字。","alternate_greetings":["雨把码头砸成一片白噪音。沈砚潮站在三号泊位的灯下，左耳塞着耳机，右耳听着你踩水走近的节奏。他没有回头，先把伞往后递了半尺，正好停在你手边。「{{user}}。」他念你的名字，像在核对一份清单，「你比我预计早到七分钟。这七分钟里，卸货平台的门开了两次，都没有灯。」他把一份塑封的任务书推过来，纸上印着观测局的抬头，编号 D-114，签发日期是三年前的今天。任务内容只有一行：回收回声海沟二号观测舱残骸及舱内录音载体。「这份文件昨天才从档案室流出，理论上它不该存在——因为二号舱事故之后，官方结论是『残骸未寻获』。」他终于转过身，镜片上是碎开的雨灯，「船在四号泊位，油加满，氧气四小时。我不强迫你上船。但如果你不来，我会一个人下去。」他把伞完全交给你，自己走进雨里。走了三步，他停下：「对了，上船之前，你得先签一句：此行一切记录，由你自己保管。」","深度一千一百二十米。警报是先从他的左耳开始的——他比你早两秒听见金属的呻吟。控制台上的深度曲线第一次跳动时，沈砚潮已经把手按在了舱壁上。「渗漏点在中部焊缝，扩展速度不快，但不会停。」他的声音经过水声通讯挤出来，被压得很扁，「{{user}}，你现在有两个选择。立刻上浮，我们四十分钟后出水，谁都不会死，记录仪留在下面。或者……」警报第二次响起。他的呼吸声里有一点点杂音，像有人在他喉咙里摇一颗小石子。「或者再给我十二分钟。记录仪里存着这一段海沟的高频底噪，昨天它变了。如果这东西是真的，我们这三年追的都只是它的影子。」他停顿了一下，你听见他解开安全扣的金属声，「我下去取，你留在上面看深度表。如果我超过十三分钟没回话，就砍断缆绳上浮，别犹豫，这是命令。不过命令这东西，我向来只听一半。」","档案室在地下三层，除湿机像一头老实的动物在角落里喘气。沈砚潮拉开 D 排第三格的抽屉，取出一个牛皮纸盒，盒盖用铅笔写着你的名字——笔迹是他的。「这是昨天下午登记的。」他把盒子推给你，没有打开，「失物招领编号 114-07。打捞员在鲸落浅滩的沉积层里捡到它，泡了大概三天，但里面的东西没进水。」你掀开盒盖。里面不是你的东西。或者说，你还没丢过它：一枚旧钥匙、半张画了一半的海图、一张拍立得，照片上你站在一艘你不认识的白船上，笑得很放松。照片背面有一行字，日期是三年后的十一月。「登记表上，认领人签名栏已经签好了，是你的字。」他靠在铁柜上，看着你的手，「我不打算问你这是怎么回事。我只想请你帮我确认一件事——如果你真的在三年后签了这张表，那么在那之前，我们之间一定发生过什么。」他把铅笔放到盒沿上，笔尖朝向你，「说还是不说，都行。但盒子我不能替你保管太久。{{user}}，你要不要先看看照片上那艘船的名字？」","凌晨五点二十分，海面从铁灰变成锡灰。沈砚潮坐在船尾的缆桩上，摘下耳机，挂在胸口。这大概是三天里他第一次把耳朵完全交给空气。「回来了。」他说，语气平平，像在念一条观测记录，「航程四小时五十二分，出水人员两名，身体状态……我的左耳今天不太听话。」他把耳机拧小，里面还漏出一点白噪音，像退潮。然后他从工装内袋里摸出一枚巴掌大的铭牌，边缘被海水啃出缺口，字迹只剩一半：「……二号。剩下的被锈吃掉了。」他用袖口把铭牌擦了擦，递向你，却没有松手。「{{user}}，有件事我想过一次又一次。」他看着你，眼睛因为通宵而发红，「这东西留在我身上，我迟早会带着它再下一次水。你替我拿着。等哪天我说『可以还给我了』，你再给我。在那之前，你不许问我为什么。」「还有——」他把铭牌放进你掌心，终于松了手，「谢谢你上船。这句话我只说一次。天亮之后，我们得决定那卷录音要不要交上去。」"]}</script>
+<script>
+(function(){
+'use strict';
+var root=document.getElementById('abyss-root');
+if(!root){return;}
+if(root.getAttribute('data-abyss-ready')==='1'){return;}
+root.setAttribute('data-abyss-ready','1');
+root.classList.add('js');
+var disposers=[];
+function listen(t,type,fn,opt){if(!t||!t.addEventListener){return;}t.addEventListener(type,fn,opt);disposers.push(function(){try{t.removeEventListener(type,fn,opt);}catch(e){}});}
+function later(fn,ms){var id=window.setTimeout(fn,ms);disposers.push(function(){window.clearTimeout(id);});return id;}
+var reduce=false;
+try{reduce=!!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);}catch(e){}
+var veil=document.getElementById('abyss-boot');
+if(veil){later(function(){if(veil.parentNode){veil.parentNode.removeChild(veil);}},reduce?0:2200);}
+var frame=document.getElementById('portrait-frame');
+var pimg=document.getElementById('portrait-img');
+if(frame&&pimg){
+var onLoad=function(){frame.classList.remove('is-error');frame.classList.add('is-loaded');};
+var onErr=function(){frame.classList.remove('is-loaded');frame.classList.add('is-error');};
+listen(pimg,'load',onLoad);
+listen(pimg,'error',onErr);
+if(pimg.complete){if(pimg.naturalWidth>0){onLoad();}else{onErr();}}
+}
+var revealEls=[].slice.call(root.querySelectorAll('.reveal'));
+var io=null;
+if(!reduce&&('IntersectionObserver' in window)){
+io=new IntersectionObserver(function(entries){entries.forEach(function(en){if(en.isIntersecting){en.target.classList.add('is-in');io.unobserve(en.target);}});},{threshold:.14,rootMargin:'0px 0px -6% 0px'});
+disposers.push(function(){io.disconnect();});
+}
+revealEls.forEach(function(el){
+if(!io){el.classList.add('is-in');return;}
+var rect=el.getBoundingClientRect();
+if(rect.top<window.innerHeight*0.92){el.classList.add('is-in');return;}
+el.classList.add('will-reveal');
+io.observe(el);
+});
+var accBtns=[].slice.call(root.querySelectorAll('.acc__btn'));
+function panelOf(btn){var id=btn.getAttribute('aria-controls');return id?document.getElementById(id):null;}
+function setAcc(btn,open){var p=panelOf(btn);if(!p){return;}btn.setAttribute('aria-expanded',open?'true':'false');p.style.maxHeight=open?(p.scrollHeight+'px'):'0px';}
+accBtns.forEach(function(btn){listen(btn,'click',function(){var open=btn.getAttribute('aria-expanded')==='true';accBtns.forEach(function(o){if(o!==btn){setAcc(o,false);}});setAcc(btn,!open);});});
+var rzT=0;
+listen(window,'resize',function(){window.clearTimeout(rzT);rzT=window.setTimeout(function(){accBtns.forEach(function(b){if(b.getAttribute('aria-expanded')==='true'){var p=panelOf(b);if(p){p.style.maxHeight=p.scrollHeight+'px';}}});},180);});
+disposers.push(function(){window.clearTimeout(rzT);});
+var stage=document.getElementById('stage');
+var inner=document.getElementById('stage-inner');
+if(stage&&inner){
+var cards=[].slice.call(inner.children);
+var total=cards.length||1;
+var angle=0,current=0,dragging=false,startX=0,startAngle=0,pid=null;
+var idxEl=document.getElementById('stage-idx');
+var readTitle=document.getElementById('stage-read-title');
+var readDesc=document.getElementById('stage-read-desc');
+var pad=function(n){return (n<10?'0':'')+n;};
+var render=function(){inner.style.transform='rotateY('+(-angle)+'deg)';};
+var sync=function(){
+var i=Math.round(angle/90);
+current=((i%total)+total)%total;
+if(idxEl){idxEl.textContent=pad(current+1)+' / '+pad(total);}
+var c=cards[current];
+if(c){if(readTitle){readTitle.textContent=c.getAttribute('data-title')||'';}if(readDesc){readDesc.textContent=c.getAttribute('data-desc')||'';}}
+cards.forEach(function(el,k){if(k===current){el.setAttribute('aria-current','true');}else{el.removeAttribute('aria-current');}});
+};
+var go=function(dir){angle+=dir*90;render();sync();};
+var pb=root.querySelector('[data-stage="prev"]');
+var nb=root.querySelector('[data-stage="next"]');
+if(pb){listen(pb,'click',function(){go(-1);});}
+if(nb){listen(nb,'click',function(){go(1);});}
+listen(stage,'pointerdown',function(e){if(e.button&&e.button!==0){return;}dragging=true;startX=e.clientX;startAngle=angle;pid=e.pointerId;stage.classList.add('is-dragging');try{stage.setPointerCapture(pid);}catch(err){}});
+listen(stage,'pointermove',function(e){if(!dragging){return;}angle=startAngle-(e.clientX-startX)*0.42;render();});
+var endDrag=function(){if(!dragging){return;}dragging=false;stage.classList.remove('is-dragging');try{if(pid!==null){stage.releasePointerCapture(pid);}}catch(err){}pid=null;angle=Math.round(angle/90)*90;render();sync();};
+listen(stage,'pointerup',endDrag);
+listen(stage,'pointercancel',endDrag);
+listen(window,'blur',endDrag);
+listen(stage,'keydown',function(e){if(e.key==='ArrowLeft'){e.preventDefault();go(-1);}else if(e.key==='ArrowRight'){e.preventDefault();go(1);}});
+render();sync();
+}
+var flip=document.getElementById('flip');
+if(flip){
+var flipBtns=[].slice.call(flip.querySelectorAll('[data-flip]'));
+var front=flip.querySelector('.flip__face--front');
+var back=flip.querySelector('.flip__face--back');
+var syncFlip=function(open){
+flip.classList.toggle('is-flipped',open);
+flipBtns.forEach(function(b){b.setAttribute('aria-expanded',open?'true':'false');});
+if(front){front.setAttribute('aria-hidden',open?'true':'false');}
+if(back){back.setAttribute('aria-hidden',open?'false':'true');}
+};
+flipBtns.forEach(function(b){listen(b,'click',function(){syncFlip(!flip.classList.contains('is-flipped'));});});
+syncFlip(false);
+}
+var hero=document.getElementById('abyss-hero');
+if(!reduce&&hero){
+var px=0,py=0,pTick=false,sy=0,sTick=false;
+var flushP=function(){pTick=false;root.style.setProperty('--px',px.toFixed(3));root.style.setProperty('--py',py.toFixed(3));};
+listen(hero,'pointermove',function(e){
+var r=hero.getBoundingClientRect();
+if(!r.width||!r.height){return;}
+px=Math.max(-1,Math.min(1,((e.clientX-r.left)/r.width-.5)*2));
+py=Math.max(-1,Math.min(1,((e.clientY-r.top)/r.height-.5)*2));
+if(!pTick){pTick=true;window.requestAnimationFrame(flushP);}
+},{passive:true});
+listen(hero,'pointerleave',function(){px=0;py=0;if(!pTick){pTick=true;window.requestAnimationFrame(flushP);}},{passive:true});
+var flushS=function(){sTick=false;root.style.setProperty('--sy',sy.toFixed(1)+'px');};
+listen(window,'scroll',function(){var y=window.pageYOffset||document.documentElement.scrollTop||0;sy=y>900?900:y;if(!sTick){sTick=true;window.requestAnimationFrame(flushS);}},{passive:true});
+}
+var deckStatus=document.getElementById('deck-status');
+var loadBtns=[].slice.call(root.querySelectorAll('[data-load]'));
+var peekBtns=[].slice.call(root.querySelectorAll('[data-peek]'));
+var cardData=null;
+try{
+var dataEl=document.querySelector('script[type="application/json"][data-tavern-character]');
+if(dataEl){cardData=JSON.parse(dataEl.textContent||'{}');}
+}catch(e){cardData=null;}
+var greetings=[];
+if(cardData&&Object.prototype.toString.call(cardData.alternate_greetings)==='[object Array]'){greetings=cardData.alternate_greetings;}
+var hasGet=(typeof window.getChatMessages==='function');
+var hasSet=(typeof window.setChatMessages==='function');
+var hasId=(typeof window.getCurrentMessageId==='function');
+var msgId=function(){try{if(hasId){var v=window.getCurrentMessageId();if(typeof v==='number'){return v;}}}catch(e){}return 0;};
+var readSwipes=function(){if(!hasGet){return null;}try{var floors=window.getChatMessages(msgId(),{include_swipes:true});if(floors&&floors[0]&&Object.prototype.toString.call(floors[0].swipes)==='[object Array]'){return floors[0].swipes;}}catch(e){}return null;};
+var normText=function(input){
+var t=(input===null||input===undefined)?'':String(input);
+var out='';
+for(var i=0;i<t.length;i++){
+var c=t.charAt(i);var code=t.charCodeAt(i);
+if(code===32||code===9||code===10||code===13||code===160||code===12288){continue;}
+if('「」『』【】*#>_`'.indexOf(c)>-1){continue;}
+out+=c;
+}
+return out;
+};
+var greetingTitle=function(i){
+var btn=root.querySelector('[data-load="'+i+'"]');
+if(!btn){return '第 '+(i+1)+' 则';}
+var card=btn.closest('.gcard');
+var h=card?card.querySelector('.gcard__title'):null;
+return h?h.textContent:('第 '+(i+1)+' 则');
+};
+var markActive=function(i){[].slice.call(root.querySelectorAll('.gcard')).forEach(function(card,k){if(k===i){card.classList.add('is-active');}else{card.classList.remove('is-active');}});};
+var setStatus=function(text,cls){if(!deckStatus){return;}deckStatus.textContent=text;deckStatus.className='deck-status'+(cls?(' '+cls):'');};
+var targetIndex=function(i){
+var swipes=readSwipes();
+if(swipes&&swipes.length){
+var want=normText(greetings[i]||'');
+if(want.length>=16){
+for(var k=0;k<swipes.length;k++){
+var got=normText(swipes[k]);
+if(got===want){return k;}
+if(got.length>=24&&got.indexOf(want.slice(0,24))===0){return k;}
+if(got.length>=24&&want.indexOf(got.slice(0,24))===0){return k;}
+}
+}
+var guess=i+1;
+if(guess>swipes.length-1){guess=swipes.length-1;}
+if(guess<0){guess=0;}
+return guess;
+}
+return i+1;
+};
+var busy=false,seq=0;
+var setBusy=function(v){busy=v;loadBtns.forEach(function(b){if(v){b.setAttribute('disabled','disabled');b.classList.add('is-busy');}else{b.removeAttribute('disabled');b.classList.remove('is-busy');}});};
+var loadGreeting=function(i){
+if(!(hasGet&&hasSet)){
+markActive(i);
+setStatus('未检测到酒馆助手接口（getChatMessages / setChatMessages 不可用）。当前为本地试读环境：本次点击没有改动任何酒馆消息，已为你展开这一则开场白的本地试读文本。','is-warn');
+var pk=root.querySelector('[data-peek="'+i+'"]');
+if(pk&&pk.getAttribute('aria-expanded')!=='true'){pk.click();}
+return;
+}
+if(busy){setStatus('上一次切换请求还在处理中，请稍候再点一次。','is-warn');return;}
+var my=++seq;
+var idx=targetIndex(i);
+var title=greetingTitle(i);
+setBusy(true);
+setStatus('正在请求切换到「'+title+'」…');
+var p=null;
+try{p=window.setChatMessages([{message_id:msgId(),swipe_id:idx}],{refresh:'affected'});}catch(err){p=Promise.reject(err);}
+Promise.resolve(p).then(function(){
+if(my!==seq){return;}
+markActive(i);
+setStatus('已发出切换请求：「'+title+'」→ 第 '+msgId()+' 条消息 swipe 索引 '+idx+'。酒馆可能因此重建本条消息的前端，页面刷新属正常现象；若没有变化，可改用消息下方的左右箭头手动切换。','is-ok');
+}).catch(function(err){
+if(my!==seq){return;}
+setStatus('切换请求失败：'+((err&&err.message)?err.message:String(err))+'。可改用酒馆消息下方的左右箭头手动切换开场白。','is-err');
+}).then(function(){if(my===seq){setBusy(false);}});
+};
+var togglePeek=function(btn){
+var i=parseInt(btn.getAttribute('data-peek'),10);if(isNaN(i)){i=0;}
+var card=btn.closest?btn.closest('.gcard'):null;
+if(!card){return;}
+var box=card.querySelector('.gcard__preview');
+var textEl=box?box.querySelector('p'):null;
+var noteEl=box?box.querySelector('.peek-note'):null;
+var open=btn.getAttribute('aria-expanded')==='true';
+peekBtns.forEach(function(o){if(o===btn){return;}o.setAttribute('aria-expanded','false');o.textContent='展开试读';var oc=o.closest('.gcard');var ob=oc?oc.querySelector('.gcard__preview'):null;if(ob){ob.hidden=true;}});
+if(open){btn.setAttribute('aria-expanded','false');btn.textContent='展开试读';if(box){box.hidden=true;}return;}
+var text=greetings[i];
+if(text){if(textEl){textEl.textContent=text;}if(noteEl){noteEl.textContent='本地试读 · 取自角色卡备用开场白数据，不是酒馆消息里的实际内容';}}
+else{if(textEl){textEl.textContent='本地试读文本不可用：当前前端中没有找到角色卡备用开场白数据块。';}if(noteEl){noteEl.textContent='试读数据缺失';}}
+btn.setAttribute('aria-expanded','true');btn.textContent='收起试读';
+if(box){box.hidden=false;}
+};
+peekBtns.forEach(function(b){listen(b,'click',function(ev){ev.stopPropagation();togglePeek(b);});});
+loadBtns.forEach(function(b){listen(b,'click',function(ev){ev.stopPropagation();loadGreeting(parseInt(b.getAttribute('data-load'),10)||0);});});
+[].slice.call(root.querySelectorAll('.gcard')).forEach(function(card){
+listen(card,'click',function(ev){
+var t=ev.target;
+if(t&&t.closest&&(t.closest('[data-peek]')||t.closest('.gcard__preview')||t.closest('[data-load]'))){return;}
+var lb=card.querySelector('[data-load]');
+if(lb){loadGreeting(parseInt(lb.getAttribute('data-load'),10)||0);}
+});
+});
+if(deckStatus){
+var sw=readSwipes();
+var n=sw?sw.length:0;
+if(hasGet&&hasSet){
+setStatus('接口已连接：可请求切换第 0 条消息的真实备用开场白（swipe）。'+(n?('当前检测到 '+n+' 个 swipe 版本。'):'暂未读取到 swipe 列表（角色卡可能尚未导入或消息未刷新），点击后仍会按顺序请求。'),'is-ok');
+}else{
+setStatus('未检测到酒馆助手接口，当前为本地试读环境：点击「载入此开场白」只会展开本地试读文本，不会改动任何酒馆消息。','is-warn');
+}
+}
+listen(window,'pagehide',function(){disposers.splice(0).forEach(function(fn){try{fn();}catch(e){}});},{once:true});
+})();
+</script>

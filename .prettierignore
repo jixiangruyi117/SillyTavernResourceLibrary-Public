@@ -1,0 +1,6 @@
+dist
+node_modules
+pnpm-lock.yaml
+artifacts
+# Preserve the exact AI-generated starter verified in SillyTavern.
+src/templates/FrontendWorkshopDeepSea.html

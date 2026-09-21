@@ -1,0 +1,432 @@
+/* 全局视觉精修：清透玻璃档案
+ * 保持交互与布局不变，只统一色彩、面板、控件与边角层级。
+ */
+/* 登录外壳与资源库共用的材质令牌由 Foundation.css 在启动时加载。 */
+
+::selection {
+  color: #ffffff;
+  background: #438f9b;
+}
+
+button,
+.button,
+input,
+select,
+textarea {
+  border-radius: var(--glass-radius-control);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline-color: color-mix(in srgb, var(--color-accent) 76%, #ffffff);
+  outline-offset: 3px;
+}
+
+.app-shell,
+.library,
+.feature-hub {
+  background-color: transparent;
+}
+
+.sidebar,
+.toolbar,
+.resource-card,
+.resource-list,
+.split-workspace,
+.empty-state,
+.archive-summary,
+.protection-panel,
+.editor-sheet,
+.resource-detail-sheet,
+.export-sheet,
+.restore-sheet,
+.layout-settings-sheet,
+.vault-sheet,
+.account-panel__sheet,
+.account-profile,
+.settings-section,
+.appearance-panel,
+.appearance-preset-manager,
+.appearance-advanced,
+.feature-hub__header,
+.feature-app,
+.stitch__header,
+.stitch-pane,
+.stitch-workbench,
+.ai-tagging-panel,
+.ai-tagging-panel__section {
+  border-color: var(--glass-border);
+  background: var(--glass-panel);
+  box-shadow: var(--glass-shadow);
+}
+
+/* 全屏层必须隔绝后方内容；玻璃效果仅保留在层内控件，避免透底影响阅读。 */
+.editor-overlay {
+  background: var(--editor-overlay-background, rgba(28, 57, 67, 0.58));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.editor-sheet,
+.resource-detail-sheet,
+.export-sheet,
+.restore-sheet,
+.layout-settings-sheet,
+.vault-sheet,
+.account-panel__sheet {
+  background: linear-gradient(145deg, #faffff, #eaf5f7);
+}
+
+:root[data-theme='dark'] .editor-overlay {
+  background: var(--editor-overlay-background, rgba(4, 15, 21, 0.76));
+}
+
+:root[data-theme='dark'] .editor-sheet,
+:root[data-theme='dark'] .resource-detail-sheet,
+:root[data-theme='dark'] .export-sheet,
+:root[data-theme='dark'] .restore-sheet,
+:root[data-theme='dark'] .layout-settings-sheet,
+:root[data-theme='dark'] .vault-sheet,
+:root[data-theme='dark'] .account-panel__sheet {
+  background: linear-gradient(145deg, var(--color-surface-raised), var(--color-surface));
+}
+
+.sidebar,
+.toolbar,
+.feature-hub__header,
+.resource-card,
+.feature-app,
+.settings-section,
+.appearance-panel,
+.stitch-pane,
+.ai-tagging-panel__section {
+  border-radius: var(--glass-radius-panel);
+}
+
+.sidebar,
+.toolbar {
+  border: 1px solid var(--glass-border);
+}
+
+.toolbar {
+  background: var(--glass-panel-strong);
+}
+
+.feature-hub {
+  background:
+    radial-gradient(circle at 88% 3%, rgba(115, 210, 211, 0.2), transparent 25rem),
+    radial-gradient(circle at 12% 86%, rgba(133, 172, 235, 0.14), transparent 24rem), transparent;
+}
+
+/* 功能桌面的卡片保持可识别，但不以高亮白块切断整片背景。 */
+.feature-hub[data-feature-page='home'] .feature-app {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(239, 250, 251, 0.44));
+  box-shadow:
+    0 0.55rem 1.35rem rgba(45, 91, 111, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.52);
+}
+
+:root[data-theme='dark'] .feature-hub[data-feature-page='home'] .feature-app {
+  background: var(--glass-panel-strong);
+}
+
+.feature-app,
+.resource-card,
+.layout-option,
+.settings-section,
+.editor-form,
+.resource-detail__content,
+.resource-detail__summary,
+.resource-detail__tabs,
+.appearance-scope-tabs,
+.stitch-entry,
+.ai-tagging-panel__result {
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
+}
+
+.layout-option,
+.stitch-entry,
+.ai-tagging-panel__result {
+  background: var(--glass-panel-muted);
+}
+
+.nav-item,
+.category-nav,
+.tag-nav,
+.resource-card__category,
+.resource-card__tag,
+.resource-card__relation,
+.resource-detail__summary-tags span,
+.export-chip,
+.appearance-scope-tabs button,
+.appearance-layouts button,
+.resource-detail__tabs button,
+.stitch-entry__toggle,
+.settings-theme button,
+.cabinet-density button,
+.mobile-bottom-nav button {
+  border-color: color-mix(in srgb, var(--color-line-strong) 72%, var(--glass-border));
+  background: var(--glass-panel-muted);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+}
+
+.nav-item--active,
+.category-nav--active,
+.tag-nav--active,
+.mobile-bottom-nav__item--active,
+.resource-detail__tab--active,
+.appearance-scope-tabs button.is-active,
+.appearance-layouts button.is-active,
+.layout-option--active {
+  border-color: color-mix(in srgb, var(--color-accent) 46%, var(--glass-border));
+  color: var(--color-accent);
+  background: linear-gradient(145deg, rgba(213, 246, 246, 0.88), rgba(226, 237, 255, 0.78));
+  box-shadow:
+    0 0.55rem 1.35rem rgba(61, 150, 162, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+:root[data-theme='dark'] .nav-item--active,
+:root[data-theme='dark'] .category-nav--active,
+:root[data-theme='dark'] .tag-nav--active,
+:root[data-theme='dark'] .mobile-bottom-nav__item--active,
+:root[data-theme='dark'] .resource-detail__tab--active,
+:root[data-theme='dark'] .appearance-scope-tabs button.is-active,
+:root[data-theme='dark'] .appearance-layouts button.is-active,
+:root[data-theme='dark'] .layout-option--active {
+  color: #e4ffff;
+  background: linear-gradient(145deg, rgba(68, 132, 137, 0.72), rgba(55, 93, 118, 0.64));
+}
+
+.button,
+.button--quiet,
+.appearance-code-actions button,
+.appearance-preset-tools button,
+.editor-form__actions button,
+.resource-detail__actions button,
+.resource-detail__summary-actions button,
+.ai-tagging-panel button {
+  border-color: color-mix(in srgb, var(--color-line-strong) 76%, var(--glass-border));
+  background: var(--glass-panel-strong);
+  box-shadow:
+    0 0.55rem 1.25rem rgba(55, 100, 117, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.button--primary,
+.import-button,
+.auth-form__primary,
+.appearance-code-actions .button--primary,
+.editor-form__actions .button--primary,
+.resource-detail__actions .button--primary,
+.resource-detail__summary-actions .button--primary,
+.persona-app .button--primary,
+.ai-tagging-panel .button--primary {
+  border-color: rgba(255, 255, 255, 0.44);
+  color: #ffffff;
+  background: linear-gradient(135deg, #4bbcc1, #5182c4);
+  box-shadow:
+    0 0.8rem 1.7rem rgba(48, 125, 158, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+:root[data-theme='dark'] .button--primary,
+:root[data-theme='dark'] .import-button,
+:root[data-theme='dark'] .auth-form__primary,
+:root[data-theme='dark'] .appearance-code-actions .button--primary,
+:root[data-theme='dark'] .editor-form__actions .button--primary,
+:root[data-theme='dark'] .resource-detail__actions .button--primary,
+:root[data-theme='dark'] .resource-detail__summary-actions .button--primary,
+:root[data-theme='dark'] .persona-app .button--primary,
+:root[data-theme='dark'] .ai-tagging-panel .button--primary {
+  color: #071619;
+  background: linear-gradient(135deg, #83d4d3, #78b4cb);
+}
+
+.button:not(:disabled):hover,
+.import-button:not(:disabled):hover,
+.feature-app:hover,
+.resource-card:hover,
+.appearance-layouts button:hover,
+.appearance-scope-tabs button:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--glass-border));
+  box-shadow:
+    0 0.8rem 1.8rem rgba(56, 133, 150, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.field__control,
+.search-box,
+.sort-control,
+.resource-relations__search input,
+.appearance-preset-fields input,
+.appearance-preset-fields select,
+.appearance-panel--code textarea,
+.appearance-advanced textarea,
+.settings-number-row__control input,
+.export-option select,
+.persona-app input:not([type='checkbox'], [type='radio'], [type='range']),
+.persona-app textarea,
+.stitch input:not([type='checkbox'], [type='radio'], [type='range']),
+.stitch textarea,
+.ai-tagging-panel input:not([type='checkbox'], [type='radio'], [type='range']),
+.ai-tagging-panel textarea {
+  border-color: color-mix(in srgb, var(--color-line-strong) 72%, var(--glass-border));
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 0.45rem 1rem rgba(60, 105, 122, 0.06);
+}
+
+:root[data-theme='dark'] .field__control,
+:root[data-theme='dark'] .search-box,
+:root[data-theme='dark'] .sort-control,
+:root[data-theme='dark'] .resource-relations__search input,
+:root[data-theme='dark'] .appearance-preset-fields input,
+:root[data-theme='dark'] .appearance-preset-fields select,
+:root[data-theme='dark'] .appearance-panel--code textarea,
+:root[data-theme='dark'] .appearance-advanced textarea,
+:root[data-theme='dark'] .settings-number-row__control input,
+:root[data-theme='dark'] .export-option select,
+:root[data-theme='dark'] .persona-app input:not([type='checkbox'], [type='radio'], [type='range']),
+:root[data-theme='dark'] .persona-app textarea,
+:root[data-theme='dark'] .stitch input:not([type='checkbox'], [type='radio'], [type='range']),
+:root[data-theme='dark'] .stitch textarea,
+:root[data-theme='dark']
+  .ai-tagging-panel
+  input:not([type='checkbox'], [type='radio'], [type='range']),
+:root[data-theme='dark'] .ai-tagging-panel textarea {
+  background: color-mix(in srgb, var(--color-surface-raised) 72%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.search-box:focus-within,
+.field__control:focus,
+.appearance-preset-fields input:focus,
+.appearance-preset-fields select:focus,
+.persona-app input:focus,
+.persona-app textarea:focus,
+.stitch input:focus,
+.stitch textarea:focus,
+.ai-tagging-panel input:focus,
+.ai-tagging-panel textarea:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 62%, var(--glass-border));
+  box-shadow:
+    0 0 0 3px rgba(92, 192, 199, 0.17),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.resource-detail__header,
+.resource-detail__tabs,
+.resource-detail__actions,
+.account-panel__header,
+.editor-sheet__header,
+.export-sheet > header,
+.restore-sheet > header,
+.layout-settings-sheet > header {
+  border-color: var(--glass-border);
+  background: var(--glass-panel-strong);
+}
+
+.resource-detail__image-frame,
+.resource-card__thumbnail,
+.resource-card__cover,
+.feature-app__icon,
+.gallery-artwork__frame,
+.persona-app__avatar,
+.stitch-entry,
+.frontend-workshop__preview,
+.ai-tagging-panel__preview {
+  border-color: color-mix(in srgb, var(--color-line-strong) 60%, var(--glass-border));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    0 0.7rem 1.55rem rgba(44, 89, 107, 0.1);
+}
+
+.persona-app,
+.stitch,
+.ai-tagging-panel {
+  background:
+    radial-gradient(circle at 88% 0, rgba(104, 207, 211, 0.12), transparent 22rem), transparent;
+}
+
+/* 开场白内容仍由原酒馆渲染链输出；这里只统一其外层阅读器。 */
+.greeting-preview-overlay {
+  background:
+    radial-gradient(circle at 86% 4%, rgba(115, 210, 211, 0.22), transparent 25rem),
+    linear-gradient(160deg, #effbfc, #eaf3fb 54%, #f6fbfb);
+}
+
+.greeting-preview-overlay__header,
+.greeting-preview-overlay__footer {
+  border-color: var(--glass-border);
+  background: var(--glass-panel-strong);
+}
+
+.greeting-preview-overlay__stage > article {
+  border-color: var(--glass-border);
+  background: linear-gradient(145deg, #fbffff, #edf8f9);
+  box-shadow: var(--glass-shadow);
+}
+
+:root[data-theme='dark'] .greeting-preview-overlay {
+  background:
+    radial-gradient(circle at 86% 4%, rgba(111, 211, 213, 0.15), transparent 25rem),
+    linear-gradient(160deg, #1b2e36, #25404a 54%, #192a31);
+}
+
+:root[data-theme='dark'] .greeting-preview-overlay__stage > article {
+  background: linear-gradient(145deg, var(--color-surface-raised), var(--color-surface));
+}
+
+@media (max-width: 53.75rem) {
+  .sidebar,
+  .toolbar {
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .feature-hub__header,
+  .resource-card,
+  .feature-app,
+  .settings-section,
+  .appearance-panel,
+  .stitch-pane,
+  .ai-tagging-panel__section {
+    border-radius: 0.95rem;
+  }
+
+  /* 所有功能入口以同一标题基线起排，减少切换 APP 时的跳动感。 */
+  .appearance-studio__header > div > small {
+    display: none;
+  }
+
+  .stitch__header {
+    min-height: var(--size-touch);
+    align-items: start;
+  }
+
+  .feature-hub--app .stitch {
+    padding-top: 0;
+  }
+
+  .feature-hub[data-feature-page='folders'] .folder-app__header {
+    align-items: start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .import-button,
+  .feature-app,
+  .resource-card,
+  .appearance-layouts button,
+  .appearance-scope-tabs button {
+    transition: none;
+  }
+}

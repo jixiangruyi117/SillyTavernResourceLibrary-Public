@@ -1,0 +1,190 @@
+import type { PersonalResourceSelection, PlainSecretCopy } from '../services/PersonalResourceBackup'
+import type { Category, Resource } from './Resource'
+import type {
+  CommunitySourceAttachmentArchiveEntry,
+  CommunitySourceBackupData,
+} from './CommunitySource'
+import type { CustomCssPreset, LayoutMode, PreviewPolicy } from '../services/BrowserStorageService'
+import type { CharacterDrawState } from '../services/CharacterDrawService'
+import type { GitHubBackupConfig } from './CloudBackup'
+import type { MainApiProfilesState } from '../services/MainApiService'
+import type { FrontendWorkshopImageGenerationConfig } from '../services/FrontendWorkshopImageGenerationService'
+import type { FrontendWorkshopSelfHostedImageBedConfig } from '../services/FrontendWorkshopImageHostingService'
+import type { AiTaggingDraft, AiTaggingUndoRecord } from '../services/AiTaggingDraftService'
+import type { ExternalAppDataRecord, InstalledExternalApp } from './ExternalApp'
+import type { PresetStitchDraft } from '../services/BrowserStorageService'
+
+export const ARCHIVE_FORMAT = 'srl-archive'
+export const ARCHIVE_VERSION = 4
+export const COMMUNITY_SOURCE_ARCHIVE_PATH = 'community-sources.json'
+export const COMMUNITY_SOURCE_ATTACHMENT_ARCHIVE_PREFIX = 'community-sources/assets/'
+
+export type ArchiveMode = 'full' | 'partial'
+export type RestoreMode = 'merge' | 'replace'
+
+export interface ArchivePortableSelection {
+  personalResources?: PersonalResourceSelection
+  plaintextSecretCopy?: boolean
+  appearance?: boolean
+  cloudBackup?: boolean
+  characterDraw?: boolean
+  generalPreferences?: boolean
+  mainApiProfiles?: boolean
+  aiTaggingState?: boolean
+  externalApps?: boolean
+  stitchWork?: boolean
+  /** 完整社区帖子/评论快照与已经本地化的 Discord 附件；不包含 Discord / Worker 凭据。 */
+  communitySources?: boolean
+}
+
+export interface ArchivePortableData {
+  /** Explicit opt-in readable companion; encrypted originals remain in the resource archive. */
+  plaintextSecretCopies?: PlainSecretCopy[]
+  version: 1
+  appearance?: {
+    theme: 'light' | 'dark'
+    layoutMode: LayoutMode
+    customCss: string
+    presets: CustomCssPreset[]
+    activePresetId: string
+  }
+  cloudBackup?: {
+    activeProvider?: 'github'
+    github?: GitHubBackupConfig
+  }
+  characterDraw?: {
+    state: CharacterDrawState
+    showNames: boolean
+  }
+  generalPreferences?: {
+    previewPolicy: PreviewPolicy
+    extractCharacterAssets: boolean
+    hideCharacterAssets: boolean
+    showManuallyBoundResources?: boolean
+    searchHistory: string[]
+    historySnapshotLimit: number
+  }
+  /** 包含 API Key；只能在用户明确选择时迁移。 */
+  mainApiProfiles?: MainApiProfilesState
+  /** 其它本机凭据；与主 API 密钥共用同一个显式迁移选择。 */
+  credentials?: {
+    version: 1
+    /** @deprecated 仅为旧备份恢复兼容；新备份不再写出生图 API Key。 */
+    imageGeneration?: FrontendWorkshopImageGenerationConfig[]
+    imageHosting?: FrontendWorkshopSelfHostedImageBedConfig
+    cloudBackup?: Partial<Record<'github', string>>
+  }
+  aiTaggingState?: {
+    draft?: AiTaggingDraft
+    undo?: AiTaggingUndoRecord
+  }
+  /** 第三方代码及其授权状态；恢复后保持禁用，需用户重新启用。 */
+  externalApps?: {
+    apps: InstalledExternalApp[]
+    data: ExternalAppDataRecord[]
+  }
+  stitchWork?: {
+    draft?: PresetStitchDraft
+    checkpoint?: PresetStitchDraft
+    recentPresets?: string[]
+  }
+}
+
+export interface ArchivedResource extends Omit<Resource, 'originalBlob' | 'thumbnailBlob'> {
+  archivePath: string
+}
+
+export interface ArchiveCommunitySourcesDescriptor {
+  version: 1
+  path: typeof COMMUNITY_SOURCE_ARCHIVE_PATH
+  sourceCount: number
+  messageCount: number
+  bindingCount: number
+  /** v4 的向后兼容扩展；旧备份没有这两个字段。 */
+  attachmentCount?: number
+  attachmentPathPrefix?: typeof COMMUNITY_SOURCE_ATTACHMENT_ARCHIVE_PREFIX
+}
+
+export interface ArchiveManifest {
+  format: typeof ARCHIVE_FORMAT
+  version: number
+  mode: ArchiveMode
+  resourceContent?: 'original' | 'modified'
+  createdAt: string
+  resourceCount: number
+  categoryCount: number
+  categories: Category[]
+  resources: ArchivedResource[]
+  versionCount?: number
+  versions?: ArchivedResource[]
+  portableData?: ArchivePortableData
+  communitySources?: ArchiveCommunitySourcesDescriptor
+}
+
+export interface ArchiveOptions {
+  personalResources?: PersonalResourceSelection
+  mode: ArchiveMode
+  resourceContent?: 'original' | 'modified'
+  resourceIds?: string[]
+  includeAllCategories?: boolean
+  /** Local recovery archives retain links to resources that were not deleted. */
+  preserveExternalRelatedResourceIds?: boolean
+  splitSizeBytes?: number
+  portableData?: ArchivePortableData
+  /** UI 选择只用于决定是否向来源 Owner 请求快照，不写入 manifest。 */
+  portableSelection?: ArchivePortableSelection
+  /** 由来源 Owner 准备的完整本地来源快照；ExportService 只负责按导出资源范围裁剪。 */
+  communitySourceData?: CommunitySourceBackupData
+  /** 与 communitySourceData 同源的本地附件二进制；ExportService 会按最终来源范围裁剪。 */
+  communitySourceAttachments?: CommunitySourceAttachmentArchiveEntry[]
+}
+
+export interface CreatedArchive {
+  blob: Blob
+  fileName: string
+  manifest: ArchiveManifest
+}
+
+export interface RestorePreview {
+  fileName: string
+  mode: ArchiveMode
+  createdAt: string
+  archiveResourceCount: number
+  resourcesToAdd: number
+  duplicatesToSkip: number
+  conflictsToPreserve: number
+  categoriesToCreate: number
+  categoriesToReuse: number
+  portableSections?: string[]
+  communitySourceCount?: number
+  communityMessageCount?: number
+  communityAttachmentCount?: number
+}
+
+export interface PreparedRestore {
+  /** Reopen the verified immutable source only when committing; previews retain no file bodies. */
+  openFiles?: () => Promise<{
+    hydrate: (resource: Resource) => Promise<Resource>
+    dispose: () => Promise<void>
+  }>
+
+  preview: RestorePreview
+  resources: Resource[]
+  versions: Resource[]
+  categories: Category[]
+  portableData?: ArchivePortableData
+  communitySourceData?: CommunitySourceBackupData
+  communitySourceAttachments?: CommunitySourceAttachmentArchiveEntry[]
+}
+
+export interface RestoreReport {
+  restoredResources: number
+  restoredVersions?: number
+  skippedDuplicates: number
+  preservedConflicts: number
+  createdCategories: number
+  reusedCategories: number
+  restoredCommunitySources?: number
+  restoredCommunityMessages?: number
+  restoredCommunityAttachments?: number
+}

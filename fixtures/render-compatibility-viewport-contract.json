@@ -1,0 +1,47 @@
+{
+  "reference": {
+    "product": "TavernHelper",
+    "version": "4.9.3",
+    "kind": "OFFICIAL_PUBLIC_BEHAVIOR",
+    "observedAt": "2026-08-25",
+    "source": "public iframe viewport and render contract",
+    "liveDifferentialParity": "UNVERIFIED"
+  },
+  "cases": [
+    {
+      "name": "stylesheet min-height vh",
+      "input": "<style>.full{min-height:100vh}.half{min-height:50vh}</style>",
+      "expected": "<style>.full{min-height:var(--TH-viewport-height)}.half{min-height:calc(var(--TH-viewport-height) * 0.5)}</style>"
+    },
+    {
+      "name": "inline min-height vh",
+      "input": "<main style=\"color:red;min-height: 80vh\">x</main>",
+      "expected": "<main style=\"color:red;min-height: calc(var(--TH-viewport-height) * 0.8)\">x</main>"
+    },
+    {
+      "name": "script minHeight static string",
+      "input": "<script>panel.style.minHeight = '100vh';</script>",
+      "expected": "<script>panel.style.minHeight = 'var(--TH-viewport-height)';</script>"
+    },
+    {
+      "name": "script setProperty static string",
+      "input": "<script>panel.style.setProperty('min-height', '25vh');</script>",
+      "expected": "<script>panel.style.setProperty('min-height', 'calc(var(--TH-viewport-height) * 0.25)');</script>"
+    },
+    {
+      "name": "height and max-height remain native",
+      "input": "<style>.a{height:100vh}.b{max-height:75vh}</style>",
+      "expected": "<style>.a{height:100vh}.b{max-height:75vh}</style>"
+    },
+    {
+      "name": "new viewport units remain native",
+      "input": "<style>.a{min-height:100dvh}.b{min-height:100svh}.c{min-height:100lvh}</style>",
+      "expected": "<style>.a{min-height:100dvh}.b{min-height:100svh}.c{min-height:100lvh}</style>"
+    },
+    {
+      "name": "unrelated vh values remain untouched",
+      "input": "<style>.a{padding:2vh;font-size:3vh}</style><script>const note='min-height:100vh';</script>",
+      "expected": "<style>.a{padding:2vh;font-size:3vh}</style><script>const note='min-height:100vh';</script>"
+    }
+  ]
+}

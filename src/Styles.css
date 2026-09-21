@@ -1,0 +1,23 @@
+/*
+ * 全局样式入口。
+ *
+ * 原单文件已按功能域切分到 src/styles/，此处只负责按原有顺序串联。
+ * 级联顺序与切分前完全等价；新增规则请写进对应域文件，不要在本文件直接写样式。
+ */
+@import './styles/Foundation.css';
+@import './styles/AppShell.css';
+@import './styles/ResourceList.css';
+@import './styles/FolderLibrary.css';
+@import './styles/ResourceDetails.css';
+@import './styles/RecycleBin.css';
+@import './styles/CloudBackup.css';
+@import './styles/DataTransferPanels.css';
+@import './styles/LayoutAndResponsive.css';
+@import './styles/AppearanceStudio.css';
+@import './styles/AppearanceOriginalCssActions.css';
+@import './styles/VersionArchive.css';
+@import './styles/AiTagging.css';
+@import './styles/GlassRefinement.css';
+@import './styles/DesignSystemRefinement.css';
+@import './styles/ProjectNoticeDialog.css';
+@import './styles/FrontendWorkshopNovelAiCompatibility.css';

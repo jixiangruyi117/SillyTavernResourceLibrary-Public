@@ -1,0 +1,33 @@
+{
+  "name": "SRL 酒馆资源库",
+  "short_name": "SRL",
+  "description": "本地优先的 SillyTavern 资源管理工具",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#E8F3F5",
+  "theme_color": "#E8F3F5",
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "files",
+          "accept": ["image/png", "application/json", "text/plain", ".png", ".json", ".txt", ".css"]
+        }
+      ]
+    }
+  },
+  "icons": [
+    {
+      "src": "/icons/srl-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

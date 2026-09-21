@@ -1,0 +1,94 @@
+.frontend-workshop-source-history-panel,
+.frontend-workshop-source-history-panel__checkpoints,
+.frontend-workshop-source-history-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.frontend-workshop-source-history-panel__checkpoints,
+.frontend-workshop-source-history-panel__actions {
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+}
+
+.frontend-workshop-source-history-panel button,
+.frontend-workshop-source-history-panel select {
+  min-height: var(--control-visual-secondary);
+  padding: 0 8px;
+  border: 1px solid currentColor;
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-caption);
+}
+
+.frontend-workshop-source-history-panel button {
+  position: relative;
+  min-width: var(--control-visual-secondary);
+}
+
+.frontend-workshop-source-history-panel button::before {
+  position: absolute;
+  inset: -4px 0;
+  content: '';
+}
+
+.frontend-workshop-source-history-panel button:disabled {
+  cursor: default;
+  opacity: 0.36;
+}
+
+.frontend-workshop-source-history-panel select {
+  max-width: 116px;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.frontend-workshop-source-history-panel__error {
+  color: var(--color-danger);
+}
+
+.frontend-workshop-source-history-panel__status {
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .frontend-workshop-source-history-panel {
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .frontend-workshop-source-history-panel::-webkit-scrollbar {
+    display: none;
+  }
+
+  .frontend-workshop-source-history-panel__checkpoints,
+  .frontend-workshop-source-history-panel__actions {
+    flex: 0 0 auto;
+  }
+
+  .frontend-workshop-source-history-panel__status,
+  .frontend-workshop-source-history-panel__error {
+    flex: 0 1 auto;
+    min-width: 5rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .frontend-workshop-source-history-panel select {
+    max-width: 96px;
+  }
+}

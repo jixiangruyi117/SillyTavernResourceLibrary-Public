@@ -1,0 +1,880 @@
+.ai-tagging {
+  position: fixed;
+  z-index: 180;
+  inset: 0;
+  isolation: isolate;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  min-width: 0;
+  min-height: 0;
+  color: var(--color-ink);
+  background: var(--color-canvas, #f3efe5);
+  overflow: hidden;
+}
+
+.ai-tagging::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-image:
+    linear-gradient(90deg, transparent 49.8%, var(--color-line) 50%, transparent 50.2%),
+    linear-gradient(var(--color-line) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 2.5rem;
+  opacity: 0.24;
+  content: '';
+  pointer-events: none;
+}
+
+.ai-tagging__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: calc(1rem + var(--safe-top)) calc(1.25rem + var(--safe-right)) 0.9rem
+    calc(1.25rem + var(--safe-left));
+  border-bottom: 1px solid var(--color-line-strong);
+  background: var(--color-surface-raised, #fffdf7);
+}
+
+.ai-tagging__header small,
+.ai-tagging__block-heading small,
+.ai-tagging__candidate-panel > header small,
+.ai-tagging__review-header small,
+.ai-tagging__running > small {
+  color: var(--color-accent);
+  font: 700 0.7rem/1 var(--font-label);
+  letter-spacing: 0.16em;
+}
+
+.ai-tagging__header h2,
+.ai-tagging__block-heading h3,
+.ai-tagging__candidate-panel h3,
+.ai-tagging__review-header h3,
+.ai-tagging__running h3 {
+  margin: 0.2rem 0 0;
+  font-family: var(--font-display);
+}
+
+.ai-tagging__header h2 {
+  font-size: clamp(1.55rem, 3vw, 2.35rem);
+}
+
+.ai-tagging__header p {
+  margin: 0.2rem 0 0;
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__close {
+  flex: 0 0 auto;
+  width: var(--size-touch);
+  min-height: var(--size-touch);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 50%;
+  color: var(--color-ink);
+  background: transparent;
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.ai-tagging__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--color-line-strong);
+  background: var(--color-surface);
+}
+
+.ai-tagging__steps span {
+  min-width: 0;
+  padding: 0.72rem 1.25rem;
+  border-right: 1px solid var(--color-line);
+  color: var(--color-ink-soft);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+}
+
+.ai-tagging__steps span:last-child {
+  border-right: 0;
+}
+
+.ai-tagging__steps b {
+  margin-right: 0.45rem;
+  font-family: var(--font-label);
+}
+
+.ai-tagging__steps .is-active {
+  color: var(--color-surface-raised);
+  background: var(--color-accent);
+}
+
+.ai-tagging__notices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  min-width: 0;
+  background: var(--color-line-strong);
+}
+
+.ai-tagging__notices--empty {
+  height: 0;
+  overflow: hidden;
+}
+
+.ai-tagging__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.55rem calc(1.25rem + var(--safe-right)) 0.55rem calc(1.25rem + var(--safe-left));
+  background: var(--color-surface);
+}
+
+.ai-tagging__notice--undo {
+  background: var(--color-accent-soft);
+}
+
+.ai-tagging__notice p {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+  margin: 0;
+}
+
+.ai-tagging__notice small {
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__notice button,
+.ai-tagging__errors button {
+  min-height: var(--size-touch);
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 0.35rem;
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.ai-tagging__body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(20rem, 0.92fr) minmax(22rem, 1.08fr);
+  gap: 1px;
+  overflow: hidden;
+  background: var(--color-line-strong);
+}
+
+.ai-tagging__control-panel,
+.ai-tagging__candidate-panel,
+.ai-tagging__review,
+.ai-tagging__running {
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-canvas);
+}
+
+.ai-tagging__control-panel {
+  padding: 1.1rem;
+  overflow: auto;
+}
+
+.ai-tagging__block {
+  margin-bottom: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--color-line);
+  border-left: 0.25rem solid var(--color-accent);
+  background: var(--color-surface-raised);
+  box-shadow: 0 0.4rem 1.2rem var(--color-shadow);
+}
+
+.ai-tagging__block-heading,
+.ai-tagging__candidate-panel > header,
+.ai-tagging__review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+.ai-tagging__block-heading strong,
+.ai-tagging__candidate-panel > header > span {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-accent);
+  font: 700 0.75rem/1 var(--font-label);
+}
+
+.ai-tagging__filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ai-tagging__field {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.ai-tagging__field--wide {
+  grid-column: 1 / -1;
+}
+
+.ai-tagging__field--batch {
+  grid-template-columns: minmax(8rem, 1fr) 5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.ai-tagging__field--batch small {
+  grid-column: 1 / -1;
+}
+
+.ai-tagging__taxonomy {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed var(--color-line-strong);
+}
+
+.ai-tagging__alias-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: var(--size-touch);
+  cursor: pointer;
+}
+
+.ai-tagging__alias-toggle input {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  accent-color: var(--color-accent);
+}
+
+.ai-tagging__alias-toggle span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.ai-tagging__alias-toggle small {
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__field input,
+.ai-tagging__field select,
+.ai-tagging__field textarea,
+.ai-tagging__add-tag input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 0.35rem;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 1rem;
+}
+
+.ai-tagging__field input,
+.ai-tagging__field select,
+.ai-tagging__add-tag input {
+  min-height: var(--size-touch);
+  padding: 0.68rem 0.75rem;
+}
+
+.ai-tagging__field textarea {
+  resize: vertical;
+  min-height: 7rem;
+  padding: 0.75rem;
+  line-height: 1.55;
+}
+
+.ai-tagging__scope-actions,
+.ai-tagging__review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.ai-tagging__scope-actions button,
+.ai-tagging__review-actions button,
+.ai-tagging__details-toggle,
+.ai-tagging__running button,
+.ai-tagging__footer button,
+.ai-tagging__add-tag button {
+  min-height: var(--size-touch);
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 0.35rem;
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  font: 700 0.82rem/1.2 var(--font-body);
+  cursor: pointer;
+}
+
+.ai-tagging__scope-actions span {
+  margin-left: auto;
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+}
+
+.ai-tagging__details-toggle {
+  width: 100%;
+  margin-top: 0.7rem;
+  border-style: dashed;
+}
+
+.ai-tagging__privacy-note {
+  margin: 0.65rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.ai-tagging__candidate-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 1.1rem;
+  overflow: hidden;
+}
+
+.ai-tagging__candidate-panel > header {
+  align-items: center;
+}
+
+.ai-tagging__candidate-list,
+.ai-tagging__review-list {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ai-tagging__candidate {
+  display: grid;
+  grid-template-columns: auto 2.45rem minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 4.25rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-line);
+  border-bottom: 0;
+  background: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.ai-tagging__candidate:last-child {
+  border-bottom: 1px solid var(--color-line);
+}
+
+.ai-tagging__candidate.is-selected {
+  border-left: 0.25rem solid var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.ai-tagging__candidate input,
+.ai-tagging__review-card input[type='checkbox'] {
+  width: 1.25rem;
+  height: 1.25rem;
+  accent-color: var(--color-accent);
+}
+
+.ai-tagging__candidate-index {
+  display: grid;
+  width: 2.4rem;
+  height: 2.4rem;
+  place-items: center;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 50%;
+  color: var(--color-accent);
+  font-family: var(--font-display);
+}
+
+.ai-tagging__candidate-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.ai-tagging__candidate-copy strong,
+.ai-tagging__candidate-copy small,
+.ai-tagging__candidate-tags {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tagging__candidate-copy small,
+.ai-tagging__candidate-tags {
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+}
+
+.ai-tagging__candidate-tags {
+  max-width: 12rem;
+}
+
+.ai-tagging__running {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 2rem;
+  text-align: center;
+}
+
+.ai-tagging__radar {
+  position: relative;
+  display: grid;
+  width: clamp(8rem, 24vw, 12rem);
+  aspect-ratio: 1;
+  margin-bottom: 1.5rem;
+  place-items: center;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 30%, var(--color-line) 31%, transparent 32%),
+    conic-gradient(from 180deg, transparent, var(--color-accent-soft), transparent 65%);
+}
+
+.ai-tagging__radar::after {
+  position: absolute;
+  inset: 11%;
+  border: 1px dashed var(--color-accent);
+  border-radius: inherit;
+  content: '';
+  animation: ai-tagging-spin 7s linear infinite;
+}
+
+.ai-tagging__radar span {
+  font: 700 clamp(1.4rem, 4vw, 2.2rem)/1 var(--font-display);
+}
+
+.ai-tagging__running p {
+  max-width: 36rem;
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__progress {
+  width: min(32rem, 100%);
+  height: 0.4rem;
+  margin: 1rem 0 0.7rem;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-surface-raised);
+  overflow: hidden;
+}
+
+.ai-tagging__progress i {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  transition: width 180ms ease;
+}
+
+.ai-tagging__running button {
+  margin-top: 1.2rem;
+}
+
+.ai-tagging__review {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 1.1rem;
+  overflow: hidden;
+}
+
+.ai-tagging__review-header p {
+  margin: 0.25rem 0 0;
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__review-actions {
+  margin-top: 0;
+}
+
+.ai-tagging__review-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 0.85rem;
+}
+
+.ai-tagging__review-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--color-line-strong);
+  border-top: 0.25rem solid var(--color-accent);
+  background: var(--color-surface-raised);
+  box-shadow: 0 0.4rem 1.2rem var(--color-shadow);
+}
+
+.ai-tagging__review-card.is-rejected {
+  opacity: 0.58;
+  border-top-color: var(--color-line-strong);
+}
+
+.ai-tagging__review-card > header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.85rem;
+}
+
+.ai-tagging__review-card > header label {
+  display: grid;
+  flex: 0 0 auto;
+  min-height: var(--size-touch);
+  place-items: center;
+  cursor: pointer;
+}
+
+.ai-tagging__review-card > header label span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+.ai-tagging__review-card > header div {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.ai-tagging__review-card > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tagging__review-card > header small,
+.ai-tagging__existing-tags > small,
+.ai-tagging__suggested-tags > small {
+  color: var(--color-ink-soft);
+  font: 700 0.68rem/1 var(--font-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ai-tagging__existing-tags,
+.ai-tagging__suggested-tags {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.ai-tagging__existing-tags span {
+  min-height: 1.9rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  color: var(--color-ink-soft);
+  background: var(--color-surface);
+  font-size: 0.75rem;
+}
+
+.ai-tagging__existing-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ai-tagging__tag-evidence {
+  min-width: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  border-left: 0.25rem solid var(--color-warning, #9a6a24);
+  border-radius: 0.35rem;
+  background: var(--color-surface);
+}
+
+.ai-tagging__tag-evidence.is-explicit {
+  border-left-color: var(--color-accent);
+}
+
+.ai-tagging__tag-evidence header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ai-tagging__tag-evidence header span {
+  padding: 0.2rem 0.4rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--color-ink-soft);
+  font-size: 0.68rem;
+}
+
+.ai-tagging__tag-evidence.is-explicit header span {
+  color: var(--color-accent);
+}
+
+.ai-tagging__tag-evidence button {
+  display: grid;
+  width: var(--size-touch);
+  min-height: var(--size-touch);
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--color-line);
+  border-radius: 50%;
+  color: var(--color-ink-soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-tagging__tag-evidence p {
+  margin: 0.45rem 0 0;
+  color: var(--color-ink-soft);
+  line-height: 1.5;
+}
+
+.ai-tagging__suggested-tags > span {
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.ai-tagging__add-tag {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.ai-tagging__empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 2rem;
+  border: 1px dashed var(--color-line-strong);
+  color: var(--color-ink-soft);
+  text-align: center;
+}
+
+.ai-tagging__errors {
+  max-height: 7rem;
+  padding: 0.7rem calc(1.25rem + var(--safe-right)) 0.7rem calc(1.25rem + var(--safe-left));
+  border-top: 1px solid var(--color-danger);
+  color: var(--color-danger);
+  background: var(--color-surface-raised);
+  overflow: auto;
+}
+
+.ai-tagging__errors p {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+}
+
+.ai-tagging__errors > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ai-tagging__errors > header div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.ai-tagging__errors article {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--color-danger);
+  border-top-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.ai-tagging__errors ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-tagging__errors li {
+  padding: 0.25rem 0.45rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.ai-tagging__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 4.5rem;
+  padding: 0.75rem calc(1.25rem + var(--safe-right)) calc(0.75rem + var(--safe-bottom))
+    calc(1.25rem + var(--safe-left));
+  border-top: 1px solid var(--color-line-strong);
+  background: var(--color-surface-raised);
+}
+
+.ai-tagging__footer p {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.ai-tagging__footer p strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tagging__footer p small {
+  color: var(--color-ink-soft);
+}
+
+.ai-tagging__footer > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.55rem;
+}
+
+.ai-tagging__footer button.is-primary {
+  border-color: var(--color-accent);
+  color: var(--color-surface-raised);
+  background: var(--color-accent);
+}
+
+.ai-tagging button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@keyframes ai-tagging-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 760px) {
+  .ai-tagging {
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  }
+
+  .ai-tagging__notices {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-tagging__notice {
+    padding: 0.5rem calc(0.8rem + var(--safe-right)) 0.5rem calc(0.8rem + var(--safe-left));
+  }
+
+  .ai-tagging__header {
+    padding-top: calc(0.75rem + var(--safe-top));
+  }
+
+  .ai-tagging__header p {
+    display: none;
+  }
+
+  .ai-tagging__steps span {
+    padding: 0.65rem 0.4rem;
+    text-align: center;
+  }
+
+  .ai-tagging__steps b {
+    display: block;
+    margin: 0 0 0.2rem;
+  }
+
+  .ai-tagging__body {
+    display: block;
+    overflow: auto;
+  }
+
+  .ai-tagging__control-panel,
+  .ai-tagging__candidate-panel,
+  .ai-tagging__review {
+    padding: 0.8rem;
+    overflow: visible;
+  }
+
+  .ai-tagging__candidate-panel {
+    display: block;
+  }
+
+  .ai-tagging__candidate-list,
+  .ai-tagging__review-list {
+    overflow: visible;
+  }
+
+  .ai-tagging__candidate {
+    grid-template-columns: auto 2.25rem minmax(0, 1fr);
+  }
+
+  .ai-tagging__candidate-tags {
+    display: none;
+  }
+
+  .ai-tagging__review-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-tagging__footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.55rem;
+    min-height: 0;
+  }
+
+  .ai-tagging__footer p strong {
+    white-space: normal;
+  }
+
+  .ai-tagging__footer > div {
+    display: grid;
+    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+  }
+
+  .ai-tagging__errors > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 420px) {
+  .ai-tagging__header h2 {
+    font-size: 1.35rem;
+  }
+
+  .ai-tagging__filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-tagging__field--wide {
+    grid-column: auto;
+  }
+
+  .ai-tagging__scope-actions span {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-tagging__radar::after {
+    animation: none;
+  }
+
+  .ai-tagging__progress i {
+    transition: none;
+  }
+}

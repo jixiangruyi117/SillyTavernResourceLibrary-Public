@@ -1,0 +1,38 @@
+/* 顶层与全屏子页的返回入口统一由此组件提供视觉、触控和焦点合同。 */
+.feature-back-button {
+  display: grid;
+  box-sizing: border-box;
+  width: var(--size-touch);
+  min-width: var(--size-touch);
+  height: var(--size-touch);
+  min-height: var(--size-touch);
+  flex: 0 0 var(--size-touch);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--color-accent);
+  background: transparent;
+  place-items: center;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.feature-back-button:hover {
+  background: var(--color-accent-soft);
+}
+
+.feature-back-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.feature-back-button svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: var(--icon-stroke);
+}

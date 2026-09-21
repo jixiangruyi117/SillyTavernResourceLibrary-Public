@@ -1,0 +1,104 @@
+import { readonly, shallowRef } from 'vue'
+
+/**
+ * 全项目统一的确认对话框服务。
+ *
+ * 取代原生 window.confirm：可样式化、适配移动端安全区与深色主题，
+ * Esc / 点击遮罩等同取消。confirmAction 返回 Promise<boolean>，
+ * 服务本身不依赖组件上下文，composable 与普通模块都可直接调用；
+ * 并发请求按先后排队，同一时刻只显示一个对话框。
+ */
+
+export interface ConfirmDialogOptions {
+  /** 正文，支持 \n 换行。 */
+  message: string
+  /** 标题，默认「请确认」。 */
+  title?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  /** 危险操作：确认按钮红色，默认聚焦取消按钮。 */
+  danger?: boolean
+  centered?: boolean
+}
+
+export interface ChoiceDialogOptions extends ConfirmDialogOptions {
+  /** 第三个操作按钮；适合不应被归为“取消”的明确选择。 */
+  alternativeLabel: string
+}
+
+export interface ActiveConfirmDialog extends Required<ConfirmDialogOptions> {
+  id: number
+  alternativeLabel?: string
+}
+
+export type ConfirmDialogResponse = 'confirm' | 'cancel' | 'alternative'
+
+interface PendingConfirm {
+  dialog: ActiveConfirmDialog
+  resolve: (response: ConfirmDialogResponse) => void
+}
+
+let nextId = 1
+const queue: PendingConfirm[] = []
+const activeDialog = shallowRef<ActiveConfirmDialog>()
+let activeResolve: ((response: ConfirmDialogResponse) => void) | undefined
+
+function present(next: PendingConfirm): void {
+  activeDialog.value = next.dialog
+  activeResolve = next.resolve
+}
+
+/** 弹出确认对话框；resolve(true) 表示用户确认。 */
+export function confirmAction(options: ConfirmDialogOptions): Promise<boolean> {
+  const dialog: ActiveConfirmDialog = {
+    id: nextId++,
+    message: options.message,
+    title: options.title ?? '请确认',
+    confirmLabel: options.confirmLabel ?? '确认',
+    cancelLabel: options.cancelLabel ?? '取消',
+    danger: options.danger ?? false,
+    centered: options.centered ?? false,
+  }
+  return new Promise<boolean>((resolve) => {
+    const pending = {
+      dialog,
+      resolve: (response: ConfirmDialogResponse) => resolve(response === 'confirm'),
+    }
+    if (activeDialog.value) queue.push(pending)
+    else present(pending)
+  })
+}
+
+/** 弹出带第三个明确选项的确认框，与 confirmAction 共用同一根节点、队列和焦点规则。 */
+export function chooseAction(options: ChoiceDialogOptions): Promise<ConfirmDialogResponse> {
+  const dialog: ActiveConfirmDialog = {
+    id: nextId++,
+    message: options.message,
+    title: options.title ?? '请确认',
+    confirmLabel: options.confirmLabel ?? '确认',
+    cancelLabel: options.cancelLabel ?? '取消',
+    danger: options.danger ?? false,
+    centered: options.centered ?? false,
+    alternativeLabel: options.alternativeLabel,
+  }
+  return new Promise<ConfirmDialogResponse>((resolve) => {
+    const pending = { dialog, resolve }
+    if (activeDialog.value) queue.push(pending)
+    else present(pending)
+  })
+}
+
+/** 供根节点对话框组件使用的状态与应答入口。 */
+export function useConfirmDialogState() {
+  return {
+    activeDialog: readonly(activeDialog),
+    respond(response: ConfirmDialogResponse): void {
+      const resolve = activeResolve
+      activeResolve = undefined
+      activeDialog.value = undefined
+      resolve?.(response)
+      const next = queue.shift()
+      if (next) present(next)
+    },
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "渲染一致性回归卡",
+    "description": "仅用于资源库对照 SillyTavern 与 TavernHelper 渲染流水线。",
+    "personality": "测试",
+    "scenario": "移动端渲染回归",
+    "first_mes": "城堡的外墙塌了大半，剩下的部分长满暗绿色的苔藓。\n\n.status-card { color: red; padding: 12px; }\n\n这是一段正文，不是 CSS。",
+    "alternate_greetings": [
+      "<div class=\"status-bar-lock\" style=\"display:block!important;width:100%!important;margin-bottom:15px;clear:both;overflow:hidden;font-family:sans-serif\"><div style=\"width:96%;max-width:600px;margin:5px auto 0;padding:15px 12px 8px;box-sizing:border-box;border:2px solid #281812;border-radius:10px;background:linear-gradient(160deg,#4e342e,#3e2723);color:#d7ccc8\"><strong style=\"font-size:2.4em;color:#ffecb3\">18:55</strong><span style=\"margin-left:12px\">无名之馆 · 霜降月第一日 · 托内拉雪林</span></div></div>\n\n这里是状态栏之后的正常正文。\n\n<tavern_status>[角色状态] 你在大厅\n[当前余额：20铜币]</tavern_status>\n<div style=\"display:none\"><%_ setvar(\"stat_data\", {}) _%></div>",
+      "前置正文。\n\n```html\n<!doctype html>\n<html><head><style>html,body{margin:0;background:transparent}.viewport{min-height:100vh;background:#315f50;color:white;padding:8px}</style></head><body><div class=\"viewport\">TavernHelper 主窗口视口块<a id=\"jump-opening\" href=\"javascript:void(0)\" onclick=\"setChatMessages([{message_id:0,swipe_id:3}])\">跳转显示正则开场白</a></div></body></html>\n```\n\n后置正文。",
+      "<status>角色状态正常，正文不应被正则吞掉。</status>"
+    ],
+    "creator": "SRL render regression",
+    "character_version": "1",
+    "tags": ["测试", "渲染一致性"],
+    "extensions": {
+      "regex_scripts": [
+        {
+          "id": "render-regression-display",
+          "scriptName": "状态显示正则",
+          "findRegex": "/<status>([\\s\\S]*?)<\\/status>/g",
+          "replaceString": "<section class=\"status-card\"><strong>状态</strong><span>$1</span></section><style>.status-card{display:flex;gap:8px;padding:10px;border:1px solid #315f50}</style>",
+          "placement": [2],
+          "markdownOnly": true,
+          "disabled": false
+        }
+      ],
+      "tavern_helper": {
+        "scripts": [
+          {
+            "id": "render-regression-helper",
+            "type": "script",
+            "name": "回归生命周期脚本",
+            "enabled": true,
+            "content": "eventOn(tavern_events.CHARACTER_MESSAGE_RENDERED, () => { window.parent.document.body.dataset.cardScriptRendered = 'yes'; });"
+          }
+        ]
+      }
+    }
+  }
+}

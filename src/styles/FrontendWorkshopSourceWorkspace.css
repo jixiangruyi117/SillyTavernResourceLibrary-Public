@@ -1,0 +1,116 @@
+.frontend-workshop-source-workspace {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  background: color-mix(in srgb, var(--color-canvas) 92%, var(--color-accent-soft));
+}
+
+.frontend-workshop-source-workspace__viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.frontend-workshop-source-workspace__stage {
+  position: relative;
+  margin: 16px 12px 64px 82px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, var(--color-line));
+  border-radius: 0.85rem;
+  background: var(--color-surface-raised);
+  min-width: 0;
+  transform-origin: top left;
+  will-change: transform;
+}
+
+.frontend-workshop-source-workspace.is-panning {
+  cursor: grabbing;
+}
+
+.frontend-workshop-source-workspace__selection-summary {
+  position: absolute;
+  z-index: 9;
+  bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  width: max-content;
+  max-width: calc(100% - 20px);
+  min-height: var(--control-visual-secondary);
+  margin: 10px;
+  padding: 4px 5px 4px 10px;
+  gap: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 5px 18px rgb(19 74 89 / 14%);
+  font-size: var(--text-caption);
+  overflow-wrap: anywhere;
+}
+
+.frontend-workshop-source-workspace__selection-summary button {
+  position: relative;
+  min-width: var(--control-visual);
+  min-height: var(--control-visual);
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: inherit;
+}
+
+.frontend-workshop-source-workspace__selection-summary button::before {
+  position: absolute;
+  inset: -6px 0;
+  content: '';
+}
+
+.frontend-workshop-source-workspace__unavailable {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 12rem;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--color-ink-soft);
+}
+
+.frontend-workshop-source-workspace__unavailable strong {
+  font-size: var(--text-body);
+  color: var(--color-ink);
+}
+
+.frontend-workshop-source-workspace__unavailable span {
+  max-width: 28rem;
+  font-size: var(--text-caption);
+  opacity: 0.72;
+}
+
+@media (max-width: 720px) {
+  .frontend-workshop-source-workspace {
+    width: 100%;
+    height: 100%;
+  }
+
+  .frontend-workshop-source-workspace__selection-summary {
+    width: auto;
+    max-width: none;
+    margin-inline: 8px;
+    border-radius: 14px;
+  }
+}
+
+@media (max-width: 420px) {
+  .frontend-workshop-source-workspace__selection-summary {
+    align-items: stretch;
+  }
+
+  .frontend-workshop-source-workspace__selection-summary button {
+    flex: 1 1 auto;
+  }
+}

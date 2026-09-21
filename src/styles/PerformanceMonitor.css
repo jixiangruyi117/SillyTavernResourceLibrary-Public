@@ -1,0 +1,153 @@
+/* 右下角本机观测胶囊：由设置中的性能监控开关统一控制。 */
+#srl-performance-monitor {
+  position: fixed;
+  right: max(0.75rem, var(--safe-right));
+  bottom: var(--bottom-notice-offset);
+  z-index: 29;
+  width: fit-content;
+  overflow: hidden;
+  border: 1px solid rgba(126, 209, 210, 0.3);
+  border-radius: 1rem;
+  background: linear-gradient(145deg, #164c56, #103b45);
+  color: #e8fbfb;
+  box-shadow: 0 0.85rem 2rem rgba(12, 48, 57, 0.22);
+  font-family: var(--font-ui, ui-sans-serif, sans-serif);
+}
+
+#srl-performance-monitor summary {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0 0.64rem;
+  cursor: grab;
+  list-style: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-size: 0.71rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+#srl-performance-monitor[data-dragging='true'] summary {
+  cursor: grabbing;
+}
+
+#srl-performance-monitor summary::-webkit-details-marker {
+  display: none;
+}
+
+#srl-performance-monitor summary > i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 2px solid #b8f2e9;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.22rem rgba(184, 242, 233, 0.13);
+}
+
+#srl-performance-monitor summary > b {
+  margin-left: 0.08rem;
+  color: #9bd6d2;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+#srl-performance-monitor[open] {
+  width: min(18.5rem, calc(100vw - 1.5rem));
+}
+
+#srl-performance-monitor[open] summary {
+  border-bottom: 1px solid rgba(184, 242, 233, 0.18);
+}
+
+#srl-performance-monitor[open] summary > b {
+  transform: rotate(180deg);
+}
+
+.srl-performance-monitor__body {
+  display: grid;
+  gap: 0;
+  /* Keep the summary reachable when iOS diagnostic rows exceed a landscape viewport. */
+  max-height: calc(
+    var(--visual-viewport-height, 100dvh) - var(--bottom-notice-offset) - 1rem - 2.75rem
+  );
+  overflow-y: auto;
+  padding: 0.75rem 0.8rem 0.85rem;
+}
+
+.srl-performance-monitor__body > header {
+  display: grid;
+  gap: 0.1rem;
+  padding-bottom: 0.5rem;
+}
+
+.srl-performance-monitor__body > header small {
+  color: #83c4c0;
+  font-size: 0.57rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.srl-performance-monitor__body > header strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.srl-performance-monitor__metric {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.52rem 0;
+  border-top: 1px solid rgba(184, 242, 233, 0.12);
+  font-size: 0.7rem;
+}
+
+.srl-performance-monitor__metric span {
+  color: #add7d6;
+}
+
+.srl-performance-monitor__metric strong {
+  max-width: 11.5rem;
+  color: #fff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.69rem;
+  font-weight: 650;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.srl-performance-monitor__note {
+  margin: 0.55rem 0 0;
+  padding: 0.6rem 0 0;
+  border-top: 1px solid rgba(184, 242, 233, 0.12);
+  color: #add7d6;
+  font-size: 0.66rem;
+  line-height: 1.55;
+}
+
+.srl-performance-monitor__copy {
+  min-height: 2.75rem;
+  margin-top: 0.6rem;
+  border: 1px solid #83c4c0;
+  border-radius: 0.5rem;
+  color: #e8fbfb;
+  background: #164c56;
+  font-size: 0.8rem;
+}
+
+.srl-performance-monitor__diagnostic-text:not([hidden]) {
+  width: 100%;
+  min-height: 5rem;
+  margin-top: 0.5rem;
+  font-size: 16px;
+}
+
+/* 未拖动时保留原桌面默认位置；一旦拖动，内联 left/top 成为唯一位置来源。 */
+@media (min-width: 53.8125rem) {
+  #srl-performance-monitor:not([data-positioned='true']) {
+    right: 1.25rem;
+    bottom: 1.25rem;
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "webVersion": "0.0.112-local",
+  "androidVersionName": "not-built",
+  "androidVersionCode": 0,
+  "buildId": "srl-local-0.0.112",
+  "workerDeployVersion": "local-only",
+  "databaseVersion": 25,
+  "bridgeProtocolVersion": 2,
+  "nativeApiVersion": 1
+}

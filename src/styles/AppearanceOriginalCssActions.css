@@ -1,0 +1,61 @@
+.appearance-panel--code > header,
+.appearance-scope-editor__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 19rem);
+  align-items: start;
+  gap: 0.5rem;
+}
+
+.appearance-original-css-controls {
+  width: 100%;
+  min-width: 0;
+}
+
+.appearance-original-css-actions {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.appearance-panel .appearance-original-css-actions > button {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--size-touch, 2.75rem);
+  padding: 0.4rem 0.35rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.appearance-original-css-actions > button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.appearance-original-css-status {
+  margin: 0.35rem 0 0;
+  color: var(--color-accent);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.appearance-original-css-status.is-error {
+  color: var(--color-danger);
+}
+
+@media (max-width: 48rem) {
+  .appearance-panel--code > header,
+  .appearance-scope-editor__header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .appearance-scope-editor__header {
+    margin-inline: 0;
+  }
+
+  .appearance-panel .appearance-original-css-actions > button {
+    padding-inline: 0.25rem;
+  }
+}

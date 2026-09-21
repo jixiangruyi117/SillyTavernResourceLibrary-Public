@@ -1,0 +1,973 @@
+/*
+ * Provenance boundary:
+ * The functions tagged AFPL-TH-INTEGRATION below retain modified integration
+ * portions derived from TavernHelper / JS-Slash-Runner 4.8.19.
+ * Upstream: https://github.com/N0VI028/JS-Slash-Runner
+ * Modified for SillyTavern Resource Library by jixiangruyi117 on 2026-08-09.
+ * Derived portions remain under the Aladdin Free Public License, Version 9;
+ * see the repository LICENSE and NOTICE files for the full terms and scope.
+ * RenderCompatibilityRuntime.ts, RenderCompatibilityFrontend.ts, viewport
+ * mapping and layout measurement are independent behavior-contract Owners.
+ */
+
+import type { PreviewPolicy } from '../services/BrowserStorageService'
+import {
+  applyCharacterGreetingRegex,
+  type CharacterGreetingRegexRule,
+} from './CharacterGreetingRegex'
+import { frontendWorkshopBehaviorRuntimeScript } from './FrontendWorkshopBehaviorRuntime'
+import { prepareTavernPreviewSource, type TavernPreviewSourceKind } from './OpeningPreviewContent'
+import type { PreviewVendorLibs } from './PreviewVendorLibs'
+import { buildPreviewFontStylesheet } from './PreviewFontStylesheet'
+import {
+  formatSillyTavernMessage,
+  isTavernHelperFrontendContent,
+  type SillyTavernMessageFormatResult,
+} from './SillyTavernMessageFormatter'
+import { mapRenderCompatibilityViewportMinimums } from './RenderCompatibilityFrontend'
+import {
+  buildRenderCompatibilityChildAdapter,
+  buildRenderCompatibilityHostRuntime,
+  createRenderCompatibilityContextFromPreviewSession,
+  normalizeRenderCompatibilityScript,
+  type PreviewSessionContext,
+  type RenderCompatibilityContext,
+  type RenderCompatibilityDiagnostic,
+} from './RenderCompatibilityRuntime'
+
+export interface RichContentPreviewResult {
+  document: string
+  hasRichContent: boolean
+  blockedScripts: boolean
+  blockedExternalAssets: boolean
+  audio: {
+    present: boolean
+    autoplay: boolean
+    mediaOnly: boolean
+    loop: boolean
+    source?: string
+    sourceBlocked: boolean
+  }
+  runtimeScriptCount: number
+  dependencies: string[]
+  tavernHelperCompatibility: 'none' | 'detected' | 'active'
+  mvuCompatibility: 'none' | 'detected' | 'active' | 'opening-preview'
+  compatibilityDiagnostics: RenderCompatibilityDiagnostic[]
+}
+
+export interface PreviewRuntimeScript {
+  id?: string
+  source?: 'character' | 'bound' | 'manual'
+  name: string
+  content: string
+  data?: Record<string, unknown>
+}
+
+export type SillyTavernMessageAvatarMode = 'visible' | 'hidden'
+export type PreviewContentTheme = 'light' | 'dark'
+
+export interface RichContentPreviewOptions {
+  vendorLibs?: PreviewVendorLibs
+  charAvatarUrl?: string
+  inspectTargets?: boolean
+  renderShell?: 'message' | 'content'
+  messageAvatarMode?: SillyTavernMessageAvatarMode
+  sourceKind?: TavernPreviewSourceKind
+  macroCharName?: string
+  macroUserName?: string
+  greetingContents?: string[]
+  greetingIndex?: number
+  characterData?: Record<string, unknown>
+  displayRegexRules?: CharacterGreetingRegexRule[]
+  swipesData?: Record<string, unknown>[]
+  swipesInfo?: Record<string, unknown>[]
+  previewVariables?: PreviewSessionContext['variables']
+  mvuRecognized?: boolean
+  mvuErrors?: string[]
+  unsupportedMvuOpeningUpdates?: string[]
+  contentTheme?: PreviewContentTheme
+  frontendWorkshopBehaviorRuntime?: boolean
+  preparedMessage?: PreparedRichContentPreviewMessage
+  preparedGreetingMessages?: Array<PreparedRichContentPreviewMessage | undefined>
+}
+
+export interface PreparedRichContentPreviewMessage {
+  source: string
+  previewSource: string
+  substitutedSource: string
+  formatted: SillyTavernMessageFormatResult
+}
+
+export interface PreviewMacroContext {
+  charName?: string
+  userName?: string
+  chatId?: string
+}
+
+const TRANSPARENT_AVATAR = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+const PICK_MACRO_PATTERN = /{{pick\s?::?([^}]+)}}/gi
+
+function hashPreviewSeed(value: string): number {
+  let hash = 0x811c9dc5
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193)
+  }
+  hash ^= hash >>> 16
+  hash = Math.imul(hash, 0x7feb352d)
+  hash ^= hash >>> 15
+  return hash >>> 0
+}
+
+function splitPreviewPickList(value: string): string[] {
+  if (value.includes('::')) return value.split('::')
+
+  const items: string[] = []
+  let current = ''
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === '\\' && value[index + 1] === ',') {
+      current += ','
+      index += 1
+      continue
+    }
+    if (value[index] === ',') {
+      items.push(current.trim())
+      current = ''
+      continue
+    }
+    current += value[index]
+  }
+  items.push(current.trim())
+  return items
+}
+
+function replacePreviewPickMacros(
+  value: string,
+  rawContent: string,
+  previewChatId: string,
+): string {
+  const documentSeed = hashPreviewSeed(`${previewChatId}\u0000${rawContent}`)
+  return value.replace(PICK_MACRO_PATTERN, (_match, listString: string, offset: number) => {
+    const list = splitPreviewPickList(listString)
+    if (!list.length) return ''
+    const choiceSeed = hashPreviewSeed(`${documentSeed}:${offset}`)
+    return list[choiceSeed % list.length] ?? ''
+  })
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
+function sanitizeAvatarUrl(value: string | undefined): string {
+  return value && /^data:image\//i.test(value) && !/["'\s]/.test(value) ? value : TRANSPARENT_AVATAR
+}
+
+export function replacePreviewMacros(source: string, context: PreviewMacroContext = {}): string {
+  const rawContent = source
+  let result = source
+  const charName = context.charName?.trim()
+  const userName = context.userName?.trim()
+  if (charName) {
+    result = result.replace(/<BOT>|<CHAR>/gi, charName).replace(/\{\{\s*char\s*\}\}/gi, charName)
+  }
+  if (userName) {
+    result = result.replace(/<USER>/gi, userName).replace(/\{\{\s*user\s*\}\}/gi, userName)
+  }
+  result = result.replace(/\{\{\s*newline\s*\}\}/gi, '\n')
+  return replacePreviewPickMacros(
+    result,
+    rawContent,
+    context.chatId?.trim() || charName || 'srl-preview-chat',
+  )
+}
+
+function preprocessResourceMessage(source: string, options: RichContentPreviewOptions): string {
+  const previewSource = prepareTavernPreviewSource(source, options.sourceKind)
+  const macroSource = replacePreviewMacros(previewSource, {
+    charName: options.macroCharName,
+    userName: options.macroUserName,
+  })
+  if (!options.displayRegexRules?.length) return macroSource
+  return (
+    applyCharacterGreetingRegex([macroSource], options.displayRegexRules, {
+      charName: options.macroCharName,
+      userName: options.macroUserName,
+    }).contents[0] ?? macroSource
+  )
+}
+
+export function prepareRichContentPreviewMessage(
+  source: string,
+  policy: PreviewPolicy,
+  options: Pick<
+    RichContentPreviewOptions,
+    'sourceKind' | 'macroCharName' | 'macroUserName' | 'displayRegexRules'
+  > = {},
+): PreparedRichContentPreviewMessage {
+  const previewSource = prepareTavernPreviewSource(source, options.sourceKind)
+  const substitutedSource = preprocessResourceMessage(source, options)
+  return {
+    source,
+    previewSource,
+    substitutedSource,
+    formatted: formatSillyTavernMessage(substitutedSource, {
+      allowExternalMedia: policy.allowRemoteResources,
+    }),
+  }
+}
+
+const SYNCHRONOUS_FORMATTER_LITERAL =
+  /\bformatAsDisplayedMessage\s*\(|\.\s*formatAsDisplayedMessage\b|["']formatAsDisplayedMessage["']/
+const UNCERTAIN_TAVERN_HELPER_PROPERTY_ACCESS =
+  /\b(?:TavernHelper|window|globalThis)\s*\[\s*(?!["']formatAsDisplayedMessage["'])[^\]]+\]/
+
+export function requiresSynchronousGreetingFormatting(
+  greetings: Iterable<string>,
+  runtimeScripts: Iterable<PreviewRuntimeScript> = [],
+): boolean {
+  for (const greeting of greetings) {
+    if (
+      SYNCHRONOUS_FORMATTER_LITERAL.test(greeting) ||
+      UNCERTAIN_TAVERN_HELPER_PROPERTY_ACCESS.test(greeting)
+    ) {
+      return true
+    }
+  }
+  for (const script of runtimeScripts) {
+    if (
+      SYNCHRONOUS_FORMATTER_LITERAL.test(script.content) ||
+      UNCERTAIN_TAVERN_HELPER_PROPERTY_ACCESS.test(script.content)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function readAttribute(markup: string, name: string): string {
+  const match = markup.match(
+    new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, 'i'),
+  )
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? '')
+    .replaceAll('&amp;', '&')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .trim()
+}
+
+function detectAudioPreview(
+  source: string,
+  policy: PreviewPolicy,
+): RichContentPreviewResult['audio'] {
+  const audio = source.match(/<audio\b([^>]*)>([\s\S]*?)<\/audio\s*>/i)
+  const selfClosing = source.match(/<audio\b([^>]*)\/?>/i)
+  const attributes = audio?.[1] ?? selfClosing?.[1]
+  if (attributes === undefined) {
+    return {
+      present: false,
+      autoplay: false,
+      mediaOnly: false,
+      loop: false,
+      sourceBlocked: false,
+    }
+  }
+
+  const sourceTag = audio?.[2]?.match(/<source\b([^>]*)>/i)
+  const rawSource = readAttribute(attributes, 'src') || readAttribute(sourceTag?.[1] ?? '', 'src')
+  const isRemote = /^(?:https?:)?\/\//i.test(rawSource)
+  const sourceAllowed =
+    /^(?:https?:|data:audio\/|blob:)/i.test(rawSource) && (!isRemote || policy.allowRemoteResources)
+  const visibleRemainder = source
+    .replace(/<audio\b[^>]*>[\s\S]*?<\/audio\s*>/gi, '')
+    .replace(/<audio\b[^>]*\/?>/gi, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!doctype\b[^>]*>/gi, '')
+    .replace(/<\/?(?:html|head|body)\b[^>]*>/gi, '')
+    .replace(/[\s\u200b-\u200d\ufeff]/g, '')
+
+  return {
+    present: true,
+    autoplay: /\bautoplay(?:\s|=|>|$)/i.test(attributes),
+    mediaOnly: visibleRemainder.length === 0,
+    loop: /\bloop(?:\s|=|>|$)/i.test(attributes),
+    source: sourceAllowed ? rawSource : undefined,
+    sourceBlocked: Boolean(rawSource && !sourceAllowed),
+  }
+}
+
+function stripExecutableContent(source: string): string {
+  return source
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(
+      /\s(?:href|xlink:href)\s*=\s*(?:"\s*javascript\s*:[^"]*"|'\s*javascript\s*:[^']*'|javascript\s*:[^\s>]+)/gi,
+      '',
+    )
+}
+
+function restoreTrustedGreetingNavigation(source: string): string {
+  return source.replace(
+    /<button\b([^>]*\bdata-srl-greeting-target\s*=\s*["']([0-9]{1,2})["'][^>]*)>/giu,
+    (_match, attributes: string, target: string) =>
+      `<button${attributes} onclick="setChatMessages([{message_id:0,swipe_id:${target}}])">`,
+  )
+}
+
+function buildLocalThirdParty(libs: PreviewVendorLibs | undefined): string {
+  const scripts: string[] = []
+  if (libs?.fontAwesomeCss) scripts.push(buildPreviewFontStylesheet(libs.fontAwesomeCss))
+  if (libs?.jqueryUiCss) scripts.push(`<style>${libs.jqueryUiCss}</style>`)
+  if (libs?.toastrCss) scripts.push(`<style>${libs.toastrCss}</style>`)
+  if (libs?.jquery)
+    scripts.push(`<script>${libs.jquery.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.jqueryUi)
+    scripts.push(`<script>${libs.jqueryUi.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.jqueryUiTouchPunch)
+    scripts.push(`<script>${libs.jqueryUiTouchPunch.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.vue) scripts.push(`<script>${libs.vue.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.vueRouter)
+    scripts.push(`<script>${libs.vueRouter.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.toastr)
+    scripts.push(`<script>${libs.toastr.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.tailwind)
+    scripts.push(`<script>${libs.tailwind.replace(/<\/script/gi, '<\\/script')}</script>`)
+  scripts.push(
+    '<script>window._=window.parent._;window.YAML=window.parent.YAML;window.showdown=window.parent.showdown;window.z=window.parent.z;</script>',
+  )
+  return scripts.join('')
+}
+
+// AFPL-TH-INTEGRATION: frontend third-party dependency composition.
+function buildCompatibilityFrontendDependencies(
+  libs: PreviewVendorLibs | undefined,
+  _allowRemoteResources: boolean,
+): string {
+  return buildLocalThirdParty(libs)
+}
+
+function buildOuterVendorLibs(libs: PreviewVendorLibs | undefined): string {
+  const scripts: string[] = []
+  if (libs?.lodash)
+    scripts.push(`<script>${libs.lodash.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.jquery)
+    scripts.push(`<script>${libs.jquery.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.showdown)
+    scripts.push(`<script>${libs.showdown.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.vendorGlobals)
+    scripts.push(`<script>${libs.vendorGlobals.replace(/<\/script/gi, '<\\/script')}</script>`)
+  return scripts.join('')
+}
+
+function buildScriptIframeVendorLibs(
+  libs: PreviewVendorLibs | undefined,
+  _allowRemoteResources: boolean,
+): string {
+  const scripts: string[] = []
+  if (libs?.toastrCss) scripts.push(`<style>${libs.toastrCss}</style>`)
+  if (libs?.vue) scripts.push(`<script>${libs.vue.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.vueRouter)
+    scripts.push(`<script>${libs.vueRouter.replace(/<\/script/gi, '<\\/script')}</script>`)
+  if (libs?.toastr)
+    scripts.push(`<script>${libs.toastr.replace(/<\/script/gi, '<\\/script')}</script>`)
+  return scripts.join('')
+}
+
+function buildCompatibilityLogRuntime(): string {
+  return `<script>window.log=window.log||{trace:console.debug?.bind(console)||console.log.bind(console),debug:console.debug?.bind(console)||console.log.bind(console),info:console.info?.bind(console)||console.log.bind(console),warn:console.warn.bind(console),error:console.error.bind(console)};</script>`
+}
+
+function buildChildPolicy(policy: PreviewPolicy): string {
+  const remote = policy.allowRemoteResources ? ' https: http:' : ''
+  const script = policy.allowScripts
+    ? ` 'unsafe-inline' 'unsafe-eval' data: blob:${remote}`
+    : " 'unsafe-inline'"
+  return [
+    "default-src 'none'",
+    `style-src 'self' 'unsafe-inline' data: blob:${remote}`,
+    `img-src data: blob:${remote}`,
+    `font-src 'self' data: blob:${remote}`,
+    `media-src data: blob:${remote}`,
+    `connect-src${remote || " 'none'"}`,
+    `script-src 'self'${script}`,
+    `frame-src${remote || " 'none'"}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ')
+}
+
+function buildEphemeralStorageRuntime(inheritFromParent: boolean): string {
+  return `<script>(()=>{'use strict';
+const createStorage=()=>{const values=new Map();return{get length(){return values.size},clear(){values.clear()},getItem(key){key=String(key);return values.has(key)?values.get(key):null},key(index){index=Number(index);return Number.isInteger(index)&&index>=0?Array.from(values.keys())[index]??null:null},removeItem(key){values.delete(String(key))},setItem(key,value){values.set(String(key),String(value))}}};
+let storage;${inheritFromParent ? 'try{storage=window.parent?.__SRL_EPHEMERAL_STORAGE__}catch{}' : ''}if(!storage)storage=createStorage();
+Object.defineProperty(window,'__SRL_EPHEMERAL_STORAGE__',{configurable:false,enumerable:false,value:storage});
+Object.defineProperty(window,'localStorage',{configurable:true,enumerable:true,value:storage});
+})();</script>`
+}
+
+function buildJavascriptHrefRuntime(): string {
+  return `<script>(()=>{'use strict';
+document.addEventListener('click',event=>{const target=event.target;const anchor=target instanceof Element?target.closest('a[href]'):null;const raw=anchor?.getAttribute('href')?.trim()||'';if(!/^javascript\\s*:/i.test(raw))return;event.preventDefault();const code=raw.replace(/^javascript\\s*:/i,'');if(!code)return;setTimeout(()=>{try{Function(code).call(window)}catch(error){console.error('[TavernHelper javascript href]',error)}},0)},true);
+})();</script>`
+}
+
+function buildTrustedGreetingNavigationRuntime(): string {
+  return `<script>(()=>{'use strict';
+const activate=event=>{const target=event.currentTarget;const swipeId=Number(target?.getAttribute?.('data-srl-greeting-target'));if(!Number.isInteger(swipeId)||swipeId<0)return;event.preventDefault();if(typeof window.setChatMessages==='function'){void window.setChatMessages([{message_id:0,swipe_id:swipeId}]);return}parent.postMessage({type:'SRL_GREETING_NAVIGATE',target:swipeId},'*')};
+const bind=()=>document.querySelectorAll('[data-srl-greeting-target]').forEach(target=>target.addEventListener('click',activate));
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
+})();</script>`
+}
+
+function buildCompatibilityLayoutRuntime(hasDeclaredViewportMinimum: boolean): string {
+  return `<script>(()=>{'use strict';
+let queued=false;let viewportHeight=0;let observer;
+const hasViewportBoundLayer=()=>Array.from(document.body?.querySelectorAll('*')||[]).some(element=>{const style=getComputedStyle(element);return style.position==='fixed'&&style.top!=='auto'&&style.bottom!=='auto'});
+const measure=()=>{queued=false;const body=document.body;if(!body)return;const contentHeight=body.scrollHeight;const viewportBound=${hasDeclaredViewportMinimum ? 'true' : 'hasViewportBoundLayer()'};const height=viewportBound&&viewportHeight>0?Math.max(contentHeight,viewportHeight):contentHeight;const frame=window.frameElement;if(frame&&Number.isFinite(height)&&height>0)frame.style.height=Math.ceil(height)+'px';parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound},'*')};
+const queue=()=>{if(queued)return;queued=true;requestAnimationFrame(measure)};
+const updateViewport=value=>{const next=Number(value);if(!Number.isFinite(next)||next<=0)return;viewportHeight=Math.ceil(next);rootStyle().setProperty('--TH-viewport-height',viewportHeight+'px');queue()};
+const rootStyle=()=>document.documentElement.style;
+const mount=()=>{const body=document.body;if(!body)return;queue();if(typeof ResizeObserver==='function'){observer=new ResizeObserver(queue);observer.observe(body)}else{observer=new MutationObserver(queue);observer.observe(body,{subtree:true,childList:true,attributes:true,characterData:true})}};
+window.addEventListener('message',event=>{if(event.data?.type==='SRL_VIEWPORT_HEIGHT')updateViewport(event.data.height)});
+window.addEventListener('load',queue);window.addEventListener('pagehide',()=>observer?.disconnect?.(),{once:true});
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});else mount();
+})();</script>`
+}
+
+function buildCompatibilityFrontendDocument(
+  source: string,
+  policy: PreviewPolicy,
+  libs: PreviewVendorLibs | undefined,
+  avatarUrl: string,
+): {
+  document: string
+  blockedScripts: boolean
+  blockedExternalAssets: boolean
+} {
+  const blockedScripts = /<script\b|\son[a-z]+\s*=|javascript\s*:/i.test(source)
+  const blockedExternalAssets =
+    !policy.allowRemoteResources &&
+    /(?:https?:)?\/\/|@import\s|url\s*\(\s*['"]?(?:https?:)?\/\//i.test(source)
+  const content = mapRenderCompatibilityViewportMinimums(
+    policy.allowScripts ? source : restoreTrustedGreetingNavigation(stripExecutableContent(source)),
+  )
+  const hasDeclaredViewportMinimum = content.includes('var(--TH-viewport-height)')
+  const thirdParty = policy.allowScripts
+    ? buildCompatibilityFrontendDependencies(libs, policy.allowRemoteResources)
+    : ''
+
+  return {
+    document: `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="${buildChildPolicy(policy)}">
+${policy.allowScripts ? buildEphemeralStorageRuntime(true) : ''}
+<style>
+*,*::before,*::after{box-sizing:border-box;}
+html,body{margin:0!important;padding:0;overflow:hidden!important;max-width:100%!important;}
+.user_avatar,.user-avatar{background-image:url('${TRANSPARENT_AVATAR}')}
+.char_avatar,.char-avatar{background-image:url('${avatarUrl}')}
+</style>
+${thirdParty}
+${buildRenderCompatibilityChildAdapter()}
+${buildCompatibilityLogRuntime()}
+${buildTrustedGreetingNavigationRuntime()}
+${policy.allowScripts ? buildJavascriptHrefRuntime() : ''}
+${buildCompatibilityLayoutRuntime(hasDeclaredViewportMinimum)}
+</head>
+<body>
+${content}
+</body>
+</html>
+`,
+    blockedScripts,
+    blockedExternalAssets,
+  }
+}
+
+function mountCompatibilityFramesAndScripts(
+  html: string,
+  blocks: string[],
+  scripts: PreviewRuntimeScript[],
+  policy: PreviewPolicy,
+  libs: PreviewVendorLibs | undefined,
+  avatarUrl: string,
+): {
+  html: string
+  companionHtml: string
+  blockedScripts: boolean
+  blockedExternalAssets: boolean
+} {
+  let blockedScripts = false
+  let blockedExternalAssets = false
+  let companionHtml = ''
+  if (typeof document === 'undefined' || (!blocks.length && !scripts.length)) {
+    return { html, companionHtml, blockedScripts, blockedExternalAssets }
+  }
+
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const wrappers = Array.from(template.content.querySelectorAll<HTMLDivElement>('div.TH-render'))
+  wrappers.forEach((wrapper, index) => {
+    const pre = Array.from(wrapper.children).find((child) => child.tagName === 'PRE')
+    const block = blocks[index]
+    if (!pre || block === undefined) return
+    const child = buildCompatibilityFrontendDocument(block, policy, libs, avatarUrl)
+    blockedScripts ||= child.blockedScripts
+    blockedExternalAssets ||= child.blockedExternalAssets
+
+    wrapper.querySelectorAll(':scope > iframe').forEach((iframe) => iframe.remove())
+    const iframe = document.createElement('iframe')
+    iframe.id = `TH-message--0--${index}`
+    iframe.name = iframe.id
+    iframe.loading = 'lazy'
+    iframe.className = 'w-full'
+    iframe.setAttribute('frameborder', '0')
+    if (policy.allowRemoteResources) iframe.setAttribute('allow', 'autoplay')
+    iframe.srcdoc = child.document
+    wrapper.append(iframe)
+    Array.from(wrapper.children).forEach((childElement) => {
+      if (childElement !== iframe) childElement.classList.add('hidden!')
+    })
+  })
+
+  if (scripts.length) {
+    const scriptContainer = document.createElement('div')
+    scriptContainer.id = 'srl-tavern-helper-script-runtimes'
+    scriptContainer.hidden = true
+    scriptContainer.setAttribute('aria-hidden', 'true')
+
+    for (const [index, script] of scripts.entries()) {
+      const iframe = document.createElement('iframe')
+      const id = script.id || `${script.source || 'character'}-${index}`
+      iframe.id = `TH-script--${script.name}--${id}`
+      iframe.name = iframe.id
+      iframe.setAttribute('tabindex', '-1')
+      iframe.srcdoc = buildCompatibilityScriptDocument(script, policy, libs)
+      scriptContainer.append(iframe)
+    }
+    companionHtml = scriptContainer.outerHTML
+  }
+
+  const container = document.createElement('div')
+  container.append(template.content.cloneNode(true))
+  return { html: container.innerHTML, companionHtml, blockedScripts, blockedExternalAssets }
+}
+
+export function buildRenderCompatibilitySwipeMarkup(
+  source: string,
+  policy: PreviewPolicy,
+  options: Pick<
+    RichContentPreviewOptions,
+    | 'vendorLibs'
+    | 'charAvatarUrl'
+    | 'sourceKind'
+    | 'macroCharName'
+    | 'macroUserName'
+    | 'displayRegexRules'
+    | 'preparedMessage'
+  > = {},
+): string {
+  const prepared =
+    options.preparedMessage?.source === source
+      ? options.preparedMessage
+      : prepareRichContentPreviewMessage(source, policy, options)
+  const formatted = prepared.formatted
+  return mountCompatibilityFramesAndScripts(
+    formatted.html,
+    formatted.frontendBlocks,
+    [],
+    policy,
+    options.vendorLibs,
+    sanitizeAvatarUrl(options.charAvatarUrl),
+  ).html
+}
+
+function buildCompatibilityScriptDocument(
+  script: PreviewRuntimeScript,
+  policy: PreviewPolicy,
+  libs: PreviewVendorLibs | undefined,
+): string {
+  const content = normalizeRenderCompatibilityScript(script.content)
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${buildChildPolicy(policy)}">
+${policy.allowScripts ? buildEphemeralStorageRuntime(true) : ''}
+${buildScriptIframeVendorLibs(libs, policy.allowRemoteResources)}
+<script>window.$=window.parent.$;window.jQuery=window.parent.jQuery;window._=window.parent._;window.YAML=window.parent.YAML;window.showdown=window.parent.showdown;window.z=window.parent.z;</script>
+${buildRenderCompatibilityChildAdapter(script)}
+${buildCompatibilityLogRuntime()}
+</head>
+<body>
+<script type="module">
+${content}
+</script>
+</body>
+</html>`
+}
+
+function buildFrameHostRuntime(): string {
+  return `<script>(()=>{'use strict';
+const frames=()=>Array.from(document.querySelectorAll('div.TH-render>iframe'));
+let hostViewportHeight=0;
+const broadcast=()=>{if(hostViewportHeight<=0)return;for(const frame of frames()){if(frame.dataset.srlViewportBound==='true')frame.contentWindow?.postMessage({type:'SRL_VIEWPORT_HEIGHT',height:hostViewportHeight},'*')}};
+const attach=()=>{for(const frame of frames()){if(frame.dataset.srlLayoutListener==='1')continue;frame.dataset.srlLayoutListener='1';frame.addEventListener('load',broadcast)}};
+const settleMessageHeight=()=>{const content=document.querySelector('[data-srl-preview-message-content]');const items=frames();if(content&&(items.length===0||items.every(frame=>frame.dataset.srlLayoutReady==='true')))content.style.removeProperty('min-height')};
+const refresh=()=>{attach();broadcast();settleMessageHeight()};
+Object.defineProperty(window,'__SRL_RENDER_COMPAT_REFRESH_MESSAGE_FRAMES__',{configurable:true,value:refresh});
+window.addEventListener('message',event=>{const data=event.data;if(!data)return;if(data.type==='SRL_HOST_VIEWPORT_HEIGHT'){const height=Math.ceil(Number(data.height));if(Number.isFinite(height)&&height>0){hostViewportHeight=height;refresh()}return}if(data.type!=='SRL_FRAME_LAYOUT_READY')return;for(const frame of frames()){if(frame.contentWindow!==event.source)continue;frame.dataset.srlViewportBound=data.viewportBound===true?'true':'false';frame.dataset.srlLayoutReady='true';if(data.viewportBound===true&&hostViewportHeight>0)frame.contentWindow?.postMessage({type:'SRL_VIEWPORT_HEIGHT',height:hostViewportHeight},'*');settleMessageHeight();break}});
+window.addEventListener('message',event=>{const data=event.data;if(!data||data.type!=='SRL_GREETING_NAVIGATE')return;for(const frame of frames()){if(frame.contentWindow===event.source){parent.postMessage(data,'*');return}}});
+window.addEventListener('resize',broadcast);if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refresh,{once:true});else refresh();window.addEventListener('load',refresh);
+})();</script>`
+}
+
+function buildOuterHeightRuntime(): string {
+  // Root offsetHeight includes collapsed body margins without the viewport floor of scrollHeight.
+  return `<script>(()=>{'use strict';
+let queued=false;const report=()=>{queued=false;const height=Math.max(document.body?.scrollHeight||0,document.documentElement?.offsetHeight||0);if(height>0)parent.postMessage({type:'SRL_PREVIEW_HEIGHT',height},'*')};const queue=()=>{if(queued)return;queued=true;requestAnimationFrame(report)};
+const mount=()=>{const body=document.body;if(!body)return;queue();new ResizeObserver(queue).observe(body)};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});else mount();
+window.addEventListener('message',event=>{if(event.data?.type==='SRL_FRAME_LAYOUT_READY')queue()});
+window.addEventListener('load',queue);
+})();</script>`
+}
+
+function buildDetailsControlRuntime(): string {
+  return `<script>(()=>{'use strict';
+const details=()=>Array.from(document.querySelectorAll('.mes_text details'));
+const report=()=>{const items=details();parent.postMessage({type:'SRL_PREVIEW_DETAILS_STATE',total:items.length,open:items.filter(item=>item.open).length},'*')};
+const initialize=()=>{report();document.addEventListener('toggle',report,true)};
+window.addEventListener('message',event=>{const data=event.data;if(!data||data.type!=='SRL_SET_DETAILS_OPEN')return;for(const item of details())item.open=data.open===true;report()});
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initialize,{once:true});else initialize();
+})();</script>`
+}
+
+function buildOuterPolicy(policy: PreviewPolicy): string {
+  const remote = policy.allowRemoteResources ? ' https: http:' : ''
+  const script = policy.allowScripts
+    ? `'unsafe-inline' 'unsafe-eval' data: blob:${remote}`
+    : "'unsafe-inline'"
+  return [
+    "default-src 'none'",
+    `style-src 'unsafe-inline' data: blob:${remote}`,
+    `img-src data: blob:${remote}`,
+    `font-src data: blob:${remote}`,
+    `media-src data: blob:${remote}`,
+    "connect-src 'none'",
+    `script-src ${script}`,
+    "frame-src 'self' data: blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ')
+}
+
+function buildPreviewMessageMarkup(title: string, html: string, avatarUrl: string): string {
+  const safeTitle = escapeHtml(title)
+  return `<main id="chat" data-srl-preview-shell="message"><article class="mes last_mes bot_mes" mesid="0" ch_name="${safeTitle}" is_user="false" is_system="false" bookmark_link="">
+<aside class="mesAvatarWrapper"><div class="avatar"><img src="${avatarUrl}" alt=""></div><div class="mesIDDisplay"></div><div class="mes_timer"></div><div class="tokenCounterDisplay"></div></aside>
+<button class="swipe_left" type="button" tabindex="-1" aria-hidden="true"></button>
+<section class="mes_block"><header class="ch_name"><span class="name_text">${safeTitle}</span></header><div class="mes_text" data-srl-preview-message-content>${html}</div></section>
+<div class="swipeRightBlock" aria-hidden="true"><button class="swipe_right" type="button" tabindex="-1"></button><div class="swipes-counter"></div></div>
+</article></main>`
+}
+
+function buildPreviewShellStyles(contentColors: {
+  body: string
+  emphasis: string
+  underline: string
+}): string {
+  return `
+*,*::before,*::after{box-sizing:border-box}
+:root{--avatar-base-height:50px;--avatar-base-width:50px;--mainFontSize:15px;--mainFontFamily:"Noto Sans",sans-serif;--mes-right-spacing:30px;--srl-message-gap:10px;--SmartThemeBodyColor:${contentColors.body};--SmartThemeEmColor:${contentColors.emphasis};--SmartThemeUnderlineColor:${contentColors.underline};--SmartThemeQuoteColor:#d48b35;--SmartThemeBorderColor:rgba(0,0,0,.5);--black50a:rgba(0,0,0,.5)}
+html,body{margin:0;padding:0;max-width:100%;background:transparent;color:var(--SmartThemeBodyColor)}
+body{overflow:hidden;font:var(--mainFontSize)/calc(var(--mainFontSize) + .5rem) var(--mainFontFamily)}
+#chat{width:100%}
+.mes{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"avatar message";align-items:start;position:relative;width:100%;min-width:0;padding:10px;color:var(--SmartThemeBodyColor)}
+.mesAvatarWrapper{grid-area:avatar;min-width:var(--avatar-base-width)}
+.avatar,.avatar img{width:var(--avatar-base-width);height:var(--avatar-base-height)}
+.avatar img{display:block;object-fit:cover;object-position:center;border:1px solid var(--SmartThemeBorderColor);border-radius:50%;box-shadow:0 0 5px var(--black50a)}
+.mes_block{grid-area:message;min-width:0;padding-inline-start:var(--srl-message-gap);overflow:hidden}
+.ch_name{font-weight:700}
+.mes_text{max-width:100%;padding-block:5px;padding-inline-end:var(--mes-right-spacing);overflow-wrap:anywhere;font-weight:500}
+.swipe_left{position:absolute;left:20px;bottom:20px;width:25px;height:25px;border:0;background:transparent}
+.swipeRightBlock{position:absolute;right:0;bottom:0;pointer-events:none}
+.swipe_right{width:25px;height:25px;border:0;background:transparent}
+.swipes-counter{min-width:40px;height:15px;margin-bottom:5px;padding-inline:5px}
+body.no-timer .mes_timer,body.no-tokenCount .tokenCounterDisplay,body.no-mesIDDisplay .mesIDDisplay{display:none}
+body.hideChatAvatars .mes{grid-template-columns:0 minmax(0,1fr)}
+body.hideChatAvatars .mesAvatarWrapper{visibility:hidden;min-width:0;width:0;overflow:hidden}
+body.hideChatAvatars .mes_block{padding-inline-start:0}
+body.hideChatAvatars.no-timer.no-tokenCount.no-mesIDDisplay .swipe_left{left:0}
+.srl-preview-content__text{padding:0}
+.mes_text p{margin-top:0}.mes_text p:last-child{margin-bottom:0}
+.mes_text q{color:var(--SmartThemeQuoteColor)}
+.mes q::before,.mes q::after,.mes_text q::before,.mes_text q::after{content:''}
+.mes_text img,.mes_text audio,.mes_text video,.mes_text canvas,.mes_text svg{max-width:100%}
+div.TH-render{display:block;width:100%;max-width:100%}
+div.TH-render>.hidden\\!{display:none!important}
+div.TH-render>iframe{display:block;width:100%;height:0;margin:0;border:0;background:transparent}
+`
+}
+
+function buildMessageDocument(
+  html: string,
+  title: string,
+  policy: PreviewPolicy,
+  renderShell: 'message' | 'content',
+  libs: PreviewVendorLibs | undefined,
+  helperContext: RenderCompatibilityContext,
+  expectedIframeCount: number,
+  helperRuntimeEnabled: boolean,
+  messageAvatarMode: SillyTavernMessageAvatarMode,
+  messageAvatarUrl: string,
+  contentTheme: PreviewContentTheme,
+  frontendWorkshopBehaviorRuntimeEnabled: boolean,
+  companionHtml: string,
+): string {
+  const contentColors =
+    renderShell === 'content'
+      ? contentTheme === 'dark'
+        ? {
+            body: '#edf0e8',
+            emphasis: '#a5afa8',
+            underline: '#8dbda9',
+          }
+        : {
+            body: '#1f2925',
+            emphasis: '#66706a',
+            underline: '#1f5b49',
+          }
+      : {
+          body: 'rgb(220,220,210)',
+          emphasis: 'rgb(145,145,145)',
+          underline: 'rgb(188,231,207)',
+        }
+  const bodyClasses =
+    renderShell === 'message'
+      ? [
+          'no-timer',
+          'no-tokenCount',
+          'no-mesIDDisplay',
+          messageAvatarMode === 'hidden' ? 'hideChatAvatars' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : ''
+  const safeAvatarUrl = sanitizeAvatarUrl(messageAvatarUrl)
+  const content =
+    renderShell === 'content'
+      ? `<div class="mes_text srl-preview-content__text" data-srl-preview-message-content>${html}</div>`
+      : buildPreviewMessageMarkup(title, html, safeAvatarUrl)
+  return `<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="${buildOuterPolicy(policy)}">
+<title>${escapeHtml(title)}</title>
+${policy.allowScripts ? buildEphemeralStorageRuntime(false) : ''}
+<style>
+${buildPreviewShellStyles(contentColors)}
+${renderShell === 'content' ? `:root{color-scheme:${contentTheme}}` : ''}
+</style>
+${helperRuntimeEnabled ? buildOuterVendorLibs(libs) : ''}
+${helperRuntimeEnabled ? buildRenderCompatibilityHostRuntime(helperContext, expectedIframeCount) : ''}
+${helperRuntimeEnabled ? buildFrameHostRuntime() : ''}
+${buildTrustedGreetingNavigationRuntime()}
+${buildOuterHeightRuntime()}
+${buildDetailsControlRuntime()}
+</head><body class="${bodyClasses}">${content}${companionHtml}${
+    frontendWorkshopBehaviorRuntimeEnabled ? `${frontendWorkshopBehaviorRuntimeScript()}` : ''
+  }</body></html>`
+}
+
+export function hasRichPreviewContent(source: string): boolean {
+  const formatted = formatSillyTavernMessage(source)
+  return (
+    formatted.frontendBlockCount > 0 ||
+    /<style\b|<(?:audio|video|canvas|svg|img)\b/i.test(formatted.html)
+  )
+}
+
+export function hasRenderCompatibilityRuntimeSource(
+  source: string,
+  runtimeScripts: PreviewRuntimeScript[] = [],
+  allowRuntimeScripts = true,
+  preparedMessage?: PreparedRichContentPreviewMessage,
+): boolean {
+  return (
+    (allowRuntimeScripts && runtimeScripts.some((script) => script.content.trim())) ||
+    (preparedMessage?.source === source
+      ? preparedMessage.formatted.frontendBlockCount
+      : formatSillyTavernMessage(source).frontendBlockCount) > 0
+  )
+}
+
+export function createResourcePreviewSessionContext(
+  options: RichContentPreviewOptions,
+  greetings: readonly string[],
+  formattedGreetings: readonly string[],
+  activeSwipe: number,
+): PreviewSessionContext {
+  const character =
+    options.macroCharName || options.characterData
+      ? { name: options.macroCharName, data: options.characterData }
+      : undefined
+  const user = options.macroUserName ? { name: options.macroUserName } : undefined
+  const mvu =
+    options.mvuRecognized === true
+      ? {
+          recognized: true,
+          swipesData: options.swipesData,
+          errors: options.mvuErrors,
+          unsupportedOpeningUpdates: options.unsupportedMvuOpeningUpdates,
+        }
+      : undefined
+
+  return {
+    character,
+    user,
+    messages: {
+      greetings: [...greetings],
+      formattedGreetings: [...formattedGreetings],
+      activeSwipe,
+      swipesData: options.swipesData,
+      swipesInfo: options.swipesInfo,
+    },
+    variables: options.previewVariables,
+    mvu,
+  }
+}
+
+export function buildRichContentPreview(
+  source: string,
+  title: string,
+  policy: PreviewPolicy = { allowRemoteResources: false, allowScripts: false },
+  runtimeScripts: PreviewRuntimeScript[] = [],
+  options: RichContentPreviewOptions = {},
+): RichContentPreviewResult {
+  const prepared =
+    options.preparedMessage?.source === source
+      ? options.preparedMessage
+      : prepareRichContentPreviewMessage(source, policy, options)
+  const { previewSource, substitutedSource, formatted } = prepared
+  const audio = detectAudioPreview(substitutedSource, policy)
+  const hasRuntimeScriptSource = runtimeScripts.some((script) => script.content.trim())
+  if (!substitutedSource.trim() && !(policy.allowScripts && hasRuntimeScriptSource)) {
+    return {
+      document: '',
+      hasRichContent: false,
+      blockedScripts: false,
+      blockedExternalAssets: false,
+      audio,
+      runtimeScriptCount: 0,
+      dependencies: [],
+      tavernHelperCompatibility: 'none',
+      mvuCompatibility: 'none',
+      compatibilityDiagnostics: [],
+    }
+  }
+
+  const activeRuntimeScripts = policy.allowScripts
+    ? runtimeScripts
+        .filter((script) => script.content.trim())
+        .map((script, index) => ({
+          ...script,
+          id: script.id || `${script.source || 'character'}-${index}`,
+        }))
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    : []
+  const greetingContents = options.greetingContents?.length
+    ? options.greetingContents
+    : [previewSource]
+  const greetingIndex = Math.min(
+    greetingContents.length - 1,
+    Math.max(0, Math.trunc(options.greetingIndex ?? 0)),
+  )
+  const avatarUrl = sanitizeAvatarUrl(options.charAvatarUrl)
+  const mounted = mountCompatibilityFramesAndScripts(
+    formatted.html,
+    formatted.frontendBlocks,
+    activeRuntimeScripts,
+    policy,
+    options.vendorLibs,
+    avatarUrl,
+  )
+  const hasRichContent =
+    formatted.frontendBlockCount > 0 ||
+    /<style\b|<(?:audio|video|canvas|svg|img)\b/i.test(formatted.html) ||
+    activeRuntimeScripts.length > 0
+  const precomputeFormattedGreetings =
+    policy.allowScripts &&
+    requiresSynchronousGreetingFormatting(greetingContents, activeRuntimeScripts)
+  const formattedGreetings = greetingContents.map((greeting, index) => {
+    if (index === greetingIndex) return formatted.html
+    if (!precomputeFormattedGreetings) return greeting
+    const preparedGreeting = options.preparedGreetingMessages?.[index]
+    return (
+      preparedGreeting?.source === greeting
+        ? preparedGreeting
+        : prepareRichContentPreviewMessage(greeting, policy, options)
+    ).formatted.html
+  })
+  const previewSessionContext = createResourcePreviewSessionContext(
+    options,
+    greetingContents,
+    formattedGreetings,
+    greetingIndex,
+  )
+  const helperContext = createRenderCompatibilityContextFromPreviewSession(previewSessionContext)
+  const hasHelperRuntime = formatted.frontendBlockCount > 0 || hasRuntimeScriptSource
+  const helperRuntimeEnabled = formatted.frontendBlockCount > 0 || activeRuntimeScripts.length > 0
+
+  return {
+    document: buildMessageDocument(
+      mounted.html,
+      title,
+      policy,
+      options.renderShell ?? 'message',
+      options.vendorLibs,
+      helperContext,
+      formatted.frontendBlockCount + activeRuntimeScripts.length,
+      helperRuntimeEnabled,
+      options.messageAvatarMode ?? 'visible',
+      options.charAvatarUrl ?? TRANSPARENT_AVATAR,
+      options.contentTheme ?? 'light',
+      Boolean(
+        options.frontendWorkshopBehaviorRuntime &&
+        mounted.html.includes('data-srl-behavior-config'),
+      ),
+      mounted.companionHtml,
+    ),
+    hasRichContent,
+    blockedScripts:
+      formatted.blockedScripts ||
+      mounted.blockedScripts ||
+      (!policy.allowScripts && hasRuntimeScriptSource),
+    blockedExternalAssets: mounted.blockedExternalAssets,
+    audio,
+    runtimeScriptCount: activeRuntimeScripts.length,
+    dependencies: [],
+    tavernHelperCompatibility: hasHelperRuntime
+      ? policy.allowScripts
+        ? 'active'
+        : 'detected'
+      : 'none',
+    mvuCompatibility: options.mvuRecognized ? 'opening-preview' : 'none',
+    compatibilityDiagnostics: helperRuntimeEnabled ? helperContext.diagnostics : [],
+  }
+}
+
+export { isTavernHelperFrontendContent }

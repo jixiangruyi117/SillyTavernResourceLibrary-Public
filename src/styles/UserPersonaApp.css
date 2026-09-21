@@ -1,0 +1,233 @@
+.persona-app {
+  min-width: 0;
+  color: var(--color-ink);
+  font-family: var(--font-body);
+}
+.persona-app__body {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem 0 calc(1rem + var(--safe-bottom, 0px));
+}
+.persona-app__toolbar,
+.persona-app__actions,
+.persona-app__description-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.persona-app__toolbar > input,
+.persona-app__toolbar > select {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+}
+.persona-app__toolbar > button {
+  flex-shrink: 0;
+}
+.persona-app__actions {
+  flex-wrap: wrap;
+}
+.persona-app__description-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-block: 1rem 0.5rem;
+}
+.persona-app input:not([type='checkbox'], [type='file']),
+.persona-app select,
+.persona-app textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--size-touch);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm, 8px);
+  padding: 0.625rem;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: 1rem;
+}
+.persona-app textarea {
+  display: block;
+  resize: vertical;
+  line-height: 1.6;
+}
+.persona-app__field {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+}
+.persona-app__field > span,
+.persona-app__description-heading > label {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+.persona-app__list {
+  padding: 0;
+  margin: 0.75rem 0;
+  list-style: none;
+}
+.persona-app__list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.75rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.persona-app__list-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 0.25rem;
+  overflow-wrap: anywhere;
+}
+.persona-app__initial {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  background: var(--color-accent-soft);
+  border-radius: var(--radius-sm, 8px);
+}
+.persona-app__initial img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+.persona-app small {
+  color: var(--color-ink-soft);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.persona-app__empty {
+  margin: 2rem 0;
+  color: var(--color-ink-soft);
+}
+.persona-app__notice,
+.persona-app__error {
+  margin: 0 0 0.75rem;
+  overflow-wrap: anywhere;
+}
+.persona-app__error {
+  color: var(--color-danger);
+}
+.persona-app__dirty {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--color-ink-soft);
+}
+.persona-app fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.persona-app__identity {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+.persona-app__avatar-fields {
+  display: flex;
+  align-items: start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.persona-app__avatar-preview {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 90px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-accent-soft);
+  font-size: 1.5rem;
+}
+.persona-app__avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.persona-app__avatar-options,
+.persona-app__name-fields {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  flex: 1;
+}
+.persona-app__templates {
+  display: grid;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+}
+.persona-app__disclosure {
+  border-bottom: 1px solid var(--color-line);
+  padding-block: 0.5rem;
+}
+.persona-app__disclosure > summary {
+  padding-block: 0.75rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  font-size: 0.875rem;
+}
+.persona-app__disclosure > summary > span {
+  color: var(--color-ink-soft);
+}
+.persona-app__injection {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+.persona-app__bindings > .persona-app__field,
+.persona-app__bindings > .persona-app__toolbar {
+  margin-bottom: 0.75rem;
+}
+.persona-app__characters {
+  max-height: 18rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.persona-app__character {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  min-height: 44px;
+  padding-block: 0.25rem;
+  overflow-wrap: anywhere;
+}
+.persona-app__character > span {
+  flex: 1;
+  min-width: 0;
+}
+.persona-app__character > small {
+  max-width: 45%;
+}
+.persona-app :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+@media (max-width: 760px) {
+  .persona-app__identity {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .persona-app__body {
+    padding-top: 0.75rem;
+  }
+  .persona-app__injection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,0 +1,321 @@
+/** @vitest-environment jsdom */
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import process from 'node:process'
+
+import { config as mountConfig, shallowMount } from '@vue/test-utils'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+
+import type { ResourceSummary } from './types/Resource'
+import { RESOURCE_TYPE } from './types/Resource'
+
+const previousStubs = mountConfig.global.stubs
+mountConfig.global.stubs = {
+  ...previousStubs,
+  LibraryToolbar: false,
+  LibrarySidebar: false,
+  LibraryProtectionPanel: false,
+  LibraryLinkImportPanel: false,
+}
+afterAll(() => {
+  mountConfig.global.stubs = previousStubs
+})
+
+const stressApi = vi.hoisted(() => ({
+  summaries: [] as ResourceSummary[],
+  listResourceListSummaries: vi.fn(async () => stressApi.summaries),
+  repairThumbnailAssets: vi.fn(async () => 0),
+  upgradeLegacyJsonResources: vi.fn(async () => 0),
+  backfillCardFingerprints: vi.fn(async () => 0),
+  get: vi.fn(),
+  initializeVaultOnce: vi.fn(async () => ({ enabled: false, locked: false })),
+}))
+
+vi.mock('./core/ServiceWorkerUpdate', () => ({
+  manualCheckForUpdate: vi.fn(async () => undefined),
+}))
+
+vi.mock('./core/AppContainer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./core/AppContainer')>()
+  return {
+    ...actual,
+    resourceService: {
+      listResourceListSummaries: stressApi.listResourceListSummaries,
+      repairThumbnailAssets: stressApi.repairThumbnailAssets,
+      upgradeLegacyJsonResources: stressApi.upgradeLegacyJsonResources,
+      backfillCardFingerprints: stressApi.backfillCardFingerprints,
+      get: stressApi.get,
+    },
+    categoryService: {
+      list: vi.fn(async () => []),
+    },
+    vaultService: {
+      initialize: vi.fn(async () => ({ enabled: false, locked: false })),
+    },
+    initializeVaultOnce: stressApi.initializeVaultOnce,
+    historyService: {
+      list: vi.fn(async () => []),
+      getSnapshotLimit: vi.fn(async () => 5),
+    },
+    recycleBinService: {
+      list: vi.fn(async () => []),
+    },
+    cloudBackupService: {
+      runDueBackup: vi.fn(async () => undefined),
+    },
+  }
+})
+
+const { default: App } = await import('./App.vue')
+
+interface ResourceIndexStressMetric {
+  count: number
+  initialRenderMs: number
+  searchP95Ms: number
+  sortP95Ms: number
+  maxInteractionMs: number
+  renderedCards: number
+  originalBlobReads: number
+}
+
+const stressMetrics: ResourceIndexStressMetric[] = []
+
+function percentile95(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right)
+  return sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? 0
+}
+
+function rounded(value: number): number {
+  return Math.round(value * 10) / 10
+}
+
+function createStressSummaries(count: number): ResourceSummary[] {
+  const types = [
+    RESOURCE_TYPE.CHARACTER_CARD,
+    RESOURCE_TYPE.WORLD_BOOK,
+    RESOURCE_TYPE.REGEX,
+    RESOURCE_TYPE.PRESET,
+  ]
+  return Array.from({ length: count }, (_, index) => {
+    const padded = String(index).padStart(5, '0')
+    return {
+      id: `stress-${padded}`,
+      type: types[index % types.length]!,
+      name: `压力资源 ${padded}`,
+      description: `第 ${index} 条轻量摘要`,
+      fileName: `resource-${padded}.${index % 4 === 0 ? 'png' : 'json'}`,
+      mimeType: index % 4 === 0 ? 'image/png' : 'application/json',
+      fileSize: 4_096 + index,
+      contentHash: `hash-${padded}`,
+      favorite: index % 10 === 0,
+      categoryId: null,
+      categoryIds: [],
+      relatedResourceIds: [],
+      tags: [`批次-${index % 20}`, index % 2 === 0 ? '偶数' : '奇数'],
+      metadata: { author: `作者-${index % 100}` },
+      versionCount: 1,
+      createdAt: 1_700_000_000_000 + index,
+      updatedAt: 1_700_000_000_000 + index,
+    }
+  })
+}
+
+describe('App 资源量压力回归', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+    stressApi.summaries = []
+    stressApi.repairThumbnailAssets.mockResolvedValue(0)
+    stressApi.upgradeLegacyJsonResources.mockResolvedValue(0)
+    stressApi.backfillCardFingerprints.mockResolvedValue(0)
+    stressApi.initializeVaultOnce.mockResolvedValue({ enabled: false, locked: false })
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: {
+        estimate: vi.fn(async () => ({ usage: 0, quota: 1_000_000_000 })),
+        persisted: vi.fn(async () => false),
+      },
+    })
+  })
+
+  it('功能页打开全局导入时挂载资源库和真实导入对话框，关闭后释放遮罩状态', async () => {
+    const wrapper = shallowMount(App, { props: { accountLabel: '导入入口回归' } })
+    await vi.waitFor(() => expect(stressApi.backfillCardFingerprints).toHaveBeenCalled())
+    await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+    expect(wrapper.find('.library').exists()).toBe(false)
+    await wrapper.get('.mobile-bottom-nav__import').trigger('click')
+    expect(wrapper.find('.library').exists()).toBe(true)
+    expect(wrapper.get('[role="dialog"][aria-label="选择导入方式"]').isVisible()).toBe(true)
+    expect(document.body.classList.contains('modal-open')).toBe(true)
+    await wrapper.get('[aria-label="关闭导入方式选择"]').trigger('click')
+    expect(wrapper.find('.import-choice-overlay').exists()).toBe(false)
+    expect(document.body.classList.contains('modal-open')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('由功能 APP 状态控制底栏真实挂载和占位，并在退出功能页后恢复', async () => {
+    const wrapper = shallowMount(App, {
+      props: { accountLabel: '底栏 Owner 回归' },
+      global: {
+        stubs: {
+          FeatureHub: {
+            name: 'FeatureHub',
+            emits: ['feature-app-active', 'close'],
+            template: '<section />',
+          },
+        },
+      },
+    })
+    try {
+      await vi.waitFor(() => expect(stressApi.backfillCardFingerprints).toHaveBeenCalled())
+      expect(wrapper.find('.mobile-bottom-nav').exists()).toBe(true)
+      await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+      const hub = wrapper.getComponent({ name: 'FeatureHub' })
+      for (const active of [true, false, true, false]) {
+        hub.vm.$emit('feature-app-active', active)
+        await nextTick()
+        expect(wrapper.find('.mobile-bottom-nav').exists()).toBe(!active)
+        expect(
+          (wrapper.element as HTMLElement).style.getPropertyValue('--bottom-nav-reserved'),
+        ).toBe(active ? '0px' : '')
+      }
+      hub.vm.$emit('feature-app-active', true)
+      await nextTick()
+      hub.vm.$emit('close')
+      await nextTick()
+      expect(wrapper.find('.library').exists()).toBe(true)
+      expect(wrapper.find('.mobile-bottom-nav').exists()).toBe(true)
+      expect((wrapper.element as HTMLElement).style.getPropertyValue('--bottom-nav-reserved')).toBe(
+        '',
+      )
+      await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+      expect(wrapper.find('.mobile-bottom-nav').exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('先显示轻量资源索引，再执行不阻塞首屏的存量维护', async () => {
+    stressApi.summaries = createStressSummaries(500)
+    let resolveUpgrade!: (count: number) => void
+    stressApi.upgradeLegacyJsonResources.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveUpgrade = resolve
+        }),
+    )
+
+    const wrapper = shallowMount(App, {
+      props: { accountLabel: '启动顺序回归' },
+    })
+
+    await vi.waitFor(() => expect(wrapper.get('.toolbar__result').text()).toContain('500'))
+    expect(stressApi.initializeVaultOnce).toHaveBeenCalledOnce()
+    expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledOnce()
+    expect(stressApi.backfillCardFingerprints).not.toHaveBeenCalled()
+
+    resolveUpgrade(0)
+    await vi.waitFor(() => expect(stressApi.backfillCardFingerprints).toHaveBeenCalledOnce())
+    wrapper.unmount()
+  })
+
+  afterAll(async () => {
+    const evidencePath = process.env.SRL_STRESS_EVIDENCE_PATH
+    if (!evidencePath) return
+    await mkdir(path.dirname(evidencePath), { recursive: true })
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          environment: 'Vitest + jsdom，浅挂载真实 App 资源筛选/排序/分页计算',
+          thresholds: {
+            initialRenderMs: 2_500,
+            filterSortP95Ms: 300,
+            maxInteractionMs: 200,
+          },
+          metrics: stressMetrics,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    )
+  })
+
+  it.each([500, 1_000, 3_000])(
+    '%i 条轻量索引只渲染当前页，且筛选/排序 p95 不超过预算',
+    async (count) => {
+      stressApi.summaries = createStressSummaries(count)
+      const startedAt = performance.now()
+      const wrapper = shallowMount(App, {
+        props: { accountLabel: '压力测试' },
+      })
+
+      await vi.waitFor(() =>
+        expect(wrapper.get('.toolbar__result').text()).toContain(String(count)),
+      )
+      const initialRenderMs = performance.now() - startedAt
+      expect(initialRenderMs).toBeLessThan(2_500)
+      expect(wrapper.findAll('resource-card-stub')).toHaveLength(24)
+      expect(stressApi.get).not.toHaveBeenCalled()
+
+      const search = wrapper.get('input[type="search"]')
+      const searchDurations: number[] = []
+      for (let iteration = 0; iteration < 20; iteration += 1) {
+        const target = (iteration * 37) % count
+        const searchStartedAt = performance.now()
+        await search.setValue(`压力资源 ${String(target).padStart(5, '0')}`)
+        await nextTick()
+        searchDurations.push(performance.now() - searchStartedAt)
+        expect(wrapper.get('.toolbar__result').text()).toContain('显示 1 项')
+      }
+      expect(wrapper.findAll('resource-card-stub')).toHaveLength(1)
+
+      await search.setValue('')
+      const sort = wrapper.get('select[aria-label="资源排序"]')
+      const sortDurations: number[] = []
+      const sortValues = ['name', 'size', 'newest'] as const
+      for (let iteration = 0; iteration < 18; iteration += 1) {
+        const value = sortValues[iteration % sortValues.length]!
+        const sortStartedAt = performance.now()
+        await sort.setValue(value)
+        await nextTick()
+        sortDurations.push(performance.now() - sortStartedAt)
+        expect((sort.element as HTMLSelectElement).value).toBe(value)
+      }
+
+      const searchP95Ms = percentile95(searchDurations)
+      const sortP95Ms = percentile95(sortDurations)
+      const maxInteractionMs = Math.max(...searchDurations, ...sortDurations)
+      expect(searchP95Ms).toBeLessThanOrEqual(300)
+      expect(sortP95Ms).toBeLessThanOrEqual(300)
+      expect(maxInteractionMs).toBeLessThanOrEqual(200)
+      expect(stressApi.get).not.toHaveBeenCalled()
+
+      await wrapper.get('select[aria-label="每页资源数量"]').setValue(96)
+      await vi.waitFor(() => expect(wrapper.findAll('resource-card-stub')).toHaveLength(96))
+      expect(wrapper.get('.pagination').text()).toContain(`第 1 / ${Math.ceil(count / 96)} 页`)
+
+      const nextButton = wrapper
+        .get('.pagination')
+        .findAll('button')
+        .find((button) => button.text() === '下一页')!
+      await nextButton.trigger('click')
+      expect(wrapper.get('.pagination').text()).toContain(`第 2 / ${Math.ceil(count / 96)} 页`)
+      expect(wrapper.findAll('resource-card-stub')).toHaveLength(Math.min(96, count - 96))
+
+      stressMetrics.push({
+        count,
+        initialRenderMs: rounded(initialRenderMs),
+        searchP95Ms: rounded(searchP95Ms),
+        sortP95Ms: rounded(sortP95Ms),
+        maxInteractionMs: rounded(maxInteractionMs),
+        renderedCards: 24,
+        originalBlobReads: stressApi.get.mock.calls.length,
+      })
+      wrapper.unmount()
+    },
+  )
+})

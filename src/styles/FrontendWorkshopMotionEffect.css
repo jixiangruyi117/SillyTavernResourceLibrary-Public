@@ -1,0 +1,488 @@
+.fw-effect-motion {
+  position: relative;
+  height: 248px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  isolation: isolate;
+}
+.fw-effect-word {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  z-index: 1;
+}
+.fw-effect-word strong {
+  position: relative;
+  font-size: 1.9rem;
+  letter-spacing: 4px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.fw-effect-word span,
+.fw-effect-word small {
+  font-size: var(--text-caption);
+  color: var(--color-ink-soft);
+}
+.is-playing.is-reveal strong {
+  animation: fw-effect-reveal 0.7s both;
+}
+.is-playing.is-reveal span {
+  animation: fw-effect-reveal 0.7s 0.15s both;
+}
+.is-playing.is-mask strong {
+  animation: fw-effect-mask 0.8s both;
+}
+.is-playing.is-iris .fw-effect-word {
+  animation: fw-effect-iris 0.85s both;
+}
+.is-playing.is-zoom .fw-effect-word {
+  animation: fw-effect-zoom 0.9s both;
+}
+.is-playing.is-slide strong {
+  animation: fw-effect-slide-left 0.7s both;
+}
+.is-playing.is-slide small {
+  animation: fw-effect-slide-right 0.7s 0.1s both;
+}
+.is-playing.is-line strong {
+  animation: fw-effect-track 0.8s both;
+}
+.is-playing.is-line .fw-effect-word:after {
+  content: '';
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  bottom: -16px;
+  height: 1px;
+  background: var(--color-accent);
+  transform-origin: left;
+  animation: fw-effect-line 0.8s both;
+}
+.fw-effect-shutters {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.fw-effect-shutters i {
+  flex: 1;
+  background: var(--color-accent-soft);
+  transform: scaleY(0);
+  transform-origin: top;
+}
+.is-playing .fw-effect-shutters i {
+  animation: fw-effect-shutter 0.45s calc(var(--i) * 0.06s) both;
+}
+.fw-effect-motion svg {
+  width: min(85%, 260px);
+  height: 120px;
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+.is-playing.is-stroke path {
+  stroke-dasharray: 1;
+  animation: fw-effect-stroke 1.1s both;
+}
+.fw-effect-ripple-target {
+  position: relative;
+  padding: 20px 30px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-accent-soft);
+  overflow: hidden;
+}
+.fw-effect-ripple-target i {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  left: calc(50% - 60px);
+  top: calc(50% - 60px);
+  border: 1px solid var(--color-accent);
+  border-radius: 50%;
+  opacity: 0;
+}
+.is-playing .fw-effect-ripple-target i {
+  animation: fw-effect-ripple 0.7s both;
+}
+.fw-effect-light-card {
+  position: relative;
+  width: 184px;
+  height: 190px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-card);
+  padding: 17px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--color-surface-raised);
+  overflow: hidden;
+  isolation: isolate;
+}
+.fw-effect-light-card small,
+.fw-effect-light-card span {
+  font-size: var(--text-caption);
+  position: relative;
+  z-index: 2;
+}
+.fw-effect-light-card strong {
+  font-size: 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+.fw-effect-light-art {
+  height: 50px;
+  border-radius: 50% 50% 0 0;
+  background: var(--color-accent-soft);
+}
+.fw-effect-light-card i {
+  position: absolute;
+  inset: -40%;
+  z-index: 1;
+  pointer-events: none;
+}
+.is-spotlight .fw-effect-light-card i {
+  background: radial-gradient(
+    circle at calc(var(--p) * 100%) 40%,
+    color-mix(in srgb, var(--color-accent) 27%, transparent),
+    transparent 45%
+  );
+}
+.is-hologram .fw-effect-light-card i {
+  background: linear-gradient(
+    115deg,
+    transparent 22%,
+    #78cdd84a 38%,
+    #b19be84a 48%,
+    #e7b1754a 57%,
+    transparent 70%
+  );
+  transform: translateX(calc((var(--p) - 0.5) * 120px));
+}
+.is-shimmer .fw-effect-light-card i {
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    color-mix(in srgb, var(--color-accent) 20%, transparent),
+    transparent 60%
+  );
+  opacity: 0;
+}
+.is-playing.is-shimmer .fw-effect-light-card i {
+  animation: fw-effect-shimmer 1s both;
+}
+.fw-effect-ambient {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 25% 70%, var(--color-accent-soft), transparent 65%);
+}
+.is-aurora .fw-effect-ambient {
+  inset: -20%;
+  background:
+    radial-gradient(ellipse at 25% 70%, var(--color-accent-soft), transparent 60%),
+    radial-gradient(
+      ellipse at 70% 25%,
+      color-mix(in srgb, var(--color-accent) 25%, transparent),
+      transparent 55%
+    );
+}
+.is-playing.is-aurora .fw-effect-ambient {
+  animation: fw-effect-aurora 3s both;
+}
+.is-playing.is-glitch strong:before,
+.is-playing.is-glitch strong:after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  animation: fw-effect-glitch 0.15s steps(2, end);
+}
+.is-glitch strong:before {
+  color: #d34d68;
+  transform: translateX(-3px);
+}
+.is-glitch strong:after {
+  color: #289aa9;
+  transform: translateX(3px);
+}
+.fw-effect-scroll {
+  height: 248px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+.fw-effect-scroll-track {
+  position: relative;
+  min-height: 780px;
+}
+.fw-effect-sticky-subject {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  height: 125px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  margin: 12px;
+  z-index: 2;
+}
+.fw-effect-sticky-subject strong {
+  font-size: 1.4rem;
+}
+.fw-effect-sticky-subject small,
+.fw-effect-sticky-subject span {
+  font-size: var(--text-caption);
+}
+.fw-effect-scroll-chapters {
+  padding: 0 18px 35px;
+}
+.fw-effect-scroll-chapters section {
+  height: 220px;
+  padding-top: 40px;
+}
+.fw-effect-scroll-chapters p {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.is-horizontal .fw-effect-sticky-subject,
+.is-depth .fw-effect-sticky-subject {
+  height: 50px;
+  gap: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  top: 0;
+}
+.is-horizontal .fw-effect-sticky-subject strong,
+.is-depth .fw-effect-sticky-subject strong {
+  font-size: 1rem;
+}
+.is-horizontal .fw-effect-sticky-subject small,
+.is-depth .fw-effect-sticky-subject small {
+  display: none;
+}
+.fw-effect-horizontal-window {
+  position: sticky;
+  top: 50px;
+  height: 185px;
+  overflow: hidden;
+}
+.fw-effect-horizontal-strip {
+  display: flex;
+  width: 300%;
+  height: 100%;
+  transform: translateX(calc(var(--progress) * -66.666%));
+}
+.fw-effect-horizontal-strip section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  border-inline-end: 1px solid var(--color-line);
+  background: var(--color-accent-soft);
+}
+.fw-effect-horizontal-strip strong {
+  font-size: 1.8rem;
+}
+.fw-effect-horizontal-strip span {
+  font-size: var(--text-caption);
+}
+.fw-effect-depth-window {
+  position: sticky;
+  top: 50px;
+  height: 185px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.fw-effect-depth-window i {
+  position: absolute;
+  inset: 30px 55px;
+  border: 2px solid var(--color-accent);
+  border-radius: var(--radius-card);
+  transform: scale(calc(0.4 + var(--i) * 0.4 + var(--progress) * 1.5));
+  opacity: calc(0.7 - var(--i) * 0.13);
+}
+.fw-effect-depth-window strong {
+  background: var(--color-surface);
+  padding: 8px;
+  z-index: 1;
+}
+@keyframes fw-effect-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes fw-effect-mask {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+@keyframes fw-effect-iris {
+  from {
+    clip-path: circle(0%);
+  }
+  to {
+    clip-path: circle(100%);
+  }
+}
+@keyframes fw-effect-zoom {
+  from {
+    transform: scale(1.08);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes fw-effect-slide-left {
+  from {
+    transform: translateX(-28px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes fw-effect-slide-right {
+  from {
+    transform: translateX(28px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes fw-effect-track {
+  from {
+    letter-spacing: 10px;
+  }
+  to {
+    letter-spacing: 4px;
+  }
+}
+@keyframes fw-effect-line {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes fw-effect-shutter {
+  from {
+    transform: scaleY(1);
+  }
+  to {
+    transform: scaleY(0);
+  }
+}
+@keyframes fw-effect-stroke {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes fw-effect-ripple {
+  from {
+    transform: scale(0.05);
+    opacity: 0.8;
+  }
+  to {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+@keyframes fw-effect-shimmer {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+@keyframes fw-effect-aurora {
+  0% {
+    transform: translate(-4%, -4%) rotate(-6deg);
+  }
+  50% {
+    transform: translate(5%, 4%) rotate(8deg);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+@keyframes fw-effect-glitch {
+  0%,
+  70% {
+    opacity: 0.65;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fw-effect-motion *,
+  .fw-effect-motion *:before,
+  .fw-effect-motion *:after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .fw-effect-horizontal-strip {
+    transform: none;
+    display: block;
+    width: 100%;
+  }
+  .fw-effect-horizontal-window {
+    position: static;
+    overflow: visible;
+    height: auto;
+  }
+  .fw-effect-horizontal-strip section {
+    min-height: 180px;
+  }
+  .fw-effect-depth-window i {
+    transform: scale(calc(0.4 + var(--i) * 0.4));
+  }
+}

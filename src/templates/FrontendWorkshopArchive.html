@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>折页档案 · 沈知遥</title>
+    <style>
+      /* 改这组颜色即可适配古风、现代或幻想角色。图片可直接替换 src。 */
+      :root {
+        --paper: #e9e4d9;
+        --ink: #282b29;
+        --muted: #71756d;
+        --accent: #76513e;
+        --line: #282b2929;
+        --portrait: #c9c8bc;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font:
+          14px/1.7 system-ui,
+          -apple-system,
+          'Microsoft YaHei',
+          sans-serif;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+      }
+      button:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 5px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      ::selection {
+        background: var(--accent);
+        color: var(--paper);
+      }
+      .archive {
+        max-width: 1180px;
+        margin: auto;
+        padding: clamp(20px, 5vw, 64px);
+        overflow: hidden;
+      }
+      .masthead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line);
+        font-size: 10px;
+        letter-spacing: 0.22em;
+      }
+      .masthead b {
+        font-size: 14px;
+        letter-spacing: 0.12em;
+      }
+      .seal {
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--accent);
+        border-radius: 50%;
+        width: 34px;
+        height: 34px;
+        color: var(--accent);
+      }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1.05fr;
+        align-items: center;
+        gap: 5%;
+        padding: 48px 0 32px;
+        min-height: 580px;
+      }
+      .intro {
+        position: relative;
+        z-index: 2;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        color: var(--accent);
+      }
+      h1 {
+        font:
+          clamp(52px, 8vw, 106px)/1.05 'Songti SC',
+          'SimSun',
+          serif;
+        margin: 30px 0 14px;
+        letter-spacing: -0.05em;
+      }
+      .roman {
+        font-size: 11px;
+        letter-spacing: 0.38em;
+        color: var(--muted);
+      }
+      .quote {
+        font:
+          clamp(18px, 2.5vw, 28px)/1.8 'Songti SC',
+          'SimSun',
+          serif;
+        max-width: 18em;
+        margin: 35px 0;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 20px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .meta span {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 0;
+      }
+      .portrait-stage {
+        position: relative;
+        perspective: 1100px;
+        padding: 20px 14px 28px;
+        min-width: 0;
+      }
+      .portrait-stage:before {
+        content: '';
+        position: absolute;
+        inset: 5% 0 8% 15%;
+        border: 1px solid var(--line);
+        transform: rotate(7deg);
+      }
+      .portrait {
+        position: relative;
+        aspect-ratio: 3/4;
+        margin: 0;
+        background: var(--portrait);
+        transform: rotate(-3deg) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+        box-shadow: 20px 25px 45px #24272420;
+        transition: transform 0.7s;
+      }
+      .portrait-stage:hover .portrait {
+        transform: rotate(0deg) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+      }
+      .portrait img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        filter: saturate(0.65);
+      }
+      .portrait img[hidden] {
+        display: none;
+      }
+      .placeholder {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: #383e35;
+        letter-spacing: 0.2em;
+        font-size: 12px;
+        background: linear-gradient(135deg, #d7d8ce, #b7b9a9);
+      }
+      .portrait figcaption {
+        position: absolute;
+        bottom: 15px;
+        left: 15px;
+        right: 15px;
+        color: #fff;
+        text-shadow: 0 1px 12px #000;
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+      }
+      .folio {
+        position: absolute;
+        right: -4px;
+        top: -12px;
+        font:
+          italic 76px/1 Georgia,
+          serif;
+        color: var(--accent);
+        opacity: 0.8;
+        z-index: 1;
+      }
+      .chapter-label {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        padding: 28px 0 20px;
+        border-top: 1px solid var(--line);
+      }
+      .chapter-label span {
+        font:
+          italic 28px Georgia,
+          serif;
+        color: var(--accent);
+      }
+      h2 {
+        font-size: 15px;
+        letter-spacing: 0.1em;
+        margin: 0;
+      }
+      .chapter-label small {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.13em;
+      }
+      .profile {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr;
+        gap: 10%;
+        padding-bottom: 42px;
+      }
+      .profile p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .profile blockquote {
+        margin: 0;
+        border-left: 2px solid var(--accent);
+        padding-left: 22px;
+        font:
+          19px/1.8 'Songti SC',
+          'SimSun',
+          serif;
+      }
+      .traits {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 20px;
+      }
+      .traits span {
+        font-size: 11px;
+        border: 1px solid var(--line);
+        padding: 4px 12px;
+        border-radius: 30px;
+      }
+      .story-list {
+        display: grid;
+        gap: 0;
+      }
+      .story {
+        position: relative;
+        text-align: left;
+        border: 0;
+        border-top: 1px solid var(--line);
+        background: transparent;
+        padding: 24px 4px;
+        display: grid;
+        grid-template-columns: 45px 1fr 34px;
+        gap: 16px;
+        align-items: center;
+        transition:
+          padding 0.35s,
+          background 0.35s;
+      }
+      .story:last-child {
+        border-bottom: 1px solid var(--line);
+      }
+      .story:hover,
+      .story[aria-pressed='true'] {
+        padding-left: 18px;
+        background: #ffffff38;
+      }
+      .story .number {
+        font:
+          italic 23px Georgia,
+          serif;
+        color: var(--accent);
+      }
+      .story strong {
+        font:
+          22px/1.5 'Songti SC',
+          'SimSun',
+          serif;
+      }
+      .story small {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .story .arrow {
+        font-size: 22px;
+        transition: transform 0.3s;
+      }
+      .story:hover .arrow {
+        transform: translateX(6px);
+      }
+      .story-book {
+        position: relative;
+        display: grid;
+        grid-template-columns: 0.65fr 1fr;
+        margin: 30px 0 24px;
+        perspective: 1500px;
+        background: #f6f2e9;
+        box-shadow: 0 18px 40px #282b2915;
+      }
+      .book-spine {
+        padding: 32px;
+        border-right: 1px solid var(--line);
+        background: linear-gradient(90deg, transparent 94%, #282b290c);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      .book-spine b {
+        font:
+          italic clamp(60px, 10vw, 110px)/1 Georgia,
+          serif;
+        color: var(--accent);
+        opacity: 0.55;
+      }
+      .book-spine p {
+        font:
+          22px/1.8 'SimSun',
+          serif;
+      }
+      .story-page {
+        position: relative;
+        min-width: 0;
+        padding: clamp(18px, 4vw, 38px);
+        transform-style: preserve-3d;
+      }
+      .story-page h3 {
+        font:
+          28px/1.5 'SimSun',
+          serif;
+        margin: 12px 0 22px;
+      }
+      .story-preview {
+        white-space: pre-line;
+        color: var(--ink);
+        line-height: 2;
+        overflow-wrap: anywhere;
+      }
+      .turning-page {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        background: #f6f2e9;
+        transform-origin: left center;
+        backface-visibility: hidden;
+        pointer-events: none;
+        box-shadow: 8px 0 24px #282b2920;
+      }
+      .book-controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 25px;
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+      }
+      .book-controls button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 14px;
+        border: 1px solid var(--line);
+        background: transparent;
+      }
+      .book-controls button:hover {
+        background: var(--ink);
+        color: var(--paper);
+      }
+      .book-count {
+        margin-right: auto;
+        color: var(--accent);
+        font:
+          italic 18px Georgia,
+          serif;
+      }
+      #enter-story {
+        width: 100%;
+        margin-top: 12px;
+        min-height: 44px;
+        background: var(--ink);
+        color: var(--paper);
+        border: 0;
+      }
+      @media (max-width: 620px) {
+        .story-book {
+          grid-template-columns: 1fr;
+        }
+        .book-spine {
+          flex-direction: row;
+          align-items: center;
+          padding: 18px 22px;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          gap: 16px;
+        }
+        .book-spine b {
+          font-size: 46px;
+        }
+        .book-spine p {
+          font-size: 15px;
+          margin: 0;
+        }
+      }
+      .status {
+        font-size: 11px;
+        color: var(--accent);
+        margin: 0 0 22px;
+      }
+      .credits {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr;
+        gap: 10%;
+        padding: 30px 0;
+        border-top: 1px solid var(--line);
+      }
+      .credits h3 {
+        font:
+          25px 'Songti SC',
+          'SimSun',
+          serif;
+        margin: 4px 0 10px;
+      }
+      .credits p {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 8px 0;
+      }
+      .rights {
+        border: 1px solid var(--line);
+        padding: 18px 22px;
+      }
+      .end {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding-top: 24px;
+        border-top: 1px solid var(--line);
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 0.16em;
+      }
+      .reveal {
+        animation: arrive 0.9s both;
+      }
+      .portrait-stage {
+        animation-delay: 0.12s;
+      }
+      @keyframes arrive {
+        from {
+          opacity: 0;
+          transform: translateY(18px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @media (max-width: 620px) {
+        .hero {
+          grid-template-columns: 1fr;
+          min-height: 0;
+          padding-top: 32px;
+          gap: 24px;
+        }
+        .intro {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          align-items: end;
+        }
+        .eyebrow,
+        .roman,
+        .meta {
+          grid-column: 1/-1;
+        }
+        h1 {
+          font-size: clamp(36px, 13vw, 58px);
+          margin: 20px 0 10px;
+          grid-column: 1/-1;
+        }
+        .quote {
+          font-size: 19px;
+          margin: 20px 0;
+          grid-column: 1/-1;
+          max-width: none;
+        }
+        .portrait-stage {
+          width: 88%;
+          margin: 0 auto;
+        }
+        .portrait {
+          aspect-ratio: 4/4.6;
+        }
+        .folio {
+          font-size: 62px;
+        }
+        .profile,
+        .credits {
+          grid-template-columns: 1fr;
+          gap: 24px;
+        }
+        .chapter-label small {
+          letter-spacing: 0;
+          font-size: 9px;
+        }
+        .story {
+          grid-template-columns: 30px 1fr 24px;
+          gap: 8px;
+        }
+        .story strong {
+          font-size: 20px;
+        }
+        .masthead {
+          letter-spacing: 0.1em;
+          gap: 8px;
+        }
+        .masthead b {
+          white-space: nowrap;
+        }
+        .masthead > span:not(.seal) {
+          font-size: 8px;
+          letter-spacing: 0;
+        }
+        .end {
+          font-size: 9px;
+        }
+      }
+      @media (max-width: 360px) {
+        .archive {
+          padding: 16px 12px;
+        }
+        .portrait-stage {
+          width: 100%;
+        }
+        .story {
+          grid-template-columns: 20px minmax(0, 1fr) 16px;
+          gap: 6px;
+        }
+        .story strong {
+          font-size: 17px;
+        }
+        .quote {
+          font-size: 17px;
+        }
+        .masthead > span:not(.seal) {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *:before,
+        *:after {
+          animation: none !important;
+          transition: none !important;
+        }
+        .portrait-stage:hover .portrait {
+          transform: rotate(-3deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="archive">
+      <header class="masthead">
+        <b>相逢档案室</b><span>CHARACTER / VOL. 01</span
+        ><span class="seal" aria-hidden="true">叙</span>
+      </header>
+      <section class="hero">
+        <div class="intro reveal">
+          <div class="eyebrow">01 / 一段尚未写完的故事</div>
+          <h1>沈知遥</h1>
+          <div class="roman">SHEN ZHI YAO</div>
+          <p class="quote">“每一次相逢，<br />都是世界留下的伏笔。”</p>
+          <div class="meta"><span>档案修复师</span><span>慢热 · 清醒 · 温柔的固执</span></div>
+        </div>
+        <div class="portrait-stage reveal">
+          <span class="folio" aria-hidden="true">01</span>
+          <figure class="portrait">
+            <div class="placeholder" aria-hidden="true">人物影像 / PORTRAIT</div>
+            <img
+              src="https://example.invalid/srl-workshop/dO7Rhmep.png"
+              alt="沈知遥的角色立绘"
+              loading="eager"
+              style="position: relative"
+            />
+            <figcaption><span>THE UNWRITTEN STORY</span><span>档案编号 001</span></figcaption>
+          </figure>
+        </div>
+      </section>
+      <div class="chapter-label">
+        <span>i.</span>
+        <h2>关于这个人</h2>
+        <small>BETWEEN THE LINES</small>
+      </div>
+      <section class="profile">
+        <blockquote>他擅长修复旧纸上的裂痕，<br />却一直学不会告别。</blockquote>
+        <div>
+          <p>
+            旧城尽头的档案馆里，沈知遥收藏着无人认领的信。他不问来者的过去，只为每个故事留下一个位置。你带来的那封信，却恰好写着他的名字。
+          </p>
+          <div class="traits"><span>旧城日常</span><span>双向靠近</span><span>隐秘往事</span></div>
+        </div>
+      </section>
+      <div class="chapter-label">
+        <span>ii.</span>
+        <h2>选择相遇的方式</h2>
+        <small>WHERE WE BEGIN</small>
+      </div>
+      <nav class="story-list" aria-label="开场白"></nav>
+      <section class="story-book" aria-label="开场白阅读">
+        <div class="book-spine">
+          <b aria-hidden="true">01</b>
+          <p>每一个故事，<br />都有一封等你拆开的信。</p>
+        </div>
+        <div class="story-page">
+          <div class="eyebrow">相逢 / 第一页</div>
+          <h3 id="story-title"></h3>
+          <div class="story-preview" aria-live="polite"></div>
+          <div class="book-controls">
+            <span class="book-count"></span
+            ><button type="button" id="previous-story" aria-label="上一则开场白">←</button
+            ><button type="button" id="next-story" aria-label="下一则开场白">→</button>
+          </div>
+          <button type="button" id="enter-story" hidden>进入此开场白</button>
+        </div>
+      </section>
+      <p class="status" role="status"></p>
+      <section class="credits">
+        <div>
+          <div class="eyebrow">作者手记</div>
+          <h3>你的署名</h3>
+          <p>在这里写下创作灵感、角色使用建议，以及想对读者说的话。感谢每一次认真阅读。</p>
+        </div>
+        <div class="rights">
+          <strong>阅读与使用说明</strong>
+          <p>
+            仅供个人交流与体验。未经作者许可，请勿二次上传、转载或用于商业用途。修改版请注明原作者，并遵循原作品授权。
+          </p>
+          <p>角色图与其他素材的署名和授权信息请补充于此。</p>
+        </div>
+      </section>
+      <footer class="end">
+        <span>故事由此继续</span><span>END OF FILE / BEGINNING OF US</span>
+      </footer>
+    </main>
+    <script type="application/json" data-tavern-character>
+      {
+        "name": "沈知遥",
+        "description": "旧城档案馆的档案修复师，收藏无人认领的信，慢热、清醒、温柔而固执。",
+        "personality": "慢热、清醒、温柔而固执",
+        "scenario": "旧城档案馆；选择不同的备用开场白开始故事。",
+        "creator_notes": "示例角色；请按自己的角色修改设定、署名和素材授权。",
+        "alternate_greetings": [
+          "雨水沿着伞骨落下。街巷里的店铺都熄了灯，只有档案馆二楼还亮着一扇窗。\n\n你敲了三下门，怀中那封泛黄的信已经被体温焐暖。开门的人没有问你的来意，他的视线停在信封右下角，握着门把的手微微收紧。\n\n“这封信，你是从哪里找到的？”沈知遥侧过身，让出一条通往灯光的路。他替你接过滴水的伞，却迟迟没有伸手去碰那封信。\n\n桌上有两杯尚温的茶。你忽然意识到，他也许已经等了很久。\n\n“先进来吧。”他轻声说，“如果你愿意，我们可以从寄信人的名字谈起。”",
+          "旧书店拆下了招牌，门口那棵树却还在。你停在马路这端，看见有人站在斑驳的树影里，手里拿着一本封皮起翘的书。\n\n沈知遥比记忆里清瘦了一些。他看见你，没有立刻走来，只是将夹在书中的车票翻了个面。\n\n“书还给你。”走到面前时，他说得像是昨天才借走它，“第七十三页，你留下的批注，我后来想明白了。”\n\n一辆公交车从身后驶过，隔断了几秒钟的沉默。他没有问这些年你去了哪里。\n\n“街角的店还开着。”他望向你，声音慢下来，“要不要一起去坐坐？这次换我请你。”",
+          "清晨六点，车站还浮着薄薄的雾。你赶到站台时，沈知遥正低头看表，另一只手里拎着两份早餐。\n\n“还好，赶上了。”他笑了一下，将靠窗的车票递给你。目的地是一座你们很多年前说过要一起去的小城。\n\n列车开动，城市的轮廓缓缓退到身后。他从背包里拿出一本空白笔记，翻到第一页，郑重写下今天的日期。\n\n“以前总觉得，还有很多时间。”他把笔放到你的掌心，指尖短暂地停留，“后来才发现，有些约定，要有人先迈出一步。”\n\n窗外第一缕光落在纸上。他看着你：“这一次，从哪里开始，由你决定。”"
+        ]
+      }
+    </script>
+    <script>
+      ;(() => {
+        // 模板自带三则完整示例，未配置角色卡也能翻页阅读。酒馆已有其他开场白时使用真实内容。
+        // 按实际消息的 swipes 跳转，不重写聊天、不触发模型生成。
+        const labels = [
+          {
+            title: '雨夜来信',
+            detail: '初次见面 · 一封迟到多年的信',
+          },
+          {
+            title: '旧街重逢',
+            detail: '久别重逢 · 熟悉又陌生的街口',
+          },
+          {
+            title: '未完成的约定',
+            detail: '关系进阶 · 从一场共同的旅行开始',
+          },
+        ]
+        const list = document.querySelector('.story-list'),
+          preview = document.querySelector('.story-preview'),
+          status = document.querySelector('.status')
+        const host = typeof getChatMessages === 'function' && typeof setChatMessages === 'function'
+        let swipes = [],
+          readError = ''
+        if (host) {
+          try {
+            swipes = getChatMessages(0, { include_swipes: true })[0]?.swipes || []
+          } catch (error) {
+            readError = '读取开场白失败：' + error.message + '。'
+          }
+        }
+        const sample = JSON.parse(
+          document.querySelector('[data-tavern-character]').textContent,
+        ).alternate_greetings
+        const live = swipes.length > 1
+        const items = live
+          ? swipes.slice(1).map((text, index) => ({
+              title: text === sample[index] ? labels[index]?.title : '备用开场白 ' + (index + 1),
+              detail: '点击切换到酒馆的备用开场白 ' + (index + 1),
+              excerpt: String(text),
+            }))
+          : labels.map((label, index) => ({ ...label, excerpt: sample[index] }))
+        status.textContent = live
+          ? '点击上方任一选项，直接切换酒馆的备用开场白。下方箭头仅供翻页试读。'
+          : '当前仅能试读示例，尚未读取到备用开场白。请导出完整作品包，将其中的角色卡 JSON 导入酒馆；只粘贴 HTML 不会添加备用开场白。'
+        if (readError) status.textContent = readError + status.textContent
+        const page = document.querySelector('.story-page'),
+          enter = document.querySelector('#enter-story')
+        const reduced = matchMedia('(prefers-reduced-motion: reduce)')
+        let selected = 0,
+          turning
+        function select(index, animate = true) {
+          index = (index + items.length) % items.length
+          turning?.cancel()
+          page.querySelector('.turning-page')?.remove()
+          const old = document.createElement('div')
+          old.className = 'turning-page'
+          old.setAttribute('aria-hidden', 'true')
+          old.style.padding = getComputedStyle(page).padding
+          const oldTitle = document.createElement('h3'),
+            oldText = document.createElement('div')
+          oldTitle.textContent = document.querySelector('#story-title').textContent
+          oldText.textContent = preview.textContent
+          oldText.className = 'story-preview'
+          old.append(oldTitle, oldText)
+          selected = index
+          document.querySelector('#story-title').textContent = items[index].title
+          preview.textContent = items[index].excerpt
+          document.querySelector('.book-spine b').textContent = String(index + 1).padStart(2, '0')
+          document.querySelector('.book-count').textContent =
+            String(index + 1).padStart(2, '0') + ' / ' + String(items.length).padStart(2, '0')
+          list
+            .querySelectorAll('button')
+            .forEach((node, i) => node.setAttribute('aria-pressed', String(i === index)))
+          if (animate && !reduced.matches && typeof old.animate === 'function') {
+            page.append(old)
+            turning = old.animate(
+              [
+                { transform: 'rotateY(0deg)', opacity: 1 },
+                { transform: 'rotateY(-175deg)', opacity: 0.2 },
+              ],
+              { duration: 700, easing: 'cubic-bezier(.22,.7,.2,1)' },
+            )
+            turning.finished.then(
+              () => old.remove(),
+              () => old.remove(),
+            )
+          }
+        }
+        items.forEach((item, index) => {
+          const button = document.createElement('button')
+          button.className = 'story'
+          button.type = 'button'
+          const number = document.createElement('span'),
+            text = document.createElement('span'),
+            title = document.createElement('strong'),
+            detail = document.createElement('small'),
+            arrow = document.createElement('span')
+          number.className = 'number'
+          number.textContent = String(index + 1).padStart(2, '0')
+          title.textContent = item.title
+          detail.textContent = item.detail
+          text.append(title, detail)
+          arrow.className = 'arrow'
+          arrow.textContent = '↗'
+          arrow.setAttribute('aria-hidden', 'true')
+          button.append(number, text, arrow)
+          list.append(button)
+          button.addEventListener('click', () => {
+            if (live) void enterStory(index)
+            else select(index)
+          })
+        })
+        document
+          .querySelector('#previous-story')
+          .addEventListener('click', () => select(selected - 1))
+        document.querySelector('#next-story').addEventListener('click', () => select(selected + 1))
+        enter.hidden = !live
+        let switching = false
+        async function enterStory(index) {
+          if (switching || !live) return
+          switching = true
+          enter.disabled = true
+          list.querySelectorAll('button').forEach((button) => (button.disabled = true))
+          try {
+            const current = getChatMessages(0, { include_swipes: true })[0]
+            if (current?.swipes?.[index + 1] !== swipes[index + 1])
+              throw new Error('该开场白已变化，请重新打开页面')
+            await setChatMessages([{ message_id: 0, swipe_id: index + 1 }])
+          } catch (error) {
+            status.textContent = '未能切换：' + error.message
+          } finally {
+            switching = false
+            enter.disabled = false
+            list.querySelectorAll('button').forEach((button) => (button.disabled = false))
+          }
+        }
+        enter.addEventListener('click', () => void enterStory(selected))
+        select(0, false)
+        const portrait = document.querySelector('.portrait'),
+          stage = document.querySelector('.portrait-stage')
+        stage.addEventListener('pointermove', (event) => {
+          if (reduced.matches || event.pointerType === 'touch') return
+          const rect = stage.getBoundingClientRect()
+          portrait.style.setProperty(
+            '--ry',
+            ((event.clientX - rect.left) / rect.width - 0.5) * 14 + 'deg',
+          )
+          portrait.style.setProperty(
+            '--rx',
+            (0.5 - (event.clientY - rect.top) / rect.height) * 8 + 'deg',
+          )
+        })
+        stage.addEventListener('pointerleave', () => {
+          portrait.style.setProperty('--rx', '0deg')
+          portrait.style.setProperty('--ry', '0deg')
+        })
+        const image = document.querySelector('.portrait img')
+        image.addEventListener('error', () => {
+          image.hidden = true
+        })
+        if (image.complete && !image.naturalWidth) image.hidden = true
+      })()
+    </script>
+  </body>
+</html>
