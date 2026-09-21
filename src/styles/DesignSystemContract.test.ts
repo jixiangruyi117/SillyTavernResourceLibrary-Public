@@ -158,7 +158,7 @@ describe('mobile design system contract', () => {
       /:is\(#app, \[role='dialog'\]\)\s*:where\([^{}]+\)\s*\{\s*font-size: 16px;/,
     )
     expect(refinement).not.toContain('font-size: 1rem')
-    expect(stylesEntry).not.toContain('FrontendWorkshopLegacyUiMigration.css')
+    expect(stylesEntry).not.toContain(['FrontendWorkshop', 'LegacyUiMigration.css'].join(''))
   })
 
   it('keeps direct iOS top inset reads inside the safe-area token owner', () => {

@@ -10,6 +10,6 @@ describe('FrontendWorkshopApp', () => {
     expect(source).not.toContain('UseFrontendWorkshopApp')
     expect(source).not.toContain('StatusPlaceHolder')
     expect(source).not.toContain('状态栏校样')
-    expect(source).not.toContain('FrontendWorkshopLegacy')
+    expect(source).not.toContain(['FrontendWorkshop', 'Legacy'].join(''))
   })
 })

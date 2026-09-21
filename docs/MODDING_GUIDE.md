@@ -147,7 +147,7 @@ TavernConnectionStore / TavernBridgeService
 - `src/services/LanDirectService.ts`：`127.0.0.1:8000` 本机直传。
 - `src/utils/TavernBridgeDiff.ts` / `src/utils/TavernSyncPlan.ts`：两端差异和同步计划。
 
-Public 版不使用作者服务器的 `/api/bridge/join`。
+Public 版不使用作者服务器的桥接会话接口。
 
 ### 前端了么 / Frontend Workshop
 

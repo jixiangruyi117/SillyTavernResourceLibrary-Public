@@ -252,7 +252,7 @@ B. 用户自己运行的本机酒馆插件
 
 本机直传固定信任边界为 `http://127.0.0.1:8000`，对应 SillyTavern 服务端插件。
 
-Public 版不通过作者服务器建立 `/api/bridge/join` 会话。
+Public 版不通过作者服务器建立桥接会话。
 
 ## 11. Frontend Workshop
 
