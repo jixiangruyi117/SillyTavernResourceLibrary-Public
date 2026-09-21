@@ -1031,6 +1031,27 @@ body.tutorial-preview-open {
   white-space: pre-wrap;
 }
 
+.cloud-backup-error {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  border-left: 0.2rem solid var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface-raised));
+  font-size: 0.72rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.cloud-tutorial-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+  padding-left: 1.3rem;
+  color: var(--color-ink-soft);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
 .cloud-metrics {
   margin-top: 0.65rem;
   padding: 0.65rem 0.75rem;

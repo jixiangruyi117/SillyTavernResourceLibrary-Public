@@ -100,7 +100,10 @@ export function useCloudBackupCenter(
   }
 
   onMounted(() => {
-    void cloudBackupService.initializeCredentials().then(() => void refreshBackups())
+    void cloudBackupService.initializeCredentials().then(() => {
+      snapshot.value = cloudBackupService.getSnapshot()
+      if (snapshot.value.github?.owner && snapshot.value.github.repository) void refreshBackups()
+    })
   })
 
   return {
