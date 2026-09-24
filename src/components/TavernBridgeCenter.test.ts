@@ -3,11 +3,14 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TavernBridgeCenter from './TavernBridgeCenter.vue'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { resourceService } from '../core/AppContainer'
+import { tavernConnectionStore } from '../core/TavernConnectionStore'
 import type { TavernResourceItem } from '../services/TavernBridgeProtocol'
 import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
 
 const writeText = vi.fn(async (_value: string) => undefined)
+const mountedWrappers: Array<{ unmount(): void }> = []
 const bridgeMocks = vi.hoisted(() => ({
   getState: vi.fn(() => ({
     status: 'idle',
@@ -17,22 +20,30 @@ const bridgeMocks = vi.hoisted(() => ({
     bridgeVersion: '',
   })),
   hasInvitation: vi.fn(() => false),
+  canBindDirectory: vi.fn(() => false),
+  bindDirectory: vi.fn(async () => undefined),
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),
   listResources: vi.fn(async (): Promise<TavernResourceItem[]> => []),
   isLocalTavernDirectAvailable: vi.fn(() => false),
   disconnect: vi.fn(),
-  sendFiles: vi.fn(async () => ['已接收']),
+  sendFiles: vi.fn(async () => [{ status: 'created', name: '已接收' }]),
+  checkUserAvatarIds: vi.fn(async () => new Set<string>()),
   pullResources: vi.fn(async () => [
     new File(['{}'], 'personas.json', { type: 'application/json' }),
   ]),
 }))
 
-vi.mock('../composables/UseConfirmDialog', () => ({ confirmAction: vi.fn() }))
+vi.mock('../composables/UseConfirmDialog', () => ({
+  confirmAction: vi.fn(),
+  chooseAction: vi.fn(),
+}))
 vi.mock('../core/AppContainer', () => ({
   browserStorageService: {
     getBridgeTransferLog: vi.fn(() => []),
     appendBridgeTransferLog: vi.fn((items: string[]) => items),
+    getBridgeTransferDraft: vi.fn(() => undefined),
+    setBridgeTransferDraft: vi.fn(),
   },
   resourceService: { get: vi.fn() },
 }))
@@ -43,11 +54,17 @@ vi.mock('../services/TavernBridgeService', () => ({
 }))
 
 function render() {
-  return mount(TavernBridgeCenter, {
+  const wrapper = mount(TavernBridgeCenter, {
     attachTo: document.body,
     props: { resources: [] },
   })
+  mountedWrappers.push(wrapper)
+  return wrapper
 }
+
+afterEach(() => {
+  for (const wrapper of mountedWrappers.splice(0)) wrapper.unmount()
+})
 
 function resource(overrides: Partial<ResourceSummary>): ResourceSummary {
   return {
@@ -64,6 +81,7 @@ function resource(overrides: Partial<ResourceSummary>): ResourceSummary {
 describe('TavernBridgeCenter 的作者小工具入口', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    tavernConnectionStore.clearInventory()
     bridgeMocks.getState.mockReturnValue({
       status: 'idle',
       detail: '等待酒馆扩展',
@@ -72,6 +90,9 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
       bridgeVersion: '',
     })
     bridgeMocks.listResources.mockResolvedValue([])
+    bridgeMocks.pullResources.mockResolvedValue([
+      new File(['{}'], 'personas.json', { type: 'application/json' }),
+    ])
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
       configurable: true,
@@ -105,7 +126,7 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
     await characterLorebookButton!.click()
     await flushPromises()
 
-    const repository = 'https://example.invalid/author-tools/character-lorebooks'
+    const repository = 'https://github.com/jixiangruyi117/SillyTavern-CharacterLorebooks'
     expect(document.body.querySelector(`a[href="${repository}"]`)).not.toBeNull()
     expect(document.body.textContent).toContain('不移动或改写世界书文件')
   })
@@ -118,7 +139,7 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
       .click()
     await flushPromises()
 
-    const repository = 'https://example.invalid/author-tools/chat-reload-guard'
+    const repository = 'https://github.com/jixiangruyi117/SillyTavern-ChatReloadGuard'
     expect(document.body.querySelector(`a[href="${repository}"]`)).not.toBeNull()
     expect(document.body.textContent).toContain('当前已审计支持 SillyTavern 1.18.0。')
 
@@ -161,9 +182,73 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
       (button) => button.text() === '断开连接',
     )
     expect(disconnectButton).toBeDefined()
+    await wrapper.get('.tavern-bridge-connection-tools summary').trigger('click')
     await disconnectButton!.trigger('click')
 
     expect(bridgeMocks.disconnect).toHaveBeenCalledWith('已手动断开酒馆连接')
+  })
+
+  it('离开再进入保留上次目录，只有点击刷新目录才重新提取', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.31',
+    })
+    bridgeMocks.listResources.mockResolvedValue([
+      { id: 'theme:one', kind: 'theme', name: '旧快照', fileName: 'one.json', detail: '' },
+    ])
+    const first = render()
+    await flushPromises()
+    expect(bridgeMocks.listResources).toHaveBeenCalledTimes(1)
+    first.unmount()
+    const second = render()
+    await flushPromises()
+    expect(second.text()).toContain('旧快照')
+    expect(bridgeMocks.listResources).toHaveBeenCalledTimes(1)
+    expect(
+      second.findAll('button').filter((button) => button.text().includes('刷新目录')),
+    ).toHaveLength(1)
+    await second
+      .findAll('button')
+      .find((button) => button.text().includes('刷新目录'))!
+      .trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.listResources).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows explicit avatar choices only for selected personas and gates old Bridge versions', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接酒馆页面扩展',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.30',
+    })
+    const personaSummary = resource({ type: RESOURCE_TYPE.USER_PERSONA, fileName: 'personas.json' })
+    const wrapper = mount(TavernBridgeCenter, {
+      attachTo: document.body,
+      props: {
+        resources: [personaSummary],
+        initialKind: 'userPersona',
+        initialLocalIds: [personaSummary.id],
+      },
+    })
+    mountedWrappers.push(wrapper)
+    await flushPromises()
+    expect(wrapper.text()).toContain('发送设置')
+    expect(wrapper.text()).toContain('默认封面 · 可选')
+    expect(
+      wrapper
+        .find('.tavern-bridge-send-options')
+        .element.compareDocumentPosition(wrapper.find('.tavern-bridge-resource-grid').element) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect((wrapper.find('input[value="none"]').element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.find('input[value="missing"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('传送封面需要更新酒馆互传扩展')
+    expect(bridgeMocks.sendFiles).not.toHaveBeenCalled()
   })
 
   it('双向资源使用紧凑卡片，并可只查看当前已选项', async () => {
@@ -199,11 +284,15 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
         ],
       },
     })
+    mountedWrappers.push(wrapper)
     await flushPromises()
 
     expect(wrapper.findAll('.tavern-bridge-resource-card')).toHaveLength(2)
     expect(wrapper.text()).toContain('角色卡')
     await wrapper.findAll('.tavern-bridge-resource-card')[0].trigger('click')
+    expect(wrapper.findAll('.tavern-bridge-resource-card')[0].attributes('aria-pressed')).toBe(
+      'true',
+    )
     await wrapper
       .findAll('button')
       .find((button) => button.text().includes('只看已选'))!
@@ -212,12 +301,24 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
 
     await wrapper.findAll('.tavern-bridge-tabs button')[1].trigger('click')
     expect(wrapper.findAll('.tavern-bridge-resource-card')).toHaveLength(2)
+    const selectAll = wrapper.findAll('.tavern-bridge-selectbar button')[0]
+    expect(selectAll.text()).toBe('全选当前结果')
+    await selectAll.trigger('click')
+    expect(selectAll.text()).toBe('取消当前全选')
+    expect(
+      wrapper
+        .findAll('.tavern-bridge-resource-card')
+        .every((card) => card.attributes('aria-pressed') === 'true'),
+    ).toBe(true)
+    await selectAll.trigger('click')
+    expect(selectAll.text()).toBe('全选当前结果')
   })
 })
 
 describe('用户人设共用互传通道', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    tavernConnectionStore.clearInventory()
     bridgeMocks.getState.mockReturnValue({
       status: 'connected',
       detail: '已连接',
@@ -233,6 +334,9 @@ describe('用户人设共用互传通道', () => {
         fileName: 'personas.json',
         detail: '',
       },
+    ])
+    bridgeMocks.pullResources.mockResolvedValue([
+      new File(['{}'], 'personas.json', { type: 'application/json' }),
     ])
   })
   it('sends a saved persona as userPersona JSON without uploading cover attachments', async () => {
@@ -255,6 +359,7 @@ describe('用户人设共用互传通道', () => {
     const w = mount(TavernBridgeCenter, {
       props: { resources: [local], initialLocalIds: [local.id], initialKind: 'userPersona' },
     })
+    mountedWrappers.push(w)
     await flushPromises()
     expect(w.text()).toContain('本地人设')
     const send = w.findAll('.tavern-bridge__sticky-action').find((b) => b.text().includes('发送'))
@@ -272,8 +377,269 @@ describe('用户人设共用互传通道', () => {
     expect(await files[0]!.file.text()).toBe(json)
     w.unmount()
   })
+  it('checks the cached default cover and uploads it before the persona only when selected', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.30',
+      capabilities: ['persona-avatar-check-v1'],
+    } as ReturnType<typeof bridgeMocks.getState>)
+    vi.mocked(confirmAction).mockResolvedValue(true)
+    const local = resource({
+      id: 'persona-local',
+      type: RESOURCE_TYPE.USER_PERSONA,
+      fileName: 'personas.json',
+      relatedResourceIds: ['cover'],
+    })
+    vi.mocked(resourceService.get).mockImplementation(async (id) =>
+      id === 'cover'
+        ? ({
+            ...resource({ id: 'cover', type: RESOURCE_TYPE.USER_PERSONA }),
+            metadata: { assetKind: 'userPersonaAvatar', avatarId: 'one.png' },
+            originalBlob: new Blob(['png'], { type: 'image/png' }),
+          } as Awaited<ReturnType<typeof resourceService.get>>)
+        : ({
+            ...local,
+            originalBlob: new Blob(
+              [
+                JSON.stringify({
+                  personas: { 'one.png': '本地人设' },
+                  persona_descriptions: { 'one.png': { description: '测试' } },
+                  default_persona: 'one.png',
+                }),
+              ],
+              { type: 'application/json' },
+            ),
+            mimeType: 'application/json',
+          } as Awaited<ReturnType<typeof resourceService.get>>),
+    )
+    const w = mount(TavernBridgeCenter, {
+      props: { resources: [local], initialLocalIds: [local.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    expect(w.find('input[value="missing"]').attributes('disabled')).toBeUndefined()
+    expect((w.get('input[value="missing"]').element as HTMLInputElement).checked).toBe(true)
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((b) => b.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.checkUserAvatarIds).toHaveBeenCalledWith(['one.png'])
+    expect(confirmAction).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '核对人设封面传送' }),
+    )
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2)
+    const sendCalls = bridgeMocks.sendFiles.mock.calls as unknown as Array<
+      [Array<{ kind: string }>, string]
+    >
+    expect(sendCalls[0]?.[0]?.[0]?.kind).toBe('userAvatar')
+    expect(sendCalls[0]?.[1]).toBe('skip')
+    expect(sendCalls[1]?.[0]?.[0]?.kind).toBe('userPersona')
+    w.unmount()
+  })
+
+  it('人设缺少已缓存封面时默认仍发送 JSON，明确显示仅传人设', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.31',
+      capabilities: ['persona-avatar-check-v1'],
+    } as ReturnType<typeof bridgeMocks.getState>)
+    const local = resource({
+      id: 'persona-local',
+      type: RESOURCE_TYPE.USER_PERSONA,
+      fileName: 'personas.json',
+    })
+    vi.mocked(resourceService.get).mockResolvedValue({
+      ...local,
+      originalBlob: new Blob(
+        [
+          JSON.stringify({
+            personas: { 'one.png': '本地人设' },
+            persona_descriptions: { 'one.png': {} },
+          }),
+        ],
+        { type: 'application/json' },
+      ),
+      mimeType: 'application/json',
+    } as Awaited<ReturnType<typeof resourceService.get>>)
+    const w = mount(TavernBridgeCenter, {
+      props: { resources: [local], initialLocalIds: [local.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    expect((w.get('input[value="missing"]').element as HTMLInputElement).checked).toBe(true)
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((b) => b.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1)
+    expect(w.text()).toContain('没有已缓存封面；仅传人设')
+  })
+
+  it('发送前核对酒馆内容时锁定发送按钮，防止重复提交', async () => {
+    let finishList: ((items: TavernResourceItem[]) => void) | undefined
+    const local = resource({
+      id: 'persona-local',
+      type: RESOURCE_TYPE.USER_PERSONA,
+      fileName: 'personas.json',
+    })
+    vi.mocked(resourceService.get).mockResolvedValue({
+      ...local,
+      originalBlob: new Blob(
+        [
+          JSON.stringify({
+            personas: { 'one.png': '本地人设' },
+            persona_descriptions: { 'one.png': {} },
+          }),
+        ],
+        { type: 'application/json' },
+      ),
+      mimeType: 'application/json',
+    } as Awaited<ReturnType<typeof resourceService.get>>)
+    const w = mount(TavernBridgeCenter, {
+      props: { resources: [local], initialLocalIds: [local.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    bridgeMocks.listResources.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishList = resolve
+        }),
+    )
+    const send = w.findAll('.tavern-bridge__sticky-action').find((b) => b.text().includes('发送'))!
+    await send.trigger('click')
+    expect(send.attributes('disabled')).toBeDefined()
+    await send.trigger('click')
+    finishList?.([])
+    await flushPromises()
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it('同头像键但内容变化时可另存为新的人设，并将缓存封面跟随新键发送', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.31',
+      capabilities: ['persona-avatar-check-v1'],
+    } as ReturnType<typeof bridgeMocks.getState>)
+    bridgeMocks.listResources.mockResolvedValue([
+      {
+        id: 'userPersona:one.png',
+        kind: 'userPersona',
+        name: '旧名',
+        fileName: 'personas.json',
+        detail: '',
+      },
+    ])
+    bridgeMocks.pullResources.mockResolvedValue([
+      new File(
+        [
+          JSON.stringify({
+            personas: { 'one.png': '旧名' },
+            persona_descriptions: { 'one.png': { description: '旧内容' } },
+          }),
+        ],
+        'personas.json',
+        { type: 'application/json' },
+      ),
+    ])
+    vi.mocked(chooseAction).mockResolvedValue('confirm')
+    vi.mocked(confirmAction).mockResolvedValue(true)
+    const local = resource({
+      id: 'persona-local',
+      type: RESOURCE_TYPE.USER_PERSONA,
+      fileName: 'personas.json',
+      relatedResourceIds: ['cover'],
+    })
+    vi.mocked(resourceService.get).mockImplementation(async (id) =>
+      id === 'cover'
+        ? ({
+            ...resource({ id: 'cover', type: RESOURCE_TYPE.USER_PERSONA }),
+            metadata: { assetKind: 'userPersonaAvatar', avatarId: 'one.png' },
+            originalBlob: new Blob(['png'], { type: 'image/png' }),
+          } as Awaited<ReturnType<typeof resourceService.get>>)
+        : ({
+            ...local,
+            originalBlob: new Blob(
+              [
+                JSON.stringify({
+                  personas: { 'one.png': '新名' },
+                  persona_descriptions: { 'one.png': { description: '新内容' } },
+                  default_persona: 'one.png',
+                }),
+              ],
+              { type: 'application/json' },
+            ),
+            mimeType: 'application/json',
+          } as Awaited<ReturnType<typeof resourceService.get>>),
+    )
+    const w = mount(TavernBridgeCenter, {
+      props: { resources: [local], initialLocalIds: [local.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((b) => b.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+    expect(chooseAction).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '酒馆人设已有不同内容' }),
+    )
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2)
+    const sendCalls = bridgeMocks.sendFiles.mock.calls as unknown as Array<
+      [Array<{ kind: string; targetName?: string; file: File }>, string]
+    >
+    const avatar = sendCalls[0]![0][0]!
+    const persona = sendCalls[1]![0][0]!
+    expect(avatar.kind).toBe('userAvatar')
+    expect(avatar.targetName).toMatch(/^persona-[a-f0-9-]{36}\.png$/u)
+    expect(persona.kind).toBe('userPersona')
+    const copied = JSON.parse(await persona.file.text()) as {
+      personas: Record<string, string>
+      default_persona?: string
+    }
+    expect(copied.personas[avatar.targetName!]).toBe('新名')
+    expect(copied.default_persona).toBeUndefined()
+  })
+
+  it('接收进行中仍可点击断开连接', async () => {
+    let finishPull: ((files: File[]) => void) | undefined
+    bridgeMocks.pullResources.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishPull = resolve
+        }),
+    )
+    const w = mount(TavernBridgeCenter, { props: { resources: [], initialKind: 'userPersona' } })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w.get('.tavern-bridge-resource-card').trigger('click')
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((b) => b.text().includes('取回'))!
+      .trigger('click')
+    await flushPromises()
+    const disconnect = w.findAll('button').find((button) => button.text() === '断开连接')!
+    expect(disconnect.attributes('disabled')).toBeUndefined()
+    await disconnect.trigger('click')
+    expect(bridgeMocks.disconnect).toHaveBeenCalledWith('已手动断开酒馆连接')
+    finishPull?.([])
+    await flushPromises()
+  })
   it('filters received personas and hands the real file to the existing importer', async () => {
     const w = mount(TavernBridgeCenter, { props: { resources: [], initialKind: 'userPersona' } })
+    mountedWrappers.push(w)
     await flushPromises()
     expect(w.findAll('.tavern-bridge-resource-card')).toHaveLength(1)
     await w.get('.tavern-bridge-resource-card').trigger('click')

@@ -7,7 +7,7 @@ import {
 import { type NativeDeepLink } from '../core/NativeRuntime'
 import type { FilterValue, SortValue } from '../types/AppView'
 import { type ResourceReference, type ResourceSummary } from '../types/Resource'
-import { revealMobileInputIfOccluded } from '../utils/MobileInputFocus'
+import { writeAppResumeState } from '../core/AppResumeState'
 
 interface LibraryNavigationContext {
   isNativeApk: boolean
@@ -43,7 +43,6 @@ interface LibraryNavigationContext {
   cancelSearchInput: (event?: Event) => void
   saveCustomUiCss: (value: string) => void
   backStack: ReturnType<typeof useBackStack>
-  mobileInputRevealTimer: number | undefined
 }
 
 export function useLibraryNavigation(getContext: () => LibraryNavigationContext) {
@@ -97,6 +96,9 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
   function openFeatureHub(): void {
     const context = getContext()
 
+    // 网页/PWA 重新打开功能桌面时从主页开始，避免上一次失效的子页（尤其是扩展管理）
+    // 在返回控件不可用时形成恢复死循环；APK 保留原有的子页恢复行为。
+    if (!context.isNativeApk) writeAppResumeState({ feature: 'featureHub', subpage: 'home' })
     context.isFeatureHubOpen.value = true
     context.isMobileFiltersOpen.value = false
     context.isSearchHistoryOpen.value = false
@@ -223,21 +225,9 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
   }
 
   function handleMobileFocus(event: FocusEvent): void {
-    const context = getContext()
-
-    if (window.innerWidth > 860) return
-    const target = event.target
-    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
-    if (target.closest('[role="dialog"], [role="alertdialog"]')) return
-
-    if (context.mobileInputRevealTimer !== undefined)
-      window.clearTimeout(context.mobileInputRevealTimer)
-    context.mobileInputRevealTimer = window.setTimeout(() => {
-      context.mobileInputRevealTimer = undefined
-      const viewport = window.visualViewport
-      if (window.innerWidth > 860 || document.activeElement !== target || !viewport) return
-      revealMobileInputIfOccluded(target, viewport)
-    }, 320)
+    // Main.ts owns input avoidance from actual visualViewport geometry. Do not
+    // schedule a second, stale focus-time scroll while iOS is animating its keyboard.
+    void event
   }
   return {
     selectFilter,

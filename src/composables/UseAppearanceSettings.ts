@@ -12,7 +12,7 @@ import { readStoredTheme, writeStoredTheme, type ThemeValue } from '../utils/Lib
 const CUSTOM_UI_STYLE_ID = 'srl-custom-ui-style'
 const CUSTOM_UI_CSS_LIMIT = 200_000
 const SCRIPT_PREVIEW_CONFIRM =
-  '开启后，导入资源中的完整 JavaScript（包括内联、远程脚本和动态代码）会在隔离 iframe 中运行，并可加载远程图片、音频、字体及发起联网请求。\n\n脚本仍不能读取资源库、IndexedDB、登录信息或主页面，但可能暴露 IP、诱导跳转、持续占用 CPU 或导致当前页面卡顿。只应预览你信任来源的文件。'
+  '开启后，导入资源中的完整 JavaScript（包括内联、远程脚本和动态代码）会在隔离 iframe 中运行，并可加载远程图片、音频、字体及发起联网请求。\n\n脚本仍不能读取资源库、IndexedDB 或主页面，但可能暴露 IP、诱导跳转、持续占用 CPU 或导致当前页面卡顿。只应预览你信任来源的文件。'
 
 /**
  * 外观与预览安全策略。

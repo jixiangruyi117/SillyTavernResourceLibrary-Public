@@ -194,7 +194,11 @@ export function useUserPersonaApp(
     page.value === 'list'
       ? [{ id: 'import', label: '导入人设 JSON' }]
       : currentResource.value
-        ? [{ id: 'delete', label: '删除当前人设', danger: true }]
+        ? [
+            { id: 'history', label: '查看历史版本' },
+            { id: 'transfer', label: '发送整份人设文件到酒馆' },
+            { id: 'delete', label: '删除当前人设', danger: true },
+          ]
         : [],
   )
 
@@ -387,6 +391,10 @@ export function useUserPersonaApp(
   }
   async function selectHeaderMore(action: ActionSheetAction): Promise<void> {
     if (action.id === 'import') importInput.value?.click()
+    if (action.id === 'history' && currentResource.value && (await confirmDiscardDraft())) {
+      emit('open-history', currentResource.value)
+    }
+    if (action.id === 'transfer') await openTransfer()
     if (action.id === 'delete') await deleteCurrent()
   }
   async function applyTemplate(): Promise<void> {
@@ -450,7 +458,7 @@ export function useUserPersonaApp(
     draft.value.description =
       draft.value.description.slice(0, start) + token + draft.value.description.slice(end)
     await nextTick()
-    textarea?.focus()
+    textarea?.focus({ preventScroll: true })
     textarea?.setSelectionRange(start + token.length, start + token.length)
   }
   function onWorldBookChange(): void {
@@ -475,6 +483,22 @@ export function useUserPersonaApp(
     dirtyStateRegistry.changed()
     if (dirty) statusMessage.value = ''
   })
+  watch(
+    () => props.resources.find((resource) => resource.id === selectedResourceId.value)?.updatedAt,
+    (updatedAt) => {
+      if (
+        page.value !== 'editor' ||
+        !updatedAt ||
+        !currentResource.value ||
+        currentResource.value.updatedAt === updatedAt ||
+        isDirty.value
+      )
+        return
+      void loadResource(selectedResourceId.value).catch((reason: unknown) => {
+        errorMessage.value = reason instanceof Error ? reason.message : '刷新人设版本失败'
+      })
+    },
+  )
   function onBackRequest(event: Event): void {
     const detail = (event as CustomEvent<SrlBackRequestDetail>).detail
     if (

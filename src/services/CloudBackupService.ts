@@ -16,15 +16,23 @@ import type {
 import type { CategoryService } from './CategoryService'
 import { hashCloudBlob, readTransportHash } from './CloudArchiveCodec'
 import { CloudBackupConfiguration, STATUS_KEY } from './CloudBackupConfiguration'
-import { friendlyNetworkError, isCloudRequestTimeout, readJson } from './CloudBackupHttp'
+import {
+  cloudHttpError,
+  friendlyNetworkError,
+  isCloudRequestTimeout,
+  readJson,
+} from './CloudBackupHttp'
 import { CloudBackupMetricsTracker } from './CloudBackupMetrics'
 import {
   LEGACY_RELEASE_TAG,
   RETRY_MS,
   allowsAutomaticBackup,
+  basicAuthorization,
   canonicalizeFingerprintValue,
   isScheduleDue,
+  joinUrl,
   normalizeContentSelection,
+  normalizeFolder,
   normalizeProtection,
   normalizeRetention,
   normalizeSchedule,
@@ -216,8 +224,39 @@ export class CloudBackupService extends CloudBackupTransport {
     await this.initializeCredentials()
     const credential = secret || this.requireSecret(config.provider)
     try {
-      const repository = await this.inspectGitHubRepository(config, credential)
-      return `已连接 ${repository.fullName}${repository.isPrivate ? '（私有仓库）' : '（公开仓库，建议改为私有）'}`
+      if (config.provider === 'github') {
+        const repository = await this.inspectGitHubRepository(config, credential)
+        return `已连接 ${repository.fullName}${repository.isPrivate ? '（私有仓库）' : '（公开仓库，建议改为私有）'}`
+      }
+      await this.ensureWebDavFolder(config, credential)
+      const probeUrl = joinUrl(
+        config.baseUrl,
+        normalizeFolder(config.folder),
+        '.srl-connection-test',
+      )
+      const response = await this.cloudFetch(
+        probeUrl,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: basicAuthorization(config.username, credential),
+            'Content-Type': 'text/plain',
+          },
+          body: 'SRL connection test',
+        },
+        'webdav',
+      )
+      if (!response.ok)
+        throw cloudHttpError(`WebDAV 写入测试返回 ${response.status}`, response.status)
+      await this.cloudFetch(
+        probeUrl,
+        {
+          method: 'DELETE',
+          headers: { Authorization: basicAuthorization(config.username, credential) },
+        },
+        'webdav',
+      )
+      return 'Koofr 连接成功'
     } catch (error) {
       if (!secret) await this.invalidateCredentialOnConfirmed401(config.provider, error)
       throw friendlyNetworkError(error, config.provider)
@@ -258,7 +297,7 @@ export class CloudBackupService extends CloudBackupTransport {
           const repository = await this.inspectGitHubRepository(resolved, credential)
           if (!repository.isPrivate)
             throw new Error(
-              `GitHub 仓库 ${repository.fullName} 是公开仓库，已阻止上传本地社区内容。请先把仓库改为 Private，再重新测试连接。`,
+              `GitHub 仓库 ${repository.fullName} 是公开仓库，已阻止上传 Discord 社区内容。请先把仓库改为 Private，再重新测试连接。`,
             )
         }
       }
@@ -344,13 +383,22 @@ export class CloudBackupService extends CloudBackupTransport {
           }
         }
         metrics.add('localReadBytes', structured.localReadBytes ?? structured.totalSize)
-        const item = await this.uploadGitHubStructuredBackup(
-          resolved,
-          credential,
-          structured,
-          onProgress,
-          respectAutomaticConstraints,
-        )
+        const item =
+          resolved.provider === 'github'
+            ? await this.uploadGitHubStructuredBackup(
+                resolved,
+                credential,
+                structured,
+                onProgress,
+                respectAutomaticConstraints,
+              )
+            : await this.uploadWebDavStructuredBackup(
+                resolved,
+                credential,
+                structured,
+                onProgress,
+                respectAutomaticConstraints,
+              )
         let maintenanceWarning: string | undefined
         try {
           if (suspiciousDrop) {
@@ -403,6 +451,7 @@ export class CloudBackupService extends CloudBackupTransport {
       if (this.transportState.activeMetrics === metrics) {
         this.transportState.activeMetrics = undefined
         this.transportState.activeGitHubInventory = undefined
+        this.transportState.activeWebDavInventory = undefined
       }
     }
   }
@@ -416,7 +465,9 @@ export class CloudBackupService extends CloudBackupTransport {
     const resolved = config ?? this.getActiveConfig()
     const credential = secret || this.requireSecret(resolved.provider)
     try {
-      return await this.listGitHub(resolved, credential, onProgress)
+      return resolved.provider === 'github'
+        ? await this.listGitHub(resolved, credential, onProgress)
+        : await this.listWebDav(resolved, credential, onProgress)
     } catch (error) {
       await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
       throw friendlyNetworkError(error, resolved.provider)
@@ -448,15 +499,35 @@ export class CloudBackupService extends CloudBackupTransport {
     const resolved = config ?? this.getActiveConfig()
     const credential = secret || this.requireSecret(resolved.provider)
     try {
-      if (item.kind === 'githubSnapshot') {
+      if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
         return (await this.materializeStructuredArchive(item, resolved, credential)).blob
       }
-      if (item.kind === 'githubBundle' || item.objectKey.endsWith('.srlbundle.json')) {
-        return this.downloadGitHubBundle(resolved, credential, item)
+      if (resolved.provider === 'github') {
+        if (item.kind === 'githubBundle' || item.objectKey.endsWith('.srlbundle.json')) {
+          return this.downloadGitHubBundle(resolved, credential, item)
+        }
+        const response = await this.githubFetch(
+          resolved,
+          credential,
+          `/releases/assets/${item.id}`,
+          {
+            headers: { Accept: 'application/octet-stream' },
+          },
+        )
+        return this.verifyDownloadedBlob(item, await response.blob())
       }
-      const response = await this.githubFetch(resolved, credential, `/releases/assets/${item.id}`, {
-        headers: { Accept: 'application/octet-stream' },
-      })
+      if (item.kind === 'webdavBundle' || item.objectKey.endsWith('.srlbundle.json')) {
+        return this.downloadWebDavBundle(resolved, credential, item)
+      }
+      const response = await this.cloudFetch(
+        joinUrl(resolved.baseUrl, normalizeFolder(resolved.folder), item.objectKey),
+        {
+          headers: { Authorization: basicAuthorization(resolved.username, credential) },
+        },
+        'webdav',
+      )
+      if (!response.ok)
+        throw cloudHttpError(`WebDAV 下载失败（${response.status}）`, response.status)
       return this.verifyDownloadedBlob(item, await response.blob())
     } catch (error) {
       await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
@@ -471,7 +542,10 @@ export class CloudBackupService extends CloudBackupTransport {
     try {
       return await listBackupResourceSummaries(
         item,
-        async () => this.readGitHubStructuredSnapshot(resolved, credential, item),
+        async () =>
+          resolved.provider === 'github'
+            ? await this.readGitHubStructuredSnapshot(resolved, credential, item)
+            : await this.readWebDavStructuredSnapshot(resolved, credential, item.objectKey),
         () => this.downloadBackup(item),
         this.resourceService,
         this.categoryService,
@@ -488,7 +562,7 @@ export class CloudBackupService extends CloudBackupTransport {
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
   ): Promise<number> {
-    if (item.kind === 'githubSnapshot') {
+    if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
       const resolved = this.getActiveConfig()
       const credential = this.requireSecret(resolved.provider)
       try {
@@ -531,7 +605,10 @@ export class CloudBackupService extends CloudBackupTransport {
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
   ): Promise<number> {
-    const loadedSnapshot = await this.readGitHubStructuredSnapshot(config, secret, item)
+    const loadedSnapshot =
+      config.provider === 'github'
+        ? await this.readGitHubStructuredSnapshot(config, secret, item)
+        : await this.readWebDavStructuredSnapshot(config, secret, item.objectKey)
     const snapshot = resourceKeys
       ? selectStructuredSnapshot(loadedSnapshot, new Set(resourceKeys))
       : loadedSnapshot
@@ -559,7 +636,10 @@ export class CloudBackupService extends CloudBackupTransport {
       await this.importPreparedPortableData(prepared.portableData, filterPortableData)
       return report.restoredResources
     }
-    const providerReader = await this.createGitHubObjectReader(config, secret)
+    const providerReader =
+      config.provider === 'github'
+        ? await this.createGitHubObjectReader(config, secret)
+        : this.createWebDavObjectReader(config, secret)
     const report = await this.restoreService.restoreStructured(
       snapshot,
       providerReader,
@@ -609,13 +689,22 @@ export class CloudBackupService extends CloudBackupTransport {
       for (const part of resource.object.parts) {
         const hash = part.sha256.toLowerCase()
         const storedSize = part.storedSize ?? part.size
-        const container = structuredPartContainer(part)
-        const objectKey = structuredPartObjectKey(part)
-        const asset = (await githubInventory(container)).get(objectKey)
-        if (!asset || asset.size !== storedSize) {
-          throw new Error(`GitHub 对象缺少分块：${container}/${objectKey}`)
+        let url: string
+        if (config.provider === 'github') {
+          const container = structuredPartContainer(part)
+          const objectKey = structuredPartObjectKey(part)
+          const asset = (await githubInventory(container)).get(objectKey)
+          if (!asset || asset.size !== storedSize) {
+            throw new Error(`GitHub 对象缺少分块：${container}/${objectKey}`)
+          }
+          url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repository)}/releases/assets/${asset.id}`
+        } else {
+          url = joinUrl(
+            config.baseUrl,
+            normalizeFolder(config.folder),
+            structuredPartObjectKey(part),
+          )
         }
-        const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repository)}/releases/assets/${asset.id}`
         const existing = objectUrls.get(hash)
         if (existing && existing.size !== storedSize) {
           throw new Error(`云对象哈希对应了不同大小：${hash}`)
@@ -639,8 +728,14 @@ export class CloudBackupService extends CloudBackupTransport {
     config: CloudBackupConfig,
     secret: string,
   ) {
-    const snapshot = await this.readGitHubStructuredSnapshot(config, secret, item)
-    const providerReader = await this.createGitHubObjectReader(config, secret)
+    const snapshot =
+      config.provider === 'github'
+        ? await this.readGitHubStructuredSnapshot(config, secret, item)
+        : await this.readWebDavStructuredSnapshot(config, secret, item.objectKey)
+    const providerReader =
+      config.provider === 'github'
+        ? await this.createGitHubObjectReader(config, secret)
+        : this.createWebDavObjectReader(config, secret)
     return (
       await this.exportService.createArchivesFromSource(
         {
@@ -735,11 +830,15 @@ export class CloudBackupService extends CloudBackupTransport {
       updatedAt: resource.updatedAt,
       versionGroupId: resource.versionGroupId,
     })
-    const destination = {
-      provider: config.provider,
-      owner: config.owner,
-      repository: config.repository,
-    }
+    const destination =
+      config.provider === 'github'
+        ? { provider: config.provider, owner: config.owner, repository: config.repository }
+        : {
+            provider: config.provider,
+            baseUrl: config.baseUrl.replace(/\/+$/u, ''),
+            folder: normalizeFolder(config.folder),
+            username: config.username,
+          }
     const fingerprintValue = canonicalizeFingerprintValue({
       version: 1,
       destination,
@@ -805,7 +904,33 @@ export class CloudBackupService extends CloudBackupTransport {
       }
     }
 
-    return undefined
+    const objects = await this.listWebDavObjects(config, secret)
+    const manifest = objects.find((object) => object.objectKey === objectKey)
+    if (!manifest) return undefined
+    let snapshot: StructuredSnapshot
+    try {
+      snapshot = await this.readWebDavStructuredSnapshot(config, secret, objectKey)
+    } catch (error) {
+      if (isCloudRequestTimeout(error)) throw error
+      return undefined
+    }
+    const byName = new Map(objects.map((object) => [object.objectKey, object.size]))
+    const parts = structuredSnapshotParts(snapshot)
+    if (parts.some((part) => byName.get(structuredPartObjectKey(part)) !== part.size)) {
+      return undefined
+    }
+    return {
+      id: objectKey,
+      objectKey,
+      size: [...snapshot.resources, ...snapshot.versions].reduce(
+        (total, resource) => total + resource.fileSize,
+        0,
+      ),
+      createdAt: manifest.createdAt || Date.parse(snapshot.createdAt) || Date.now(),
+      kind: 'webdavSnapshot',
+      partCount: parts.length,
+      archiveName: structuredSnapshotArchiveName(objectKey),
+    }
   }
 
   private async buildStructuredBackup(
@@ -914,7 +1039,33 @@ export class CloudBackupService extends CloudBackupTransport {
         })
         .sort((left, right) => right.createdAt - left.createdAt)
     }
-    return []
+    return (await this.listWebDavRetentionObjects(config, secret))
+      .flatMap((object): CloudBackupItem[] => {
+        if (isStructuredSnapshotObjectKey(object.objectKey))
+          return [
+            {
+              id: object.objectKey,
+              objectKey: object.objectKey,
+              size: object.size,
+              createdAt: object.createdAt,
+              kind: 'webdavSnapshot',
+            },
+          ]
+        if (object.objectKey.endsWith('.srlbundle.json'))
+          return [
+            {
+              id: object.objectKey,
+              objectKey: object.objectKey,
+              size: object.size,
+              createdAt: object.createdAt,
+              kind: 'webdavBundle',
+            },
+          ]
+        return /\.zip$/iu.test(object.objectKey)
+          ? [{ ...object, id: object.objectKey, kind: 'single', archiveName: object.objectKey }]
+          : []
+      })
+      .sort((left, right) => right.createdAt - left.createdAt)
   }
 
   private async referencedPartIdentities(
@@ -924,13 +1075,26 @@ export class CloudBackupService extends CloudBackupTransport {
   ): Promise<Set<string>> {
     const referenced = new Set<string>()
     for (const item of backups) {
-      if (item.kind === 'githubSnapshot') {
-        const snapshot = await this.readGitHubStructuredSnapshot(config, secret, item)
+      if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
+        const snapshot =
+          config.provider === 'github'
+            ? await this.readGitHubStructuredSnapshot(config, secret, item)
+            : await this.readWebDavStructuredSnapshot(config, secret, item.objectKey)
         for (const part of structuredSnapshotParts(snapshot))
-          referenced.add(structuredPartIdentity(part))
-      } else if (item.kind === 'githubBundle') {
-        const manifest = await this.readGitHubBundleManifest(config, secret, item)
-        for (const part of manifest.parts) referenced.add(`${LEGACY_RELEASE_TAG}\u0000${part.name}`)
+          referenced.add(
+            config.provider === 'github'
+              ? structuredPartIdentity(part)
+              : structuredPartObjectKey(part),
+          )
+      } else if (item.kind === 'githubBundle' || item.kind === 'webdavBundle') {
+        const manifest =
+          config.provider === 'github'
+            ? await this.readGitHubBundleManifest(config, secret, item)
+            : await this.readWebDavBundleManifest(config, secret, item.objectKey)
+        for (const part of manifest.parts)
+          referenced.add(
+            config.provider === 'github' ? `${LEGACY_RELEASE_TAG}\u0000${part.name}` : part.name,
+          )
       }
     }
     return referenced
@@ -964,16 +1128,23 @@ export class CloudBackupService extends CloudBackupTransport {
     // 先让超出 retention 的清单退出可见快照集合；只要任一清单删除失败，
     // 本轮就不会继续回收内容对象，避免留下“仍可见但缺对象”的旧快照。
     for (const item of removed) {
-      await this.githubFetch(config, secret, `/releases/assets/${item.id}`, { method: 'DELETE' })
+      if (config.provider === 'github') {
+        await this.githubFetch(config, secret, `/releases/assets/${item.id}`, { method: 'DELETE' })
+      } else {
+        await this.deleteWebDavObject(config, secret, item.objectKey)
+      }
     }
 
-    const orphanScope = `github:${config.owner}/${config.repository}`
+    const orphanScope =
+      config.provider === 'github'
+        ? `github:${config.owner}/${config.repository}`
+        : `webdav:${config.baseUrl.replace(/\/+$/u, '')}/${normalizeFolder(config.folder)}`
     const now = Date.now()
 
     const pending = await this.transportState.jobStore.pendingOrphans(orphanScope)
     const candidates = new Set(
       [...pending, ...retiredParts].filter(
-        (part) => !keptParts.has(part) && isVerifiedChunkIdentity(part),
+        (part) => !keptParts.has(part) && isVerifiedChunkIdentity(config.provider, part),
       ),
     )
 
@@ -1012,24 +1183,49 @@ export class CloudBackupService extends CloudBackupTransport {
       return removed.length
     }
 
+    if (config.provider === 'github') {
+      const eligible = await this.transportState.jobStore.eligibleOrphans(
+        orphanScope,
+        candidates,
+        now,
+        ORPHAN_CHUNK_GRACE_MS,
+      )
+      const assetsByIdentity = new Map<string, GitHubAsset>()
+      for (const container of new Set(
+        eligible.map((identity) => identity.split('\u0000', 1)[0]!),
+      )) {
+        const release = await this.getGitHubRelease(config, secret, false, container)
+        if (!release) continue
+        for (const asset of await this.listGitHubAssets(config, secret, release.id))
+          assetsByIdentity.set(`${container}\u0000${asset.name}`, asset)
+      }
+      for (const identity of eligible) {
+        const asset = assetsByIdentity.get(identity)
+        if (asset)
+          await this.githubFetch(config, secret, `/releases/assets/${asset.id}`, {
+            method: 'DELETE',
+          })
+        await this.transportState.jobStore.clearOrphan(orphanScope, identity)
+      }
+      return removed.length
+    }
+
+    if (deep) {
+      for (const object of await this.listWebDavObjects(config, secret)) {
+        const leaf = object.objectKey.split('/').at(-1) ?? ''
+        if (isVerifiedChunkObjectName(leaf) && !keptParts.has(object.objectKey))
+          candidates.add(object.objectKey)
+      }
+    }
     const eligible = await this.transportState.jobStore.eligibleOrphans(
       orphanScope,
       candidates,
       now,
       ORPHAN_CHUNK_GRACE_MS,
     )
-    const assetsByIdentity = new Map<string, GitHubAsset>()
-    for (const container of new Set(eligible.map((identity) => identity.split('\u0000', 1)[0]!))) {
-      const release = await this.getGitHubRelease(config, secret, false, container)
-      if (!release) continue
-      for (const asset of await this.listGitHubAssets(config, secret, release.id))
-        assetsByIdentity.set(`${container}\u0000${asset.name}`, asset)
-    }
-    for (const identity of eligible) {
-      const asset = assetsByIdentity.get(identity)
-      if (asset)
-        await this.githubFetch(config, secret, `/releases/assets/${asset.id}`, { method: 'DELETE' })
-      await this.transportState.jobStore.clearOrphan(orphanScope, identity)
+    for (const objectKey of eligible) {
+      await this.deleteWebDavObject(config, secret, objectKey)
+      await this.transportState.jobStore.clearOrphan(orphanScope, objectKey)
     }
     return removed.length
   }
@@ -1039,7 +1235,10 @@ function isVerifiedChunkObjectName(name: string): boolean {
   return /^srl-chunk--sha256-[a-f0-9]{64}$/iu.test(name)
 }
 
-function isVerifiedChunkIdentity(identity: string): boolean {
-  const name = identity.split('\u0000').at(-1) ?? ''
+function isVerifiedChunkIdentity(provider: CloudBackupProvider, identity: string): boolean {
+  const name =
+    provider === 'github'
+      ? (identity.split('\u0000').at(-1) ?? '')
+      : (identity.split('/').at(-1) ?? '')
   return isVerifiedChunkObjectName(name)
 }

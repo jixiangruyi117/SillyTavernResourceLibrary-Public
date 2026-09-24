@@ -11,10 +11,11 @@ class Probe extends CloudBackupTransport {
     this.transportState.activeMetrics = this.metrics
   }
   async send(blob: Blob): Promise<void> {
-    const response = await this.cloudFetch('https://uploads.github.com/test', {
-      method: 'POST',
-      body: blob,
-    })
+    const response = await this.cloudFetch(
+      'https://uploads.github.com/test',
+      { method: 'POST', body: blob },
+      'github',
+    )
     await response.text()
   }
   replaceMetrics(): CloudBackupMetricsTracker {

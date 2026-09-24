@@ -7,12 +7,8 @@ import {
   type DiscordAttachmentMeta,
   type DiscordCapture,
 } from '../types/CommunitySource'
+import { previewDiscordMessage } from '../utils/DiscordMessagePresentation'
 import { hashBytes } from './HashService'
-
-function localMessagePreview(message: CommunitySourceMessage): string | undefined {
-  const content = message.content.replace(/\s+/g, ' ').trim()
-  return content ? content.slice(0, 240) : undefined
-}
 
 export function clean(value: string | undefined, maxLength: number): string | undefined {
   const result = value?.trim().slice(0, maxLength)
@@ -164,7 +160,7 @@ export function withMessageSummary(
     missingMessageCount: messages.filter(
       (message) => message.remoteState === COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.MISSING,
     ).length,
-    latestMessagePreview: latest ? localMessagePreview(latest) : undefined,
+    latestMessagePreview: latest ? previewDiscordMessage(latest) : undefined,
   }
 }
 

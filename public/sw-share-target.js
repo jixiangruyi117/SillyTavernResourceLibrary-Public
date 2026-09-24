@@ -2,7 +2,7 @@
  * Web Share Target 接收器（由 sw.js importScripts 引入）。
  *
  * 系统分享面板把文件 POST 到 /share-target；这里把文件暂存进
- * Cache Storage 后 303 跳回应用首页，应用启动后取走并进入
+ * Cache Storage 后 303 跳回应用首页，应用完成登录后取走并进入
  * 常规导入管线。文件只短暂驻留本机缓存，被取走时立即删除，
  * 不发送到任何服务器。
  */

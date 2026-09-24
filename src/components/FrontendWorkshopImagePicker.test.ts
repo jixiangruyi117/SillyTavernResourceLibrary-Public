@@ -12,11 +12,7 @@ const { album, hosting } = vi.hoisted(() => ({
   },
   hosting: {
     initializeCredentials: vi.fn(async () => undefined),
-    getSelfHostedConfiguration: vi.fn(() => ({
-      origin: 'https://img.example/upload',
-      token: 'test-token',
-      remember: true,
-    })),
+    getSelfHostedConfiguration: vi.fn((): { origin: string } | null => null),
     uploadBlobSelfHosted: vi.fn(),
   },
 }))
@@ -54,6 +50,7 @@ beforeEach(() => {
   })
   album.getPreviewBlob.mockResolvedValue(new Blob(['preview'], { type: 'image/png' }))
   album.getOriginalBlob.mockResolvedValue(new Blob(['original'], { type: 'image/png' }))
+  hosting.getSelfHostedConfiguration.mockReturnValue({ origin: 'https://img.example/upload' })
   hosting.uploadBlobSelfHosted.mockResolvedValue({ url: 'https://img.example/new.png' })
   album.setHostedUrl.mockResolvedValue({ ...item, hostedUrl: 'https://img.example/new.png' })
 })

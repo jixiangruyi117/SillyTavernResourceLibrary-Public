@@ -11,9 +11,6 @@
   padding: 0;
   overflow: hidden;
   color: var(--color-ink);
-  background:
-    radial-gradient(circle at 88% 4%, var(--color-accent-soft), transparent 23rem),
-    var(--color-canvas);
 }
 
 .external-app-host :deep(.feature-app-header),
@@ -521,11 +518,6 @@
 
   .external-app-host__runtime em {
     max-width: 52%;
-  }
-
-  :global(body.external-app-fullscreen .auth-offline-note) {
-    visibility: hidden;
-    pointer-events: none;
   }
 
   .external-app-resource-picker {

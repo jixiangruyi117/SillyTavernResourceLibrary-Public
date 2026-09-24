@@ -56,7 +56,7 @@ onUnmounted(() => {
     <header>
       <small>INSTALL · {{ BRIDGE_DOWNLOAD_VERSION }}</small>
       <strong>还没有安装互传扩展？</strong>
-      <p>互传只使用当前浏览器窗口或你自己运行的本机酒馆插件，不需要资源库账号或作者服务器。</p>
+      <p>新版 HTTPS 设备码只需页面扩展；服务端插件仅用于旧版或本机离线中继兼容。</p>
     </header>
 
     <section class="tavern-bridge-install__git" aria-label="页面扩展安装（推荐）">
@@ -95,12 +95,10 @@ onUnmounted(() => {
 
     <section class="tavern-bridge-install__server" aria-label="服务端插件安装">
       <div class="tavern-bridge-install__section-heading">
-        <span>LOCAL SUPPORT</span>
-        <h3>本机服务插件 · 一键脚本</h3>
+        <span>LEGACY SUPPORT</span>
+        <h3>服务端插件 · 一键脚本</h3>
       </div>
-      <p class="tavern-bridge-install__section-note">
-        仅在窗口连接不可用，或需要同机 APK 直连时使用。
-      </p>
+      <p class="tavern-bridge-install__section-note">仅旧版兼容或本机离线中继需要。</p>
       <div class="tavern-bridge-install__copyline">
         <code>{{ BRIDGE_SERVER_PLUGIN_INSTALL_COMMAND }}</code>
         <button type="button" @click="copyText('command', BRIDGE_SERVER_PLUGIN_INSTALL_COMMAND)">
@@ -127,18 +125,18 @@ onUnmounted(() => {
       <p>适用场景：没有 git 环境、内网部署、上面的安装方式执行失败。</p>
       <div>
         <a :href="`${downloadRoot}srl-bridge-complete-v${BRIDGE_DOWNLOAD_VERSION}.zip`" download>
-          <span><strong>完整兼容包</strong><small>扩展 + 本机服务插件 + 中文说明</small></span>
+          <span><strong>完整兼容包</strong><small>扩展 + 旧中继服务端 + 中文说明</small></span>
           <i aria-hidden="true">↓</i>
         </a>
         <a :href="`${downloadRoot}srl-bridge-extension-v${BRIDGE_DOWNLOAD_VERSION}.zip`" download>
-          <span><strong>页面扩展</strong><small>支持同浏览器窗口互传</small></span>
+          <span><strong>页面扩展</strong><small>支持 HTTPS 设备码与同浏览器互传</small></span>
           <i aria-hidden="true">↓</i>
         </a>
         <a
           :href="`${downloadRoot}srl-bridge-server-plugin-v${BRIDGE_DOWNLOAD_VERSION}.zip`"
           download
         >
-          <span><strong>仅服务端插件</strong><small>本机酒馆中继组件</small></span>
+          <span><strong>仅服务端插件</strong><small>设备码中继组件</small></span>
           <i aria-hidden="true">↓</i>
         </a>
       </div>

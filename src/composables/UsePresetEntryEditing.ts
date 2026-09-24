@@ -113,8 +113,6 @@ export function usePresetEntryEditing(getContext: () => PresetEntryEditingContex
       if (typeof textarea.focus === 'function') textarea.focus({ preventScroll: true })
       if (typeof textarea.setSelectionRange === 'function')
         textarea.setSelectionRange(selectionStart, selectionEnd)
-      if (typeof textarea.scrollIntoView === 'function')
-        textarea.scrollIntoView({ block: 'center' })
     })
   }
 

@@ -45,10 +45,12 @@ defineExpose({ open, back })
 </script>
 
 <template>
-  <FrontendWorkshopImagePicker
-    v-if="openState"
-    ref="picker"
-    @close="close"
-    @insert-asset="insertAsset"
-  />
+  <Teleport to="body">
+    <FrontendWorkshopImagePicker
+      v-if="openState"
+      ref="picker"
+      @close="close"
+      @insert-asset="insertAsset"
+    />
+  </Teleport>
 </template>

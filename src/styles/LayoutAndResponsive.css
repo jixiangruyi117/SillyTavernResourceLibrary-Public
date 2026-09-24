@@ -582,9 +582,38 @@
   border-top: 1px solid var(--color-line-strong);
 }
 
-/* Layout settings */
-.layout-settings-sheet {
-  width: min(100%, 43rem);
+/* Settings is a full-screen workspace on every viewport, not a centered sheet. */
+.layout-settings-overlay {
+  display: block;
+  padding: 0;
+  background: var(--color-surface-raised);
+}
+
+.layout-settings-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.layout-settings-page .layout-settings__header {
+  padding: 1rem clamp(1rem, 4vw, 3rem);
+}
+
+.layout-settings-page .settings-sections {
+  min-height: 0;
+  margin: 0;
+  padding: 1rem clamp(1rem, 4vw, 3rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.layout-settings-page .layout-settings__footer {
+  margin: 0;
+  padding: 1rem clamp(1rem, 4vw, 3rem);
 }
 
 .layout-settings__header p:last-child {
@@ -1208,6 +1237,14 @@
     pointer-events: none;
   }
 
+  /* Only fixed-viewport apps with an explicit internal scroller lock the host document. */
+  :root.feature-app-scroll-lock,
+  body.feature-app-scroll-lock,
+  :root.modal-open,
+  body.modal-open {
+    overflow: hidden;
+  }
+
   body.modal-open .notice {
     display: none;
   }
@@ -1458,6 +1495,9 @@
     align-items: stretch;
     flex-direction: column;
     margin-top: 0.5rem;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--glass-radius-control);
+    overflow: hidden;
   }
 
   .archive-summary__counts {
@@ -1477,7 +1517,7 @@
     min-width: 0;
     min-height: var(--size-touch);
     padding: 0.5rem 0.75rem;
-    border: 1px solid var(--color-line);
+    border: 0;
   }
 
   .protection-trigger__copy {
@@ -1877,6 +1917,11 @@
     padding: var(--mobile-dialog-top-space) 0 0;
   }
 
+  .layout-settings-overlay {
+    display: block;
+    padding: 0;
+  }
+
   :root[data-ios-keyboard-open='true'] .editor-overlay {
     /* Keep the existing backdrop under iOS's translucent keyboard accessory.
        Only the first grid row (the interactive sheet) shrinks with the keyboard. */
@@ -1918,30 +1963,43 @@
     box-shadow: none;
   }
 
-  .layout-settings-sheet {
-    width: 100%;
+  :root[data-ios-keyboard-open='true'] .layout-settings-overlay {
+    height: var(--visual-viewport-height);
+    --editor-overlay-background: var(--color-surface-raised);
+  }
+
+  .layout-settings-page .layout-settings__header {
+    padding: max(0.75rem, var(--safe-top)) var(--mobile-gutter) 0.75rem;
+  }
+
+  .layout-settings-page .settings-sections {
+    min-height: 0;
+    margin: 0;
+    padding: 0.75rem var(--mobile-gutter) max(0.75rem, var(--safe-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   /* 设置页移动端密度试点：去除重复眉题，保留输入与开关的触控尺寸。 */
-  .layout-settings-sheet .settings-sections {
+  .layout-settings-page .settings-sections {
     gap: 0.625rem;
-    margin-top: 0.875rem;
+    margin-top: 0;
   }
 
   .settings-section {
     padding: 0.875rem;
   }
 
-  .layout-settings-sheet .settings-section {
+  .layout-settings-page .settings-section {
     padding: 0.75rem;
   }
 
-  .layout-settings-sheet .settings-section > header {
+  .layout-settings-page .settings-section > header {
     gap: 0.5rem;
     margin-bottom: 0.5rem;
   }
 
-  .layout-settings-sheet .settings-section > header h3 {
+  .layout-settings-page .settings-section > header h3 {
     font-size: 1rem;
   }
 
@@ -1976,6 +2034,9 @@
   .layout-settings__footer {
     align-items: stretch;
     flex-direction: column;
+    margin: 0;
+    padding: 0.75rem var(--mobile-gutter) max(0.75rem, var(--safe-bottom));
+    background: var(--color-surface-raised);
   }
 
   .layout-settings__footer .button {

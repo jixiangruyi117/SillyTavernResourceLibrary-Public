@@ -15,7 +15,11 @@ dev-dist
 *.local
 .env*
 .dev.vars*
+!server/.env.example
 .tmp-*.png
+server/.env
+server/data/
+.wrangler/
 
 # Editor directories and files
 .vscode/*
@@ -27,11 +31,19 @@ dev-dist
 *.njsproj
 *.sln
 *.sw?
+android/local.properties
+android/.release-signing.local.ps1
+key.properties
+**/key.properties
 
 # Local build, release, and visual-audit evidence. Tracked fixtures remain tracked.
 artifacts/
 
 # Generated Android outputs, test evidence, and Codex-only working files.
+android/.gradle/
+android/**/build/
+*.apk
+*.aab
 coverage/
 playwright-report/
 test-results/
@@ -44,3 +56,11 @@ test-results/
 *.p12
 *.pfx
 *.key
+*.jceks
+*.cer
+*.crt
+*.der
+*.asc
+*.mobileprovision
+wrangler.jsonc
+**/wrangler.jsonc

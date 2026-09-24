@@ -1,4 +1,4 @@
-import { selfHostedImageDelete, selfHostedImageUpload } from '../core/SelfHostedImageTransport'
+import { selfHostedImageDelete, selfHostedImageUpload } from '../core/HostedApiTransport'
 import { isCapacitorApp } from '../utils/CapacitorDetection'
 import { generatedImageToBlob } from './GeneratedImageData'
 import type { FrontendWorkshopGeneratedImage } from '../types/ImageGeneration'
@@ -22,7 +22,7 @@ export type FrontendWorkshopSelfHostedAuthMode = 'auto' | 'bearer' | 'auth-code'
 export interface FrontendWorkshopSelfHostedImageBedConfig {
   /** 完整上传 API；旧版仅保存站点根地址时会自动迁移到 /upload。 */
   origin: string
-  /** Bearer API Token 或兼容 ImgBed 的 AUTH_CODE，始终只进凭据存储。 */
+  /** Bearer API Token 或经典 CloudFlare-ImgBed 的 AUTH_CODE，始终只进凭据存储。 */
   token: string
   remember: boolean
   authMode?: FrontendWorkshopSelfHostedAuthMode
@@ -140,7 +140,7 @@ function extractSelfHostedCredential(
   return {
     origin: url.toString(),
     token,
-    // 兼容 ImgBed 的 API Token 有稳定的 imgbed_ + 64 hex 格式。Web/iOS 识别到
+    // 当前 CloudFlare-ImgBed API Token 有稳定的 imgbed_ + 64 hex 格式。Web/iOS 识别到
     // 这种凭据后直接按 Bearer 使用，避免把全权限 Token 误当成 AUTH_CODE 探测。
     authMode: queryAuthCode
       ? 'auth-code'

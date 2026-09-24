@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SRL 酒馆资源库</string>
+    <string name="title_activity_main">SRL 酒馆资源库</string>
+    <string name="package_name">buzz.jixiangruyi1207.srl</string>
+    <string name="custom_url_scheme">buzz.jixiangruyi1207.srl</string>
+    <string name="shortcut_import_short">导入资源</string>
+    <string name="shortcut_import_long">导入资源或备份</string>
+    <string name="shortcut_backup_short">云备份</string>
+    <string name="shortcut_backup_long">打开云端备份</string>
+    <string name="shortcut_favorites_short">收藏</string>
+    <string name="shortcut_favorites_long">打开收藏资源</string>
+</resources>

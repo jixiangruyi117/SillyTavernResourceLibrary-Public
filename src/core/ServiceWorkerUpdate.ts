@@ -65,7 +65,7 @@ function createUpdateState() {
    * 可在设置中由用户主动调用，不依赖定时器或前台切换。
    */
   async function manualCheckForUpdate(): Promise<string> {
-    if (isCapacitorApp()) return '原生壳不使用网页更新，请重新加载应用页面'
+    if (isCapacitorApp()) return 'APK 中不使用网页更新，请使用“检查 APK 版本更新”'
     if (!activeRegistration) return 'Service Worker 未注册，请用强制刷新'
 
     try {
@@ -75,6 +75,26 @@ function createUpdateState() {
         return '发现新版本，点击上方"立即刷新"使用'
       }
       if (activeRegistration.installing) return '正在下载新版本，请稍候…'
+
+      // SW 没检测到变化时，通过统一托管 API transport 请求版本号。
+      try {
+        const response = await fetch('/api/version', { cache: 'no-store' })
+        if (response.ok) {
+          const data = (await response.json()) as { version?: string }
+          const serverVersion = data?.version ?? ''
+          const storedVersion = localStorage.getItem('srl.deploy.version') ?? ''
+          if (serverVersion && serverVersion !== storedVersion) {
+            localStorage.setItem('srl.deploy.version', serverVersion)
+            if (applyUpdateRef) showUpdateBanner(() => applyUpdateRef?.(true))
+            return '服务器有新版本（' + serverVersion + '），点击上方"立即刷新"'
+          }
+          if (serverVersion) {
+            return '已是最新版本（' + serverVersion + '）'
+          }
+        }
+      } catch {
+        /* 直连失败 */
+      }
 
       return '未检测到更新，可尝试强制刷新'
     } catch {
@@ -149,7 +169,7 @@ const state = createUpdateState()
 /** 注册 Service Worker。开发模式下不注册，避免缓存干扰调试。 */
 export const installServiceWorker = state.installServiceWorker
 
-/** 手动检查更新，供需要保留 PWA 更新提示的宿主调用。 */
+/** 手动检查更新。在设置页点击"检查网页更新"时调用。 */
 export const manualCheckForUpdate = state.manualCheckForUpdate
 
 /** 强制刷新：注销 SW、清空 Cache Storage、硬重载。 */

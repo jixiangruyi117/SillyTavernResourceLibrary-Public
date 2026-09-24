@@ -245,16 +245,7 @@ onUnmounted(() => {
         </select>
       </section>
 
-      <section class="frontend-image-picker__hosting-mode">
-        <span>无直链图片使用：</span>
-        <button
-          type="button"
-          :class="{ 'is-active': hostingMode === 'self-hosted' }"
-          @click="hostingMode = 'self-hosted'"
-        >
-          自建图床
-        </button>
-      </section>
+      <p class="frontend-image-picker__hint">图片直链通过你自己配置的 ImgBed 生成。</p>
 
       <p v-if="loading" class="frontend-image-picker__state">正在读取生图相册…</p>
       <p v-else-if="!page.items.length" class="frontend-image-picker__state">

@@ -1,220 +1,236 @@
 # SillyTavern Resource Library
 
-SillyTavern Resource Library（SRL）是一个面向 SillyTavern 使用场景的本地优先资源管理工具，用于整理、预览、搜索、备份和管理角色卡、世界书、预设、正则、美化、快速回复、脚本及其他相关资源。
-
-本仓库为可自行部署的本地版本，不需要 SRL 账号或登录，也不依赖作者提供的账号系统、管理后台、反馈服务或官方云端服务。
+SRL 是一个本地优先的 SillyTavern 资源整理、预览、互传与创作工具。本仓库保留主要本地与自部署功能，但与主项目并非功能完全一致：不包含作者账号系统、管理后台、反馈服务、预打包 APK、作者官方 APK 更新通道或在线创作组件分享。需要云端基础设施的能力由部署者自行配置。功能边界与已知差异见 [Public Release 功能差异](docs/PUBLIC_RELEASE_DIFFERENCES.md)。
 
 > [!WARNING]
 > **关于本文档**
 >
-> 本 README 由 AI 辅助生成，并经过项目维护者整理与修改。由于项目仍在持续迭代，文档内容可能存在遗漏、表述不准确或未及时同步最新实现的情况。
->
-> 功能行为请以当前版本源码和实际运行结果为准；涉及许可证、第三方代码及再分发要求时，请以仓库中的 `LICENSE`、`NOTICE` 及相关上游项目条款为准。
->
-> README 中关于安全、隐私、兼容性和数据处理方式的说明主要用于帮助理解项目设计，不应视为正式的安全审计、法律意见或绝对安全保证。
+> 本 README 由 AI 辅助整理，并经项目维护者核对。项目持续迭代，文档可能遗漏、表述不准确或未及时反映最新实现。功能行为以当前版本源码和实际运行结果为准；许可证、第三方代码来源及再分发要求以 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和相关上游项目条款为准。这里的安全说明用于解释项目设计和使用注意事项，不构成正式安全审计、法律意见或绝对安全保证。
 
 ## 主要功能
 
-SRL 目前主要支持：
+- **资源库管理**：整理角色卡、开场白、用户人设、世界书、主题美化、正则、预设、快速回复、脚本、插件清单、番外、小手机、密钥及其他资源；支持分类、文件夹、标签、收藏、搜索、预览、批量整理、历史版本和回收站。
+- **导入与导出**：导入常见 SillyTavern 资源文件和备份，解析角色卡、世界书、预设等格式；支持链接导入、整库或选定内容的 ZIP 备份与恢复，以及资源包导入导出。
+- **酒馆互传**：与 SillyTavern/TavernHelper 相关环境交换受支持的角色卡、世界书和预设。连接方式取决于网页或 Android 版本及使用者部署的桥接服务。
+- **云备份**：连接使用者自己的 GitHub 仓库或 WebDAV/Koofr，支持手动、定时备份和恢复。云端目标及访问权限由使用者配置和管理。
+- **前端创作工作台**：管理 HTML/CSS/JavaScript 项目，编辑和预览内容，使用模板、检查器、AI 辅助创作和本地组件库；组件支持本地创作、导入与导出。Public v1 不提供在线发布、分享链接、撤销分享或自部署分享后端。
+- **图像与 AI**：使用自行配置的主 API 进行兼容任务和 AI 辅助操作；通过 NovelAI、OpenAI 或兼容服务生成图像；管理本地生图相册，并按需上传至使用者自己的 ImgBed。
+- **资源扩展**：管理用户导入的第三方 APP/扩展；权限受应用内的沙箱和逐项授权机制约束。
+- **个性化工具**：自定义外观与 CSS、可视化文件夹、预设缝合、随机抽取、人设管理、角色卡资源装配和 AI 标签等。
+- **网页与 Android**：网页支持 PWA 和离线应用壳；Capacitor Android 版提供网页功能及原生文件、备份和系统集成；独立 Kotlin 原生版提供本地资源管理和导入导出。不同版本的功能范围可能不同。
 
-- 角色卡 PNG / JSON 导入与管理
-- 世界书、预设、正则、快速回复、脚本等资源管理
-- SillyTavern 备份识别与导入
-- GitHub 链接资源导入
-- 分类、标签、文件夹、收藏、搜索与批量管理
-- 资源详情、历史版本与重复资源处理
-- 本地导入、导出与备份恢复
-- GitHub 私有仓库直连备份
-- 用户自建 ImgBed 图床
-- 用户自行配置的 AI API 与图像生成服务
-- 第三方 APP / 扩展资源管理
-- 本机 SillyTavern 资源互传
-- HTML / CSS / JavaScript 内容预览
-- TavernHelper 相关内容兼容
-- 前端工作台（Frontend Workshop）
-- PWA 与离线使用
+## 数据存储、读取与权限
 
-具体功能会随着项目更新继续调整。
+### 数据存在哪里
 
-## 本地优先
+- **网页/PWA**：资源正文、原始文件、分类、标签、历史版本、前端工作台项目、组件、相册、扩展数据和应用设置主要保存在浏览器的 IndexedDB；少量界面偏好、草稿恢复数据和兼容配置保存在当前站点的 `localStorage`。PWA 使用 Service Worker/Cache Storage 缓存网页应用壳和已访问的静态资源，以支持离线打开；这不等同于资源库备份。清除浏览器站点数据可能删除本机资料，请定期导出备份。
+- **Capacitor Android**：网页部分的数据保存在应用私有 WebView 存储中；原生资源文件、索引和任务状态保存在应用私有目录/数据库中。卸载应用或清除应用数据可能删除这些内容。应用关闭了 Android 自动备份；需要迁移时请使用应用内导出或备份功能。
+- **独立 Kotlin 原生 Android**：资源索引保存在应用私有 SQLite 数据库，资源包保存在应用私有文件目录。导出的文件写入使用者选择的目录或系统提供的分享/保存位置。
+- **保险库**：网页和 Capacitor 资源库可选择开启本地数据加密；使用 PBKDF2 从密码派生密钥，并用 AES-256-GCM 加密资源名称、标签、解析内容、原文件、缩略图和历史快照。密码只用于当前会话，不会保存；忘记密码无法解密。内容指纹仍用于本机去重。此保险库不代表所有应用设置、缓存或外部服务数据都已加密。
+- **凭据**：Web 环境将 API Key、Token 等敏感凭据与普通配置分开保存，以不可导出的本机密钥和 AES-GCM 加密后存入当前浏览器 IndexedDB；Android 应用使用 Android Keystore 保护凭据。它们仍受当前设备、浏览器用户配置、恶意软件及同源脚本安全影响，不应把本机凭据存储视为远端备份或绝对安全边界。
+- **外部服务**：只有在使用者配置并调用相应功能时，数据才会发送到其选择的 AI/API 服务、GitHub、WebDAV/Koofr、ImgBed、Discord 或自部署 Worker。Discord 消息桥的数据由使用者部署的 Worker/D1 和 Discord 侧处理。具体保存期限和访问者由对应服务及其账户权限决定。
 
-SRL 的核心数据默认保存在当前设备。
+完整备份可包含资源、配置及使用者选择的凭据。选择将凭据加入备份时，ZIP/远端备份中的密钥可能以明文形式保存；任何能读取备份的人都可能使用这些凭据。请只备份到可信位置，并按需轮换已泄露的密钥。
 
-包括但不限于：
+### 可能使用的系统权限
 
-- 角色卡
-- 世界书
-- 预设
-- 正则
-- 文件夹与标签
-- 前端工作台项目
-- 应用设置
-- 历史记录
+网页通常通过浏览器自身的选择器和安全上下文管理授权；实际提示由浏览器和操作系统决定。Android 项目 Manifest 当前声明的主要权限和入口如下：
 
-Web 版本主要使用 IndexedDB 等浏览器本地存储能力保存数据。
+| 环境/能力             | 用途与触发方式                                                                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 网页文件选择与导入    | 用户点击导入或恢复后，由浏览器打开文件选择器；只读取用户选中的文件。支持的浏览器中，备份目录需用户选择并授予读写权限。                                                         |
+| 网页剪贴板            | 用户点击复制等操作时调用浏览器剪贴板 API；通常需要 HTTPS 等安全上下文，并受浏览器权限策略限制。                                                                                |
+| Android 网络访问      | `INTERNET` 用于用户启用的 API、云备份、图床、Discord 和互传请求；独立原生版另声明 `ACCESS_NETWORK_STATE` 读取网络状态。                                                        |
+| Android 通知          | Capacitor 版声明 `POST_NOTIFICATIONS`；用户启用原生通知时请求授权，用于长时间备份/任务状态通知。拒绝后相关通知不可用。                                                         |
+| Android 前台数据同步  | Capacitor 版声明 `FOREGROUND_SERVICE` 和 `FOREGROUND_SERVICE_DATA_SYNC`，用于用户启动的长时间导入/备份等任务在后台持续运行。                                                   |
+| Android 文件导入/导出 | 通过系统文件选择器、SAF、MediaStore、系统分享入口或用户选择的目录访问文件；项目没有声明通用的外部存储读写权限。应用提供的文档入口受 Android 系统 `MANAGE_DOCUMENTS` 权限保护。 |
 
-SRL 不会因为打开页面而自动把资源上传到作者服务器。
+当前两个 Android Manifest 均未声明通用外部存储读写、摄像头、麦克风或定位权限；源码也未发现相机、麦克风或定位 API 的调用。图片选择使用用户触发的系统选择器；通知和文件/目录访问会受设备版本及用户授权影响。
 
-## 外部服务
+## 安全提示
 
-部分功能需要用户主动配置第三方服务，例如：
+- 角色卡、HTML/CSS/JavaScript、扩展包和远程资源可能来自第三方。导入或预览前确认来源；只对可信内容启用 JavaScript 或远程资源。沙箱和内容策略用于缩小权限范围，不会让不可信代码或内容自动变安全；允许远程请求时，相关站点仍可能收到网络请求。
+- 外部 APP/扩展只应安装自可信来源，并仔细检查其申请的资源读取、文件等权限。不要把访问令牌写入扩展包、源码、Wrangler 配置或公开仓库。
+- AI 提示词、所选图像及发送给供应商的任务内容会离开本机并发送到使用者配置的服务。使用前检查供应商地址、账户、隐私政策和计费规则。
+- GitHub、WebDAV/Koofr、ImgBed 和自部署 Worker 由使用者配置。请使用最小必要的 Token/权限；自部署代理中的 CORS 来源限制不是身份认证。
+- 完整 ZIP/云备份在选择包含凭据时可能包含明文 API Key、Bot Token 和云备份凭据。不要上传到公开仓库、公开网盘或不可信服务；导出前检查内容选择和目标位置。
+- 开启本地保险库后请另行安全保存密码并定期导出备份；忘记密码无法恢复已加密资源。加密保险库不会自动覆盖所有浏览器设置、缓存和第三方服务器数据。
 
-- GitHub 私有仓库备份
-- 自建 ImgBed 图床
-- GPT / OpenAI Provider（支持 OpenAI-compatible Endpoint）
-- NovelAI Provider（支持自定义 Endpoint）
-- 其他用户自行配置的 AI 服务
+## 兼容关系与第三方代码
 
-这些连接只会在用户主动配置并使用对应功能时发生。
+SRL 为 SillyTavern 和 TavernHelper 的部分资源格式、脚本及前端内容提供兼容能力。这不表示 SRL 与 SillyTavern、TavernHelper 或其开发者存在隶属、授权、赞助或官方合作关系；兼容范围也不代表对上游全部版本或功能提供保证。
 
-相关数据如何存储和处理，同时受对应第三方服务的隐私政策、权限设置和安全策略影响。
-
-请妥善保管 API Key、GitHub Token 和其他访问凭据。
-
-## 安全说明
-
-角色卡、HTML、JavaScript、第三方 APP、插件及远程资源都可能包含来自第三方的内容。
-
-SRL 默认限制部分高风险能力，并提供相应开关。
-
-启用远程资源或 JavaScript 前，请确认内容来源可信。
-
-角色卡预览中的 JavaScript 在隔离 iframe 中执行，不获得 SRL 主页面的同源权限。
-
-第三方内容本身的安全性不由 SRL 保证。
-
-## 本机 SillyTavern 互传
-
-SRL 支持与 SillyTavern 进行本机资源互传。
-
-Public 版本不会通过作者服务器建立互传连接。
-
-互传主要通过：
-
-- SillyTavern 页面扩展与当前窗口通信
-- 用户自己运行的本机 SillyTavern 服务插件
-- `127.0.0.1` 本地连接
-
-完成。
-
-相关扩展与安装说明可在 SRL 的酒馆互传功能中查看。
-
-## 快速开始
-
-### 环境要求
-
-- Node.js 22 或更高版本
-- pnpm
-
-### 安装依赖
-
-```bash
-pnpm install
-```
-
-### 本地开发
-
-```bash
-pnpm dev
-```
-
-需要允许局域网其他设备访问时：
-
-```bash
-pnpm dev:lan
-```
-
-### 构建
-
-```bash
-pnpm build
-```
-
-构建产物位于：
-
-```text
-dist/
-```
-
-可将 `dist` 部署到支持静态网页的 Web Server。
-
-### 本地预览构建结果
-
-```bash
-pnpm preview
-```
-
-## 开发检查
-
-提交修改前建议执行：
-
-```bash
-pnpm format:check
-pnpm lint
-pnpm test
-pnpm build
-```
-
-也可以直接运行：
-
-```bash
-pnpm check
-```
-
-项目包含 Public Release Guard，用于防止正式站账号、管理后台和其他作者服务端代码意外进入本地公开版本。
+`src/utils/RichContentPreview.ts` 中保留了修改后的 TavernHelper / JS-Slash-Runner 4.8.19 相关代码。来源、修改范围和适用许可见 [NOTICE](NOTICE)；其他第三方依赖和资源的许可应按各自上游声明核对。
 
 ## 项目结构
 
 ```text
 src/
-├─ components/    Vue 页面与组件
-├─ composables/   页面状态与交互逻辑
-├─ core/          应用核心、容器与基础设施
-├─ services/      导入、备份、AI、图床等业务逻辑
+├─ components/    Vue 页面与界面组件
+├─ composables/   页面状态和交互逻辑
+├─ core/          应用启动、容器与平台能力
+├─ database/      IndexedDB 数据库及迁移
 ├─ parser/        SillyTavern 与资源格式解析
-├─ storage/       IndexedDB 与本地数据存储
-├─ types/         TypeScript 类型定义
-├─ utils/         兼容、转换、安全和辅助工具
+├─ services/      资源、备份、AI、图床等业务服务
+├─ storage/       本地数据与文件存储适配器
+├─ sync/          同步相关逻辑
 ├─ styles/        页面样式
-├─ workers/       浏览器 Web Worker
-└─ templates/     Frontend Workshop 模板
+├─ templates/     创作工作台模板
+├─ types/         TypeScript 类型定义
+├─ utils/         格式转换、安全和辅助函数
+└─ workers/       浏览器 Web Worker
+android/
+├─ app/           Capacitor Android 应用与原生插件
+└─ nativeapp/     独立 Kotlin 原生 Android 应用
+cloudflare/       Cloudflare Worker 模板（包括可选 ImgBed 代理）
+workers/          独立服务；Discord 消息桥及其 D1 迁移
+scripts/          构建、资源校验和审计脚本
+public/           网页静态资源
+docs/             当前公开版功能边界说明
 ```
 
-`.test.ts` 等测试文件通常与对应业务模块放在一起，不会因此进入生产构建产物。
+修改功能时可从对应目录的页面、composable 和 service 开始追踪；`.test.ts` 等测试通常与业务代码相邻。`dist/` 是构建生成目录，不是源码编辑位置。
 
-## 二次开发
+## 本机运行
 
-想修改某个功能但不知道从哪里开始？  
-请查看 [二次开发导航](docs/MODDING_GUIDE.md)。
+需要 Node.js 22 或更高版本及 pnpm 11。
 
-需要了解项目整体架构，请查看  
-[架构说明](docs/ARCHITECTURE.md)。
+```bash
+pnpm install --frozen-lockfile
+pnpm dev
+```
 
-两份开发文档按当前仓库源码维护；如果文档与代码不一致，请以代码为准。
+构建网页：
 
-## SillyTavern / TavernHelper 兼容说明
+```bash
+pnpm build
+```
 
-本项目针对 SillyTavern 与 TavernHelper 的部分资源格式和使用方式提供兼容支持。
+在局域网设备上临时访问开发服务器：
 
-这种兼容关系不表示 SRL 与 SillyTavern、TavernHelper 或其开发者存在隶属、授权、赞助或官方合作关系。
+```bash
+pnpm dev:lan
+```
 
-`src/utils/RichContentPreview.ts` 中包含经过修改的 TavernHelper / JS-Slash-Runner 4.8.19 相关代码。
+该命令会监听所有网络接口，只在可信的局域网临时使用；不应将开发服务器暴露到公共网络。
 
-具体来源与修改说明请参阅：
+本地预览生产构建：
 
-- [NOTICE](NOTICE)
+```bash
+pnpm preview
+```
 
-## License
+提交代码前可运行完整检查：
 
-Copyright (C) 2026 jixiangruyi117
+```bash
+pnpm check
+```
 
-本项目按照 Aladdin Free Public License Version 9（AFPL v9）发布。
+## 部署到 Cloudflare Workers
 
-AFPL v9 包含关于修改、分发、源代码提供和商业分发等方面的要求，并不是 OSI 定义下的开源许可证。
+Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。每位部署者使用自己的 Cloudflare 账号和 Worker；配置中没有作者的域名、账号、数据库或 Discord 参数。
 
-在修改、重新分发或以其他方式使用本项目源码前，请完整阅读：
+1. Fork 或下载本仓库，在本地安装依赖并构建：
 
-- [LICENSE](LICENSE)
-- [NOTICE](NOTICE)
+   ```bash
+   pnpm install --frozen-lockfile
+   pnpm build
+   ```
 
-使用、修改或分发本项目即表示相关行为需要遵守适用的许可证条款。
+2. 安装 Wrangler 并登录自己的 Cloudflare 账号：
+
+   ```bash
+   pnpm add --global wrangler@4
+   wrangler login
+   ```
+
+3. 将根目录 `wrangler.example.jsonc` 复制为 `wrangler.jsonc`。按需修改 Worker 名称；模板使用 `workers.dev`，不绑定自定义域名。
+4. 部署：
+
+   ```bash
+   wrangler deploy --config wrangler.jsonc
+   ```
+
+部署配置与命令可参考 [Cloudflare Workers 静态资源文档](https://developers.cloudflare.com/workers/static-assets/) 和 [Wrangler 配置文档](https://developers.cloudflare.com/workers/wrangler/configuration/)。
+
+不需要设备互传或 Koofr 云备份时，可直接把 `dist/` 部署为 Cloudflare Pages 静态站点，构建命令为 `pnpm build`、输出目录为 `dist`，并设置 `NODE_VERSION=22`。Pages Git 构建说明见 [Cloudflare Pages 文档](https://developers.cloudflare.com/pages/configuration/build-configuration/)。
+
+### ImgBed 跨域中转（可选）
+
+只有你的 ImgBed 不接受 SRL 来源的跨域请求时才需要部署。模板固定转发到你配置的 ImgBed HTTPS 地址，只开放上传、读取图片和删除图片路径，不接受任意目标 URL。上传和删除仍需由 ImgBed 凭据授权。
+
+1. 进入 `cloudflare/imgbed-proxy/`，复制 `wrangler.example.jsonc` 为 `wrangler.jsonc`。
+2. 将 `IMGBED_ORIGIN` 改为自己的 ImgBed HTTPS 根地址；将 `ALLOWED_ORIGINS` 改为自己 SRL 部署的完整 Origin。此设置只控制浏览器 CORS，不是身份认证。
+3. 在该目录部署：
+
+   ```bash
+   wrangler deploy --config wrangler.jsonc
+   ```
+
+4. 在 SRL 的前端工作台或生图相册中连接自己的 ImgBed。填写 Worker 地址和 ImgBed 自己签发的 Token；不要把 Token 写入 Worker 源码或配置。模板将单次上传限制为 10 MiB。
+
+### Discord 社区消息桥（可选）
+
+社区消息导入使用独立的用户自建 Worker 和 D1 数据库，只处理 Discord 消息捕获与一次性导入凭据，不连接 SRL 账号系统，也不使用作者的 Discord 社区 ID。SRL 内置的 Discord 设置向导也提供手动部署步骤。
+
+1. 进入 `workers/discord-source-bridge/`，安装依赖并登录自己的 Cloudflare 账号：
+
+   ```bash
+   npm ci
+   npx wrangler login
+   ```
+
+   复制 `wrangler.example.jsonc` 为本地 `wrangler.jsonc`。本地配置会被 Git 忽略；请勿提交其中的 D1 `database_id`。
+
+2. 创建自己的 D1 数据库：
+
+   ```bash
+   npx wrangler d1 create srl-discord-source-handoff
+   ```
+
+   把命令返回的 `database_id` 填入 `wrangler.jsonc` 中 `d1_databases` 的 `database_id` 字段。数据库名称也可以修改，但要同时更新配置和创建命令。
+
+3. 将 Discord Developer Portal 中自己的 Application ID、Public Key 和 Bot Token 分别保存为 Worker Secret：
+
+   ```bash
+   npx wrangler secret put DISCORD_APPLICATION_ID
+   npx wrangler secret put DISCORD_PUBLIC_KEY
+   npx wrangler secret put DISCORD_BOT_TOKEN
+   ```
+
+   在 `wrangler.jsonc` 的 `vars` 中按需设置 `SRL_WEB_URL` 为你部署的 SRL Origin。不要把 Bot Token 写入配置文件或源码。
+
+4. 部署并应用数据库迁移：
+
+   ```bash
+   npm run deploy
+   ```
+
+5. 在 Discord Developer Portal 将 Interactions Endpoint URL 设为 `https://你的-worker.workers.dev/interactions`，然后按 SRL 内置向导完成命令注册，并把 Worker 根地址填入 Discord 社区设置。
+
+`npm run deploy` 会先将 `migrations/` 中尚未应用的 SQL 迁移到远程 D1，再部署 Worker。[Cloudflare D1 Wrangler 命令](https://developers.cloudflare.com/d1/wrangler-commands/)与 [D1 迁移说明](https://developers.cloudflare.com/d1/reference/migrations/)可查看官方文档。
+
+## Android 源码构建
+
+需要 Android Studio、Android SDK、JDK 21、Node.js 22 和 pnpm 11。构建网页资源并同步到 Android 工程：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm android:sync
+```
+
+之后在 Android Studio 中打开 `android/`，由你自己的环境构建 APK，并使用自己的签名密钥签署。公开源码构建不会连接作者官方更新服务器；公开仓库也不提供通用自建 APK 更新服务器。更新源码时请通过 Git 拉取新版本并重新构建；若要向用户分发更新，由下游维护者自行管理签名密钥和发行流程。Android 覆盖安装更新需要沿用该应用原有的签名密钥。
+
+原生 Android 酒馆互传功能需要连接你部署的主 Worker。构建前可在 `android/` 目录执行：
+
+```powershell
+.\gradlew :nativeapp:assembleDebug "-PsrlBridgeOrigin=https://你的-worker.workers.dev"
+```
+
+不需要酒馆互传时，可以直接在 Android Studio 里构建；未设置地址时，该功能会提示先配置自己的 Worker。
+
+## 许可
+
+Copyright (C) 2026 jixiangruyi117。
+
+本项目按 Aladdin Free Public License Version 9（AFPL v9）授权。**AFPL v9 不是 OSI 定义的开源许可证**，并对分发和商业销售等行为设有限制。使用、修改或再分发前，请完整阅读 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，并遵守适用条款；不要仅凭“源码可见”推断可以不受限制地商业使用或再分发。

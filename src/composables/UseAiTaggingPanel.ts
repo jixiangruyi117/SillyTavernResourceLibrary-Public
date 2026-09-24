@@ -648,13 +648,15 @@ export function useAiTaggingPanel(
     const draft = aiTaggingDraftService.loadDraft()
     if (draft) restoreDraft(draft)
     undoRecord.value = aiTaggingDraftService.loadUndo()
-    void nextTick(() => document.querySelector<HTMLElement>('.ai-tagging__close')?.focus())
+    void nextTick(() =>
+      document.querySelector<HTMLElement>('.ai-tagging__close')?.focus({ preventScroll: true }),
+    )
   })
 
   onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleKeydown)
     document.body.style.overflow = previousBodyOverflow
-    void nextTick(() => triggerElement?.focus())
+    void nextTick(() => triggerElement?.focus({ preventScroll: true }))
   })
 
   watch(

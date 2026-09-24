@@ -7,13 +7,13 @@
 export const BRIDGE_EXTENSION_VERSION = '0.3.20'
 
 /** 当前离线安装包版本，与最低兼容版本分开维护。 */
-export const BRIDGE_DOWNLOAD_VERSION = '0.3.29'
+export const BRIDGE_DOWNLOAD_VERSION = '0.3.35'
 
-/** 仅 APK 同机本机直传所需的页面扩展版本，不影响网页窗口连接和本机服务传输。 */
+/** 仅 APK 同机本机直传所需的页面扩展版本，不影响网页和旧设备码传输。 */
 export const LOCAL_DIRECT_BRIDGE_EXTENSION_VERSION = '0.3.22'
 
 /** 页面扩展 Git 仓库（酒馆「安装扩展」直接粘贴此链接）。 */
-export const BRIDGE_REPO_URL = 'https://example.invalid/sillytavern-srl-bridge'
+export const BRIDGE_REPO_URL = 'https://github.com/jixiangruyi117/SillyTavern-SRL-Bridge'
 
 /** 安装成功后酒馆扩展列表中显示的名称（来自 manifest.json display_name）。 */
 export const BRIDGE_EXTENSION_NAME = 'SRL 酒馆互传'

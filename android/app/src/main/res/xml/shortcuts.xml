@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="import" android:enabled="true" android:icon="@drawable/ic_shortcut_import" android:shortcutShortLabel="@string/shortcut_import_short" android:shortcutLongLabel="@string/shortcut_import_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="buzz.jixiangruyi1207.srl" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/import" />
+    </shortcut>
+    <shortcut android:shortcutId="backup" android:enabled="true" android:icon="@drawable/ic_shortcut_backup" android:shortcutShortLabel="@string/shortcut_backup_short" android:shortcutLongLabel="@string/shortcut_backup_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="buzz.jixiangruyi1207.srl" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/cloud" />
+    </shortcut>
+    <shortcut android:shortcutId="favorites" android:enabled="true" android:icon="@drawable/ic_shortcut_favorite" android:shortcutShortLabel="@string/shortcut_favorites_short" android:shortcutLongLabel="@string/shortcut_favorites_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="buzz.jixiangruyi1207.srl" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/favorites" />
+    </shortcut>
+</shortcuts>

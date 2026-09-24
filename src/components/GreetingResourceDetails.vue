@@ -163,6 +163,10 @@ async function apply() {
   <section class="greeting-resource" aria-label="开场白资源">
     <p v-if="error" role="alert">{{ error }}</p>
     <template v-if="greeting">
+      <header class="greeting-resource__heading">
+        <h3>开场白</h3>
+        <span>{{ items.length }} 个</span>
+      </header>
       <div class="greeting-resource__actions">
         <button class="button button--secondary" type="button" @click="previewIndex = 0">
           预览开场白
@@ -171,14 +175,24 @@ async function apply() {
           应用到角色卡
         </button>
       </div>
-      <p>
-        {{ items.length }} 个开场白<span v-if="greeting.companion_scripts.length">
-          · {{ greeting.companion_scripts.length }} 个配套脚本（导入后需在酒馆助手中启用）</span
-        >
+      <p v-if="greeting.companion_scripts.length">
+        {{ greeting.companion_scripts.length }} 个配套脚本（导入后需在酒馆助手中启用）
       </p>
-      <details v-for="item in items" :key="item.key">
-        <summary>{{ item.label }}</summary>
+      <details v-for="item in items" :key="item.key" class="greeting-resource__entry">
+        <summary>
+          <span>{{ item.label }}</span>
+          <small>{{ item.content.length.toLocaleString() }} 字符</small>
+          <span class="greeting-resource__chevron" aria-hidden="true">⌄</span>
+        </summary>
         <pre>{{ item.content }}</pre>
+        <button
+          class="button button--quiet"
+          type="button"
+          :aria-label="`预览${item.label}`"
+          @click="previewIndex = Number(item.key)"
+        >
+          预览这一条
+        </button>
       </details>
       <div v-if="choosing" class="greeting-resource__apply" role="group" aria-label="应用到角色卡">
         <label
@@ -279,8 +293,60 @@ async function apply() {
 
 <style scoped>
 .greeting-resource {
+  display: grid;
+  gap: 10px;
   min-width: 0;
   font-size: 14px;
+}
+.greeting-resource__heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.greeting-resource__heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.greeting-resource__heading > span,
+.greeting-resource__entry small {
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+.greeting-resource__entry {
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--glass-radius-control);
+  background: var(--glass-panel-muted);
+}
+.greeting-resource__entry > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--size-touch);
+  padding: 10px 12px;
+  list-style: none;
+}
+.greeting-resource__entry > summary::-webkit-details-marker {
+  display: none;
+}
+.greeting-resource__entry > summary > span:first-child {
+  flex: 1;
+  font-weight: 600;
+}
+.greeting-resource__chevron {
+  transition: transform 160ms ease;
+}
+.greeting-resource__entry[open] .greeting-resource__chevron {
+  transform: rotate(180deg);
+}
+.greeting-resource__entry > pre {
+  margin: 0;
+  padding: 12px;
+  border-top: 1px solid var(--color-line);
+  line-height: 1.65;
+}
+.greeting-resource__entry > .button {
+  margin: 8px 12px 12px;
 }
 .greeting-resource__actions {
   display: flex;
@@ -288,7 +354,7 @@ async function apply() {
   gap: 8px;
 }
 .greeting-resource .button {
-  min-height: 32px;
+  min-height: var(--size-touch);
   padding: 4px 10px;
   font-size: 13px;
 }

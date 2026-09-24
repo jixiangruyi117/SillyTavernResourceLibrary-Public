@@ -97,6 +97,16 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * iOS 独立 PWA 打开软键盘后，视觉视口底部已经由键盘接管；继续叠加
+ * Home Indicator 安全区会在输入区域下方留下第二层空白。所有 UI 通过
+ * --safe-bottom 消费底部安全区，因此在键盘状态下统一释放它，收起后由
+ * Main.ts 清除状态后，原始系统安全区变量会自然恢复。
+ */
+:root[data-ios-keyboard-open='true'] {
+  --safe-bottom: 0px !important;
+}
+
 :root[data-theme='dark'] {
   --glass-panel: linear-gradient(145deg, rgba(48, 73, 83, 0.88), rgba(31, 52, 62, 0.82));
   --glass-panel-strong: linear-gradient(145deg, rgba(57, 84, 94, 0.94), rgba(38, 61, 71, 0.9));

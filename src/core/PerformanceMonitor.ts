@@ -1,4 +1,8 @@
 import { BUILD_INFO } from './BuildInfo'
+import {
+  setMobileInputFocusDiagnosticListener,
+  type MobileInputFocusDiagnostic,
+} from '../utils/MobileInputFocus'
 
 export interface PerformanceSnapshot {
   firstInteractiveMs: number | null
@@ -31,18 +35,178 @@ let scrollListener: (() => void) | undefined
 let longTaskObserver: PerformanceObserver | undefined
 let diagnosticsInstalled = false
 let diagnosticsFrame = 0
+let diagnosticSessionStartedAt = 0
 // Only enabled by the existing monitor switch; session-only, bounded and without field values.
 const keyboardSamples: Array<Record<string, unknown>> = []
+const keyboardEvents: Array<Record<string, unknown>> = []
 let lastKeyboardGeometry = ''
+
+const interactionEventTypes = [
+  'pointerdown',
+  'pointerup',
+  'click',
+  'focusin',
+  'focusout',
+  'blur',
+  'beforeinput',
+  'input',
+  'change',
+  'compositionstart',
+  'compositionend',
+] as const
+
+type InteractionEventType = (typeof interactionEventTypes)[number]
+const interactionListeners = new Map<InteractionEventType, (event: Event) => void>()
+
+function roundDiagnostic(value: number | undefined): number | null {
+  return value === undefined ? null : Math.round(value * 100) / 100
+}
+
+function getDisplayMode(): string {
+  const iosStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+  const mediaStandalone =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches
+  if (iosStandalone || mediaStandalone) return 'standalone'
+  return 'browser'
+}
+
+function getViewportDiagnosticState(): Record<string, unknown> {
+  const viewport = window.visualViewport
+  const innerHeight = window.innerHeight
+  const visualHeight = viewport?.height ?? innerHeight
+  const keyboardDelta = innerHeight - visualHeight
+  return {
+    innerHeight: roundDiagnostic(innerHeight),
+    visualHeight: roundDiagnostic(viewport?.height),
+    offsetTop: roundDiagnostic(viewport?.offsetTop),
+    offsetLeft: roundDiagnostic(viewport?.offsetLeft),
+    pageTop: roundDiagnostic(viewport?.pageTop),
+    scale: roundDiagnostic(viewport?.scale),
+    keyboardDelta: roundDiagnostic(keyboardDelta),
+    keyboardLikelyOpen: document.documentElement.dataset.iosKeyboardOpen === 'true',
+  }
+}
+
+function describeElement(element: Element | null | undefined): string {
+  if (!element) return 'none'
+  if (element.closest('#srl-performance-monitor')) return 'monitor'
+  if (
+    element.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+  ) {
+    if (element instanceof HTMLInputElement) return `input:${element.type || 'text'}`
+    if (element instanceof HTMLTextAreaElement) return 'textarea'
+    if (element instanceof HTMLSelectElement) return 'select'
+    return 'contenteditable'
+  }
+  if (element.closest('[role="dialog"], [role="alertdialog"]')) return 'dialog'
+  if (element.closest('.editor-overlay, .mobile-dialog-viewport')) return 'overlay'
+  return element.tagName.toLowerCase()
+}
+
+function getInputDiagnostic(element: Element | null | undefined): Record<string, unknown> | null {
+  if (
+    !element?.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+  )
+    return null
+  const rect = element.getBoundingClientRect()
+  const input = element instanceof HTMLInputElement ? element : null
+  const textarea = element instanceof HTMLTextAreaElement ? element : null
+  const select = element instanceof HTMLSelectElement ? element : null
+  return {
+    kind: describeElement(element),
+    disabled: input?.disabled ?? textarea?.disabled ?? select?.disabled ?? false,
+    readOnly: input?.readOnly ?? textarea?.readOnly ?? false,
+    tabIndex: (element as HTMLElement).tabIndex,
+    box: {
+      top: roundDiagnostic(rect.top),
+      bottom: roundDiagnostic(rect.bottom),
+      height: roundDiagnostic(rect.height),
+    },
+    fontSize: getComputedStyle(element).fontSize,
+  }
+}
+
+function describePointHit(clientX: number, clientY: number): string | null {
+  if (!document.elementFromPoint) return null
+  try {
+    return describeElement(document.elementFromPoint(clientX, clientY))
+  } catch {
+    return null
+  }
+}
+
+function recordInteractionEvent(type: InteractionEventType, event: Event): void {
+  if (!shouldShowPerformancePanel() || !isIosStandalonePwa()) return
+  const target = event.target instanceof Element ? event.target : null
+  const pointer =
+    typeof PointerEvent !== 'undefined' && event instanceof PointerEvent ? event : null
+  keyboardEvents.push({
+    ms: Math.round(performance.now()),
+    type,
+    target: describeElement(target),
+    activeElement: describeElement(document.activeElement),
+    input: getInputDiagnostic(target),
+    defaultPrevented: event.defaultPrevented,
+    ...(pointer
+      ? {
+          pointerType: pointer.pointerType || null,
+          isPrimary: pointer.isPrimary,
+          clientX: roundDiagnostic(pointer.clientX),
+          clientY: roundDiagnostic(pointer.clientY),
+          hit: describePointHit(pointer.clientX, pointer.clientY),
+        }
+      : {}),
+    viewport: getViewportDiagnosticState(),
+  })
+  if (keyboardEvents.length > 80) keyboardEvents.shift()
+}
+
+function recordMobileInputFocusDiagnostic(event: MobileInputFocusDiagnostic): void {
+  if (!shouldShowPerformancePanel() || !isIosStandalonePwa()) return
+  keyboardEvents.push({
+    ms: Math.round(performance.now()),
+    type: `focus-scroll:${event.action}`,
+    ...event,
+    viewport: getViewportDiagnosticState(),
+  })
+  if (keyboardEvents.length > 80) keyboardEvents.shift()
+}
+
+function getEnvironmentDiagnostic(): Record<string, unknown> {
+  const nav = navigator as Navigator & { standalone?: boolean }
+  const serviceWorker = 'serviceWorker' in navigator ? navigator.serviceWorker : undefined
+  return {
+    userAgent: navigator.userAgent || null,
+    platform: navigator.platform || null,
+    maxTouchPoints: navigator.maxTouchPoints ?? null,
+    devicePixelRatio: roundDiagnostic(window.devicePixelRatio),
+    screen: { width: window.screen?.width ?? null, height: window.screen?.height ?? null },
+    online: navigator.onLine,
+    visibility: document.visibilityState,
+    displayMode: getDisplayMode(),
+    iosStandalone: Boolean(nav.standalone),
+    mediaStandalone:
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(display-mode: standalone)').matches,
+    hasVisualViewport: Boolean(window.visualViewport),
+    serviceWorker: serviceWorker
+      ? {
+          supported: true,
+          controlled: Boolean(serviceWorker.controller),
+        }
+      : { supported: false, controlled: false },
+  }
+}
 
 function sampleKeyboardGeometry(): void {
   if (!shouldShowPerformancePanel() || !isIosStandalonePwa()) return
   const viewport = window.visualViewport
   const active = document.activeElement
-  const focusedDialog = active?.closest<HTMLElement>('[role="dialog"]')
+  const focusedDialog = active?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]')
   const dialog =
     focusedDialog ??
-    [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+    [...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
       .filter((element) => element.getBoundingClientRect().height > 0)
       .at(-1)
   const overlay = dialog?.closest<HTMLElement>('.editor-overlay, .mobile-dialog-viewport')
@@ -53,7 +217,11 @@ function sampleKeyboardGeometry(): void {
     const rect = element.getBoundingClientRect()
     return { top: round(rect.top), bottom: round(rect.bottom), height: round(rect.height) }
   }
-  const input = active?.matches('input, textarea, [contenteditable="true"]') ? active : null
+  const input = active?.matches(
+    'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+  )
+    ? active
+    : null
   const rootStyle = getComputedStyle(document.documentElement)
   const overlayStyle = overlay ? getComputedStyle(overlay) : null
   // Rectangles alone do not describe clipping or hit testing. Keep both coordinate
@@ -141,7 +309,19 @@ function sampleKeyboardGeometry(): void {
 }
 
 export function getKeyboardDiagnosticText(): string {
-  return JSON.stringify({ buildId: BUILD_INFO.buildId, samples: keyboardSamples }, null, 2)
+  return JSON.stringify(
+    {
+      schemaVersion: 2,
+      capturedAt: new Date(diagnosticSessionStartedAt || Date.now()).toISOString(),
+      buildId: BUILD_INFO.buildId,
+      workerDeployVersion: BUILD_INFO.workerDeployVersion,
+      environment: getEnvironmentDiagnostic(),
+      events: keyboardEvents,
+      samples: keyboardSamples,
+    },
+    null,
+    2,
+  )
 }
 
 const visibilityStorageKey = 'srl.performance-monitor.visible'
@@ -157,7 +337,16 @@ function shouldShowPerformancePanel(): boolean {
 }
 
 function isIosStandalonePwa(): boolean {
-  return Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+  const nav = navigator as Navigator & { standalone?: boolean }
+  const isAppleMobile =
+    /iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+    (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1)
+  if (!isAppleMobile) return false
+  const iosStandalone = Boolean(nav.standalone)
+  const mediaStandalone =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches
+  return iosStandalone || mediaStandalone
 }
 
 function formatDuration(value: number | null): string {
@@ -205,6 +394,10 @@ function getIosGeometryRows(): Array<[string, string]> {
   if (appViewport.includes('safe-bottom')) verdict += ' · App 高度仍含 safe-bottom'
 
   return [
+    ['打开方式', getDisplayMode()],
+    ['键盘状态', getViewportDiagnosticState().keyboardLikelyOpen ? '可能已弹起' : '未检测到弹起'],
+    ['当前焦点', describeElement(document.activeElement)],
+    ['最近事件', String(keyboardEvents.at(-1)?.type ?? '暂无')],
     ['inner / visual', `${Math.round(window.innerHeight)} / ${Math.round(viewportHeight)} px`],
     ['visual offsetTop', `${Math.round(viewport?.offsetTop ?? 0)} px`],
     [
@@ -510,6 +703,12 @@ function installDiagnosticsListeners(): void {
   window.addEventListener('pageshow', scheduleDiagnosticsRender, { passive: true })
   window.visualViewport?.addEventListener('resize', scheduleDiagnosticsRender, { passive: true })
   window.visualViewport?.addEventListener('scroll', scheduleDiagnosticsRender, { passive: true })
+  interactionEventTypes.forEach((type) => {
+    const listener = (event: Event) => recordInteractionEvent(type, event)
+    interactionListeners.set(type, listener)
+    document.addEventListener(type, listener, true)
+  })
+  setMobileInputFocusDiagnosticListener(recordMobileInputFocusDiagnostic)
 }
 
 function uninstallDiagnosticsListeners(): void {
@@ -520,6 +719,12 @@ function uninstallDiagnosticsListeners(): void {
   window.removeEventListener('pageshow', scheduleDiagnosticsRender)
   window.visualViewport?.removeEventListener('resize', scheduleDiagnosticsRender)
   window.visualViewport?.removeEventListener('scroll', scheduleDiagnosticsRender)
+  interactionEventTypes.forEach((type) => {
+    const listener = interactionListeners.get(type)
+    if (listener) document.removeEventListener(type, listener, true)
+  })
+  interactionListeners.clear()
+  setMobileInputFocusDiagnosticListener(undefined)
   if (diagnosticsFrame) cancelAnimationFrame(diagnosticsFrame)
   diagnosticsFrame = 0
 }
@@ -567,6 +772,8 @@ function resetSnapshot(): void {
 
 function stopPerformanceMonitor(): void {
   keyboardSamples.length = 0
+  keyboardEvents.length = 0
+  diagnosticSessionStartedAt = 0
   lastKeyboardGeometry = ''
   if (scrollListener) {
     window.removeEventListener('scroll', scrollListener, true)
@@ -608,6 +815,7 @@ export function installPerformanceMonitor(): void {
   }
 
   bootStartedAt = performance.now()
+  diagnosticSessionStartedAt = Date.now()
   void import('../styles/PerformanceMonitor.css')
   installDiagnosticsListeners()
   scrollListener = () => {

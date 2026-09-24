@@ -4,3 +4,7 @@ packages:
 allowBuilds:
   esbuild: true
   sharp: true
+  workerd: true
+
+patchedDependencies:
+  '@capacitor/android@8.4.2': patches/@capacitor__android@8.4.2.patch

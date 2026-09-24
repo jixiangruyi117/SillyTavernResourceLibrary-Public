@@ -12,7 +12,13 @@ const keys: Partial<Record<OfficialAppId, string[]>> = {
     'srl.stitch.templates',
     'srl.stitch.mainSide',
   ],
-  frontendWorkshop: ['srl.frontendWorkshop.recentColors'],
+  frontendWorkshop: [
+    'srl.frontendWorkshop.recentColors',
+    'srl.frontendWorkshop.versions.v1',
+    'srl.frontendWorkshop.drafts.v1',
+    'srl.frontendWorkshop.recovery.v1',
+    'srl.frontendWorkshop.conversation.v1',
+  ],
   imageGeneration: [
     'srl.frontendWorkshop.imageGeneration.config.v1',
     'srl.frontendWorkshop.imageGeneration.draft.v1',

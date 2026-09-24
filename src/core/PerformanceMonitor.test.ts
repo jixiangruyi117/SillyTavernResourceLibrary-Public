@@ -40,7 +40,13 @@ describe('PerformanceMonitor', () => {
     vi.stubGlobal('visualViewport', viewport)
     vi.stubGlobal('innerHeight', 812)
     vi.stubGlobal('innerWidth', 390)
-    vi.stubGlobal('navigator', { standalone: true })
+    vi.stubGlobal('navigator', {
+      standalone: true,
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+      platform: 'iPhone',
+      maxTouchPoints: 5,
+      onLine: true,
+    })
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       frames.set(++nextFrame, callback)
       return nextFrame
@@ -158,6 +164,53 @@ describe('PerformanceMonitor', () => {
     expect(text).not.toContain('private-api-key')
     expect(text).not.toContain('private-host-url')
     expect(panel.querySelector('button')?.textContent).toBe('已复制键盘诊断')
+  })
+
+  it('records a bounded, value-free focus and pointer event timeline', async () => {
+    document.body.innerHTML =
+      '<section role="alertdialog"><input type="email" value="private@example.com"></section>'
+    const input = document.querySelector('input')!
+    const panel = enablePanel()
+    input.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerType: 'touch',
+        isPrimary: true,
+        clientX: 24,
+        clientY: 48,
+      }),
+    )
+    input.focus()
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', {
+      standalone: true,
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+      platform: 'iPhone',
+      maxTouchPoints: 5,
+      onLine: true,
+      clipboard: { writeText },
+    })
+    panel.querySelector<HTMLButtonElement>('button')!.click()
+    await Promise.resolve()
+    const report = JSON.parse(writeText.mock.calls[0]![0] as string)
+    expect(report.schemaVersion).toBe(2)
+    expect(report.workerDeployVersion).toBeTruthy()
+    expect(report.environment.displayMode).toBe('standalone')
+    expect(report.events.map((event: { type: string }) => event.type)).toEqual(
+      expect.arrayContaining(['pointerdown', 'focusin', 'input', 'change']),
+    )
+    expect(
+      report.events.find((event: { type: string }) => event.type === 'pointerdown'),
+    ).toMatchObject({
+      target: 'input:email',
+      pointerType: 'touch',
+      clientX: 24,
+      clientY: 48,
+    })
+    expect(report.events.some((event: Record<string, unknown>) => 'value' in event)).toBe(false)
+    expect(JSON.stringify(report)).not.toContain('private@example.com')
   })
 
   it('bounds and deduplicates samples and clears them when disabled', () => {

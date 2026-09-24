@@ -9,18 +9,12 @@ const SecretPasswordDialog = createAsyncPanel(
   () => import('./components/SecretPasswordDialog.vue'),
 )
 import LibraryLinkImportPanel from './components/LibraryLinkImportPanel.vue'
+import CategoryManager from './components/CategoryManager.vue'
+import DataVaultPanel from './components/DataVaultPanel.vue'
 import { createAsyncPanel } from './core/AsyncPanel'
-const CategoryManager = createAsyncPanel(
-  '文件夹管理',
-  () => import('./components/CategoryManager.vue'),
-)
 const AiTaggingPanel = createAsyncPanel(
   'AI 标签实验台',
   () => import('./components/AiTaggingPanel.vue'),
-)
-const DataVaultPanel = createAsyncPanel(
-  '本地保险库',
-  () => import('./components/DataVaultPanel.vue'),
 )
 const ExportPanel = createAsyncPanel('导出', () => import('./components/ExportPanel.vue'))
 const FeatureHub = createAsyncPanel('功能桌面', () => import('./components/FeatureHub.vue'))
@@ -102,6 +96,8 @@ const {
   handleImport,
   handleTavernBackupImport,
   isImportChooserOpen,
+  isLinkImportOpen,
+  closeImportChooser,
   openLinkImportPanel,
   openFileImportPicker,
   openTavernBackupPicker,
@@ -146,6 +142,7 @@ const {
   duplicateResources,
   visibleLibraryResources,
   organizingVersions,
+  organizingInitialTab,
   categories,
   uiFontScale,
   customUiCss,
@@ -228,6 +225,7 @@ const {
   openFolderSettings,
   openVaultSettings,
   openVersionRecognition,
+  handleManualUpdateCheck,
   categoryManagerKey,
   handleCategoryCreate,
   handleCategoryUpdate,
@@ -384,86 +382,105 @@ const {
         v-if="isImportChooserOpen"
         class="import-choice-overlay"
         role="presentation"
-        @click.self="isImportChooserOpen = false"
+        @click.self="closeImportChooser"
       >
         <section
           class="import-choice-sheet"
+          :class="{ 'import-choice-sheet--link': isLinkImportOpen }"
           role="dialog"
           aria-modal="true"
-          aria-label="选择导入方式"
+          :aria-label="isLinkImportOpen ? '链接导入' : '选择导入方式'"
         >
           <header>
-            <span>
-              <strong>资源 / 备份</strong>
+            <button
+              v-if="isLinkImportOpen"
+              class="import-choice-sheet__back"
+              type="button"
+              aria-label="返回导入方式"
+              @click="isLinkImportOpen = false"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m14 6-6 6 6 6" />
+              </svg>
+            </button>
+            <span class="import-choice-sheet__header-title">
+              <small v-if="isLinkImportOpen">LINK IMPORT</small>
+              <strong>
+                {{ isLinkImportOpen ? '导入脚本 / 外部扩展链接' : '资源 / 备份' }}
+              </strong>
             </span>
             <button
+              class="import-choice-sheet__close"
               type="button"
-              aria-label="关闭导入方式选择"
-              @click="isImportChooserOpen = false"
+              aria-label="关闭导入"
+              @click="closeImportChooser"
             >
               ×
             </button>
           </header>
-          <div class="personal-create-actions">
-            <button type="button" @click="createPersonal('extraStory')">添加番外指令</button>
-            <button type="button" @click="createPersonal('pocketPhone')">收纳小手机</button>
-            <button type="button" @click="createPersonal('secret')">保存密钥资料</button>
-          </div>
-          <button
-            class="import-choice-card import-choice-card--link"
-            type="button"
-            @click="openLinkImportPanel"
-          >
-            <span class="import-choice-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M10 13a5 5 0 0 0 7.1 0l1.4-1.4a5 5 0 0 0-7.1-7.1l-.8.8" />
-                <path d="M14 11a5 5 0 0 0-7.1 0l-1.4 1.4a5 5 0 0 0 7.1 7.1l.8-.8" />
-              </svg>
-            </span>
-            <span class="import-choice-card__copy">
-              <small>LINK IMPORT</small>
-              <strong>链接导入脚本 / 外部扩展</strong>
-              <em>读取 GitHub 说明，或保存 Release、raw 文件与社区入口</em>
-            </span>
-          </button>
-          <button
-            class="import-choice-card"
-            type="button"
-            :disabled="isBusy"
-            @click="openFileImportPicker"
-          >
-            <span class="import-choice-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
-              </svg>
-            </span>
-            <span class="import-choice-card__copy">
-              <small>FILE IMPORT</small>
-              <strong>{{ isBusy ? '正在导入资源' : '导入本地资源 / 备份' }}</strong>
-              <em>角色卡、世界书、正则、CSS、TXT、ZIP，可多选</em>
-            </span>
-          </button>
-          <button
-            class="import-choice-card"
-            type="button"
-            :disabled="isBusy"
-            @click="openTavernBackupPicker"
-          >
-            <span class="import-choice-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M4 7h16v12H4zM7 4h10v3M8 11h8M8 15h5" />
-              </svg>
-            </span>
-            <span class="import-choice-card__copy">
-              <small>TAVERN BACKUP</small>
-              <strong>导入酒馆备份</strong>
-              <em>仅接受 SillyTavern 备份 ZIP，提取角色卡、世界书、预设、美化等支持资源</em>
-            </span>
-          </button>
+
+          <template v-if="!isLinkImportOpen">
+            <div class="personal-create-actions">
+              <button type="button" @click="createPersonal('extraStory')">添加番外指令</button>
+              <button type="button" @click="createPersonal('pocketPhone')">收纳小手机</button>
+              <button type="button" @click="createPersonal('secret')">保存密钥资料</button>
+            </div>
+            <button
+              class="import-choice-card import-choice-card--link"
+              type="button"
+              @click="openLinkImportPanel"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M10 13a5 5 0 0 0 7.1 0l1.4-1.4a5 5 0 0 0-7.1-7.1l-.8.8" />
+                  <path d="M14 11a5 5 0 0 0-7.1 0l-1.4 1.4a5 5 0 0 0 7.1 7.1l.8-.8" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>LINK IMPORT</small>
+                <strong>链接导入脚本 / 外部扩展</strong>
+                <em>读取 GitHub 说明，或保存 Release、raw 文件与社区入口</em>
+              </span>
+            </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="openFileImportPicker"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>FILE IMPORT</small>
+                <strong>{{ isBusy ? '正在导入资源' : '导入本地资源 / 备份' }}</strong>
+                <em>角色卡、世界书、正则、CSS、TXT、ZIP，可多选</em>
+              </span>
+            </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="openTavernBackupPicker"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16v12H4zM7 4h10v3M8 11h8M8 15h5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>TAVERN BACKUP</small>
+                <strong>导入酒馆备份</strong>
+                <em>仅接受 SillyTavern 备份 ZIP，提取角色卡、世界书、预设、美化等支持资源</em>
+              </span>
+            </button>
+          </template>
+
+          <LibraryLinkImportPanel v-else :model="panelModel" />
         </section>
       </div>
-
-      <LibraryLinkImportPanel :model="panelModel" />
 
       <section class="archive-summary" aria-label="资源概况">
         <div class="archive-summary__counts">
@@ -489,7 +506,7 @@ const {
         >
           <span class="protection-trigger__mark" aria-hidden="true"></span>
           <span class="protection-trigger__copy">
-            <small>DATA SAFETY</small>
+            <small>数据保护</small>
             <strong>{{ storageProtectionStatus }}</strong>
           </span>
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -669,6 +686,7 @@ const {
       @feature-app-active="isFeatureAppActive = $event"
       @close="isFeatureHubOpen = false"
       @open-resource="openResourceDetail"
+      @open-persona-history="(resource) => openResourceDetail(resource, 'versions')"
       @manage-folders="openFolderManagerFromFeatureHub"
       @folder-add="handleFolderAdd"
       @folder-cover="handleFolderCover"
@@ -807,6 +825,7 @@ const {
       v-if="organizingResource"
       ref="personalOrganizer"
       :resource="organizingResource"
+      :initial-tab="organizingInitialTab"
       :settings-open="isSettingsOpen"
       :resources="managedResources"
       :bound-resources="organizingBoundResources"
@@ -876,6 +895,7 @@ const {
       @manage-folders="openFolderSettings"
       @open-vault="openVaultSettings"
       @open-version-recognition="openVersionRecognition"
+      @manual-check-update="handleManualUpdateCheck"
       @close="isSettingsOpen = false"
     />
 
@@ -987,7 +1007,7 @@ const {
         class="duplicate-cleaner-sheet"
         role="dialog"
         aria-modal="true"
-        aria-label="重新识别历史版本"
+        aria-label="历史版本管理"
       >
         <VersionRecognitionPanel
           :resources="managedResources"

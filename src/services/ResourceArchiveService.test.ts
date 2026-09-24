@@ -124,6 +124,24 @@ describe('SillyTavern user archive', () => {
     expect(nestedFiles).toEqual(['Dark Lite.json'])
   })
 
+  it('uses content.log to skip seeded resources while preserving user files and subfolders', async () => {
+    const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
+    const file = zip({
+      'settings.json': '{}',
+      'content.log':
+        'default_Seraphina.png\nEldoria.json\nthemes/Dark Lite.json\npresets/openai/Default.json\n',
+      'characters/default_Seraphina.png': 'seed character',
+      'characters/my-character.json': 'user character',
+      'worlds/Eldoria.json': 'seed world',
+      'themes/Dark Lite.json': 'seed theme',
+      'themes/user/Dark Lite.json': 'user theme',
+      'OpenAI Settings/Default.json': 'seed preset',
+    })
+    const files = []
+    for await (const entry of service.tavernFiles(file)) files.push(entry.name)
+    expect(files).toEqual(['my-character.json', 'Dark Lite.json'])
+  })
+
   it('rejects unsafe ZIP paths before an import', async () => {
     const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
     await expect(service.inspect(zip({ '../characters/a.json': '{}' }))).rejects.toThrow()

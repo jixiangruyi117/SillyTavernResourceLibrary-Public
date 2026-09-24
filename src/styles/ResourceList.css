@@ -153,16 +153,6 @@
     );
 }
 
-.resource-card--compact::before {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 3px;
-  background: var(--color-line-strong);
-  content: '';
-}
-
 .resource-card--compact .resource-card__selector {
   right: 0.625rem;
   left: auto;
@@ -618,7 +608,8 @@
   animation: notice-enter 180ms ease both;
 }
 
-.editor-sheet {
+.editor-sheet,
+.layout-settings-page {
   width: min(100%, 31rem);
   max-height: min(42rem, calc(var(--app-viewport-height) - 2rem));
   padding: clamp(1.25rem, 4vw, 1.75rem);

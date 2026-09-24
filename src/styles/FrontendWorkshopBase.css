@@ -1,0 +1,341 @@
+.frontend-workshop {
+  grid-column: 1/-1;
+  min-height: var(--app-viewport-height);
+  padding: clamp(1rem, 4vw, 3rem) clamp(0.75rem, 4vw, 4rem) 0;
+  color: var(--color-ink);
+  background:
+    linear-gradient(90deg, transparent 0 4.95rem, var(--color-grid) 5rem, transparent 5.05rem),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 31px,
+      color-mix(in srgb, var(--color-grid) 70%, transparent) 32px
+    ),
+    var(--color-canvas);
+}
+.frontend-workshop,
+.frontend-workshop *,
+.frontend-workshop *::before,
+.frontend-workshop *::after {
+  box-sizing: border-box;
+}
+.frontend-workshop__header > *,
+.frontend-workshop__layout > *,
+.frontend-workshop__brief,
+.frontend-workshop__proof,
+.frontend-workshop__delivery {
+  min-width: 0;
+  max-width: 100%;
+}
+.frontend-workshop fieldset,
+.frontend-workshop form,
+.frontend-workshop section,
+.frontend-workshop article,
+.frontend-workshop div {
+  min-width: 0;
+}
+.frontend-workshop__header {
+  display: grid;
+  grid-template-columns: var(--size-touch) minmax(0, 1fr) auto;
+  gap: 1rem;
+  max-width: 78rem;
+  margin: 0 auto 1.5rem;
+  padding: 1rem clamp(1rem, 3vw, 1.5rem) 1.25rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius-panel);
+  background: var(--glass-panel);
+  box-shadow: var(--glass-shadow);
+}
+.frontend-workshop__header > button {
+  width: var(--size-touch);
+  height: var(--size-touch);
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-accent);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__header small,
+.frontend-workshop header small {
+  color: var(--color-accent);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+  letter-spacing: 0.06em;
+}
+.frontend-workshop__header h1 {
+  min-height: calc(var(--feature-title-size) * var(--feature-title-line-height));
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--feature-title-size);
+  font-weight: var(--weight-title);
+  line-height: var(--feature-title-line-height);
+}
+.frontend-workshop__header p {
+  max-width: 42rem;
+  margin: 0.65rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+  line-height: 1.55;
+}
+.frontend-workshop__header > span {
+  align-self: center;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--glass-radius-control);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__conversation-launcher {
+  position: fixed;
+  z-index: 76;
+  right: max(0.75rem, var(--safe-right));
+  bottom: max(4rem, calc(3.5rem + var(--safe-bottom)));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 5.5rem;
+  min-height: var(--control-visual-secondary);
+  padding: 0.28rem 0.65rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-accent);
+  background: var(--glass-panel-strong);
+  box-shadow: 0 0.25rem 0.7rem color-mix(in srgb, var(--color-ink) 13%, transparent);
+  text-align: left;
+}
+.frontend-workshop__conversation-launcher::before {
+  position: absolute;
+  inset: -0.25rem 0;
+  content: '';
+}
+.frontend-workshop__conversation-launcher span {
+  min-width: 0;
+  font: var(--weight-title) var(--text-body)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__conversation-launcher small {
+  display: none;
+}
+
+@media (max-width: 30rem) {
+  .frontend-workshop__conversation-launcher {
+    width: var(--control-visual);
+    min-width: 0;
+    min-height: var(--control-visual);
+    place-items: center;
+    padding: 0;
+  }
+
+  .frontend-workshop__conversation-launcher span {
+    position: relative;
+    width: 1.25rem;
+    overflow: hidden;
+    font-size: 0.6875rem;
+    text-indent: -9999px;
+    white-space: nowrap;
+  }
+
+  .frontend-workshop__conversation-launcher span::after {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    content: 'AI';
+    font-size: 0.6875rem;
+    text-indent: 0;
+  }
+}
+.frontend-workshop__conversation-launcher:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+@media (min-width: 48rem) {
+  .frontend-workshop__conversation-launcher {
+    bottom: max(0.75rem, var(--safe-bottom));
+  }
+}
+.frontend-workshop__steps {
+  position: sticky;
+  z-index: 12;
+  top: max(0.4rem, var(--safe-top));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+  width: min(24rem, 100%);
+  min-width: 0;
+  margin: 0 auto 1rem;
+  padding: 0.3rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius-control);
+  background: var(--glass-panel-muted);
+}
+.frontend-workshop .frontend-workshop__steps button {
+  position: relative;
+  min-width: 0;
+  min-height: 2.25rem;
+  border: 0;
+  color: var(--color-ink-soft);
+  background: transparent;
+  font-size: var(--text-caption);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop .frontend-workshop__steps button::before {
+  position: absolute;
+  inset: -0.25rem 0;
+  content: '';
+}
+.frontend-workshop .frontend-workshop__steps button.is-active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.frontend-workshop__design-tabs {
+  display: none;
+}
+.frontend-workshop__design-panel {
+  display: contents;
+}
+.frontend-workshop__panel-next {
+  display: none;
+}
+.frontend-workshop__layout {
+  display: grid;
+  grid-template-columns: minmax(17rem, 0.82fr) minmax(20rem, 1.18fr);
+  gap: 1rem;
+  max-width: 78rem;
+  margin: 0 auto;
+}
+.frontend-workshop__brief,
+.frontend-workshop__proof,
+.frontend-workshop__delivery {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius-panel);
+  background: var(--glass-panel);
+  box-shadow: var(--glass-shadow);
+}
+.frontend-workshop__brief,
+.frontend-workshop__proof {
+  padding: 1rem;
+}
+.frontend-workshop__brief > header,
+.frontend-workshop__proof > header,
+.frontend-workshop__delivery > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.frontend-workshop header strong {
+  display: block;
+  min-width: 0;
+  margin-top: 0.15rem;
+  font-family: var(--font-ui);
+  font-size: var(--text-title-sm);
+  font-weight: var(--weight-title);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  margin-top: 0.75rem;
+}
+.frontend-workshop details:not([open]) > :not(summary) {
+  display: none;
+}
+.frontend-workshop__drafts,
+.frontend-workshop__references,
+.frontend-workshop__conversation {
+  margin: 0.8rem 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--glass-radius-control);
+  background: var(--glass-panel-muted);
+}
+.frontend-workshop__drafts > summary,
+.frontend-workshop__references > header,
+.frontend-workshop__conversation > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--size-touch);
+  gap: 0.75rem;
+  padding: 0.6rem 0.7rem;
+}
+.frontend-workshop__drafts > summary {
+  cursor: pointer;
+}
+.frontend-workshop__drafts > summary span,
+.frontend-workshop__references > header span,
+.frontend-workshop__conversation > header span {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__drafts > summary small,
+.frontend-workshop__references > header small,
+.frontend-workshop__conversation > header small {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__drafts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+  padding: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__drafts > div button {
+  min-height: var(--control-visual-secondary);
+  padding: 0 0.75rem;
+}
+.frontend-workshop__draft-protection {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0 0.7rem 0.7rem;
+  padding: 0.55rem 0.65rem;
+  border-left: 0.2rem solid var(--color-accent);
+  background-color: var(--color-surface);
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+}
+.frontend-workshop__draft-protection strong {
+  color: var(--color-ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-ui);
+}
+.frontend-workshop__drafts ul {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0 0.7rem 0.7rem;
+  list-style: none;
+}
+.frontend-workshop__drafts li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--size-touch);
+  gap: 0.35rem;
+  min-width: 0;
+}
+.frontend-workshop__drafts li button {
+  min-width: 0;
+  min-height: var(--size-touch);
+  text-align: left;
+}
+.frontend-workshop__drafts li button:first-child {
+  display: grid;
+  padding: 0.45rem 0.6rem;
+  overflow: hidden;
+}
+.frontend-workshop__drafts li button:first-child :where(strong, small, span) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__drafts li button:last-child {
+  text-align: center;
+}

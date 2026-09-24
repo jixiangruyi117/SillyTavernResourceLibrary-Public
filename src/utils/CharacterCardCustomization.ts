@@ -201,7 +201,7 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0
 }
 
-async function replacePngCharacterChunk(
+export async function replacePngCharacterChunk(
   source: Blob,
   keyword: string,
   card: Record<string, unknown>,

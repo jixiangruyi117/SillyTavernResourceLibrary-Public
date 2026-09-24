@@ -1,5 +1,5 @@
 import type { PersonalResourceSelection } from '../services/PersonalResourceBackup'
-export type CloudBackupProvider = 'github'
+export type CloudBackupProvider = 'github' | 'webdav'
 
 export type CloudBackupIntervalUnit = 'minutes' | 'hours' | 'days'
 
@@ -39,7 +39,19 @@ export interface GitHubBackupConfig {
   contentSelection?: CloudBackupContentSelection
 }
 
-export type CloudBackupConfig = GitHubBackupConfig
+export interface WebDavBackupConfig {
+  provider: 'webdav'
+  baseUrl: string
+  folder: string
+  username: string
+  retention: number
+  autoBackup: boolean
+  schedule?: CloudBackupSchedule
+  protection?: CloudBackupProtection
+  contentSelection?: CloudBackupContentSelection
+}
+
+export type CloudBackupConfig = GitHubBackupConfig | WebDavBackupConfig
 
 export interface CloudBackupMetrics {
   startedAt: number
@@ -82,7 +94,7 @@ export interface CloudBackupItem {
   objectKey: string
   size: number
   createdAt: number
-  kind?: 'single' | 'githubBundle' | 'githubSnapshot'
+  kind?: 'single' | 'githubBundle' | 'webdavBundle' | 'githubSnapshot' | 'webdavSnapshot'
   partCount?: number
   archiveName?: string
   maintenanceWarning?: string
@@ -93,6 +105,7 @@ export interface CloudBackupItem {
 export interface CloudBackupSnapshot {
   activeProvider?: CloudBackupProvider
   github?: GitHubBackupConfig
+  webdav?: WebDavBackupConfig
   status: CloudBackupStatus
   credentials: Record<CloudBackupProvider, 'missing' | 'valid' | 'invalid'>
 }

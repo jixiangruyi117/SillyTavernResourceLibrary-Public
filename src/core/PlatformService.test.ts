@@ -125,6 +125,7 @@ describe('PlatformService', () => {
       'network',
       'systemUi',
       'share',
+      'update',
     ])
     await expect(platform.capabilities.supports('system-insets-v1')).resolves.toBe(true)
     await expect(platform.network.getState()).resolves.toMatchObject({ wifi: true })

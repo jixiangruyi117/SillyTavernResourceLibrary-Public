@@ -6,6 +6,7 @@ import { useNativeResourceExport } from '../composables/UseNativeResourceExport'
 import { useRecycleBin } from '../composables/UseRecycleBin'
 import { useResourceVersions } from '../composables/UseResourceVersions'
 import { useSearchIndex } from '../composables/UseSearchIndex'
+import { isAndroidApk } from '../utils/CapacitorDetection'
 import { browserStorageService } from '../core/AppContainer'
 import { noticeCenter, type NoticeType } from '../core/NoticeCenter'
 import { getPerformanceMonitorVisible } from '../core/PerformanceMonitor'
@@ -40,7 +41,6 @@ import { useLibraryQueryView } from './UseLibraryQueryView'
 import { useLibraryRefresh } from './UseLibraryRefresh'
 import { useLibraryResourceActions } from './UseLibraryResourceActions'
 import { useLibraryWorkspaceRecovery } from './UseLibraryWorkspaceRecovery'
-import { isCapacitorApp } from '../utils/CapacitorDetection'
 export type { FilterValue, SortValue } from '../types/AppView'
 
 export function useApp() {
@@ -49,6 +49,7 @@ export function useApp() {
     applyHideCharacterAssets,
     applyShowManuallyBoundResources,
     applyBlurThumbnails,
+    handleManualUpdateCheck,
     updateSplitViewport,
     openAiTagging,
     openVersionRecognition,
@@ -145,12 +146,6 @@ export function useApp() {
     cancelSearchInput,
     saveCustomUiCss,
     backStack,
-    get mobileInputRevealTimer() {
-      return mobileInputRevealTimer
-    },
-    set mobileInputRevealTimer(value: typeof mobileInputRevealTimer) {
-      mobileInputRevealTimer = value
-    },
   }))
 
   const {
@@ -165,6 +160,7 @@ export function useApp() {
   } = useLibraryResourceActions(() => ({
     showNotice,
     organizingResource,
+    organizingInitialTab,
     organizingBoundResources,
     organizingVersions,
     layoutMode,
@@ -208,6 +204,7 @@ export function useApp() {
     handleSystemFileDragLeave,
     handleSystemFileDrop,
     handleLinkImport,
+    closeImportChooser,
     openLinkImportPanel,
     openImportChooser,
     openFileImportPicker,
@@ -337,8 +334,6 @@ export function useApp() {
 
   const categories = ref<Category[]>([])
 
-  let mobileInputRevealTimer: number | undefined
-
   const activeFilter = ref<FilterValue>('all')
 
   const activeCategoryId = ref<string | null | undefined>(undefined)
@@ -404,6 +399,8 @@ export function useApp() {
 
   const organizingResource = ref<Resource>()
 
+  const organizingInitialTab = ref<'overview' | 'versions'>('overview')
+
   const organizingBoundResources = ref<Resource[]>([])
 
   const organizingVersions = ref<ResourceVersionView[]>([])
@@ -451,7 +448,7 @@ export function useApp() {
 
   const isClearingNativeCache = ref(false)
 
-  const isNativeApk = isCapacitorApp()
+  const isNativeApk = isAndroidApk()
 
   const isRequestingPersistence = ref(false)
 
@@ -772,12 +769,6 @@ export function useApp() {
     handleNativeShortcut,
     handleMobileFocus,
     syncCustomUiCss,
-    get mobileInputRevealTimer() {
-      return mobileInputRevealTimer
-    },
-    set mobileInputRevealTimer(value: typeof mobileInputRevealTimer) {
-      mobileInputRevealTimer = value
-    },
   })
   return {
     layoutMode,
@@ -816,6 +807,7 @@ export function useApp() {
     handleTavernBackupImport,
     isImportChooserOpen,
     personalNavigation,
+    closeImportChooser,
     openLinkImportPanel,
     openFileImportPicker,
     openTavernBackupPicker,
@@ -935,6 +927,7 @@ export function useApp() {
     handlePurgeRecycleBinEntry,
     handleEmptyRecycleBin,
     organizingResource,
+    organizingInitialTab,
     organizingBoundResources,
     isOrganizing,
     closeResourceDetail,
@@ -975,6 +968,7 @@ export function useApp() {
     openFolderSettings,
     openVaultSettings,
     openVersionRecognition,
+    handleManualUpdateCheck,
     categoryManagerKey,
     handleCategoryCreate,
     handleCategoryUpdate,

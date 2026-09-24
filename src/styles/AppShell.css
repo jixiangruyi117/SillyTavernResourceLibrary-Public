@@ -475,7 +475,10 @@
 .import-choice-sheet {
   display: grid;
   width: min(100%, 34rem);
+  max-height: calc(100vh - max(1rem, var(--safe-top)));
   gap: 0.75rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.875rem 0.875rem max(0.875rem, var(--safe-bottom));
   border: 1px solid var(--color-line);
   border-radius: 18px 18px 0 0;
@@ -491,8 +494,10 @@
   padding: 0.25rem 0.25rem 0.5rem;
 }
 
-.import-choice-sheet header span {
+.import-choice-sheet__header-title {
   display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
   gap: 0.125rem;
 }
 
@@ -514,11 +519,27 @@
 .import-choice-sheet header button {
   width: var(--size-touch);
   height: var(--size-touch);
+  flex: 0 0 var(--size-touch);
   border: 1px solid var(--color-line);
   border-radius: 999px;
   color: var(--color-ink);
   background: var(--color-surface);
   font-size: 1.25rem;
+}
+
+.import-choice-sheet__back {
+  display: grid;
+  place-items: center;
+}
+
+.import-choice-sheet__back svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .import-choice-card {
@@ -613,40 +634,29 @@
     border-radius: 14px;
   }
 
+  .import-choice-sheet--link {
+    grid-template-columns: minmax(0, 1fr);
+    width: min(100%, 38rem);
+  }
+
   .import-choice-sheet header {
     grid-column: 1 / -1;
   }
 }
 
 .link-import-panel {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 0.75fr) minmax(18rem, 1fr);
-  gap: clamp(0.875rem, 2vw, 1.25rem);
-  margin-top: var(--space-section);
-  padding: clamp(0.875rem, 2vw, 1.25rem);
-  border: 1px solid var(--color-line);
-  border-radius: 4px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent),
-    var(--color-surface);
-  box-shadow: 0 12px 32px var(--color-shadow);
+  min-width: 0;
+  gap: 0.875rem;
 }
 
 .link-import-panel__copy {
-  display: grid;
-  align-content: start;
-  gap: 0.45rem;
   min-width: 0;
 }
 
-.link-import-panel__copy strong {
-  font-family: var(--font-display);
-  font-size: clamp(1.125rem, 2.2vw, 1.625rem);
-  font-weight: 500;
-  letter-spacing: -0.02em;
-}
-
-.link-import-panel__copy span {
+.link-import-panel__copy > span {
+  display: block;
   color: var(--color-ink-soft);
   font-size: 12px;
   line-height: 1.7;

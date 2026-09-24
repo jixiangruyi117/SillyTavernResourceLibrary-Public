@@ -43,11 +43,15 @@ export class TavernConnectionStore extends EventTarget {
 
   clearInventory(): void {
     this.inventory = []
+    this.lastSyncAt = undefined
     this.publish()
   }
 
   private readonly handleBridgeState = (): void => {
-    if (tavernBridgeService.getState().status !== 'connected') this.inventory = []
+    if (tavernBridgeService.getState().status !== 'connected') {
+      this.inventory = []
+      this.lastSyncAt = undefined
+    }
     this.publish()
   }
 

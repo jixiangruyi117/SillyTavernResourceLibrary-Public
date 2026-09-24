@@ -4,7 +4,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core'
  * 取回系统分享暂存的文件。
  *
  * 网页由 Service Worker 暂存；APK 由 Android 流式复制到应用私有持久目录。
- * 应用登录完成后交给常规导入管线，只有数据库导入成功才确认删除；
+ * 应用启动后交给常规导入管线，只有数据库导入成功才确认删除；
  * 失败文件保留七天供下次启动重试。文件从不离开本机。
  */
 

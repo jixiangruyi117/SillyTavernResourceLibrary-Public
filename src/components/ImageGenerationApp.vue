@@ -87,7 +87,6 @@ const {
   saveToAlbum,
   canSaveToPhone,
   saveToPhone,
-  hostingMode,
   selfHostedOrigin,
   selfHostedToken,
   rememberSelfHosted,
@@ -99,7 +98,7 @@ const {
 </script>
 
 <template>
-  <section class="image-generation-app">
+  <section class="image-generation-app" role="dialog" aria-modal="true" aria-label="AI 生图">
     <FeatureAppHeader
       title="AI 生图"
       @back="section === 'generate' ? $emit('back') : (section = 'generate')"
@@ -887,16 +886,7 @@ const {
       <header>
         <div><strong>云端</strong><small>生成稳定 HTTPS 直链；结果会同步写回生图相册。</small></div>
       </header>
-      <div class="image-generation-provider__switch image-generation-provider__switch--hosting">
-        <button
-          type="button"
-          :class="{ 'is-active': hostingMode === 'self-hosted' }"
-          @click="hostingMode = 'self-hosted'"
-        >
-          自建图床
-        </button>
-      </div>
-      <div v-if="hostingMode === 'self-hosted'" class="image-generation-hosting-form">
+      <div class="image-generation-hosting-form">
         <label
           ><span>Origin</span
           ><input v-model="selfHostedOrigin" type="url" placeholder="https://img.example.com"
@@ -912,7 +902,7 @@ const {
       <button
         class="btn primary image-generation-primary"
         type="button"
-        :disabled="!result || hostingBusy || busy"
+        :disabled="!result || hostingBusy || busy || !selfHostedReady"
         @click="hostResult"
       >
         {{ hostingBusy ? '生成直链中…' : '生成直链' }}

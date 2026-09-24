@@ -3,8 +3,8 @@ import { hashCloudBlob } from './CloudArchiveCodec'
 export const GITHUB_BUNDLE_FORMAT = 'srl-github-backup-bundle'
 export const GITHUB_BUNDLE_VERSION = 2
 const LEGACY_GITHUB_BUNDLE_VERSION = 1
-// GitHub 直连分块保持在可恢复的大小；文件中间增删数据后会很快重新同步边界，
-// 避免后续分卷全部重传。
+// CF Worker 同源代理 body 上限为 64 MiB，任何内容定义分块都不会超过 32 MiB。
+// 平均边界约 16 MiB；文件中间增删数据后会很快重新同步边界，避免后续分卷全部重传。
 export const GITHUB_PART_SIZE = 32 * 1024 * 1024
 export const GITHUB_MIN_PART_SIZE = 8 * 1024 * 1024
 export const GITHUB_AVERAGE_PART_SIZE = 16 * 1024 * 1024
@@ -21,7 +21,7 @@ export interface GitHubBundlePart {
   storedSize?: number
   /** V3 transport locator. V1/V2 manifests infer the legacy container. */
   storage?: {
-    kind: 'github-release'
+    kind: 'github-release' | 'koofr-path'
     container: string
     objectKey: string
   }
@@ -164,7 +164,7 @@ export function parseGitHubBundleManifest(value: unknown): GitHubBundleManifest 
           part.storedSize < (part.offset ?? 0) + part.size)) ||
       (part.offset === undefined) !== (part.storedSize === undefined) ||
       (part.storage !== undefined &&
-        (part.storage.kind !== 'github-release' ||
+        (!['github-release', 'koofr-path'].includes(part.storage.kind) ||
           typeof part.storage.container !== 'string' ||
           !part.storage.container ||
           typeof part.storage.objectKey !== 'string' ||

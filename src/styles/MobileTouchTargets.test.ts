@@ -16,6 +16,22 @@ const richContentPreview = readFileSync(
   new URL('./RichContentPreview.css', import.meta.url),
   'utf8',
 )
+const frontendWorkshopCss = readFileSync(
+  new URL('./FrontendWorkshopDesignAppearance.css', import.meta.url),
+  'utf8',
+)
+const frontendWorkshopReferencesCss = readFileSync(
+  new URL('./FrontendWorkshopDesignReferences.css', import.meta.url),
+  'utf8',
+)
+const frontendWorkshopResponsiveCss = readFileSync(
+  new URL('./FrontendWorkshopResponsive.css', import.meta.url),
+  'utf8',
+)
+const frontendWorkshopProofCss = readFileSync(
+  new URL('./FrontendWorkshopProof.css', import.meta.url),
+  'utf8',
+)
 const performanceMonitorCss = readFileSync(
   new URL('./PerformanceMonitor.css', import.meta.url),
   'utf8',
@@ -231,6 +247,61 @@ describe('移动端主要触控目标', () => {
     const toolbarButtonRule = readRule(richContentPreview, '.rich-content-preview__toolbar button')
 
     expect(toolbarButtonRule).toContain('min-height: 44px')
+  })
+
+  it('前端了么快捷模板按钮分离紧凑视觉高度与 44px 触控热区', () => {
+    const presetRule = readRule(frontendWorkshopCss, '.frontend-workshop__presets button')
+    const presetHitRule = readRule(
+      frontendWorkshopCss,
+      '.frontend-workshop__presets button::before',
+    )
+    const fieldRule = readRule(
+      frontendWorkshopCss,
+      ".frontend-workshop select,\n.frontend-workshop input:not([type='range'], [type='file'], [type='checkbox'], [type='radio'])",
+    )
+
+    expect(presetRule).toContain('min-height: var(--control-visual)')
+    expect(presetHitRule).toContain('inset: -0.375rem 0')
+    expect(fieldRule).toContain('min-height: var(--size-touch)')
+  })
+
+  it('前端了么普通输入框规则排除 checkbox，审美建议勾选框保持紧凑尺寸', () => {
+    const reviewCheckboxRule = readRule(
+      frontendWorkshopProofCss,
+      ".frontend-workshop .frontend-workshop__review-suggestion input[type='checkbox']",
+    )
+
+    expect(frontendWorkshopCss).toContain("[type='checkbox'], [type='radio']")
+    expect(frontendWorkshopResponsiveCss).toContain("[type='checkbox'], [type='radio']")
+    expect(reviewCheckboxRule).toContain('width: 1.2rem')
+    expect(reviewCheckboxRule).toContain('max-width: 1.2rem')
+    expect(reviewCheckboxRule).toContain('max-height: 1.2rem')
+  })
+
+  it('前端了么提示词注入开关不继承普通输入框的整行尺寸', () => {
+    const switchRule = readRule(
+      frontendWorkshopReferencesCss,
+      ".frontend-workshop .frontend-workshop__module-switch input[type='checkbox']",
+    )
+    const switchLayoutRule = readRule(
+      frontendWorkshopReferencesCss,
+      '.frontend-workshop__module-switch',
+    )
+    const switchTextRule = readRule(
+      frontendWorkshopReferencesCss,
+      '.frontend-workshop__module-switch span',
+    )
+    const mobileRootRule = readRule(frontendWorkshopResponsiveCss, '.frontend-workshop')
+
+    expect(switchLayoutRule).toContain('grid-template-columns: auto minmax(0, 1fr)')
+    expect(switchLayoutRule).toContain('min-height: var(--size-touch)')
+    expect(switchLayoutRule).toContain('border-radius: var(--radius-control)')
+    expect(switchRule).toContain('width: 1.1rem')
+    expect(switchRule).toContain('max-width: 1.1rem')
+    expect(switchRule).toContain('max-height: 1.1rem')
+    expect(switchTextRule).toContain('writing-mode: horizontal-tb')
+    expect(frontendWorkshopReferencesCss).toContain('label:not(.frontend-workshop__module-switch)')
+    expect(mobileRootRule).toContain('padding-bottom: 0')
   })
 
   it('云备份持久凭据状态与操作按钮保持可触控', () => {

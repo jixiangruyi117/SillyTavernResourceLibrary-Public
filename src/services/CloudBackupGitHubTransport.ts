@@ -61,6 +61,7 @@ export async function githubFetch(
         ...init.headers,
       },
     },
+    'github',
   )
   if (response.ok && (init.method ?? 'GET').toUpperCase() === 'DELETE') {
     const assetId = Number(/\/releases\/assets\/(\d+)/u.exec(path)?.[1] ?? Number.NaN)
@@ -87,6 +88,7 @@ export async function ensureGitHubInitialCommit(
         'X-GitHub-Api-Version': '2022-11-28',
       },
     },
+    'github',
   )
   if (commits.ok) return false
   if (commits.status !== 409) {
@@ -114,13 +116,17 @@ export async function getGitHubRelease(
 ): Promise<GitHubRelease | undefined> {
   const releaseUrl = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repository)}/releases/tags/${encodeURIComponent(tag)}`
   const requestRelease = (): Promise<Response> =>
-    context.cloudFetch(releaseUrl, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${secret}`,
-        'X-GitHub-Api-Version': '2022-11-28',
+    context.cloudFetch(
+      releaseUrl,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${secret}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
       },
-    })
+      'github',
+    )
   let response = await requestRelease()
   let initialized = false
   if (response.ok) return (await response.json()) as GitHubRelease
@@ -412,6 +418,7 @@ export async function uploadGitHubAsset(
           },
           body: blob,
         },
+        'github',
       )
       if (response.ok) {
         const asset = (await response.json()) as GitHubAsset

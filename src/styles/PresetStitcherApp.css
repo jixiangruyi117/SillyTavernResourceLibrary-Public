@@ -18,10 +18,6 @@
 
 .stitch {
   color: var(--stitch-ink);
-  background:
-    linear-gradient(90deg, transparent 0 5.9rem, var(--color-grid) 5.9rem 6rem, transparent 6rem),
-    radial-gradient(circle at 82% 8%, var(--color-accent-soft), transparent 28rem),
-    var(--stitch-paper);
   min-height: 100%;
   padding: 0 clamp(0.75rem, 4vw, 4rem);
   display: flex;

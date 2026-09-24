@@ -53,7 +53,7 @@ watch(
   () => props.open,
   (open) => {
     document.documentElement.classList.toggle('srl-action-sheet-open', open)
-    if (open) void nextTick(() => panel.value?.focus())
+    if (open) void nextTick(() => panel.value?.focus({ preventScroll: true }))
   },
   { immediate: true },
 )

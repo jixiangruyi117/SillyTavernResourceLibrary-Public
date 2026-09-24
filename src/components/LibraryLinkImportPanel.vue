@@ -4,15 +4,9 @@ import type { useApp } from '../composables/UseApp'
 
 type PanelModel = Pick<
   ShallowUnwrapRef<ReturnType<typeof useApp>>,
-  | 'isLinkImportOpen'
-  | 'handleLinkImport'
-  | 'linkImportText'
-  | 'linkImportUrls'
-  | 'isBusy'
-  | 'linkImportPreview'
+  'handleLinkImport' | 'linkImportText' | 'linkImportUrls' | 'isBusy' | 'linkImportPreview'
 >
 const input = defineProps<{ model: PanelModel }>()
-const isLinkImportOpen = toRef(input.model, 'isLinkImportOpen')
 const handleLinkImport = toRef(input.model, 'handleLinkImport')
 const linkImportText = toRef(input.model, 'linkImportText')
 const linkImportUrls = toRef(input.model, 'linkImportUrls')
@@ -20,14 +14,8 @@ const isBusy = toRef(input.model, 'isBusy')
 const linkImportPreview = toRef(input.model, 'linkImportPreview')
 </script>
 <template>
-  <section
-    v-if="isLinkImportOpen"
-    id="link-import-panel"
-    class="link-import-panel"
-    aria-label="链接导入"
-  >
+  <section id="link-import-panel" class="link-import-panel" aria-label="链接导入表单">
     <div class="link-import-panel__copy">
-      <strong>导入脚本 / 外部扩展链接</strong>
       <span
         >适合 GitHub 仓库、Release、raw 文件、文档或社区发布页。公开 GitHub 仓库会读取描述、README
         与扩展清单；始终不安装、不执行。</span

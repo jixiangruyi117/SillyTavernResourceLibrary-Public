@@ -8,6 +8,8 @@ declare const caches: {
 }
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { buildDiscordManualWorkerSource } from './scripts/DiscordManualWorkerSource.ts'
+import { officialAppPackagesPlugin } from './scripts/OfficialAppPackages.js'
 
 import vue from '@vitejs/plugin-vue'
 import { build } from 'esbuild'
@@ -16,6 +18,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 import buildInfo from './build-info.json' with { type: 'json' }
 
+const workerProxy = { '/api': 'http://127.0.0.1:8787' }
 const previewVendorGlobalsSourceId = 'virtual:srl-preview-vendor-globals-source'
 const resolvedPreviewVendorGlobalsSourceId = `\0${previewVendorGlobalsSourceId}`
 const appearanceStarterCssSourceId = 'virtual:srl-appearance-starter-css-source'
@@ -46,8 +49,9 @@ const appearanceStarterCssSources: Record<string, AppearanceStarterCssSource[]> 
   bridge: [{ file: 'TavernBridgeCenter.css', selectorHint: /\.tavern-bridge/u }],
   stitch: [{ file: 'PresetStitcherApp.css', selectorHint: /\.stitch/u }],
   frontend: [
-    { file: 'FrontendWorkshopWorkbench.css', selectorHint: /\.(fw-|frontend-workbench)/u },
-    { file: 'FrontendWorkshopSourceSession.css', selectorHint: /\.frontend-workshop-source/u },
+    { file: 'FrontendWorkshopBase.css', selectorHint: /\.frontend-workshop/u },
+    { file: 'FrontendWorkshopDelivery.css', selectorHint: /\.frontend-workshop/u },
+    { file: 'FrontendWorkshopResponsive.css', selectorHint: /\.frontend-workshop/u },
   ],
   persona: [{ file: 'UserPersonaApp.css', selectorHint: /\.persona-app/u }],
   'app:imageGeneration': [
@@ -133,6 +137,7 @@ function listPublicOfflineAssets(
 ): Array<{ url: string; size: number }> {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolutePath = join(directory, entry.name)
+    if (directory === root && entry.name === 'official-apps') return []
     if (entry.isDirectory()) return listPublicOfflineAssets(root, absolutePath)
     const publicPath = relative(root, absolutePath).split(sep).join('/')
     if (
@@ -157,8 +162,18 @@ function offlineAssetManifestPlugin(): Plugin {
     generateBundle: {
       order: 'post',
       handler(_options, bundle) {
+        const optionalAsset = bundle['official-app-assets.json']
+        const optionalFiles = new Set<string>(
+          optionalAsset?.type === 'asset' ? JSON.parse(String(optionalAsset.source)).files : [],
+        )
         const outputAssets = Object.values(bundle)
-          .filter((entry) => !entry.fileName.endsWith('.map'))
+          .filter(
+            (entry) =>
+              !entry.fileName.endsWith('.map') &&
+              !optionalFiles.has(entry.fileName) &&
+              !entry.fileName.startsWith('official-apps/') &&
+              entry.fileName !== 'official-app-assets.json',
+          )
           .map((entry) => ({
             url: `/${entry.fileName}`,
             size:
@@ -192,7 +207,20 @@ export default defineConfig({
   plugins: [
     vue(),
     appearanceStarterCssSourcePlugin(),
+    officialAppPackagesPlugin(buildInfo.buildId),
     previewVendorGlobalsSourcePlugin(),
+    {
+      name: 'srl-discord-manual-worker-source',
+      resolveId(id) {
+        return id === 'virtual:srl-discord-manual-worker-source'
+          ? '\0srl-discord-manual-worker-source'
+          : undefined
+      },
+      async load(id) {
+        if (id !== '\0srl-discord-manual-worker-source') return undefined
+        return 'export default ' + JSON.stringify(await buildDiscordManualWorkerSource())
+      },
+    },
     offlineAssetManifestPlugin(),
     VitePWA({
       // 更新不静默生效：新版本就绪后由页面提示用户刷新，避免运行中的会话被换掉分包。
@@ -207,6 +235,7 @@ export default defineConfig({
         // 默认只安装应用壳与资源库核心入口；Feature 分包和教程图按需进入运行时缓存。
         globPatterns: [
           'index.html',
+          'force-refresh.html',
           'manifest.webmanifest',
           'icons/*.{svg,png,ico}',
           'assets/index-*.{js,css}',
@@ -214,12 +243,18 @@ export default defineConfig({
           'assets/AppContainer-*.js',
           'assets/vue.runtime*.js',
           'assets/vue-router*.js',
+          'assets/dist-*.js',
         ],
-        globIgnores: ['**/downloads/**', '**/offline-assets.json'],
+        globIgnores: ['**/downloads/**', '**/official-apps/**', '**/offline-assets.json'],
         navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/force-refresh\.html$/],
+        // Worker API 与互传中继必须实时访问服务器，任何情况下都不能走缓存。
+        navigateFallbackDenylist: [/^\/api\//, /^\/force-refresh\.html$/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
+          {
+            urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname.startsWith('/api/'),
+            handler: 'NetworkOnly',
+          },
           {
             urlPattern: ({ url, request, sameOrigin }) =>
               sameOrigin &&
@@ -227,6 +262,10 @@ export default defineConfig({
                 request.destination === 'script' ||
                 request.destination === 'style'),
             handler: async ({ request }) => {
+              const installed = await (
+                await caches.open('srl-official-app-assets-v1')
+              ).match(request)
+              if (installed) return installed
               const runtime = await caches.open('srl-feature-assets')
               const cached = await runtime.match(request)
               if (cached) return cached
@@ -265,4 +304,9 @@ export default defineConfig({
     // This prevents minification from emitting modern media-query range syntax that those runtimes may ignore.
     cssTarget: 'chrome61',
   },
+  server: {
+    proxy: workerProxy,
+    watch: { ignored: ['**/android/**'] },
+  },
+  preview: { proxy: workerProxy },
 })

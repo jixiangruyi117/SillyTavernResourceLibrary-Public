@@ -67,14 +67,24 @@ export function cloneOptionalNumber(value: unknown): number | undefined {
   return Number.isFinite(rawValue) ? Number(rawValue) : undefined
 }
 
-export function cloneBlob(value: unknown): Blob | undefined {
+export async function cloneBlob(value: unknown): Promise<Blob | undefined> {
   const rawValue = toRaw(value)
-  return rawValue instanceof Blob ? rawValue : undefined
+  if (!(rawValue instanceof Blob)) return undefined
+  // WebKit can reject a File object during IndexedDB structured cloning even
+  // though the same bytes are accepted as a plain Blob. Materialize the bytes
+  // before persistence without changing the public Resource shape. Wrapping a
+  // File in a new Blob is not sufficient: WebKit can retain the source file
+  // backing during structured cloning.
+  if (typeof File !== 'undefined' && rawValue instanceof File) {
+    const bytes = await rawValue.arrayBuffer()
+    return new Blob([bytes], { type: rawValue.type })
+  }
+  return rawValue
 }
 
-export function cloneResourceForStorage(resource: Resource): Resource {
+export async function cloneResourceForStorage(resource: Resource): Promise<Resource> {
   const rawResource = toRaw(resource)
-  const originalBlob = cloneBlob(rawResource.originalBlob)
+  const originalBlob = await cloneBlob(rawResource.originalBlob)
   if (!originalBlob) throw new Error('资源原始文件无法保存，请刷新页面后重试。')
 
   return normalizeResource({
@@ -101,11 +111,43 @@ export function cloneResourceForStorage(resource: Resource): Resource {
     versionNote: cloneOptionalString(rawResource.versionNote),
     versionCount: cloneOptionalNumber(rawResource.versionCount),
     thumbnailAssetId: cloneOptionalString(rawResource.thumbnailAssetId),
-    thumbnailBlob: cloneBlob(rawResource.thumbnailBlob),
+    thumbnailBlob: await cloneBlob(rawResource.thumbnailBlob),
     originalBlob,
     createdAt: Number(rawResource.createdAt) || Date.now(),
     updatedAt: Number(rawResource.updatedAt) || Date.now(),
   })
+}
+
+export async function materializeResourceForIndexedDb(
+  resource: StoredResource,
+): Promise<StoredResource> {
+  if (isEncryptedResource(resource) || isNativeBackedResource(resource)) return resource
+  if (!(resource.originalBlob instanceof Blob)) return resource
+  return {
+    ...resource,
+    originalBlob: await resource.originalBlob.arrayBuffer(),
+  } as unknown as StoredResource
+}
+
+export function hydrateResourceFromIndexedDb(resource: StoredResource): Resource {
+  if (isEncryptedResource(resource) || isNativeBackedResource(resource))
+    return resource as unknown as Resource
+  const originalBlob = resource.originalBlob as unknown
+  if (originalBlob instanceof Blob) return resource
+  if (!(originalBlob instanceof ArrayBuffer)) return resource
+  return {
+    ...resource,
+    originalBlob: new Blob([originalBlob], { type: resource.mimeType }),
+  }
+}
+
+export function storedResourceBinarySize(resource: StoredResource): number {
+  if (isEncryptedResource(resource)) return resource.original.data.size
+  if (isNativeBackedResource(resource)) return resource.nativeOriginal.size
+  const originalBlob = resource.originalBlob as unknown
+  if (originalBlob instanceof Blob) return originalBlob.size
+  if (originalBlob instanceof ArrayBuffer) return originalBlob.byteLength
+  return 0
 }
 
 export function stripStableResourceBinaryFields(resource: StoredResource): Partial<StoredResource> {

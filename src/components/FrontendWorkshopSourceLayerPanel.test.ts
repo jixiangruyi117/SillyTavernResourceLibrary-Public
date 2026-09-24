@@ -29,6 +29,12 @@ function mountPanel(locked: string[] = []) {
   })
 }
 describe('source layer actions', () => {
+  it('keeps the fixed layer surface discoverable as a dialog for iOS input viewport handling', () => {
+    const wrapper = mountPanel()
+    expect(wrapper.get('[role="dialog"]').attributes('aria-label')).toBe('作品图层')
+    wrapper.unmount()
+  })
+
   it('locks child groups when their ancestor is locked', () => {
     const wrapper = mountPanel(['person'])
     const child = wrapper.findAll('details.fw-layer-panel__group')[1]!

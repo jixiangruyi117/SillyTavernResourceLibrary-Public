@@ -145,6 +145,29 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 describe('人设列表和单页编辑', () => {
+  it('offers a direct history action and confirms unsaved edits before opening versions', async () => {
+    const w = render([persona()])
+    await w.get('.persona-app__list-item').trigger('click')
+    await flushPromises()
+    await w.get('[aria-label="更多人设操作"]').trigger('click')
+    expect(document.body.textContent).toContain('查看历史版本')
+    expect(document.body.textContent).toContain('发送整份人设文件到酒馆')
+    await Array.from(document.querySelectorAll<HTMLButtonElement>('.action-sheet__actions button'))
+      .find((button) => button.textContent?.includes('查看历史版本'))!
+      .click()
+    await flushPromises()
+    expect(w.emitted('open-history')?.[0]?.[0]).toMatchObject({ id: 'personas' })
+
+    await w.get('textarea').setValue('未保存的编辑')
+    mocks.chooseAction.mockResolvedValueOnce('cancel')
+    await w.get('[aria-label="更多人设操作"]').trigger('click')
+    await Array.from(document.querySelectorAll<HTMLButtonElement>('.action-sheet__actions button'))
+      .find((button) => button.textContent?.includes('查看历史版本'))!
+      .click()
+    await flushPromises()
+    expect(w.emitted('open-history')).toHaveLength(1)
+    expect(w.get('textarea').element.value).toBe('未保存的编辑')
+  })
   it('offers one creation entry and one transfer entry, with all identity fields on the same page', async () => {
     const w = render()
     expect(w.findAll('button').filter((b) => b.text() === '新建')).toHaveLength(1)

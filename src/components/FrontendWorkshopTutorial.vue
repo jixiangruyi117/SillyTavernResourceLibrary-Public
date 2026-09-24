@@ -124,7 +124,7 @@ async function copyPrompt(): Promise<void> {
     fallbackCopy.value = true
     status.value = '当前环境无法直接复制，请长按下方文字或全选复制。'
     await nextTick()
-    copyArea.value?.focus()
+    copyArea.value?.focus({ preventScroll: true })
     copyArea.value?.select()
   }
 }

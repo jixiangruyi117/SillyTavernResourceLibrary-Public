@@ -85,7 +85,7 @@ async function confirmCredentialExport(): Promise<boolean> {
   return confirmAction({
     title: '导出敏感凭证',
     message:
-      '主 API、生图、图床和云备份凭据会以明文写入这个 ZIP。任何拿到文件的人都可能使用这些凭据，确认继续吗？',
+      '主 API、生图、图床、Discord Bot Token 和云备份凭据会以明文写入这个 ZIP。任何拿到文件的人都可能使用这些凭据，确认继续吗？',
     confirmLabel: '仍要导出',
     danger: true,
   })

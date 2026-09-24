@@ -411,6 +411,50 @@ describe('ResourceService', () => {
     expect(await service.listVersions(initial.resource.id)).toHaveLength(1)
   })
 
+  it('覆盖当前版本时不把旧版写入历史', async () => {
+    const { service } = createServiceWithStorage()
+    const card = (version: string, description: string) =>
+      new File(
+        [
+          JSON.stringify({
+            spec: 'chara_card_v3',
+            spec_version: '3.0',
+            data: {
+              name: '覆盖测试卡',
+              creator: 'Alice',
+              character_version: version,
+              description,
+              first_mes: '你好。',
+            },
+          }),
+        ],
+        `覆盖测试卡-v${version}.json`,
+        { type: 'application/json' },
+      )
+
+    const [initial] = await service.importFiles([card('1.0', '旧版内容')])
+    expect(initial?.status).toBe('imported')
+    if (!initial || initial.status !== 'imported') return
+
+    const [candidate] = await service.importFiles([card('2.0', '新版内容')])
+    expect(candidate?.status).toBe('versionCandidate')
+    if (!candidate || candidate.status !== 'versionCandidate') return
+
+    const updated = await service.importAsVersion(
+      candidate.file,
+      initial.resource.id,
+      true,
+      '直接覆盖测试',
+      undefined,
+      {},
+      false,
+      false,
+    )
+
+    expect(updated.metadata.characterVersion).toBe('2.0')
+    expect(await service.listVersions(initial.resource.id)).toHaveLength(1)
+  })
+
   it('把同一语义内容的 v1 JSON 与 v2 封装绑定为一个逻辑版本', async () => {
     const { service } = createServiceWithStorage()
     const data = {
@@ -1085,6 +1129,72 @@ describe('ResourceService', () => {
     expect(resource?.favorite).toBe(true)
     expect(resource?.categoryId).toBe('tools')
     expect(resource?.tags).toEqual(['保留标签'])
+  })
+
+  it('repairs only legacy single global regex names without changing files or user names', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const script = { scriptName: '清理思维链', findRegex: '/old/g', replaceString: '' }
+    const originalBlob = new Blob([JSON.stringify({ global: [script], sourceName: '全局正则' })])
+    const base = {
+      type: RESOURCE_TYPE.REGEX,
+      description: '全局正则，包含 1 条脚本',
+      mimeType: 'application/json',
+      fileSize: originalBlob.size,
+      favorite: true,
+      categoryId: 'tools',
+      tags: ['保留标签'],
+      metadata: {
+        format: 'json',
+        parserVersion: 8,
+        detectedVariant: 'regexCollection',
+        regexScope: 'global',
+        sourceName: '全局正则',
+        itemCount: 1,
+      },
+      originalBlob,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    await storage.save({
+      ...base,
+      id: 'legacy',
+      name: '全局正则',
+      fileName: '清理思维链.json',
+      contentHash: 'old',
+    })
+    await storage.save({
+      ...base,
+      id: 'renamed',
+      name: '我的规则',
+      fileName: '自定义.json',
+      contentHash: 'renamed',
+    })
+    await storage.save({
+      ...base,
+      id: 'generic',
+      name: '全局正则',
+      fileName: '全局正则.json',
+      contentHash: 'generic',
+    })
+
+    expect(await service.upgradeLegacyJsonResources()).toBe(1)
+    const repaired = await storage.get('legacy')
+    expect(repaired).toMatchObject({
+      name: '清理思维链',
+      fileName: '清理思维链.json',
+      contentHash: 'old',
+      favorite: true,
+      categoryId: 'tools',
+      tags: ['保留标签'],
+      metadata: { legacyGlobalRegexNameRepaired: true },
+    })
+    expect(repaired?.originalBlob).toBe(originalBlob)
+    expect((await storage.get('renamed'))?.name).toBe('我的规则')
+    expect((await storage.get('generic'))?.name).toBe('全局正则')
+    expect(await service.upgradeLegacyJsonResources()).toBe(0)
+    await storage.update('legacy', { name: '全局正则' })
+    expect(await service.upgradeLegacyJsonResources()).toBe(0)
+    expect((await storage.get('legacy'))?.name).toBe('全局正则')
   })
 
   it('upgrades a version 2 JSON character card and merges embedded tags', async () => {

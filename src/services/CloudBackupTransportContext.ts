@@ -1,4 +1,9 @@
-import type { CloudBackupItem, GitHubBackupConfig } from '../types/CloudBackup'
+import type {
+  CloudBackupItem,
+  CloudBackupProvider,
+  GitHubBackupConfig,
+  WebDavBackupConfig,
+} from '../types/CloudBackup'
 import { type GitHubBundleManifest } from './GitHubBackupBundle'
 import { type CloudObjectPlan, type StructuredSnapshot } from './CloudStructuredSnapshot'
 import { CloudBackupMetricsTracker } from './CloudBackupMetrics'
@@ -29,13 +34,28 @@ export interface GitHubRelease {
   tag_name?: string
 }
 
+export interface WebDavObject {
+  objectKey: string
+  size: number
+  createdAt: number
+}
+
+export type WebDavVerifyMethod = 'range' | 'head' | 'propfind'
+
+export interface WebDavCapabilities {
+  verifyMethod: WebDavVerifyMethod
+  probedAt: number
+}
+
 export type CloudBackupProgressCallback = (message: string) => void
 
 export interface CloudBackupTransportContext {
   activeGitHubInventory: { releaseId: number; assets: Map<number, GitHubAsset> } | undefined
   activeMetrics: CloudBackupMetricsTracker | undefined
   jobStore: CloudBackupJobStore
-  cloudFetch(url: string, init: RequestInit): Promise<Response>
+  activeWebDavInventory: { key: string; objects: Map<string, WebDavObject> } | undefined
+  webDavCapabilities: Map<string, WebDavCapabilities>
+  cloudFetch(url: string, init: RequestInit, provider: CloudBackupProvider): Promise<Response>
   readResponseBlob(response: Response, totalBytes?: number): Promise<Blob>
   githubFetch(
     config: GitHubBackupConfig,
@@ -87,4 +107,36 @@ export interface CloudBackupTransportContext {
     secret: string,
     item: CloudBackupItem,
   ): Promise<GitHubBundleManifest>
+  ensureWebDavFolder(config: WebDavBackupConfig, secret: string): Promise<void>
+  listWebDavObjects(config: WebDavBackupConfig, secret: string): Promise<WebDavObject[]>
+  uploadWebDavObject(
+    config: WebDavBackupConfig,
+    secret: string,
+    objectKey: string,
+    blob: Blob,
+    contentType?: string,
+    onUploaded?: () => void,
+  ): Promise<void>
+  readWebDavRemoteSize(
+    config: WebDavBackupConfig,
+    secret: string,
+    objectUrl: string,
+  ): Promise<number>
+  verifyWebDavUploadSize(
+    config: WebDavBackupConfig,
+    secret: string,
+    objectUrl: string,
+    expectedSize: number,
+    remoteSize: number,
+  ): Promise<void>
+  readWebDavBundleManifest(
+    config: WebDavBackupConfig,
+    secret: string,
+    objectKey: string,
+  ): Promise<GitHubBundleManifest>
+  readWebDavStructuredSnapshot(
+    config: WebDavBackupConfig,
+    secret: string,
+    objectKey: string,
+  ): Promise<StructuredSnapshot>
 }

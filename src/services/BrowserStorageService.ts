@@ -1,4 +1,20 @@
 import { Capacitor } from '@capacitor/core'
+import type { TavernConflictPolicy } from './TavernBridgeProtocol'
+
+export interface BridgeTransferDraft {
+  direction: 'pull' | 'send'
+  origin: string
+  policy: TavernConflictPolicy
+  at: number
+  items: Array<{
+    key: string
+    name: string
+    label: string
+    status: 'pending' | 'active' | 'done' | 'failed'
+    detail: string
+    operationId?: string
+  }>
+}
 import type { UserPersonaTemplate } from '../types/UserPersona'
 import type { PresetFavoriteSnapshot } from '../utils/PresetStitcher'
 import {
@@ -592,6 +608,54 @@ export class BrowserStorageService {
       // 报告属于非关键偏好，写入失败不影响传输。
     }
     return next
+  }
+
+  getBridgeTransferDraft(): BridgeTransferDraft | undefined {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem('srl-bridge-transfer-draft') || 'null',
+      ) as BridgeTransferDraft | null
+      if (
+        !value ||
+        !['pull', 'send'].includes(value.direction) ||
+        typeof value.origin !== 'string' ||
+        !['copy', 'skip', 'overwrite'].includes(value.policy) ||
+        !Number.isFinite(value.at) ||
+        Date.now() - value.at > 7 * 86400_000 ||
+        !Array.isArray(value.items) ||
+        value.items.length > 200
+      )
+        return
+      if (
+        value.items.some(
+          (item) =>
+            !item ||
+            typeof item.key !== 'string' ||
+            typeof item.name !== 'string' ||
+            typeof item.label !== 'string' ||
+            typeof item.detail !== 'string' ||
+            !['pending', 'active', 'done', 'failed'].includes(item.status) ||
+            (item.operationId !== undefined &&
+              (typeof item.operationId !== 'string' || !/^[\w-]{16,80}$/.test(item.operationId))),
+        )
+      )
+        return
+      return value
+    } catch {
+      return
+    }
+  }
+
+  setBridgeTransferDraft(value: BridgeTransferDraft): void {
+    try {
+      // Only task metadata: no files, endpoint credentials, pairing tokens or encryption keys.
+      localStorage.setItem(
+        'srl-bridge-transfer-draft',
+        JSON.stringify({ ...value, items: value.items.slice(0, 200) }),
+      )
+    } catch {
+      /* A disabled preference store must not prevent an otherwise valid transfer. */
+    }
   }
 
   /** 缝了么：装配区非空时的本地草稿，防误退丢工作。 */

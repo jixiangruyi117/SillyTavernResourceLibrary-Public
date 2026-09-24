@@ -586,6 +586,54 @@ body.tutorial-preview-open {
   font-family: ui-monospace, Consolas, monospace;
 }
 
+.webdav-official-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.5rem;
+  padding: 0 0.8rem 0.8rem;
+}
+
+.webdav-official-links a {
+  display: grid;
+  min-height: 4.25rem;
+  align-content: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  text-decoration: none;
+}
+
+.webdav-official-links strong,
+.webdav-official-links span {
+  display: block;
+  min-width: 0;
+}
+
+.webdav-official-links span {
+  grid-column: 1 / -1;
+  margin-top: 0.2rem;
+  color: var(--color-ink-soft);
+  font-size: 0.6rem;
+}
+
+.webdav-official-links i {
+  color: var(--color-accent);
+  font-size: 0.6rem;
+  font-style: normal;
+}
+
+.cloud-koofr-ready {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.65rem;
+  border-left: 2px solid var(--color-accent);
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 18%, transparent);
+  font-weight: 700;
+}
+
 .cloud-tutorial-step {
   position: relative;
   min-width: 0;
@@ -645,6 +693,18 @@ body.tutorial-preview-open {
   .cloud-tutorial-steps--real .cloud-tutorial-step {
     width: min(88vw, 22rem);
     flex-basis: min(88vw, 22rem);
+  }
+
+  .webdav-official-links {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .webdav-official-links a {
+    width: min(76vw, 16rem);
+    flex: 0 0 min(76vw, 16rem);
+    scroll-snap-align: start;
   }
 
   .cloud-tutorial-step p {
@@ -1029,27 +1089,6 @@ body.tutorial-preview-open {
   background: var(--color-accent-soft);
   font-size: 0.72rem;
   white-space: pre-wrap;
-}
-
-.cloud-backup-error {
-  margin: 0.75rem 0 0;
-  padding: 0.75rem;
-  border-left: 0.2rem solid var(--color-danger);
-  color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface-raised));
-  font-size: 0.72rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
-}
-
-.cloud-tutorial-list {
-  display: grid;
-  gap: 0.4rem;
-  margin: 0.75rem 0;
-  padding-left: 1.3rem;
-  color: var(--color-ink-soft);
-  font-size: 0.72rem;
-  line-height: 1.55;
 }
 
 .cloud-metrics {

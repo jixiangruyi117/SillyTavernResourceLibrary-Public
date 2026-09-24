@@ -16,6 +16,7 @@ import {
   type StoredResourceSummary,
 } from '../types/Vault'
 import type { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
+import { storedResourceBinarySize } from './ResourceStorageClone'
 
 export interface NativeRecoveryInput {
   contentHash: string
@@ -297,11 +298,11 @@ export class IndexedDbResourceHealthStorage {
         if (
           !isEncryptedResource(record) &&
           !isNativeBackedResource(record) &&
-          record.originalBlob.size === record.fileSize &&
+          storedResourceBinarySize(record) === record.fileSize &&
           /^[a-f0-9]{64}$/i.test(record.contentHash)
         ) {
           result[countKey]++
-          result.reclaimableBytes += record.originalBlob.size
+          result.reclaimableBytes += storedResourceBinarySize(record)
         }
       })
     }
@@ -326,7 +327,7 @@ export class IndexedDbResourceHealthStorage {
           if (
             !isEncryptedResource(record) &&
             !isNativeBackedResource(record) &&
-            record.originalBlob.size === record.fileSize &&
+            storedResourceBinarySize(record) === record.fileSize &&
             /^[a-f0-9]{64}$/i.test(record.contentHash)
           ) {
             yield {
@@ -368,7 +369,7 @@ export class IndexedDbResourceHealthStorage {
           isNativeBackedResource(record) ||
           record.contentHash.toLowerCase() !== item.contentHash ||
           record.fileSize !== item.size ||
-          record.originalBlob.size !== item.size
+          storedResourceBinarySize(record) !== item.size
         )
           return false
         const { originalBlob: _originalBlob, ...metadata } = record
@@ -620,7 +621,7 @@ export class IndexedDbResourceHealthStorage {
         if (isEncryptedResource(record)) result[key] += record.original.data.size
         else if (isNativeBackedResource(record))
           result.nativeReferenceBytes += record.nativeOriginal.size
-        else result[key] += record.originalBlob.size
+        else result[key] += storedResourceBinarySize(record)
         if (
           key === 'currentOriginalBytes' &&
           !isEncryptedResource(record) &&
@@ -630,7 +631,7 @@ export class IndexedDbResourceHealthStorage {
           result.recoveredPlaceholderCount++
           result.recoveredPlaceholderBytes += isNativeBackedResource(record)
             ? record.nativeOriginal.size
-            : record.originalBlob.size
+            : storedResourceBinarySize(record)
         }
       })
     }

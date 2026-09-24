@@ -1,0 +1,9 @@
+```html
+<body>
+  <main id="fixture-script">script pending</main>
+  <script>
+    document.querySelector('#fixture-script').textContent = 'script ready'
+    window.__anonymousFixtureScript = '雪'
+  </script>
+</body>
+```

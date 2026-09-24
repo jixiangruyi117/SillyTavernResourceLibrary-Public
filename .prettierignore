@@ -1,6 +1,18 @@
 dist
 node_modules
 pnpm-lock.yaml
+server/data
+server/node_modules
+server/.env.example
+android
 artifacts
+# Published compatibility archives must retain their original bytes.
+public/official-apps
 # Preserve the exact AI-generated starter verified in SillyTavern.
 src/templates/FrontendWorkshopDeepSea.html
+docs/frontend-workshop/runtime/probes
+docs/frontend-workshop/runtime/S0_RUNTIME_SPEC.md
+docs/frontend-workshop/runtime/S0B_LIFECYCLE_PLAN.md
+docs/frontend-workshop/runtime/S0B_MVU_OPTIONALITY.md
+docs/frontend-workshop/runtime/S0C_STRESS_PLAN.md
+docs/frontend-workshop/runtime/runtime-contract.s0a.json

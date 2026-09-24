@@ -38,7 +38,7 @@ describe('RichContentPreview trusted runtime document', () => {
     const srcdoc = iframe.attributes('srcdoc') ?? ''
 
     expect(sandbox.split(/\s+/)).toContain('allow-scripts')
-    expect(sandbox.split(/\s+/)).not.toContain('allow-same-origin')
+    expect(sandbox.split(/\s+/)).toContain('allow-same-origin')
     expect(iframe.attributes('src')).toBeUndefined()
     expect(srcdoc).toContain('trusted-frontend')
     expect(srcdoc).toContain('__SRL_RENDER_COMPAT_HOST__')

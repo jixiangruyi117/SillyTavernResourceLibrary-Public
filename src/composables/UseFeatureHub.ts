@@ -24,6 +24,8 @@ import {
   type FeatureAppDescriptorContext,
 } from '../core/FeatureAppRegistry'
 import { getFeatureAppLoader } from '../core/FeatureAppLoaders'
+import { officialAppService } from '../core/OfficialAppRuntime'
+import { isOfficialAppId } from '../types/OfficialApp'
 import { featureAppUsageStore } from '../core/FeatureAppUsageStore'
 import type { LayoutMode, UiFontScale } from '../services/BrowserStorageService'
 import {
@@ -34,7 +36,12 @@ import type { InstalledExternalAppSummary } from '../types/ExternalApp'
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import { getHiddenCategoryIds, isResourceHiddenByCategory } from '../utils/CategoryVisibility'
 
-export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp'
+export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp' | 'officialApps'
+
+// Only pages with a fixed viewport and an explicit internal scroll owner may
+// lock the host document. Ordinary feature pages (for example Appearance)
+// intentionally continue to use document scrolling on mobile Safari.
+const FEATURE_PAGES_WITH_INTERNAL_SCROLL: ReadonlySet<FeaturePage> = new Set(['imageGeneration'])
 
 export type FeatureDesktopEntry =
   | { kind: 'builtIn'; app: FeatureAppDescriptor }
@@ -54,6 +61,7 @@ export type FeatureHubProps = {
 export type FeatureHubEvents = {
   close: []
   openResource: [resource: ResourceSummary]
+  openPersonaHistory: [resource: ResourceSummary]
   manageFolders: []
   folderAdd: [details: { categoryId: string; resourceIds: string[]; removeFromCabinet?: boolean }]
   folderCover: [details: { category: Category; file?: File; coverUrl?: string }]
@@ -83,6 +91,11 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     const descriptor = getFeatureAppDescriptor(id)
     return createAsyncPanel(descriptor.name, getFeatureAppLoader(id))
   }
+
+  const OfficialAppManager = createAsyncPanel(
+    'APP 管理',
+    () => import('../components/OfficialAppManager.vue'),
+  )
 
   const DrawApp = createRegisteredAsyncPanel('draw')
 
@@ -136,6 +149,10 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const bundleSendIds = ref<string[]>([])
 
   const externalApps = ref<InstalledExternalAppSummary[]>([])
+  const installedOfficialIds = ref(new Set<string>())
+  async function reloadOfficialApps() {
+    installedOfficialIds.value = new Set((await officialAppService.list()).map((app) => app.id))
+  }
 
   const activeExternalAppId = ref('')
 
@@ -158,7 +175,9 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const enabledExternalApps = computed(() => externalApps.value.filter((app) => app.enabled))
 
   const visibleBuiltInFeatureApps = computed(() =>
-    FEATURE_APP_REGISTRY.filter((app) => app.visible)
+    FEATURE_APP_REGISTRY.filter(
+      (app) => app.visible && (!isOfficialAppId(app.id) || installedOfficialIds.value.has(app.id)),
+    )
       .slice()
       .sort((left, right) => left.sortOrder - right.sortOrder),
   )
@@ -429,6 +448,13 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     activePage,
     (page) => {
       emit('feature-app-active', page !== 'home')
+      // Only fixed-viewport apps with an explicit internal scroll owner may
+      // lock the host document. Pages such as Appearance use document scroll;
+      // locking html/body for every feature page makes them impossible to pan.
+      const locksHostScroll = FEATURE_PAGES_WITH_INTERNAL_SCROLL.has(page)
+      document.body.classList.toggle('feature-app-scroll-lock', locksHostScroll)
+      document.documentElement.classList.toggle('feature-app-scroll-lock', locksHostScroll)
+      if (page === 'home') void reloadOfficialApps().catch(() => {})
       document.body.classList.toggle('folder-desktop-open', page === 'folders')
       if (resumeTrackingReady)
         writeAppResumeState({
@@ -444,6 +470,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   })
 
   onMounted(async () => {
+    await reloadOfficialApps().catch(() => {})
     window.addEventListener('keydown', handleKeydown)
     window.addEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest)
     window.addEventListener('srl:native-shortcut', handleNativeShortcut)
@@ -472,6 +499,8 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
 
   onUnmounted(() => {
     clearFeatureDesktopLongPress()
+    document.body.classList.remove('feature-app-scroll-lock')
+    document.documentElement.classList.remove('feature-app-scroll-lock')
     window.removeEventListener('keydown', handleKeydown)
     window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest)
     window.removeEventListener('srl:native-shortcut', handleNativeShortcut)
@@ -508,6 +537,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     desktopFilterActions,
     selectDesktopFilter,
     DrawApp,
+    OfficialAppManager,
     AppearanceStudio,
     TavernBridgeCenter,
     bundleSendIds,

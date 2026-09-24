@@ -1,0 +1,1 @@
+<body><main data-fixture="regex-unwrapped">anonymous raw HTML after display regex</main></body>

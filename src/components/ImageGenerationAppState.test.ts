@@ -40,6 +40,7 @@ vi.mock('../core/ImageAlbumContainer', () => ({
   },
   frontendWorkshopImageHostingService: {
     getSelfHostedConfiguration: vi.fn(() => null),
+    uploadBlobShared: vi.fn(),
     uploadBlobSelfHosted: vi.fn(),
   },
 }))

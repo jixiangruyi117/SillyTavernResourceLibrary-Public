@@ -5,10 +5,12 @@ import type {
   CloudBackupSnapshot,
   CloudBackupStatus,
   GitHubBackupConfig,
+  WebDavBackupConfig,
 } from '../types/CloudBackup'
 import { readJson } from './CloudBackupHttp'
 import {
   normalizeContentSelection,
+  normalizeFolder,
   normalizeProtection,
   normalizeRetention,
   normalizeSchedule,
@@ -30,6 +32,7 @@ const LOCAL_SECRETS_KEY = 'srl.cloudBackup.localSecrets.v1'
 interface StoredCloudSettings {
   activeProvider?: CloudBackupProvider
   github?: GitHubBackupConfig
+  webdav?: WebDavBackupConfig
 }
 
 type StoredCloudSecrets = Partial<Record<CloudBackupProvider, string>>
@@ -46,7 +49,7 @@ export class CloudBackupConfiguration {
   private readonly credentialCache: Partial<Record<CloudBackupProvider, string>> = {}
 
   private readonly credentialStates: Record<CloudBackupProvider, 'missing' | 'valid' | 'invalid'> =
-    { github: 'missing' }
+    { github: 'missing', webdav: 'missing' }
 
   private credentialReady?: Promise<void>
 
@@ -56,7 +59,7 @@ export class CloudBackupConfiguration {
 
   async loadCredentials(): Promise<void> {
     const legacy = readJson<StoredCloudSecrets>(localStorage, LOCAL_SECRETS_KEY, {})
-    for (const provider of ['github'] as const) {
+    for (const provider of ['github', 'webdav'] as const) {
       if (isNativeCloudTransferAvailable()) {
         const credential = await readNativeCloudCredential(provider).catch(() => ({
           state: 'missing' as const,
@@ -85,6 +88,7 @@ export class CloudBackupConfiguration {
     if (typeof localStorage !== 'undefined') localStorage.removeItem(LOCAL_SECRETS_KEY)
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.removeItem('srl.cloudBackup.secret.github')
+      sessionStorage.removeItem('srl.cloudBackup.secret.webdav')
     }
   }
 
@@ -102,6 +106,7 @@ export class CloudBackupConfiguration {
     return {
       activeProvider: settings.activeProvider,
       github: settings.github,
+      webdav: settings.webdav,
     }
   }
 
@@ -121,14 +126,37 @@ export class CloudBackupConfiguration {
             },
           }
         : undefined
-    const activeProvider = value.activeProvider === 'github' && github ? 'github' : undefined
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ activeProvider, github }))
+    const webdav =
+      value.webdav?.provider === 'webdav'
+        ? {
+            ...value.webdav,
+            baseUrl: String(value.webdav.baseUrl ?? '')
+              .trim()
+              .replace(/\/+$/g, ''),
+            folder: normalizeFolder(String(value.webdav.folder ?? '')),
+            username: String(value.webdav.username ?? '').trim(),
+            retention: normalizeRetention(value.webdav.retention),
+            schedule: normalizeSchedule(value.webdav.schedule),
+            protection: normalizeProtection(value.webdav.protection),
+            contentSelection: {
+              ...normalizeContentSelection(value.webdav.contentSelection),
+              plaintextSecretCopy: false,
+            },
+          }
+        : undefined
+    const activeProvider =
+      value.activeProvider === 'github' && github
+        ? 'github'
+        : value.activeProvider === 'webdav' && webdav
+          ? 'webdav'
+          : undefined
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ activeProvider, github, webdav }))
   }
 
   async exportPortableCredentials(): Promise<Partial<Record<CloudBackupProvider, string>>> {
     await this.initializeCredentials()
     return Object.fromEntries(
-      (['github'] as const)
+      (['github', 'webdav'] as const)
         .map((provider) => [provider, this.getSecret(provider)] as const)
         .filter((entry) => Boolean(entry[1])),
     )
@@ -138,7 +166,7 @@ export class CloudBackupConfiguration {
     value: Partial<Record<CloudBackupProvider, string>>,
   ): Promise<void> {
     await this.initializeCredentials()
-    for (const provider of ['github'] as const) {
+    for (const provider of ['github', 'webdav'] as const) {
       const secret = String(value[provider] ?? '').trim()
       if (secret) await this.setSecret(provider, secret)
     }
@@ -157,15 +185,27 @@ export class CloudBackupConfiguration {
       throw new Error('请先填写并验证云端凭据')
     }
     const current = readJson<StoredCloudSettings>(localStorage, SETTINGS_KEY, {})
-    const normalized: GitHubBackupConfig = {
-      ...config,
-      owner: config.owner.trim(),
-      repository: config.repository.trim(),
-      retention: normalizeRetention(config.retention),
-      schedule: normalizeSchedule(config.schedule),
-      protection: normalizeProtection(config.protection),
-      contentSelection: normalizeContentSelection(config.contentSelection),
-    }
+    const normalized: CloudBackupConfig =
+      config.provider === 'github'
+        ? {
+            ...config,
+            owner: config.owner.trim(),
+            repository: config.repository.trim(),
+            retention: normalizeRetention(config.retention),
+            schedule: normalizeSchedule(config.schedule),
+            protection: normalizeProtection(config.protection),
+            contentSelection: normalizeContentSelection(config.contentSelection),
+          }
+        : {
+            ...config,
+            baseUrl: config.baseUrl.trim().replace(/\/+$/g, ''),
+            folder: normalizeFolder(config.folder),
+            username: config.username.trim(),
+            retention: normalizeRetention(config.retention),
+            schedule: normalizeSchedule(config.schedule),
+            protection: normalizeProtection(config.protection),
+            contentSelection: normalizeContentSelection(config.contentSelection),
+          }
     localStorage.setItem(
       SETTINGS_KEY,
       JSON.stringify({

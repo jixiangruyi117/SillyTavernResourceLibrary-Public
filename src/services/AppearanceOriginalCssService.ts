@@ -26,7 +26,7 @@ function cssUrl(path: string, origin: string): string {
   return url.href
 }
 
-/** Read current bundled shell assets and, when supplied, a legacy APP asset manifest. */
+/** Read current shell assets and the selected installed APP's exact asset manifest. */
 export async function readOriginalCss(
   scope?: AppearanceScope,
   signal?: AbortSignal,
@@ -34,18 +34,19 @@ export async function readOriginalCss(
 ): Promise<OriginalCssDocument> {
   if (scope && !scope.selector) throw new Error('该界面暂不可用，已保存的自定义 CSS 不受影响')
   if (!reader) {
+    const { officialAppService, fetchOfficialAppAsset } = await import('../core/OfficialAppRuntime')
     reader = {
       document,
       origin: location.origin,
       shellVersion: BUILD_INFO.buildId,
-      apps: [],
+      apps: scope ? await officialAppService.list() : [],
       // The host extension manager is lazy, but has no independently installed APP manifest.
       readExtraCss:
         scope?.value === 'app:extensions'
           ? async () => (await import('../styles/ExternalAppManager.css?inline')).default
           : undefined,
       readAsset: async (url, requestSignal) => {
-        const response = await fetch(url, { signal: requestSignal })
+        const response = await fetchOfficialAppAsset(url, { signal: requestSignal })
         if (!response.ok || !/^text\/css(?:;|$)/iu.test(response.headers.get('Content-Type') ?? ''))
           throw new Error('原始 CSS 文件读取失败，请检查离线资源或网络后重试')
         return response.text()
@@ -56,6 +57,8 @@ export async function readOriginalCss(
   const { document: sourceDocument, origin, apps } = reader
   const appId = scope?.appId
   const app = appId && isOfficialAppId(appId) ? apps.find((item) => item.id === appId) : undefined
+  if (appId && isOfficialAppId(appId) && !app)
+    throw new Error('请先安装该 APP，再读取它的原始 CSS；已有自定义样式仍保留')
 
   if (app && app.shellVersion !== reader.shellVersion)
     throw new Error('该 APP 需要更新，不能混用不同版本的原始 CSS')

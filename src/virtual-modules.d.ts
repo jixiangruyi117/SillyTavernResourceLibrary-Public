@@ -8,6 +8,11 @@ declare module 'virtual:srl-appearance-starter-css-source' {
   export default source
 }
 
+declare module 'virtual:srl-discord-manual-worker-source' {
+  const source: string
+  export default source
+}
+
 declare module 'virtual:srl-official-app-entries' {
   import type { Component } from 'vue'
   export const entries: Record<

@@ -145,7 +145,7 @@ async function openDetail(item: GeneratedImageAlbumItem, event?: MouseEvent): Pr
       await generatedImageAlbumService.getOriginalBlob(item.id),
     )
     await nextTick()
-    detailCloseButton.value?.focus()
+    detailCloseButton.value?.focus({ preventScroll: true })
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '原图暂时无法打开'
   }
@@ -156,7 +156,7 @@ function closeDetail(): void {
   revokeSelectedUrl()
   const trigger = detailTrigger
   detailTrigger = null
-  if (trigger?.isConnected) void nextTick(() => trigger.focus())
+  if (trigger?.isConnected) void nextTick(() => trigger.focus({ preventScroll: true }))
 }
 
 async function importImages(event: Event): Promise<void> {
@@ -350,12 +350,12 @@ function handleEscape(event: KeyboardEvent): void {
 
 function openSettings(): void {
   settingsOpen.value = true
-  void nextTick(() => settingsCloseButton.value?.focus())
+  void nextTick(() => settingsCloseButton.value?.focus({ preventScroll: true }))
 }
 
 function closeSettings(): void {
   settingsOpen.value = false
-  void nextTick(() => settingsButton.value?.focus())
+  void nextTick(() => settingsButton.value?.focus({ preventScroll: true }))
 }
 
 function selectHostedStatus(status: GeneratedImageHostedStatus): void {
@@ -621,14 +621,8 @@ onUnmounted(() => {
                 <button type="button" @click="copyUrl(selectedItem)">复制</button>
               </div>
               <div class="generated-album__hosting">
-                <span>直链来源：自建 ImgBed</span>
-                <button
-                  type="button"
-                  :class="{ 'is-active': hostingMode === 'self-hosted' }"
-                  @click="hostingMode = 'self-hosted'"
-                >
-                  我的 ImgBed
-                </button>
+                <span>直链来源</span>
+                <span>我的 ImgBed</span>
               </div>
               <form
                 v-if="hostingMode === 'self-hosted' && !selfHostedReady"
@@ -657,8 +651,8 @@ onUnmounted(() => {
                 <button type="submit">连接</button>
               </form>
               <p v-if="hostingMode === 'self-hosted'" class="generated-album__hint">
-                使用你自己的 ImgBed；远端永久删除需要包含 delete 权限的 API Token，AUTH_CODE
-                仍可正常上传。
+                使用你自己的 ImgBed，不占共享图床名额、每日次数或容量。远端永久删除需要包含 delete
+                权限的 API Token；AUTH_CODE 仍可正常上传。
               </p>
               <div class="generated-album__actions">
                 <button

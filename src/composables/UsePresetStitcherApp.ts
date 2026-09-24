@@ -298,6 +298,8 @@ export function usePresetStitcherApp(
 
   const editorKeyboardOffset = ref(0)
 
+  const mobileEditorOverlay = ref(false)
+
   const variableWriterOpen = ref(false)
 
   const variableName = ref('')
@@ -398,6 +400,8 @@ export function usePresetStitcherApp(
   let editorVisualViewport: VisualViewport | undefined
 
   let editorViewportFrame: number | undefined
+
+  let mobileEditorMedia: MediaQueryList | undefined
 
   let landscapeWorkbenchMedia: MediaQueryList | undefined
 
@@ -701,6 +705,10 @@ export function usePresetStitcherApp(
     })
   }
 
+  function syncMobileEditorOverlay(): void {
+    mobileEditorOverlay.value = Boolean(mobileEditorMedia?.matches)
+  }
+
   function syncLandscapeWorkbench(): void {
     const nextLandscapeWorkbench = Boolean(landscapeWorkbenchMedia?.matches)
     const changed = landscapeWorkbench.value !== nextLandscapeWorkbench
@@ -774,6 +782,9 @@ export function usePresetStitcherApp(
     editorVisualViewport?.addEventListener('resize', scheduleEditorViewportSync)
     editorVisualViewport?.addEventListener('scroll', scheduleEditorViewportSync)
     if (typeof window.matchMedia === 'function') {
+      mobileEditorMedia = window.matchMedia('(max-width: 52rem)')
+      syncMobileEditorOverlay()
+      mobileEditorMedia.addEventListener?.('change', syncMobileEditorOverlay)
       landscapeWorkbenchMedia = window.matchMedia(
         '(orientation: landscape) and (max-height: 34rem)',
       )
@@ -803,6 +814,7 @@ export function usePresetStitcherApp(
     editorVisualViewport?.removeEventListener('resize', scheduleEditorViewportSync)
     editorVisualViewport?.removeEventListener('scroll', scheduleEditorViewportSync)
     if (editorViewportFrame !== undefined) window.cancelAnimationFrame(editorViewportFrame)
+    mobileEditorMedia?.removeEventListener?.('change', syncMobileEditorOverlay)
     landscapeWorkbenchMedia?.removeEventListener?.('change', syncLandscapeWorkbench)
     if (draftTimer) window.clearTimeout(draftTimer)
     cancelSourceDrag()
@@ -850,6 +862,7 @@ export function usePresetStitcherApp(
     insertFavoriteFromAction,
     editor,
     editorOverlayStyle,
+    mobileEditorOverlay,
     ROLE_OPTIONS,
     rememberEditorSelection,
     QUICK_VARIABLES,

@@ -1,6 +1,7 @@
 import type { ComputedRef, Ref } from 'vue'
 import { browserStorageService } from '../core/AppContainer'
 import { setPerformanceMonitorVisible } from '../core/PerformanceMonitor'
+import { manualCheckForUpdate } from '../core/ServiceWorkerUpdate'
 import { isExtractedCharacterAsset, type ResourceSummary } from '../types/Resource'
 
 interface LibraryDisplayPreferencesContext {
@@ -52,6 +53,13 @@ export function useLibraryDisplayPreferences(getContext: () => LibraryDisplayPre
     browserStorageService.setBlurThumbnails(enabled)
   }
 
+  async function handleManualUpdateCheck(): Promise<void> {
+    const context = getContext()
+
+    const message = await manualCheckForUpdate()
+    context.showNotice(message)
+  }
+
   function updateSplitViewport(): void {
     const context = getContext()
 
@@ -82,6 +90,7 @@ export function useLibraryDisplayPreferences(getContext: () => LibraryDisplayPre
     applyHideCharacterAssets,
     applyShowManuallyBoundResources,
     applyBlurThumbnails,
+    handleManualUpdateCheck,
     updateSplitViewport,
     openAiTagging,
     openVersionRecognition,

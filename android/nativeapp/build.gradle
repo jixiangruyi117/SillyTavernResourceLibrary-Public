@@ -1,0 +1,92 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+import groovy.json.JsonSlurper
+
+def buildInfo = new JsonSlurper().parse(rootProject.file('../build-info.json'))
+def bridgeOrigin = providers.gradleProperty('srlBridgeOrigin').getOrElse('')
+
+def releaseSigningValues = [
+    storeFile: System.getenv('SRL_ANDROID_RELEASE_STORE_FILE'),
+    storePassword: System.getenv('SRL_ANDROID_RELEASE_STORE_PASSWORD'),
+    keyAlias: System.getenv('SRL_ANDROID_RELEASE_KEY_ALIAS'),
+    keyPassword: System.getenv('SRL_ANDROID_RELEASE_KEY_PASSWORD'),
+]
+
+def isReleaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase().contains('release')
+}
+
+if (isReleaseBuildRequested && releaseSigningValues.values().any { !it }) {
+    throw new GradleException(
+        'Release 构建需要 SRL_ANDROID_RELEASE_STORE_FILE、SRL_ANDROID_RELEASE_STORE_PASSWORD、' +
+        'SRL_ANDROID_RELEASE_KEY_ALIAS 和 SRL_ANDROID_RELEASE_KEY_PASSWORD 环境变量。'
+    )
+}
+
+android {
+    namespace = 'buzz.jixiangruyi1207.srl.nativeapp'
+    compileSdk = rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        // 保持正式包名，才能由原 0.0.4 覆盖安装；原生代码不加载任何 Vue/WebView 页面。
+        applicationId 'buzz.jixiangruyi1207.srl'
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode buildInfo.androidVersionCode as int
+        versionName buildInfo.androidVersionName as String
+        buildConfigField 'String', 'SRL_BRIDGE_ORIGIN', '"' + bridgeOrigin.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    signingConfigs {
+        release {
+            storeFile file(releaseSigningValues.storeFile ?: '.')
+            storePassword releaseSigningValues.storePassword
+            keyAlias releaseSigningValues.keyAlias
+            keyPassword releaseSigningValues.keyPassword
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2026.06.01')
+    implementation 'androidx.activity:activity-compose:1.13.0'
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.json:json:20250517'
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    androidTestImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+    androidTestImplementation platform('androidx.compose:compose-bom:2026.06.01')
+    androidTestImplementation 'androidx.compose.ui:ui-test-junit4'
+    debugImplementation 'androidx.compose.ui:ui-test-manifest'
+}

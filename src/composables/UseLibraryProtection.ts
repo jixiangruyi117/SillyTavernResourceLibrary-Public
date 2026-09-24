@@ -49,6 +49,8 @@ interface LibraryProtectionContext {
 }
 
 export function useLibraryProtection(getContext: () => LibraryProtectionContext) {
+  let historySnapshotsLoaded = false
+  let historySnapshotsLoad: Promise<void> | undefined
   async function refreshStorageHealth(): Promise<void> {
     const context = getContext()
 
@@ -67,7 +69,7 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     const confirmed = await confirmAction({
       title: '清理 APK 临时缓存',
       message:
-        '清空 APK 的临时缓存和代码缓存，不会删除资源、历史版本、云端备份、网页数据库或登录信息。请先完成上传、下载、导入和恢复任务。',
+        '清空 APK 的临时缓存和代码缓存，不会删除资源、历史版本、云端备份或网页数据库。请先完成上传、下载、导入和恢复任务。',
       confirmLabel: '清理缓存',
     })
     if (!confirmed) return
@@ -103,15 +105,21 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     }
   }
 
-  async function loadHistorySnapshots(): Promise<void> {
-    const context = getContext()
-
-    const [snapshots, limit] = await Promise.all([
-      historyService.list(),
-      historyService.getSnapshotLimit(),
-    ])
-    context.historySnapshots.value = snapshots
-    context.historySnapshotLimit.value = limit
+  function loadHistorySnapshots(): Promise<void> {
+    if (historySnapshotsLoad) return historySnapshotsLoad
+    historySnapshotsLoad = (async () => {
+      const context = getContext()
+      const [snapshots, limit] = await Promise.all([
+        historyService.list(),
+        historyService.getSnapshotLimit(),
+      ])
+      context.historySnapshots.value = snapshots
+      context.historySnapshotLimit.value = limit
+      historySnapshotsLoaded = true
+    })().finally(() => {
+      historySnapshotsLoad = undefined
+    })
+    return historySnapshotsLoad
   }
 
   async function handleHistorySnapshotLimit(value: number): Promise<void> {
@@ -161,7 +169,7 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
 
     context.isDataProtectionOpen.value = false
     context.isVaultPanelOpen.value = true
-    if (!context.vaultStatus.value.locked) await loadHistorySnapshots()
+    if (!context.vaultStatus.value.locked && !historySnapshotsLoaded) await loadHistorySnapshots()
   }
 
   async function handleVaultUnlock(password: string): Promise<void> {
@@ -252,6 +260,7 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     const context = getContext()
 
     vaultService.lock()
+    historySnapshotsLoaded = false
     context.vaultStatus.value = vaultService.getStatus()
     context.resetSearchState()
     context.resources.value = []

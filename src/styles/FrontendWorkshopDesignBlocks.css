@@ -1,0 +1,569 @@
+.frontend-workshop__block-scenes,
+.frontend-workshop__block-blueprint {
+  margin: 0 0.7rem 0.7rem;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+.frontend-workshop__block-scenes > header,
+.frontend-workshop__block-blueprint > header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+.frontend-workshop__block-scenes > header span,
+.frontend-workshop__block-blueprint > header span {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__block-scenes > header strong,
+.frontend-workshop__block-blueprint > header strong {
+  margin: 0.08rem 0 0;
+  font: var(--weight-title) var(--text-body)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-scenes > header em,
+.frontend-workshop__block-blueprint > header em {
+  max-width: 14rem;
+  color: var(--color-ink-soft);
+  font: var(--weight-body) var(--text-caption)/1.45 var(--font-ui);
+  font-style: normal;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-scenes > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+.frontend-workshop__block-scenes > div button {
+  display: grid;
+  min-width: 0;
+  min-height: 4.75rem;
+  align-content: start;
+  gap: 0.3rem;
+  padding: 0.6rem;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+  text-align: left;
+}
+.frontend-workshop__block-scenes > div button.is-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.frontend-workshop__block-scenes > div button strong {
+  min-width: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-scenes > div button small {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.frontend-workshop__block-scenes > div button span {
+  min-width: 0;
+  margin-top: auto;
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-scenes > div button.is-active small,
+.frontend-workshop__block-scenes > div button.is-active span {
+  color: var(--color-ink-soft);
+}
+.frontend-workshop__block-blueprint {
+  border-left: 0.22rem solid var(--color-accent);
+}
+.frontend-workshop__block-blueprint[data-complexity='medium'] {
+  border-left-color: #aa713a;
+}
+.frontend-workshop__block-blueprint[data-complexity='high'] {
+  border-left-color: var(--color-danger);
+}
+.frontend-workshop__block-blueprint ol {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  counter-reset: skeleton;
+  list-style: none;
+}
+.frontend-workshop__block-blueprint ol li {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(0, 1.3fr);
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__block-blueprint ol span {
+  min-width: 0;
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.4 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-blueprint ol strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-caption);
+  line-height: 1.45;
+}
+.frontend-workshop__block-blueprint > p,
+.frontend-workshop__block-blueprint > ul {
+  margin: 0.5rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-blueprint > ul {
+  padding-left: 1.1rem;
+}
+.frontend-workshop__block-grid {
+  display: grid;
+  grid-auto-columns: minmax(16rem, 18rem);
+  grid-auto-flow: column;
+  gap: 0.65rem;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 0.7rem 0.7rem;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-inline: contain;
+}
+.frontend-workshop__block-grid > button {
+  display: grid;
+  position: relative;
+  min-width: 0;
+  min-height: 20rem;
+  align-content: start;
+  gap: 0.5rem;
+  overflow: hidden;
+  padding: 0.7rem;
+  border-color: var(--color-line-strong);
+  background-color: var(--color-surface-raised);
+  scroll-snap-align: start;
+  text-align: left;
+}
+.frontend-workshop__block-grid > button.is-active {
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+  background-color: var(--color-surface-raised);
+  box-shadow:
+    inset 0 0 0 1px var(--color-accent),
+    0.35rem 0.35rem 0 color-mix(in srgb, var(--color-accent) 13%, transparent);
+}
+.frontend-workshop__block-preview {
+  position: relative;
+  display: grid;
+  min-height: 5.8rem;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface);
+  background-image:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent) 9%, transparent),
+      transparent 52%
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 0.95rem,
+      color-mix(in srgb, var(--color-grid) 50%, transparent) 1rem
+    );
+}
+.frontend-workshop__block-selected {
+  position: absolute;
+  z-index: 2;
+  top: 0.35rem;
+  right: 0.35rem;
+  max-width: calc(100% - 0.7rem);
+  padding: 0.18rem 0.38rem;
+  overflow: hidden;
+  border: 1px solid var(--color-accent);
+  color: white;
+  background-color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.25 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__block-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+.frontend-workshop__block-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-body);
+  font-weight: var(--weight-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__block-heading small {
+  flex: 0 0 auto;
+  font-size: var(--text-caption);
+}
+.frontend-workshop__block-grid small {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__block-grid > button > p {
+  display: -webkit-box;
+  min-height: 2.8em;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.frontend-workshop__block-grid dl {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+}
+.frontend-workshop__block-grid dl > div {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__block-grid dt,
+.frontend-workshop__block-grid dd {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__block-grid dt {
+  color: var(--color-accent);
+  font-weight: var(--weight-ui);
+}
+.frontend-workshop__block-grid dd {
+  color: var(--color-ink-soft);
+}
+.frontend-workshop__block-grid em {
+  color: var(--color-accent);
+  font: var(--weight-body) var(--text-caption)/1.35 var(--font-ui);
+  font-style: normal;
+}
+.frontend-workshop__block-grid footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-top: auto;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__block-grid footer > span {
+  min-width: 0;
+  color: var(--color-ink-soft);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 以下 mock-* 仅用于块类型缩略示意图，不是正常阅读型产品文字。
+ * 它们保持缩略比例，避免把预览内部微型标签错误放大成 12px UI 文本。
+ */
+.frontend-workshop__mock-character {
+  display: grid;
+  width: 82%;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
+}
+.frontend-workshop__mock-avatar,
+.frontend-workshop__mock-person {
+  display: block;
+  border: 2px solid var(--color-accent);
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface));
+}
+.frontend-workshop__mock-avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+.frontend-workshop__mock-copy {
+  display: grid;
+  gap: 0.3rem;
+}
+.frontend-workshop__mock-copy i,
+.frontend-workshop__mock-tabs > i,
+.frontend-workshop__mock-collapse > em,
+.frontend-workshop__mock-banner > i {
+  display: block;
+  height: 0.28rem;
+  border-radius: 999px;
+  background-color: var(--color-line-strong);
+}
+.frontend-workshop__mock-copy i:first-child {
+  width: 82%;
+  height: 0.42rem;
+  background-color: var(--color-ink);
+}
+.frontend-workshop__mock-copy i:last-child {
+  width: 58%;
+}
+.frontend-workshop__mock-character > b {
+  align-self: end;
+  padding: 0.16rem 0.25rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-accent);
+  font-size: 0.42rem;
+}
+.frontend-workshop__mock-attributes {
+  display: grid;
+  width: 86%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+.frontend-workshop__mock-attributes > span {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.38rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface-raised);
+}
+.frontend-workshop__mock-attributes b {
+  color: var(--color-ink-soft);
+  font-size: 0.43rem;
+}
+.frontend-workshop__mock-attributes i {
+  display: block;
+  width: 100%;
+  height: 0.25rem;
+  background:
+    linear-gradient(90deg, var(--color-accent) var(--fill), transparent var(--fill)),
+    var(--color-line);
+}
+.frontend-workshop__mock-relationship {
+  display: grid;
+  width: 84%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  place-items: center;
+  gap: 0.35rem;
+}
+.frontend-workshop__mock-person {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+.frontend-workshop__mock-bond {
+  display: grid;
+  width: 100%;
+  place-items: center;
+}
+.frontend-workshop__mock-bond i {
+  width: 100%;
+  height: 2px;
+  background-color: var(--color-accent);
+}
+.frontend-workshop__mock-bond b {
+  margin-top: -0.65rem;
+  padding: 0.18rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 50%;
+  color: var(--color-accent);
+  background-color: var(--color-surface);
+  font-size: 0.45rem;
+}
+.frontend-workshop__mock-relationship small {
+  grid-column: 1 / -1;
+  color: var(--color-ink);
+}
+.frontend-workshop__mock-inventory {
+  display: grid;
+  width: 84%;
+  gap: 0.3rem;
+}
+.frontend-workshop__mock-inventory > span {
+  display: flex;
+  gap: 0.2rem;
+}
+.frontend-workshop__mock-inventory b {
+  padding: 0.18rem 0.28rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-ink-soft);
+  font-size: 0.4rem;
+}
+.frontend-workshop__mock-inventory b:first-child {
+  color: white;
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+}
+.frontend-workshop__mock-inventory > i {
+  display: block;
+  height: 0.48rem;
+  border-left: 0.22rem solid var(--color-accent);
+  background-color: var(--color-line);
+}
+.frontend-workshop__mock-inventory > i:nth-of-type(2) {
+  width: 82%;
+}
+.frontend-workshop__mock-inventory > i:nth-of-type(3) {
+  width: 64%;
+}
+.frontend-workshop__mock-timeline {
+  display: grid;
+  width: 74%;
+  gap: 0;
+}
+.frontend-workshop__mock-timeline > span {
+  display: grid;
+  min-height: 1.2rem;
+  grid-template-columns: 0.8rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.35rem;
+  color: var(--color-ink-soft);
+  font-size: 0.43rem;
+}
+.frontend-workshop__mock-timeline i {
+  width: 0.52rem;
+  height: 0.52rem;
+  border: 2px solid var(--color-line-strong);
+  border-radius: 50%;
+  box-shadow: 0 0.7rem 0 -0.2rem var(--color-line-strong);
+}
+.frontend-workshop__mock-timeline .is-done i,
+.frontend-workshop__mock-timeline .is-current i {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+}
+.frontend-workshop__mock-timeline .is-current b {
+  color: var(--color-accent);
+}
+.frontend-workshop__mock-tabs {
+  display: grid;
+  width: 84%;
+  gap: 0.35rem;
+}
+.frontend-workshop__mock-tabs > span {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--color-line-strong);
+}
+.frontend-workshop__mock-tabs b {
+  padding: 0.26rem;
+  color: var(--color-ink-soft);
+  font-size: 0.45rem;
+  text-align: center;
+}
+.frontend-workshop__mock-tabs b.is-active {
+  color: white;
+  background-color: var(--color-accent);
+}
+.frontend-workshop__mock-tabs > i:nth-of-type(2) {
+  width: 76%;
+}
+.frontend-workshop__mock-tabs > i:nth-of-type(3) {
+  width: 55%;
+}
+.frontend-workshop__mock-collapse {
+  display: grid;
+  width: 84%;
+  gap: 0.35rem;
+  padding: 0.45rem;
+  border: 1px solid var(--color-line-strong);
+  background-color: var(--color-surface-raised);
+}
+.frontend-workshop__mock-collapse > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--color-ink);
+  font-size: 0.45rem;
+}
+.frontend-workshop__mock-collapse > span i {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--color-accent);
+  border-bottom: 2px solid var(--color-accent);
+  transform: rotate(45deg);
+}
+.frontend-workshop__mock-collapse > em:nth-of-type(2) {
+  width: 76%;
+}
+.frontend-workshop__mock-collapse > em:nth-of-type(3) {
+  width: 58%;
+}
+.frontend-workshop__mock-banner {
+  display: grid;
+  position: relative;
+  width: 86%;
+  height: 4rem;
+  align-content: end;
+  overflow: hidden;
+  padding: 0.45rem;
+  color: white;
+  background-color: var(--color-accent);
+  background-image: linear-gradient(135deg, transparent 25%, rgb(0 0 0 / 32%));
+}
+.frontend-workshop__mock-banner > span {
+  position: absolute;
+  top: -1rem;
+  right: 0.5rem;
+  width: 4rem;
+  height: 4rem;
+  border: 1px solid rgb(255 255 255 / 52%);
+  border-radius: 50%;
+}
+.frontend-workshop__mock-banner > b {
+  z-index: 1;
+  font-size: 0.55rem;
+}
+.frontend-workshop__mock-banner > i {
+  z-index: 1;
+  width: 54%;
+  margin-top: 0.25rem;
+  background-color: rgb(255 255 255 / 62%);
+}
+
+@media (max-width: 30rem) {
+  .frontend-workshop__block-scenes > header,
+  .frontend-workshop__block-blueprint > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .frontend-workshop__block-scenes > header em,
+  .frontend-workshop__block-blueprint > header em {
+    max-width: none;
+    text-align: left;
+  }
+
+  .frontend-workshop__block-scenes > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .frontend-workshop__block-blueprint ol li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+  }
+
+  .frontend-workshop__block-grid {
+    grid-auto-columns: minmax(15.5rem, 88vw);
+  }
+}

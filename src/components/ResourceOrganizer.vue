@@ -313,7 +313,10 @@ const {
                 aria-labelledby="resource-tab-content"
               >
                 <header
-                  v-if="!isPersonalResourceType(resource.type)"
+                  v-if="
+                    !isPersonalResourceType(resource.type) &&
+                    resource.type !== RESOURCE_TYPE.GREETING
+                  "
                   class="resource-detail__tab-heading"
                 >
                   <h3>
@@ -593,6 +596,7 @@ const {
                           </span>
                           <div>
                             <button
+                              class="button button--quiet"
                               type="button"
                               :disabled="busy"
                               @click="emit('download', carrier)"
@@ -601,6 +605,7 @@ const {
                             </button>
                             <button
                               v-if="carrier.id !== resource.id"
+                              class="button button--quiet"
                               type="button"
                               :disabled="busy"
                               @click="emit('activateVersion', carrier.id)"
@@ -612,7 +617,7 @@ const {
                                 carrier.id !== resource.id &&
                                 carrier.metadata.artworkVariantKind === 'custom'
                               "
-                              class="button--danger"
+                              class="button button--quiet button--danger"
                               type="button"
                               :disabled="busy"
                               @click="emit('deleteVersion', carrier.id)"

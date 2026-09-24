@@ -187,7 +187,7 @@ export interface ResourceBackupDescriptor {
     sha256: string
     storedSize?: number
     storage?: {
-      kind: 'github-release'
+      kind: 'github-release' | 'koofr-path'
       container: string
       objectKey: string
     }

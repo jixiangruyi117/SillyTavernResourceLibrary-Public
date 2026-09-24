@@ -95,6 +95,20 @@ describe('ConfirmDialog + confirmAction', () => {
     wrapper.unmount()
   })
 
+  it('centered 选项在移动端仍保持屏幕中央弹窗', async () => {
+    await drain()
+    const wrapper = mount(ConfirmDialog, { attachTo: document.body })
+    const pending = confirmAction({ message: '中央确认', centered: true })
+    await flushPromises()
+
+    expect(
+      document.querySelector('.confirm-dialog__overlay')?.classList.contains('is-centered'),
+    ).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await expect(pending).resolves.toBe(false)
+    wrapper.unmount()
+  })
+
   it('第三个明确选项会返回 alternative，不会与取消混淆', async () => {
     await drain()
     const wrapper = mount(ConfirmDialog, { attachTo: document.body })

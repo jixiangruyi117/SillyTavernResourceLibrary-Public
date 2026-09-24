@@ -43,11 +43,15 @@ export async function plaintextSecretCopies(
 }
 
 async function grantId(config: CloudBackupConfig): Promise<string> {
-  const target = [
-    'github',
-    config.owner.trim().toLowerCase(),
-    config.repository.trim().toLowerCase(),
-  ]
+  const target =
+    config.provider === 'github'
+      ? ['github', config.owner.trim().toLowerCase(), config.repository.trim().toLowerCase()]
+      : [
+          'webdav',
+          config.baseUrl.trim().replace(/\/+$/, ''),
+          config.username.trim().toLowerCase(),
+          config.folder.trim().replace(/^\/+|\/+$/g, '') || 'SRL-Backups',
+        ]
   const hash = new Uint8Array(
     await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(target))),
   )

@@ -1,7 +1,13 @@
 import type { ComputedRef, Ref, ShallowRef } from 'vue'
 import { computed, nextTick } from 'vue'
-import { resourceArchiveService, resourceService } from '../core/AppContainer'
+import {
+  categoryService,
+  historyService,
+  resourceArchiveService,
+  resourceService,
+} from '../core/AppContainer'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
+import { confirmAction } from './UseConfirmDialog'
 import type { ImportVersionCandidate } from '../types/Import'
 import {
   analyzeResourceLink,
@@ -14,6 +20,7 @@ import {
   type ResourceLink,
 } from '../types/Resource'
 import { summarizeFileNames, summarizeResourceTypes } from '../utils/LibraryFormatting'
+import { createResourceArchiveSource } from '../services/ExportService'
 
 interface LibraryImportContext {
   pendingBackupImport: Ref<File | undefined>
@@ -236,7 +243,10 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       const duplicateCount = results.filter((result) => result.status === 'duplicate').length
       const failed = results.filter((result) => result.status === 'failed')
       await context.loadResources()
-      if (importedCount > 0) context.linkImportText.value = ''
+      if (!failed.length && importedCount + duplicateCount > 0) {
+        context.linkImportText.value = ''
+        closeImportChooser()
+      }
       context.showNotice(
         [
           importedCount ? `链接资源 ${importedCount} 项` : '',
@@ -251,13 +261,20 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     }
   }
 
+  function closeImportChooser(): void {
+    const context = getContext()
+
+    context.isLinkImportOpen.value = false
+    context.isImportChooserOpen.value = false
+  }
+
   function openLinkImportPanel(): void {
     const context = getContext()
 
+    context.isImportChooserOpen.value = true
     context.isLinkImportOpen.value = true
-    context.isImportChooserOpen.value = false
     void nextTick(() => {
-      document.getElementById('link-import-text')?.focus()
+      document.getElementById('link-import-text')?.focus({ preventScroll: true })
     })
   }
 
@@ -266,20 +283,21 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
 
     if (context.isBusy.value) return
     context.isFeatureHubOpen.value = false
+    context.isLinkImportOpen.value = false
     context.isImportChooserOpen.value = true
   }
 
   function openFileImportPicker(): void {
     const context = getContext()
 
-    context.isImportChooserOpen.value = false
+    closeImportChooser()
     void nextTick(() => context.fileImportInput.value?.click())
   }
 
   function openTavernBackupPicker(): void {
     const context = getContext()
     if (context.isBusy.value) return
-    context.isImportChooserOpen.value = false
+    closeImportChooser()
     void nextTick(() => context.tavernBackupInput.value?.click())
   }
 
@@ -404,7 +422,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
   }
 
   async function handleVersionImportDecision(decision: {
-    action: 'activate' | 'archive' | 'independent' | 'skip'
+    action: 'activate' | 'archive' | 'replace' | 'independent' | 'skip'
     targetId?: string
     note?: string
   }): Promise<void> {
@@ -412,6 +430,23 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
 
     const pending = context.activeVersionImport.value
     if (!pending || context.isVersionImportBusy.value) return
+
+    const selectedCandidate = pending.candidates.find(
+      (candidate) => candidate.resource.id === decision.targetId,
+    )
+    const isContainerVariant = selectedCandidate?.matchKind === 'containerVariant'
+    if (decision.action === 'replace') {
+      if (!decision.targetId) throw new Error('请选择要覆盖的已有资源')
+      const confirmed = await confirmAction({
+        title: isContainerVariant ? '覆盖当前封装' : '覆盖当前版本',
+        message: `将用“${pending.fileName}”替换「${selectedCandidate?.resource.name ?? '已有资源'}」的当前文件，旧版不会进入历史记录，只能通过本地快照恢复。确定继续吗？`,
+        confirmLabel: isContainerVariant ? '覆盖当前封装' : '覆盖当前版本',
+        danger: true,
+        centered: true,
+      })
+      if (!confirmed) return
+    }
+
     context.isVersionImportBusy.value = true
     try {
       if (decision.action === 'independent') {
@@ -423,30 +458,47 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           throw new Error(result?.status === 'failed' ? result.message : '独立资源导入失败')
         }
         context.showNotice(`“${pending.fileName}”已作为独立资源导入`)
-      } else if (decision.action === 'activate' || decision.action === 'archive') {
+      } else if (
+        decision.action === 'activate' ||
+        decision.action === 'archive' ||
+        decision.action === 'replace'
+      ) {
         if (!decision.targetId) throw new Error('请选择要归入的已有资源')
-        const selectedCandidate = pending.candidates.find(
-          (candidate) => candidate.resource.id === decision.targetId,
-        )
-        const isContainerVariant = selectedCandidate?.matchKind === 'containerVariant'
+        if (decision.action === 'replace') {
+          await historyService.capture(
+            await createResourceArchiveSource(resourceService),
+            await categoryService.list(),
+            '覆盖资源当前版本前自动快照',
+          )
+        }
         await resourceService.importAsVersion(
           pending.file,
           decision.targetId,
-          decision.action === 'activate',
+          decision.action === 'activate' || decision.action === 'replace',
           decision.note,
           isContainerVariant ? 'container' : undefined,
+          {},
+          false,
+          decision.action !== 'replace',
         )
-        if (decision.action === 'activate' && context.extractCharacterAssets.value) {
+        if (
+          (decision.action === 'activate' || decision.action === 'replace') &&
+          context.extractCharacterAssets.value
+        ) {
           await resourceService.extractCharacterAssetsMany([decision.targetId])
         }
         context.showNotice(
-          isContainerVariant
-            ? decision.action === 'activate'
-              ? `“${pending.fileName}”已绑定到同一版本并设为当前封装，原文件仍完整保留`
-              : `“${pending.fileName}”已绑定为同一版本的另一份封装，当前展示未改变`
-            : decision.action === 'activate'
-              ? `“${pending.fileName}”已设为当前版本，旧版已收入历史`
-              : `“${pending.fileName}”已加入历史，当前展示版本未改变`,
+          decision.action === 'replace'
+            ? isContainerVariant
+              ? `“${pending.fileName}”已覆盖当前封装，旧封装未进入历史记录`
+              : `“${pending.fileName}”已覆盖当前版本，旧版未进入历史记录`
+            : isContainerVariant
+              ? decision.action === 'activate'
+                ? `“${pending.fileName}”已绑定到同一版本并设为当前封装，原文件仍完整保留`
+                : `“${pending.fileName}”已绑定为同一版本的另一份封装，当前展示未改变`
+              : decision.action === 'activate'
+                ? `“${pending.fileName}”已设为当前版本，旧版已收入历史`
+                : `“${pending.fileName}”已加入历史，当前展示版本未改变`,
         )
       }
       context.pendingVersionImports.value.shift()
@@ -471,6 +523,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     handleSystemFileDragLeave,
     handleSystemFileDrop,
     handleLinkImport,
+    closeImportChooser,
     openLinkImportPanel,
     openImportChooser,
     openFileImportPicker,

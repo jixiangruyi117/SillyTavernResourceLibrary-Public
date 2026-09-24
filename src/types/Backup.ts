@@ -6,10 +6,11 @@ import type {
 } from './CommunitySource'
 import type { CustomCssPreset, LayoutMode, PreviewPolicy } from '../services/BrowserStorageService'
 import type { CharacterDrawState } from '../services/CharacterDrawService'
-import type { GitHubBackupConfig } from './CloudBackup'
-import type { MainApiProfilesState } from '../services/MainApiService'
+import type { GitHubBackupConfig, WebDavBackupConfig } from './CloudBackup'
+import type { MainApiConfig, MainApiProfilesState } from '../services/MainApiService'
 import type { FrontendWorkshopImageGenerationConfig } from '../services/FrontendWorkshopImageGenerationService'
 import type { FrontendWorkshopSelfHostedImageBedConfig } from '../services/FrontendWorkshopImageHostingService'
+import type { DiscordSourceConnectionSettings } from '../services/DiscordSourceSettingsService'
 import type { AiTaggingDraft, AiTaggingUndoRecord } from '../services/AiTaggingDraftService'
 import type { ExternalAppDataRecord, InstalledExternalApp } from './ExternalApp'
 import type { PresetStitchDraft } from '../services/BrowserStorageService'
@@ -49,8 +50,9 @@ export interface ArchivePortableData {
     activePresetId: string
   }
   cloudBackup?: {
-    activeProvider?: 'github'
+    activeProvider?: 'github' | 'webdav'
     github?: GitHubBackupConfig
+    webdav?: WebDavBackupConfig
   }
   characterDraw?: {
     state: CharacterDrawState
@@ -72,7 +74,9 @@ export interface ArchivePortableData {
     /** @deprecated 仅为旧备份恢复兼容；新备份不再写出生图 API Key。 */
     imageGeneration?: FrontendWorkshopImageGenerationConfig[]
     imageHosting?: FrontendWorkshopSelfHostedImageBedConfig
-    cloudBackup?: Partial<Record<'github', string>>
+    legacyFrontendWorkshopApi?: MainApiConfig
+    discordSource?: DiscordSourceConnectionSettings
+    cloudBackup?: Partial<Record<'github' | 'webdav', string>>
   }
   aiTaggingState?: {
     draft?: AiTaggingDraft

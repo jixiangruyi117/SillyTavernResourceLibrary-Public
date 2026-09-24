@@ -100,7 +100,7 @@ async function focusInitialRange(): Promise<void> {
   if (!textarea) return
   const start = Math.max(0, Math.min(draft.value.length, Math.floor(range.start)))
   const end = Math.max(start, Math.min(draft.value.length, Math.floor(range.end)))
-  textarea.focus()
+  textarea.focus({ preventScroll: true })
   textarea.setSelectionRange(start, end)
   const line = draft.value.slice(0, start).split('\n').length - 1
   const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 20

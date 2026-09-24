@@ -48,9 +48,7 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
   border-top: 1px solid var(--color-line);
   border-bottom: 1px solid var(--color-line-strong);
-  background: color-mix(in srgb, var(--color-surface-raised) 96%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--color-surface-raised);
 }
 
 .resource-detail__tabs button {
@@ -338,11 +336,15 @@
 .resource-version-carriers > article > div {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 0.4rem;
 }
 
 .resource-version-carriers button {
   min-height: var(--size-touch);
+  flex: 1 1 auto;
+  padding: 0.5rem 0.75rem;
+  white-space: normal;
 }
 
 .resource-version-card__body > header strong,
@@ -433,7 +435,8 @@
   cursor: pointer;
 }
 
-.resource-version-card__actions .button--danger {
+.resource-version-card__actions .button--danger,
+.resource-version-carriers .button--danger {
   color: var(--color-danger, #9a3f36);
 }
 
@@ -608,6 +611,11 @@
   background: var(--color-accent);
 }
 
+.version-import-dialog__actions .version-import-dialog__replace {
+  border-color: var(--color-warning, #a86b24);
+  color: var(--color-warning, #a86b24);
+}
+
 .version-import-dialog > p {
   margin: 0;
   padding: 0 1.1rem 1.1rem;
@@ -647,8 +655,7 @@
   }
 
   .character-artwork-panel button,
-  .resource-version-carriers > article > div,
-  .resource-version-carriers button {
+  .resource-version-carriers > article > div {
     width: 100%;
   }
 

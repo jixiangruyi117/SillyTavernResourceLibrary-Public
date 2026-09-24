@@ -2,6 +2,7 @@ import { stageArchive } from './ArchiveExtraction'
 import type { RestoreStagingStore } from '../storage/RestoreStagingStore'
 import { isRecord } from '../utils/UnknownValue'
 import { isUnmodifiedSillyTavernDefault } from './SillyTavernDefaultContent'
+import { isSillyTavernSeededPath, parseSillyTavernContentLog } from './SillyTavernContentLog'
 
 const TAVERN_RESOURCE_DIRECTORIES = new Set([
   'characters',
@@ -43,6 +44,16 @@ function isSettingsPath(path: string): boolean {
 function isTavernStructurePath(path: string): boolean {
   const parts = path.toLowerCase().split('/')
   return isSettingsPath(path) || parts.some((part) => TAVERN_STRUCTURE_DIRECTORIES.has(part))
+}
+
+function fileMimeType(name: string): string {
+  return /\.json$/i.test(name)
+    ? 'application/json'
+    : /\.png$/i.test(name)
+      ? 'image/png'
+      : /\.css$/i.test(name)
+        ? 'text/css'
+        : 'text/plain'
 }
 
 /** Uses the restore staging owner; files are decoded in bounded chunks and read one at a time. */
@@ -95,16 +106,25 @@ export class ResourceArchiveService {
   async *tavernFiles(file: File): AsyncGenerator<File> {
     await this.validateTavernBackup(file)
     const paths: string[] = []
+    let contentLogPath: string | undefined
     const job = await stageArchive(file, this.staging, (path) => {
       const include = isResourcePath(path) || isSettingsPath(path)
       if (include) paths.push(path)
-      return include
+      const isContentLog = /(?:^|\/)content\.log$/iu.test(path)
+      if (!contentLogPath && isContentLog) contentLogPath = path
+      return include || isContentLog
     })
     try {
+      let seededPaths = new Set<string>()
+      if (contentLogPath) {
+        const contentLog = await this.staging.get(job, contentLogPath)
+        if (contentLog) seededPaths = parseSillyTavernContentLog(await contentLog.blob.text())
+      }
       for (const path of paths) {
         const entry = await this.staging.get(job, path)
         if (!entry) throw new Error('压缩包暂存文件不完整')
         const name = path.split('/').at(-1)!
+        if (!/^settings\.json$/i.test(name) && isSillyTavernSeededPath(path, seededPaths)) continue
         if (
           !/^settings\.json$/i.test(name) &&
           (await isUnmodifiedSillyTavernDefault(path, entry.blob))
@@ -144,15 +164,7 @@ export class ResourceArchiveService {
           // Do not persist the complete settings object: it may contain credentials.
           continue
         }
-        yield new File([entry.blob], name, {
-          type: /\.json$/i.test(name)
-            ? 'application/json'
-            : /\.png$/i.test(name)
-              ? 'image/png'
-              : /\.css$/i.test(name)
-                ? 'text/css'
-                : 'text/plain',
-        })
+        yield new File([entry.blob], name, { type: fileMimeType(name) })
       }
     } finally {
       await this.staging.deleteJob(job)

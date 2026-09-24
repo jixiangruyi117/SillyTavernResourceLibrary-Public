@@ -1,0 +1,7 @@
+前置匿名正文。
+
+```html
+<body><main data-fixture="mixed">anonymous mixed frontend</main></body>
+```
+
+后置匿名正文。

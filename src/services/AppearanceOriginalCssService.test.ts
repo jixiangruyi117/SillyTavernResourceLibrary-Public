@@ -139,17 +139,14 @@ describe('original appearance CSS', () => {
     expect(source.readAsset).not.toHaveBeenCalled()
   })
 
-  it('rejects empty and missing sources without requiring an installed APP', async () => {
+  it('rejects empty, missing and uninstalled sources', async () => {
     await expect(readOriginalCss(undefined, undefined, reader('', {}))).rejects.toThrow('空文件')
     await expect(
       readOriginalCss(drawScope, undefined, reader(`<link rel="stylesheet" href="${shell}">`, {})),
     ).rejects.toThrow('读取失败')
     const source = reader('', {})
     source.apps = []
-    source.document.head.innerHTML = `<link rel="stylesheet" href="${shell}">`
-    source.readAsset = vi.fn(async () => ':root { --bundled: 1; }')
-    const bundled = await readOriginalCss(drawScope, undefined, source)
-    expect(bundled.parts.join('')).toContain('--bundled: 1')
+    await expect(readOriginalCss(drawScope, undefined, source)).rejects.toThrow('请先安装')
   })
 
   it('rejects an APP from a different shell version', async () => {

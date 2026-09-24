@@ -56,7 +56,6 @@ interface LibraryLifecycleContext {
   handleNativeShortcut: (event?: Event) => void
   handleMobileFocus: (event: FocusEvent) => void
   syncCustomUiCss: () => void
-  mobileInputRevealTimer: number | undefined
 }
 
 export function useLibraryLifecycle(context: LibraryLifecycleContext) {
@@ -142,6 +141,7 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     context.isOverlayOpen,
     (open) => {
       document.body.classList.toggle('modal-open', open)
+      document.documentElement.classList.toggle('modal-open', open)
     },
     { immediate: true },
   )
@@ -223,8 +223,6 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     if (searchIndexTimer !== undefined) window.clearTimeout(searchIndexTimer)
     if (libraryMaintenanceTimer !== undefined) window.clearTimeout(libraryMaintenanceTimer)
     if (cloudBackupTimer !== undefined) window.clearInterval(cloudBackupTimer)
-    if (context.mobileInputRevealTimer !== undefined)
-      window.clearTimeout(context.mobileInputRevealTimer)
     window.removeEventListener('keydown', context.handleGlobalKeydown)
     window.removeEventListener(SRL_BACK_REQUEST_EVENT, context.handleBackRequest)
     window.removeEventListener('popstate', context.handleBrowserPopState)
@@ -236,6 +234,7 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     context.saveWorkspaceSnapshot()
     document.removeEventListener('focusin', context.handleMobileFocus)
     document.body.classList.remove('modal-open')
+    document.documentElement.classList.remove('modal-open')
   })
   return {
     consumeSharedFiles,

@@ -27,7 +27,6 @@ import {
   type NovelAiQualityMode,
   type RelayCapabilityKey,
 } from '../services/ImageGenerationCapabilities'
-import type { GeneratedImageHostingMode } from '../types/GeneratedImageAlbum'
 
 export type ImageGenerationAppEvents = { back: []; 'open-album': [] }
 
@@ -118,8 +117,6 @@ export function useImageGenerationApp() {
   const assetName = ref('')
 
   const category = ref('')
-
-  const hostingMode = ref<GeneratedImageHostingMode>('self-hosted')
 
   const hostedUrl = computed(() => currentCandidate.value?.hostedUrl ?? '')
 
@@ -773,7 +770,6 @@ export function useImageGenerationApp() {
     try {
       const candidate = currentCandidate.value!
       const image = candidate.image
-      const mode = hostingMode.value
       const item = await generatedImageAlbumService.saveGenerated(image, {
         name: assetName.value,
         category: category.value,
@@ -782,7 +778,7 @@ export function useImageGenerationApp() {
       const blob = await generatedImageAlbumService.getOriginalBlob(item.id)
       const name = assetName.value.trim() || image.prompt.slice(0, 60) || '生成图片'
       const hosted = await frontendWorkshopImageHostingService.uploadBlobSelfHosted(blob, name)
-      await generatedImageAlbumService.setHostedUrl(item.id, hosted, mode)
+      await generatedImageAlbumService.setHostedUrl(item.id, hosted, 'self-hosted')
       candidate.hostedUrl = hosted.url
       notice.value = '已生成稳定 HTTPS 直链，并同步记录到生图相册。'
     } catch (cause) {
@@ -876,7 +872,6 @@ export function useImageGenerationApp() {
     saveToAlbum,
     canSaveToPhone,
     saveToPhone,
-    hostingMode,
     selfHostedOrigin,
     selfHostedToken,
     rememberSelfHosted,

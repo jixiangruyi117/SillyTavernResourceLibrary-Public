@@ -21,6 +21,7 @@ const { albumService, hostingService } = vi.hoisted(() => ({
       membership: { registered: true, disabled: false, termsAccepted: true },
       capacity: { uploadEnabled: true },
     })),
+    uploadBlobShared: vi.fn(),
     uploadBlobSelfHosted: vi.fn(),
   },
 }))

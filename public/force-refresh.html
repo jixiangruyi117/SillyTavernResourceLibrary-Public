@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SRL 缓存清理</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        padding: 24px;
+        background: #101b17;
+        color: #edf1ed;
+        font:
+          15px/1.6 system-ui,
+          sans-serif;
+      }
+      main {
+        width: min(100%, 400px);
+        padding: 28px;
+        border: 1px solid #557b6d;
+        background: #15251f;
+        box-shadow: 0 24px 70px #0007;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font:
+          500 22px/1.2 Georgia,
+          serif;
+      }
+      small {
+        display: block;
+        color: #9fc9b9;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        margin-bottom: 0.8rem;
+      }
+      #status {
+        min-height: 60px;
+        padding: 14px;
+        border-left: 3px solid #91c7b2;
+        background: #0c1713;
+        margin: 1rem 0;
+        white-space: pre-wrap;
+      }
+      button {
+        width: 100%;
+        min-height: 48px;
+        margin-top: 0.5rem;
+        border: 1px solid #91c7b2;
+        color: #102019;
+        background: #b7dece;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      p {
+        margin: 0.8rem 0;
+        color: #b9c9c2;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <small>CACHE CLEANUP</small>
+      <h1>强制清理缓存</h1>
+      <p>
+        这会注销 Service Worker
+        并清空浏览器缓存，但<strong>不会删除你的角色卡数据</strong>（数据存在 IndexedDB
+        中，与缓存独立）。
+      </p>
+      <div id="status">等待操作…</div>
+      <button id="clean-btn" type="button">清除缓存并刷新</button>
+      <p style="font-size: 12px">
+        清理完成后自动跳回资源库首页。如果页面仍然没有更新，说明服务器最新版本就是你当前看到的。
+      </p>
+    </main>
+    <script>
+      const statusEl = document.getElementById('status')
+      const btn = document.getElementById('clean-btn')
+
+      btn.addEventListener('click', async () => {
+        btn.disabled = true
+        btn.textContent = '正在清理…'
+
+        try {
+          // 1. 注销全部 Service Worker
+          if ('serviceWorker' in navigator) {
+            statusEl.textContent = '注销 Service Worker…'
+            const registrations = await navigator.serviceWorker.getRegistrations()
+            for (const reg of registrations) {
+              await reg.unregister()
+            }
+          }
+
+          // 2. 清空 Cache Storage（HTTP 缓存 + SW 预缓存）
+          if ('caches' in window) {
+            statusEl.textContent = '清空浏览器缓存…'
+            const keys = await caches.keys()
+            await Promise.all(
+              keys.filter((k) => k !== 'srl-official-app-assets-v1').map((k) => caches.delete(k)),
+            )
+          }
+
+          statusEl.textContent = '清理完成，正在跳回资源库…'
+          setTimeout(() => {
+            location.replace('/')
+          }, 800)
+        } catch (err) {
+          statusEl.textContent =
+            '清理失败：' + (err.message || '未知错误') + '\n请尝试手动清除浏览器数据。'
+          btn.disabled = false
+          btn.textContent = '重试'
+        }
+      })
+
+      statusEl.textContent = '点下方按钮开始清理'
+    </script>
+  </body>
+</html>

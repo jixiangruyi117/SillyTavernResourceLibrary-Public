@@ -91,7 +91,7 @@ onMounted(async () => {
   try {
     await refreshProtection()
     if (props.resource) {
-      stored = await personalResourceService.read(props.resource)
+      stored = toRaw(await personalResourceService.read(props.resource))
       draft.value = structuredClone(stored)
       draft.value.name = props.resource.name
       locked.value = Boolean(stored.protected)

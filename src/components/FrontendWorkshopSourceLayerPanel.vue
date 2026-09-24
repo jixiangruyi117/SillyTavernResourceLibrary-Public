@@ -174,8 +174,8 @@ function organize() {
 }
 </script>
 <template>
-  <Teleport to=".fw-workbench.is-editing">
-    <section class="fw-layer-panel" aria-label="作品图层">
+  <Teleport to="body">
+    <section class="fw-layer-panel" role="dialog" aria-label="作品图层">
       <header>
         <strong>图层</strong
         ><button type="button" :disabled="busy || saving" @click="organize">AI 整理图层</button>
@@ -332,11 +332,13 @@ function organize() {
 <style scoped>
 .fw-layer-panel {
   position: fixed;
-  z-index: 80;
+  z-index: 1300;
   left: calc(var(--safe-left, 0px) + 62px);
   top: calc(var(--safe-top, 0px) + 76px);
   width: min(340px, calc(100vw - var(--safe-left, 0px) - var(--safe-right, 0px) - 78px));
-  max-height: calc(100dvh - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 92px);
+  max-height: calc(
+    var(--visual-viewport-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 92px
+  );
   overflow: auto;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-line);

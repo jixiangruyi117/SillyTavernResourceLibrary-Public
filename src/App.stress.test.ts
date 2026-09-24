@@ -148,7 +148,11 @@ describe('App 资源量压力回归', () => {
     expect(wrapper.find('.library').exists()).toBe(true)
     expect(wrapper.get('[role="dialog"][aria-label="选择导入方式"]').isVisible()).toBe(true)
     expect(document.body.classList.contains('modal-open')).toBe(true)
-    await wrapper.get('[aria-label="关闭导入方式选择"]').trigger('click')
+    await wrapper.get('.import-choice-card--link').trigger('click')
+    expect(wrapper.get('[role="dialog"][aria-label="链接导入"]').isVisible()).toBe(true)
+    await wrapper.get('[aria-label="返回导入方式"]').trigger('click')
+    expect(wrapper.get('[role="dialog"][aria-label="选择导入方式"]').isVisible()).toBe(true)
+    await wrapper.get('[aria-label="关闭导入"]').trigger('click')
     expect(wrapper.find('.import-choice-overlay').exists()).toBe(false)
     expect(document.body.classList.contains('modal-open')).toBe(false)
     wrapper.unmount()
@@ -170,7 +174,15 @@ describe('App 资源量压力回归', () => {
     try {
       await vi.waitFor(() => expect(stressApi.backfillCardFingerprints).toHaveBeenCalled())
       expect(wrapper.find('.mobile-bottom-nav').exists()).toBe(true)
+      localStorage.setItem(
+        'srl.appResume.v1',
+        JSON.stringify({ feature: 'featureHub', subpage: 'extensions', savedAt: 1 }),
+      )
       await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+      expect(JSON.parse(localStorage.getItem('srl.appResume.v1') ?? '{}')).toMatchObject({
+        feature: 'featureHub',
+        subpage: 'home',
+      })
       const hub = wrapper.getComponent({ name: 'FeatureHub' })
       for (const active of [true, false, true, false]) {
         hub.vm.$emit('feature-app-active', active)
@@ -212,7 +224,7 @@ describe('App 资源量压力回归', () => {
 
     await vi.waitFor(() => expect(wrapper.get('.toolbar__result').text()).toContain('500'))
     expect(stressApi.initializeVaultOnce).toHaveBeenCalledOnce()
-    expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledOnce())
     expect(stressApi.backfillCardFingerprints).not.toHaveBeenCalled()
 
     resolveUpgrade(0)

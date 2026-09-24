@@ -1,0 +1,436 @@
+.frontend-workshop__fullscreen {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  color: var(--color-ink);
+  background: var(--color-canvas);
+}
+.frontend-workshop__fullscreen > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 4rem;
+  padding: max(0.65rem, var(--safe-top)) max(0.75rem, var(--safe-right)) 0.65rem
+    max(0.75rem, var(--safe-left));
+  border-bottom: 2px solid var(--color-ink);
+  background: var(--color-surface);
+}
+.frontend-workshop__fullscreen > header span {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.frontend-workshop__fullscreen > header em {
+  max-width: min(60rem, 70vw);
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__fullscreen > header strong {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: var(--text-title-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__fullscreen > header button {
+  min-height: var(--size-touch);
+  flex: 0 0 auto;
+  padding: 0 0.8rem;
+  border: 1px solid var(--color-line-strong);
+  color: white;
+  background: var(--color-accent);
+}
+.frontend-workshop__fullscreen > main {
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 auto;
+  padding: 1rem max(0.75rem, var(--safe-right)) max(1rem, var(--safe-bottom))
+    max(0.75rem, var(--safe-left));
+}
+.frontend-workshop__fullscreen-stage-viewport {
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.frontend-workshop__fullscreen-stage-viewport > .frontend-workshop__stage {
+  margin-block: 0;
+}
+.frontend-workshop__fullscreen :deep(.rich-content-preview iframe) {
+  min-height: 12rem;
+}
+@media (max-width: 48rem) {
+  .frontend-workshop {
+    padding-top: 0;
+    padding-inline: 0.65rem;
+    padding-bottom: 0;
+    background: var(--color-canvas);
+  }
+  .frontend-workshop select,
+  .frontend-workshop textarea,
+  .frontend-workshop input:not([type='range'], [type='file'], [type='checkbox'], [type='radio']) {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 1rem;
+  }
+  .frontend-workshop__header {
+    grid-template-columns: var(--size-touch) minmax(0, 1fr);
+    gap: 0.65rem;
+    margin-bottom: 0.7rem;
+    padding-bottom: 0.7rem;
+  }
+  .frontend-workshop__header h1 {
+    min-width: 0;
+    min-height: calc(var(--feature-title-size) * var(--feature-title-line-height));
+    overflow: hidden;
+    font-size: var(--feature-title-size);
+    line-height: var(--feature-title-line-height);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .frontend-workshop__header p,
+  .frontend-workshop__header div > small {
+    display: none;
+  }
+  .frontend-workshop__header > span {
+    display: none;
+  }
+  .frontend-workshop__steps {
+    top: max(0.35rem, var(--safe-top));
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+  .frontend-workshop__steps::-webkit-scrollbar {
+    display: none;
+  }
+  .frontend-workshop[data-active-step='design']
+    [data-workshop-step]:not([data-workshop-step='design']),
+  .frontend-workshop[data-active-step='proof']
+    [data-workshop-step]:not([data-workshop-step='proof']),
+  .frontend-workshop[data-active-step='delivery']
+    [data-workshop-step]:not([data-workshop-step='delivery']) {
+    display: none;
+  }
+  .frontend-workshop__layout,
+  .frontend-workshop__delivery > div.is-comparing {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__brief {
+    padding: 0.65rem;
+    box-shadow: none;
+  }
+  .frontend-workshop__brief > header {
+    margin-bottom: 0.65rem;
+  }
+  .frontend-workshop__design-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    min-width: 0;
+    margin-bottom: 0.65rem;
+    border: 1px solid var(--color-line-strong);
+    background: var(--color-line);
+  }
+  .frontend-workshop__design-tabs button {
+    display: grid;
+    min-width: 0;
+    min-height: var(--control-visual-secondary);
+    place-content: center;
+    gap: 0;
+    padding: 0.4rem 0.25rem;
+    overflow: hidden;
+    border: 0;
+    background: var(--color-surface-raised);
+    text-align: center;
+  }
+  .frontend-workshop__design-tabs button small {
+    display: none;
+  }
+  .frontend-workshop__design-tabs button strong {
+    display: -webkit-box;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    font: var(--weight-ui) var(--text-caption)/1.25 var(--font-ui);
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .frontend-workshop__design-tabs button.is-active {
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    box-shadow: inset 0 -2px 0 var(--color-accent);
+  }
+  .frontend-workshop__design-tabs button.is-active small {
+    color: var(--color-ink-soft);
+    opacity: 0.72;
+  }
+  .frontend-workshop__design-panel {
+    display: none;
+  }
+  .frontend-workshop__design-panel.is-active {
+    display: block;
+  }
+  .frontend-workshop__panel-next {
+    display: block;
+    width: 100%;
+    margin-top: 0.8rem;
+    color: white;
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+    font-weight: var(--weight-title);
+  }
+  .frontend-workshop__drafts > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__reference-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .frontend-workshop__layout-reference-actions {
+    justify-content: stretch;
+  }
+  .frontend-workshop__layout-reference-actions button {
+    min-width: 0;
+    flex: 1 1 8rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .frontend-workshop__api-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__mode-grid {
+    grid-auto-columns: minmax(13rem, 86%);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+    scroll-snap-type: x mandatory;
+  }
+  .frontend-workshop__mode-grid > button {
+    min-height: 5rem;
+    scroll-snap-align: start;
+  }
+  .frontend-workshop__interaction-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .frontend-workshop__interaction-grid > button {
+    grid-template-columns: 1rem minmax(0, 1fr);
+    min-height: 4.25rem;
+    padding: 0.45rem;
+    overflow: hidden;
+  }
+  .frontend-workshop__interaction-grid > button :where(strong, span, small) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .frontend-workshop__design-tokens > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__condition-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .frontend-workshop__condition-form > select:first-child,
+  .frontend-workshop__condition-form > input,
+  .frontend-workshop__condition-form > button {
+    grid-column: 1 / -1;
+  }
+  .frontend-workshop__module-prompt pre,
+  .frontend-workshop__full-prompt pre,
+  .frontend-workshop__prompt-history pre,
+  .frontend-workshop__review-prompt pre {
+    max-height: 13rem;
+  }
+  .frontend-workshop__review > header,
+  .frontend-workshop__prompt-history > summary,
+  .frontend-workshop__full-prompt > summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__review-start,
+  .frontend-workshop__conversation-manage {
+    width: 100%;
+  }
+  .frontend-workshop__conversation > div.frontend-workshop__conversation-toolbar {
+    margin-inline: 0;
+    padding-bottom: 0.55rem;
+  }
+  .frontend-workshop__conversation-toolbar,
+  .frontend-workshop__version-controls,
+  .frontend-workshop__delivery-actions {
+    min-width: 0;
+  }
+  .frontend-workshop__conversation-toolbar :where(button, select),
+  .frontend-workshop__version-controls :where(button, select) {
+    max-width: 100%;
+  }
+  .frontend-workshop__field-editor > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__field-editor > header > div {
+    width: 100%;
+    min-width: 0;
+  }
+  .frontend-workshop__field-editor > header button {
+    min-height: var(--control-visual);
+  }
+  .frontend-workshop__field-table > article > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__block-scenes > header,
+  .frontend-workshop__block-blueprint > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__block-scenes > header em,
+  .frontend-workshop__block-blueprint > header em {
+    max-width: none;
+    text-align: left;
+  }
+  .frontend-workshop__block-scenes > div {
+    grid-auto-columns: minmax(13rem, 86%);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 0.2rem;
+    scroll-snap-type: x mandatory;
+  }
+  .frontend-workshop__block-scenes > div button {
+    min-height: 4.75rem;
+    scroll-snap-align: start;
+  }
+  .frontend-workshop__mvu-turns > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__type-pickers {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__layout-reference {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__layout-reference button {
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .frontend-workshop__typography > header,
+  .frontend-workshop__locks > header {
+    align-items: start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .frontend-workshop__compatibility {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .frontend-workshop__compatibility > p {
+    grid-column: 1;
+  }
+  .frontend-workshop__proof {
+    padding-inline: 0.65rem;
+    box-shadow: none;
+  }
+  .frontend-workshop__proof > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__version-controls {
+    justify-content: space-between;
+    gap: 0.5rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .frontend-workshop__version-controls::-webkit-scrollbar {
+    display: none;
+  }
+  .frontend-workshop__version-controls nav {
+    flex: 1 0 auto;
+    justify-content: space-between;
+  }
+  .frontend-workshop__delivery > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .frontend-workshop__delivery-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .frontend-workshop__delivery-actions button {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .frontend-workshop__previewbar {
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow-x: auto;
+    padding-bottom: 0.55rem;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+  .frontend-workshop__previewbar::-webkit-scrollbar {
+    display: none;
+  }
+  .frontend-workshop__previewbar > div {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+  .frontend-workshop__previewbar > div button {
+    flex: 0 0 auto;
+  }
+  .frontend-workshop__previewbar > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    scroll-snap-align: start;
+  }
+  .frontend-workshop__canvas {
+    padding: 0.45rem;
+  }
+}
+
+@media (max-width: 26.25rem) {
+  .frontend-workshop__fullscreen > header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.5rem;
+    padding-inline: max(0.5rem, var(--safe-left)) max(0.5rem, var(--safe-right));
+  }
+
+  .frontend-workshop__fullscreen > header em {
+    display: none;
+  }
+
+  .frontend-workshop__fullscreen > header button {
+    max-width: 44vw;
+    padding-inline: 0.6rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .frontend-workshop__design-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .frontend-workshop__design-tabs button {
+    padding-inline: 0.15rem;
+  }
+
+  .frontend-workshop__interaction-grid,
+  .frontend-workshop__delivery-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -8,7 +8,7 @@ const props = defineProps<{ candidate: ImportVersionCandidate; remaining: number
 const emit = defineEmits<{
   resolve: [
     decision: {
-      action: 'activate' | 'archive' | 'independent' | 'skip'
+      action: 'activate' | 'archive' | 'replace' | 'independent' | 'skip'
       targetId?: string
       note?: string
     },
@@ -33,12 +33,19 @@ watch(
   { immediate: true },
 )
 
-function decide(action: 'activate' | 'archive' | 'independent' | 'skip'): void {
-  if ((action === 'activate' || action === 'archive') && !selectedId.value) return
+function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'skip'): void {
+  if ((action === 'activate' || action === 'archive' || action === 'replace') && !selectedId.value)
+    return
   emit('resolve', {
     action,
-    targetId: action === 'activate' || action === 'archive' ? selectedId.value : undefined,
-    note: action === 'activate' || action === 'archive' ? versionNote.value.trim() : undefined,
+    targetId:
+      action === 'activate' || action === 'archive' || action === 'replace'
+        ? selectedId.value
+        : undefined,
+    note:
+      action === 'activate' || action === 'archive' || action === 'replace'
+        ? versionNote.value.trim()
+        : undefined,
   })
 }
 </script>
@@ -131,6 +138,15 @@ function decide(action: 'activate' | 'archive' | 'independent' | 'skip'): void {
             @click="decide('archive')"
           >
             {{ isContainerVariant ? '绑定封装，不切换' : '加入历史，不切换' }}
+          </button>
+          <button
+            v-if="!isExistingContent"
+            type="button"
+            class="version-import-dialog__replace"
+            :disabled="busy"
+            @click="decide('replace')"
+          >
+            {{ isContainerVariant ? '覆盖当前封装' : '覆盖当前版本' }}
           </button>
           <button
             v-if="!isExistingContent"

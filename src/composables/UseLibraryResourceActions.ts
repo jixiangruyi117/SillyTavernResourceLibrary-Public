@@ -20,6 +20,7 @@ import { downloadBlob } from '../utils/LibraryFormatting'
 interface LibraryResourceActionsContext {
   showNotice: (message: string, duration?: number, preserveRecycleUndo?: boolean) => void
   organizingResource: Ref<Resource | undefined>
+  organizingInitialTab: Ref<'overview' | 'versions'>
   organizingBoundResources: Ref<Resource[]>
   organizingVersions: Ref<ResourceVersionView[]>
   layoutMode: Ref<'grid' | 'list' | 'split', 'grid' | 'list' | 'split'>
@@ -36,7 +37,10 @@ interface LibraryResourceActionsContext {
 export function useLibraryResourceActions(getContext: () => LibraryResourceActionsContext) {
   let isFavoriteBusy = false
 
-  async function openResourceDetail(resource: ResourceReference): Promise<void> {
+  async function openResourceDetail(
+    resource: ResourceReference,
+    initialTab: 'overview' | 'versions' = 'overview',
+  ): Promise<void> {
     const context = getContext()
 
     const fullResource =
@@ -45,6 +49,7 @@ export function useLibraryResourceActions(getContext: () => LibraryResourceActio
       context.showNotice('资源文件不存在或已被删除')
       return
     }
+    context.organizingInitialTab.value = initialTab
     context.organizingResource.value = fullResource
     context.organizingBoundResources.value = (
       await Promise.all(

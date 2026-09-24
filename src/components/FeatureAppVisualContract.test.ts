@@ -31,6 +31,23 @@ describe('Feature App visual contract', () => {
     expect(bundle).not.toContain('{{ templates.length }} 个已存套装')
   })
 
+  it('lays out settings as a full-viewport page instead of a centered sheet', () => {
+    const settings = readComponent('LayoutSettingsPanel.vue')
+    const responsive = readStyle('LayoutAndResponsive.css')
+    const glass = readStyle('GlassRefinement.css')
+    const appearance = readFileSync(new URL('../core/AppearanceScopes.ts', import.meta.url), 'utf8')
+
+    expect(settings).toContain('class="layout-settings-page"')
+    expect(settings).not.toContain('layout-settings-sheet')
+    expect(responsive).toContain('.layout-settings-overlay {\n  display: block;\n  padding: 0;')
+    expect(responsive).toContain('.layout-settings-page {\n  display: grid;')
+    expect(responsive).toContain('width: 100%;\n  height: 100%;')
+    expect(responsive).toContain('height: 100%;')
+    expect(glass).toContain('.layout-settings-page {\n  border: 0;\n  border-radius: 0;')
+    expect(glass).toContain('box-shadow: none;')
+    expect(appearance).toContain("selector: '.layout-settings-page'")
+  })
+
   it('removes dead private Header CSS from the first batch', () => {
     const desktop = readStyle('FeatureDesktop.css')
     const folders = readStyle('FolderLibrary.css')
@@ -86,13 +103,17 @@ describe('Feature App visual contract', () => {
 
   it('puts Cloud primary operations before configuration on compact layouts', () => {
     const cloud = readComponent('CloudBackupCenter.vue')
+    const cloudCss = readStyle('CloudBackup.css')
 
-    expect(cloud).toContain('GitHub 直连备份')
-    expect(cloud).toContain('立即备份')
-    expect(cloud).toContain('刷新列表')
-    expect(cloud).toContain('不经过资源库作者的服务器')
-    expect(cloud).not.toContain('Koofr')
-    expect(cloud).not.toContain('WebDAV')
+    expect(cloud).not.toContain('class="cloud-vault"')
+    expect(cloud).toContain('class="cloud-credential-status"')
+    expect(cloud.indexOf('class="cloud-operations"')).toBeLessThan(
+      cloud.indexOf('class="cloud-config"'),
+    )
+    expect(cloudCss).toContain('.cloud-config {\n  grid-column: 1;\n  grid-row: 1;')
+    expect(cloudCss).toContain('.cloud-operations {\n  grid-column: 2;\n  grid-row: 1;')
+    expect(cloudCss).not.toContain('.cloud-vault')
+    expect(cloudCss).toContain('min-height: var(--size-touch);')
   })
 
   it('gives Stitch Entry a real tablet and desktop composition', () => {
@@ -120,6 +141,8 @@ describe('Feature App visual contract', () => {
 
     expect(foundation).toContain('--bottom-nav-block-size: 4.75rem;')
     expect(foundation).toContain('--bottom-notice-offset: max(1rem, var(--safe-bottom));')
+    expect(foundation).toContain(":root[data-ios-keyboard-open='true']")
+    expect(foundation).toContain('--safe-bottom: 0px !important;')
     expect(layout).toMatch(
       /--bottom-nav-reserved:\s*calc\(\s*var\(--bottom-nav-block-size\) \+ max\(0px, var\(--safe-bottom\) - 0\.375rem\)\s*\);/,
     )

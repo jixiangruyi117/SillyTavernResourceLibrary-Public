@@ -1,7 +1,7 @@
 {
-  "name": "sillytavern-resource-library-local",
+  "name": "sillytavern-resource-library",
   "private": true,
-  "version": "0.0.112",
+  "version": "0.0.120",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "packageManager": "pnpm@11.5.0",
@@ -11,12 +11,17 @@
   "scripts": {
     "dev": "vite",
     "dev:lan": "vite --host 0.0.0.0",
-    "build": "vue-tsc -b && vite build",
-    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build",
+    "build": "vue-tsc -b && vite build && node scripts/Check-OfficialAppPackages.mjs",
+    "android:sync": "pnpm build && cap sync android",
+    "android:open": "cap open android",
+    "android:apk": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/Build-AndroidApk.ps1",
     "preview": "vite preview",
-    "test": "vitest run --exclude \"**/.codex-tmp/**\"",
+    "test": "vitest run --exclude \"server/**\" --exclude \"**/.codex-tmp/**\"",
+    "secret:scan": "node scripts/SecretScan.mjs",
+    "secret:scan:history": "node scripts/SecretScan.mjs --history",
     "lint": "eslint .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build && pnpm secret:scan && pnpm secret:scan:history"
   },
   "dependencies": {
     "@adobe/css-tools": "4.4.4",
@@ -46,6 +51,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/cli": "^8.4.2",
     "@eslint/js": "^10.0.1",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^24.13.2",
@@ -66,6 +73,7 @@
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.10",
     "vue-tsc": "^3.3.5",
-    "workbox-window": "^7.4.1"
+    "workbox-window": "^7.4.1",
+    "wrangler": "^4.113.0"
   }
 }

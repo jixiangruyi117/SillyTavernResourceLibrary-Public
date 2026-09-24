@@ -1,0 +1,998 @@
+.frontend-workshop__proof-settings {
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__proof-settings > summary {
+  display: flex;
+  min-height: var(--size-touch);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  list-style: none;
+}
+.frontend-workshop__proof-settings > summary::-webkit-details-marker {
+  display: none;
+}
+.frontend-workshop__proof-settings > summary span {
+  min-width: 0;
+}
+.frontend-workshop__proof-settings > summary strong,
+.frontend-workshop__proof-settings > summary small {
+  display: block;
+}
+.frontend-workshop__proof-settings > summary strong {
+  margin: 0;
+  font: var(--weight-title) var(--text-body)/1.3 var(--font-ui);
+}
+.frontend-workshop__proof-settings > summary small,
+.frontend-workshop__proof-settings > summary em {
+  margin-top: 0.12rem;
+  color: var(--color-ink-soft);
+  font: var(--weight-body) var(--text-caption)/1.4 var(--font-ui);
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__proof-settings > summary em {
+  color: var(--color-accent);
+}
+.frontend-workshop__proof-settings[open] {
+  padding-bottom: 0.7rem;
+}
+.frontend-workshop__proof-settings[open] > summary {
+  border-bottom: 1px solid var(--color-line);
+}
+.frontend-workshop__proof-settings .frontend-workshop__compatibility,
+.frontend-workshop__proof-settings .frontend-workshop__sample,
+.frontend-workshop__proof-settings .frontend-workshop__error {
+  margin-inline: 0.7rem;
+}
+.frontend-workshop__proof-settings .frontend-workshop__compatibility {
+  margin-top: 0.7rem;
+}
+.frontend-workshop__proof nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+.frontend-workshop__proof nav button {
+  position: relative;
+  width: 2.125rem;
+  min-width: 2.125rem;
+  min-height: 2.125rem;
+  flex: 0 0 2.125rem;
+}
+.frontend-workshop__proof nav button::before,
+.frontend-workshop__version-controls > button::before,
+.frontend-workshop__previewbar button::before {
+  position: absolute;
+  inset: -0.3125rem 0;
+  content: '';
+}
+.frontend-workshop__proof nav em {
+  min-width: 5rem;
+  text-align: center;
+  font: var(--weight-title) var(--text-caption)/1.3 var(--font-ui);
+}
+.frontend-workshop__version-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+}
+.frontend-workshop__version-controls > button {
+  position: relative;
+  min-height: 2.25rem;
+  padding: 0 0.65rem;
+  white-space: nowrap;
+}
+.frontend-workshop__version-controls > button.is-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.frontend-workshop__version-manager {
+  display: grid;
+  min-width: 0;
+  gap: 0.55rem;
+  margin: -0.35rem 0 0.8rem;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-line));
+  background: color-mix(in srgb, var(--color-danger-soft) 58%, var(--color-surface-raised));
+}
+.frontend-workshop__version-manager > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.frontend-workshop__version-manager > header span {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__version-manager > header strong {
+  margin: 0;
+  font: var(--weight-title) var(--text-body)/1.3 var(--font-ui);
+}
+.frontend-workshop__version-manager > header small,
+.frontend-workshop__version-manager > div small {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__version-manager > div {
+  display: grid;
+  grid-auto-columns: minmax(6.5rem, 8.5rem);
+  grid-auto-flow: column;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  scroll-snap-type: x proximity;
+}
+.frontend-workshop__version-manager > div button {
+  display: grid;
+  min-height: 3.5rem;
+  align-content: center;
+  gap: 0.15rem;
+  padding: 0.45rem;
+  border-color: var(--color-line);
+  text-align: left;
+  scroll-snap-align: start;
+}
+.frontend-workshop__version-manager > div button.is-current {
+  box-shadow: inset 0 -0.15rem 0 var(--color-accent);
+}
+.frontend-workshop__version-manager > div button.is-selected {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+  box-shadow: inset 0 -2px 0 var(--color-danger);
+}
+.frontend-workshop__version-manager > div small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__version-manager > button {
+  min-height: var(--size-touch);
+  color: var(--color-on-accent);
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+}
+.frontend-workshop__version-manager > button:disabled {
+  color: var(--color-ink-soft);
+  border-color: var(--color-line);
+  background: var(--color-surface);
+}
+.frontend-workshop__compatibility {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  min-width: 0;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-line);
+}
+.frontend-workshop__compatibility > span {
+  min-width: 0;
+  padding: 0.55rem;
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__compatibility small,
+.frontend-workshop__compatibility strong {
+  display: block;
+}
+.frontend-workshop__compatibility small {
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.3 var(--font-ui);
+  letter-spacing: 0.04em;
+}
+.frontend-workshop__compatibility strong {
+  margin-top: 0.18rem;
+  overflow: hidden;
+  font-size: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__compatibility > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.48rem 0.55rem;
+  color: var(--color-ink-soft);
+  background: color-mix(in srgb, var(--color-accent-soft) 55%, var(--color-surface-raised));
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__stress-tests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+.frontend-workshop__stress-tests > span {
+  margin-right: 0.1rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__stress-tests button {
+  min-height: var(--control-visual-secondary);
+  padding-inline: 0.55rem;
+  border-color: var(--color-line);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__mvu-turns {
+  display: grid;
+  min-width: 0;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__mvu-turns > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.frontend-workshop__mvu-turns > header span,
+.frontend-workshop__mvu-turns > header strong,
+.frontend-workshop__mvu-turns > header small {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__mvu-turns > header strong {
+  font-size: var(--text-caption);
+}
+.frontend-workshop__mvu-turns > header small,
+.frontend-workshop__mvu-turns > header em {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  font-style: normal;
+}
+.frontend-workshop__mvu-turns > div {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(var(--size-touch), 1fr));
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+.frontend-workshop__mvu-turns > div button {
+  min-height: var(--control-visual);
+  padding: 0;
+}
+.frontend-workshop__mvu-turns > div button.is-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.frontend-workshop__sample-issues {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.frontend-workshop__sample-issues li {
+  padding: 0.4rem 0.55rem;
+  border-left: 0.2rem solid var(--color-warning);
+  background: var(--color-warning-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__sample-issues li.is-error {
+  border-left-color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+.frontend-workshop__previewbar {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding: 0.45rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__previewbar > div {
+  display: flex;
+}
+.frontend-workshop__previewbar button {
+  position: relative;
+  min-width: 2.125rem;
+  min-height: 2.125rem;
+  padding: 0 0.55rem;
+  border-color: var(--color-line);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+.frontend-workshop__previewbar > div button + button {
+  border-left: 0;
+}
+.frontend-workshop__previewbar button.is-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.frontend-workshop__preview-note {
+  margin: 0.45rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.55;
+}
+.frontend-workshop__preview-note strong {
+  margin-right: 0.25rem;
+  color: var(--color-accent);
+}
+.frontend-workshop__inspect-tray {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  padding: 0.55rem;
+  border: 1px solid var(--color-warning-line);
+  background: var(--color-warning-soft);
+}
+.frontend-workshop__inspect-tray > div {
+  display: grid;
+  flex: 1 1 100%;
+  min-width: 0;
+  gap: 0.1rem;
+}
+.frontend-workshop__inspect-tray strong,
+.frontend-workshop__inspect-tray small,
+.frontend-workshop__inspect-tray > span {
+  font-size: var(--text-caption);
+}
+.frontend-workshop__inspect-tray small {
+  color: var(--color-ink-soft);
+}
+.frontend-workshop__inspect-tray > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--size-touch);
+  gap: 0.3rem;
+  padding-left: 0.55rem;
+  border: 1px solid var(--color-warning-line);
+  color: var(--color-warning-ink);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__inspect-tray > span button,
+.frontend-workshop__inspect-tray > button {
+  min-height: var(--control-visual);
+  padding: 0 0.5rem;
+  border: 0;
+}
+.frontend-workshop__stage-viewport {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+}
+.frontend-workshop__stage {
+  width: 100%;
+  min-width: 100%;
+  margin: 0.55rem auto 1rem;
+  border: 1px solid var(--color-line-strong);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent),
+    var(--color-surface-raised);
+}
+.frontend-workshop__stage.is-phone320 {
+  width: 20rem;
+  min-width: 20rem;
+}
+.frontend-workshop__stage.is-phone390 {
+  width: 24.375rem;
+  min-width: 24.375rem;
+}
+.frontend-workshop__stage.is-desktop {
+  width: 45rem;
+  min-width: 45rem;
+}
+.frontend-workshop__stage.is-fit {
+  width: 100%;
+  min-width: 100%;
+}
+.frontend-workshop__stage.is-message {
+  display: block;
+  padding: 0;
+  background: rgb(23 23 23);
+}
+.frontend-workshop__canvas {
+  min-width: 0;
+  padding: 0.8rem;
+}
+.frontend-workshop__stage pre {
+  max-height: 30rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.8rem;
+  color: #dbece5;
+  background: #16231e;
+  font: var(--text-caption)/1.55 var(--font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__stage :deep(.rich-content-preview) {
+  min-width: 0;
+  border: 0;
+}
+.frontend-workshop__stage :deep(.rich-content-preview iframe) {
+  min-height: 10rem;
+}
+.frontend-workshop__prompt-history,
+.frontend-workshop__review {
+  min-width: 0;
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__prompt-history > summary,
+.frontend-workshop__review > header {
+  display: flex;
+  min-height: var(--size-touch);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.65rem 0.7rem;
+}
+.frontend-workshop__prompt-history > summary {
+  cursor: pointer;
+}
+.frontend-workshop__prompt-history > summary span,
+.frontend-workshop__review > header span {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__prompt-history > summary strong,
+.frontend-workshop__review > header strong,
+.frontend-workshop__prompt-history > summary small,
+.frontend-workshop__review > header small,
+.frontend-workshop__prompt-history > summary em,
+.frontend-workshop__prompt-history h4,
+.frontend-workshop__review-prompt h4,
+.frontend-workshop__prompt-history > p,
+.frontend-workshop__review > p {
+  font-size: var(--text-caption);
+}
+.frontend-workshop__prompt-history > summary small,
+.frontend-workshop__review > header small,
+.frontend-workshop__prompt-history > summary em,
+.frontend-workshop__prompt-history > p,
+.frontend-workshop__review > p {
+  color: var(--color-ink-soft);
+}
+.frontend-workshop__prompt-history > summary em {
+  font-style: normal;
+}
+.frontend-workshop__prompt-history > section,
+.frontend-workshop__review-prompt > section {
+  margin: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__prompt-history h4,
+.frontend-workshop__review-prompt h4 {
+  margin: 0 0 0.35rem;
+  color: var(--color-accent);
+}
+.frontend-workshop__prompt-history pre,
+.frontend-workshop__review-prompt pre {
+  max-height: 18rem;
+  margin: 0;
+  padding: 0.65rem;
+  overflow: auto;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  font: var(--text-caption)/1.6 var(--font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__prompt-history > p,
+.frontend-workshop__review > p {
+  margin: 0 0.7rem 0.65rem;
+  line-height: 1.55;
+}
+.frontend-workshop__review-start,
+.frontend-workshop__review-apply,
+.frontend-workshop__review-cleanup,
+.frontend-workshop__conversation-manage,
+.frontend-workshop__conversation-toolbar button {
+  min-height: var(--control-visual-secondary);
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-ink);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+.frontend-workshop__review > div {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__review-suggestion {
+  min-width: 0;
+  padding: 0.6rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+.frontend-workshop__review-suggestion.is-selected {
+  border-color: var(--color-accent);
+  box-shadow: inset 0.2rem 0 var(--color-accent);
+}
+.frontend-workshop__review-suggestion > label {
+  display: grid;
+  grid-template-columns: var(--size-touch) minmax(0, 1fr);
+  align-items: center;
+  cursor: pointer;
+}
+.frontend-workshop .frontend-workshop__review-suggestion input[type='checkbox'] {
+  width: 1.2rem;
+  height: 1.2rem;
+  min-height: 1.2rem;
+  max-width: 1.2rem;
+  max-height: 1.2rem;
+  padding: 0;
+  justify-self: center;
+  accent-color: var(--color-accent);
+}
+.frontend-workshop__review-suggestion label span {
+  display: grid;
+}
+.frontend-workshop__review-suggestion label small {
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+}
+.frontend-workshop__review-suggestion label strong {
+  font-size: var(--text-body);
+}
+.frontend-workshop__review-selection {
+  width: max-content;
+  margin-top: 0.22rem;
+  padding: 0.12rem 0.32rem;
+  color: var(--color-muted);
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  font: var(--weight-ui) var(--text-caption)/1.3 var(--font-ui);
+  font-style: normal;
+}
+.frontend-workshop__review-suggestion.is-selected .frontend-workshop__review-selection {
+  color: var(--color-accent);
+  border-color: currentColor;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+}
+.frontend-workshop__review-suggestion textarea {
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.45rem;
+  resize: vertical;
+}
+.frontend-workshop__review-apply {
+  width: max-content;
+  max-width: calc(100% - 1.4rem);
+  margin: 0 0.7rem 0.7rem;
+  padding-inline: 0.85rem;
+  color: white;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.frontend-workshop__review-apply:disabled {
+  color: var(--color-muted);
+  border-color: var(--color-line);
+  background: var(--color-surface-soft);
+}
+.frontend-workshop__review-apply.is-applied {
+  color: var(--color-accent);
+  background: var(--color-surface);
+}
+.frontend-workshop__review-prompt {
+  margin: 0 0.7rem 0.7rem;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__review-prompt > summary {
+  min-height: var(--size-touch);
+  padding: 0.6rem 0;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: 800;
+}
+.frontend-workshop__refine {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__refine button {
+  color: var(--color-accent);
+}
+.frontend-workshop__generation-failure {
+  display: grid;
+  gap: 0.28rem;
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.7rem;
+  color: var(--color-ink);
+  border: 1px solid color-mix(in srgb, #b64035 55%, var(--color-line));
+  border-left: 0.24rem solid #b64035;
+  background: color-mix(in srgb, #b64035 6%, var(--color-surface));
+}
+.frontend-workshop__generation-failure strong {
+  color: var(--color-danger);
+  font-size: var(--text-body-strong);
+}
+.frontend-workshop__generation-failure p,
+.frontend-workshop__generation-failure small,
+.frontend-workshop__generation-failure em {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__generation-failure p {
+  font-size: var(--text-body);
+}
+.frontend-workshop__generation-failure small,
+.frontend-workshop__generation-failure em {
+  color: var(--color-muted);
+  font-size: var(--text-caption);
+  font-style: normal;
+}
+.frontend-workshop__manual-repair-open {
+  justify-self: start;
+  min-height: var(--control-visual-secondary);
+  margin-top: 0.25rem;
+  color: var(--color-on-accent);
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+}
+.frontend-workshop__manual-repair-dialog {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(0.75rem, var(--safe-top)) max(0.75rem, var(--safe-right))
+    max(0.75rem, var(--safe-bottom)) max(0.75rem, var(--safe-left));
+  overflow: auto;
+  background: rgba(26, 20, 17, 0.82);
+}
+.frontend-workshop__manual-repair-dialog > section {
+  display: grid;
+  width: min(52rem, 100%);
+  max-height: min(52rem, calc(var(--app-viewport-height) - 1.5rem));
+  gap: 0.7rem;
+  overflow: auto;
+  padding: 0.9rem;
+  color: var(--color-ink);
+  border: 1px solid var(--color-line);
+  border-top: 0.28rem solid var(--color-danger);
+  background: var(--color-surface);
+  box-shadow: 0 1.25rem 3rem rgba(0, 0, 0, 0.32);
+}
+.frontend-workshop__manual-repair-dialog header,
+.frontend-workshop__manual-repair-dialog footer {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.frontend-workshop__manual-repair-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 0.35rem;
+}
+.frontend-workshop__manual-repair-dialog button.is-guide {
+  color: var(--color-accent);
+  border-color: var(--color-line-strong);
+  background: var(--color-accent-soft);
+}
+.frontend-workshop__manual-repair-dialog header strong {
+  display: block;
+  margin-top: 0.12rem;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+}
+.frontend-workshop__manual-repair-dialog header p,
+.frontend-workshop__manual-repair-dialog label > span,
+.frontend-workshop__manual-repair-code > small {
+  display: block;
+  margin: 0.25rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__manual-repair-dialog button {
+  min-height: var(--control-visual-secondary);
+}
+.frontend-workshop__manual-repair-dialog footer .is-primary {
+  color: white;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.frontend-workshop__manual-repair-issues {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 52%, var(--color-line));
+  background: var(--color-danger-soft);
+}
+.frontend-workshop__manual-repair-issues strong,
+.frontend-workshop__manual-repair-issues li,
+.frontend-workshop__manual-repair-error {
+  color: var(--color-danger);
+}
+.frontend-workshop__manual-repair-issues ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  font-size: var(--text-body);
+}
+.frontend-workshop__manual-repair-code pre {
+  max-height: 12rem;
+  margin: 0.35rem 0 0;
+  overflow: auto;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-soft);
+}
+.frontend-workshop__manual-repair-code code span {
+  display: block;
+  min-width: max-content;
+  padding: 0.08rem 0.45rem;
+  white-space: pre;
+}
+.frontend-workshop__manual-repair-code code span.is-error {
+  color: #8f211a;
+  background: #ffd9d5;
+}
+.frontend-workshop__manual-repair-code code b {
+  display: inline-block;
+  width: 2.2rem;
+  margin-right: 0.5rem;
+  color: var(--color-muted);
+  text-align: right;
+  user-select: none;
+}
+.frontend-workshop__manual-repair-dialog textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 14rem;
+  margin-top: 0.35rem;
+  padding: 0.65rem;
+  color: var(--color-ink);
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-soft);
+  font:
+    var(--text-caption)/1.5 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  resize: vertical;
+}
+.frontend-workshop__manual-repair-error {
+  margin: 0;
+  font-size: var(--text-body);
+}
+.frontend-workshop__manual-repair-guide {
+  z-index: 80;
+}
+.frontend-workshop__manual-repair-guide > section {
+  border-top-color: #256b59;
+}
+.frontend-workshop__manual-repair-guide-list {
+  display: grid;
+  gap: 0.55rem;
+}
+.frontend-workshop__manual-repair-guide-list article {
+  padding: 0.62rem 0.7rem;
+  border-left: 0.2rem solid #3f8c77;
+  background: var(--color-surface-soft);
+}
+.frontend-workshop__manual-repair-guide-list strong {
+  display: block;
+  color: #174f40;
+  font-size: var(--text-body-strong);
+}
+.frontend-workshop__manual-repair-guide-list p {
+  margin: 0.3rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+  line-height: 1.55;
+}
+.frontend-workshop__manual-repair-guide-list code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.frontend-workshop__manual-repair-guide-list pre {
+  margin: 0.42rem 0 0;
+  padding: 0.5rem 0.58rem;
+  overflow: auto;
+  color: #173d34;
+  border: 1px solid #b8d6cc;
+  background: #f5fbf8;
+  font:
+    var(--text-caption)/1.5 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  white-space: pre;
+}
+.frontend-workshop__conversation > div {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 15rem;
+  overflow: auto;
+  padding: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__conversation > div p {
+  display: grid;
+  width: min(88%, 32rem);
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--color-line);
+  cursor: pointer;
+  font-size: var(--text-body);
+  touch-action: pan-y;
+}
+.frontend-workshop__conversation > div p:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.frontend-workshop__conversation > header {
+  gap: 0.65rem;
+}
+.frontend-workshop__conversation > div.frontend-workshop__conversation-toolbar {
+  display: flex;
+  max-height: none;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  overflow: auto;
+  border-bottom: 1px solid var(--color-line);
+}
+.frontend-workshop__conversation-toolbar strong,
+.frontend-workshop__conversation-toolbar small {
+  flex: 0 0 auto;
+}
+.frontend-workshop__conversation-toolbar button {
+  flex: 0 0 auto;
+}
+.frontend-workshop__conversation-toolbar .frontend-workshop__conversation-delete {
+  color: var(--color-on-accent);
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+}
+.frontend-workshop__conversation > div p.is-selected {
+  outline: 0.18rem solid var(--color-accent);
+  outline-offset: 0.12rem;
+}
+.frontend-workshop__conversation > div p.is-user {
+  justify-self: end;
+  color: white;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.frontend-workshop__conversation > div p.is-assistant {
+  justify-self: start;
+  background: var(--color-surface);
+}
+.frontend-workshop__conversation > div small {
+  opacity: 0.7;
+  font-size: var(--text-caption);
+}
+.frontend-workshop__conversation .frontend-workshop__refine {
+  margin: 0;
+  padding: 0.7rem;
+}
+.frontend-workshop__conversation-dialog {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  align-items: end;
+  padding: max(0.5rem, var(--safe-top)) max(0.5rem, var(--safe-right))
+    max(0.5rem, var(--safe-bottom)) max(0.5rem, var(--safe-left));
+  background: rgba(26, 20, 17, 0.72);
+}
+.frontend-workshop__conversation-dialog > section {
+  display: grid;
+  width: min(42rem, 100%);
+  max-height: min(44rem, calc(var(--app-viewport-height) - 1rem));
+  margin-inline: auto;
+  overflow: hidden;
+  color: var(--color-ink);
+  border: 1px solid var(--color-line-strong);
+  border-top: 0.3rem solid var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 0 -1rem 2.5rem rgba(0, 0, 0, 0.3);
+}
+.frontend-workshop__conversation-dialog > section > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.8rem 0.85rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.frontend-workshop__conversation-dialog header strong,
+.frontend-workshop__conversation-dialog header small,
+.frontend-workshop__conversation-dialog header p {
+  display: block;
+}
+.frontend-workshop__conversation-dialog header strong {
+  margin-top: 0.12rem;
+  font: 700 1.1rem var(--font-display);
+}
+.frontend-workshop__conversation-dialog header p {
+  margin: 0.22rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+}
+.frontend-workshop__conversation-dialog header > button {
+  min-height: var(--control-visual);
+  padding-inline: 0.7rem;
+}
+.frontend-workshop__conversation-dialog-history {
+  display: grid;
+  gap: 0.5rem;
+  min-height: 8rem;
+  max-height: min(48dvh, 25rem);
+  overflow: auto;
+  padding: 0.75rem 0.85rem;
+  background: var(--color-surface-soft);
+}
+.frontend-workshop__conversation-dialog-history p {
+  display: grid;
+  width: min(88%, 31rem);
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--color-line);
+  font-size: var(--text-body);
+  line-height: 1.55;
+}
+.frontend-workshop__conversation-dialog-history p.is-user {
+  justify-self: end;
+  color: white;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.frontend-workshop__conversation-dialog-history p.is-assistant {
+  justify-self: start;
+  background: var(--color-surface);
+}
+.frontend-workshop__conversation-dialog-history small {
+  opacity: 0.72;
+  font-size: var(--text-caption);
+}
+.frontend-workshop__conversation-dialog-empty {
+  margin: 0;
+  padding: 1.2rem 0.85rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+}
+.frontend-workshop__conversation-dialog-refine {
+  margin: 0;
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__empty {
+  display: grid;
+  min-height: 24rem;
+  place-content: center;
+  text-align: center;
+}
+.frontend-workshop__empty span {
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+  letter-spacing: 0.18em;
+}
+.frontend-workshop__empty strong {
+  margin-top: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+}
+.frontend-workshop__empty p {
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+}

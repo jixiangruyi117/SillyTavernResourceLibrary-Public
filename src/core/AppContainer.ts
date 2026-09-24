@@ -43,6 +43,12 @@ import { ExternalAppSdkService } from '../services/ExternalAppSdkService'
 import { hashBytes } from '../services/HashService'
 import { IndexedDbAssetStore } from '../storage/IndexedDbAssetStore'
 import { ThumbnailService } from '../services/ThumbnailService'
+import { frontendWorkshopLegacyApiPreferenceService } from '../services/FrontendWorkshopLegacyApiPreferenceService'
+import {
+  initializeDiscordSourceCredentials,
+  loadDiscordSourceConnectionSettings,
+  saveDiscordSourceConnectionSettings,
+} from '../services/DiscordSourceSettingsService'
 import type { ArchivePortableData } from '../types/Backup'
 
 export const vaultService = new VaultService(database)
@@ -189,7 +195,16 @@ export const cloudBackupService = new CloudBackupService(
 
 export async function initializeCredentialServices(): Promise<void> {
   await mainApiService.initializeCredentials()
-  await cloudBackupService.initializeCredentials()
+  await Promise.all([
+    cloudBackupService.initializeCredentials(),
+    frontendWorkshopLegacyApiPreferenceService.initializeCredentials({
+      mode: 'main',
+      savedProfileId: mainApiService.getActiveProfile().id,
+      custom: mainApiService.getConfig(),
+      credentialPersistence: 'local',
+    }),
+    initializeDiscordSourceCredentials(),
+  ])
 }
 
 export async function exportPortableCredentialBundle(): Promise<
@@ -201,6 +216,11 @@ export async function exportPortableCredentialBundle(): Promise<
     version: 1,
     // 生图 API Key 仅保存在当前设备，不参与便携凭据、云备份或模板导出。
     imageHosting: frontendWorkshopImageHostingService.exportSelfHostedConfiguration(),
+    legacyFrontendWorkshopApi:
+      frontendWorkshopLegacyApiPreferenceService.exportCustomConfiguration(),
+    discordSource: loadDiscordSourceConnectionSettings().botToken
+      ? loadDiscordSourceConnectionSettings()
+      : undefined,
     cloudBackup: await cloudBackupService.exportPortableCredentials(),
   }
 }
@@ -220,6 +240,17 @@ export async function importPortableCredentialBundle(
     await frontendWorkshopImageHostingService.saveSelfHostedConfiguration({
       ...value.imageHosting,
       remember: true,
+    })
+  }
+  if (value.legacyFrontendWorkshopApi) {
+    await frontendWorkshopLegacyApiPreferenceService.importCustomConfiguration(
+      value.legacyFrontendWorkshopApi,
+    )
+  }
+  if (value.discordSource?.botToken) {
+    await saveDiscordSourceConnectionSettings({
+      ...value.discordSource,
+      credentialPersistence: 'local',
     })
   }
   if (value.cloudBackup) await cloudBackupService.importPortableCredentials(value.cloudBackup)

@@ -109,19 +109,18 @@ describe('ProjectNoticeDialog', () => {
     wrapper.unmount()
   })
 
-  it('shows the public free-use, source and responsibility notices', () => {
+  it('shows data, source and responsibility notices without the old public repository reference', () => {
     const wrapper = mount(ProjectNoticeDialog, {
       attachTo: document.body,
       props: { open: true },
     })
 
     expect(document.body.textContent).toContain('数据与隐私')
-    expect(document.body.textContent).toContain('完全免费，请勿付费购买')
+    expect(document.body.textContent).toContain('源码与费用')
     expect(document.body.textContent).toContain('使用责任')
-    expect(document.body.textContent).toContain('公开源码说明')
-    expect(document.body.textContent).toContain('SillyTavernResourceLibrary-Public')
-    expect(document.body.textContent).not.toContain('官版使用范围')
-    expect(document.body.textContent).not.toContain('指定社区')
+    expect(document.body.textContent).toContain('本项目源码不收取购买费')
+    expect(document.body.textContent).not.toContain('SillyTavernResourceLibrary-Public')
+    expect(document.body.textContent).not.toContain('功能现状')
     wrapper.unmount()
   })
 })

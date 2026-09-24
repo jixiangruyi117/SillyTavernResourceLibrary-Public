@@ -10,7 +10,7 @@ import {
 } from './GitHubBackupBundle'
 
 describe('GitHubBackupBundle', () => {
-  it('keeps every provider part below the GitHub request size limit', () => {
+  it('keeps every provider part below the Cloudflare Free request limit', () => {
     expect(GITHUB_PART_SIZE).toBe(32 * 1024 * 1024)
     expect(GITHUB_MIN_PART_SIZE).toBe(8 * 1024 * 1024)
     expect(GITHUB_AVERAGE_PART_SIZE).toBe(16 * 1024 * 1024)

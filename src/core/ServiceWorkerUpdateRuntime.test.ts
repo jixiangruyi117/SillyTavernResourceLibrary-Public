@@ -31,7 +31,7 @@ describe('ServiceWorkerUpdate native boundary', () => {
     installServiceWorker()
 
     expect(runtime.registerSW).not.toHaveBeenCalled()
-    await expect(manualCheckForUpdate()).resolves.toContain('原生壳不使用网页更新')
+    await expect(manualCheckForUpdate()).resolves.toContain('检查 APK 版本更新')
   })
 
   it('unregisters legacy website workers and clears Cache Storage inside the APK', async () => {

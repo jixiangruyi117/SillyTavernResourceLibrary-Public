@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "srl-imgbed-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-24",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "IMGBED_ORIGIN": "https://YOUR-IMGBED-DOMAIN",
+    "ALLOWED_ORIGINS": "https://YOUR-SRL-PAGES-DOMAIN.pages.dev",
+  },
+}

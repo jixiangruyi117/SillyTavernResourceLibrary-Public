@@ -2,8 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { platform } from '../core/PlatformService'
 import { resetPerformanceMonitorPosition } from '../core/PerformanceMonitor'
-import { forceRefresh } from '../core/ServiceWorkerUpdate'
-import { isCapacitorApp } from '../utils/CapacitorDetection'
+import { forceRefresh, manualCheckForUpdate } from '../core/ServiceWorkerUpdate'
 import {
   downloadFullOfflineResources,
   getOfflineResourceStatus,
@@ -50,11 +49,13 @@ const emit = defineEmits<{
   'manage-folders': []
   'open-vault': []
   'open-version-recognition': []
+  'manual-check-update': []
   close: []
 }>()
 
 const snapshotLimitDraft = ref(props.historySnapshotLimit)
-const isNativeApk = isCapacitorApp()
+const updateCheckResult = ref('')
+const isNativeApk = platform.update.isAndroidApk()
 const nativeStorageInfo = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
 const nativeSecurityState = ref<NativeSecurityState | null>(null)
 const nativeBiometricMessage = ref('')
@@ -93,6 +94,17 @@ function saveSnapshotLimit(): void {
   const value = Number(snapshotLimitDraft.value)
   if (!Number.isFinite(value)) return
   emit('update:historySnapshotLimit', value)
+}
+
+async function handleCheckUpdate(): Promise<void> {
+  updateCheckResult.value = '正在检查…'
+  try {
+    updateCheckResult.value = isNativeApk
+      ? 'APK 由部署者自行构建和安装更新。'
+      : await manualCheckForUpdate()
+  } catch (error) {
+    updateCheckResult.value = `检查失败：${error instanceof Error ? error.message : '未知错误'}`
+  }
 }
 
 async function toggleSecureScreen(event: Event): Promise<void> {
@@ -191,7 +203,7 @@ async function clearOfflineResources(): Promise<void> {
     @click.self="emit('close')"
   >
     <section
-      class="editor-sheet layout-settings-sheet"
+      class="layout-settings-page"
       role="dialog"
       aria-modal="true"
       aria-labelledby="layout-settings-title"
@@ -261,11 +273,12 @@ async function clearOfflineResources(): Promise<void> {
             <i aria-hidden="true"></i>
           </label>
           <label
+            v-if="isNativeApk"
             class="settings-switch-row"
             :class="{ 'settings-switch-row--disabled': !allowRemotePreviews }"
           >
             <span>
-              <strong>开场白：外链直显，Android 后台缓存</strong>
+              <strong>开场白：Android 后台缓存</strong>
               <small
                 >优先显示当前页的图片、背景和字体；Android APK
                 会在后台缓存可读取的资源，不会因缓存失败阻塞预览。</small
@@ -282,11 +295,12 @@ async function clearOfflineResources(): Promise<void> {
             <i aria-hidden="true"></i>
           </label>
           <label
+            v-if="isNativeApk"
             class="settings-switch-row"
             :class="{ 'settings-switch-row--disabled': !allowRemotePreviews }"
           >
             <span>
-              <strong>美化：外链直显，Android 后台缓存</strong>
+              <strong>美化：Android 后台缓存</strong>
               <small
                 >优先显示主题场景的图片、背景和字体；Android APK
                 会在后台缓存可读取的资源，不会因缓存失败阻塞预览。</small
@@ -629,10 +643,20 @@ async function clearOfflineResources(): Promise<void> {
           </template>
           <button type="button" @click="emit('open-version-recognition')">
             <span>
-              <strong>重新识别历史版本</strong>
-              <small>按新规则扫描已导入资源，可勾选候选并批量并入历史</small>
+              <strong>版本识别与清理</strong>
+              <small>清理时间线内已存版本，或并入尚未归组的跨资源版本</small>
             </span>
             <i>→</i>
+          </button>
+          <button type="button" @click="handleCheckUpdate">
+            <span>
+              <strong>{{ isNativeApk ? '检查 APK 版本更新' : '检查网页更新' }}</strong>
+              <small>{{
+                updateCheckResult ||
+                (isNativeApk ? '检查并下载新版 APK' : '自动检测服务器是否有新版本')
+              }}</small>
+            </span>
+            <i>↻</i>
           </button>
           <button type="button" class="settings-force-refresh" @click="forceRefresh">
             <span>

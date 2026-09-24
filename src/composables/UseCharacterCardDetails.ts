@@ -484,7 +484,7 @@ export function useCharacterCardDetails(
 
   function handleGreetingPreviewClose(index: number): void {
     nextTick(() => scrollToGreeting(index, false))
-    nextTick(() => greetingPreviewTrigger?.focus())
+    nextTick(() => greetingPreviewTrigger?.focus({ preventScroll: true }))
   }
 
   function helperScriptLocation(script: EmbeddedHelperScript): string {

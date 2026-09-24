@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
 
 import { useOverlayStack } from './UseOverlayStack'
@@ -39,5 +39,28 @@ describe('useOverlayStack', () => {
     expect(stack.closeTop()).toBe('blocked')
     expect(locked.value).toBe(true)
     expect(behind.value).toBe(true)
+  })
+
+  it('keeps aggregate modal state open until every nested overlay is closed', async () => {
+    const parentOpen = ref(true)
+    const childOpen = ref(false)
+    const overlays = useOverlayStack([
+      { id: 'parent', isOpen: () => parentOpen.value, close: () => (parentOpen.value = false) },
+      { id: 'child', isOpen: () => childOpen.value, close: () => (childOpen.value = false) },
+    ])
+
+    expect(overlays.isOpen.value).toBe(true)
+    childOpen.value = true
+    await nextTick()
+    expect(overlays.topId.value).toBe('child')
+
+    childOpen.value = false
+    await nextTick()
+    expect(overlays.isOpen.value).toBe(true)
+    expect(overlays.topId.value).toBe('parent')
+
+    parentOpen.value = false
+    await nextTick()
+    expect(overlays.isOpen.value).toBe(false)
   })
 })

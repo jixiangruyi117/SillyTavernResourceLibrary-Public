@@ -1,6 +1,8 @@
 import { App } from '@capacitor/app'
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
+import { normalizeDiscordHandoffRequest } from '../services/DiscordHandoffService'
+
 interface NativeShortcutApi {
   takePending(): Promise<{ action?: string }>
   addListener(
@@ -18,6 +20,7 @@ export type NativeDeepLink =
   | { kind: 'backup' }
   | { kind: 'favorites' }
   | { kind: 'import' }
+  | { kind: 'discordSource'; workerUrl: string; token: string }
 
 const NativeShortcut = registerPlugin<NativeShortcutApi>('NativeShortcut')
 const NativeShareReceiver = registerPlugin<NativeShareReceiverApi>('ShareReceiver')
@@ -42,6 +45,14 @@ function publishShortcut(url?: string): void {
       const resourceId = parsed.pathname.replace(/^\/+/, '')
       if (/^[A-Za-z0-9._-]{1,160}$/.test(resourceId))
         publishDeepLink({ kind: 'resource', resourceId })
+      return
+    }
+    if (parsed.hostname === 'discord-source') {
+      const handoff = normalizeDiscordHandoffRequest({
+        workerUrl: parsed.searchParams.get('worker') ?? '',
+        token: parsed.searchParams.get('token') ?? '',
+      })
+      if (handoff) publishDeepLink({ kind: 'discordSource', ...handoff })
       return
     }
     if (parsed.hostname === 'backup') {

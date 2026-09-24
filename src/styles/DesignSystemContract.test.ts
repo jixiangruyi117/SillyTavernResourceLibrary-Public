@@ -9,8 +9,8 @@ const layout = readFileSync(new URL('./LayoutAndResponsive.css', import.meta.url
 const stylesEntry = readFileSync(new URL('../Styles.css', import.meta.url), 'utf8')
 const header = readFileSync(new URL('./FeatureAppHeader.css', import.meta.url), 'utf8')
 const backButton = readFileSync(new URL('./FeatureBackButton.css', import.meta.url), 'utf8')
-const sourceComponentLibrary = readFileSync(
-  new URL('./FrontendWorkshopSourceComponentLibrary.css', import.meta.url),
+const workshopResponsive = readFileSync(
+  new URL('./FrontendWorkshopResponsive.css', import.meta.url),
   'utf8',
 )
 const workshopToolRail = readFileSync(
@@ -129,10 +129,12 @@ describe('mobile design system contract', () => {
   })
 
   it('keeps workshop readable typography paired with mobile overflow handling', () => {
-    expect(sourceComponentLibrary).toContain('font-size: var(--text-caption)')
-    expect(sourceComponentLibrary).toContain('overflow-wrap: anywhere')
-    expect(sourceComponentLibrary).toContain('overflow: auto')
-    expect(sourceComponentLibrary).toContain('-webkit-line-clamp: 2')
+    expect(workshopResponsive).not.toContain('font: 0.46rem var(--font-label)')
+    expect(workshopResponsive).not.toContain('font: 700 0.64rem var(--font-ui)')
+    expect(workshopResponsive).toContain('font-size: var(--text-caption)')
+    expect(workshopResponsive).toContain('overflow-wrap: anywhere')
+    expect(workshopResponsive).toContain('overflow-x: auto')
+    expect(workshopResponsive).toContain('-webkit-line-clamp: 2')
 
     expect(workshopToolRail).toContain('font-size: var(--text-caption)')
     expect(workshopToolRail).toContain('.frontend-workbench__rail-tools > button span')
@@ -158,7 +160,7 @@ describe('mobile design system contract', () => {
       /:is\(#app, \[role='dialog'\]\)\s*:where\([^{}]+\)\s*\{\s*font-size: 16px;/,
     )
     expect(refinement).not.toContain('font-size: 1rem')
-    expect(stylesEntry).not.toContain(['FrontendWorkshop', 'LegacyUiMigration.css'].join(''))
+    expect(stylesEntry).not.toContain('FrontendWorkshopLegacyUiMigration.css')
   })
 
   it('keeps direct iOS top inset reads inside the safe-area token owner', () => {

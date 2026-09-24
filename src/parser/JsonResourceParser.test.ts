@@ -116,6 +116,32 @@ describe('JsonResourceParser', () => {
     expect(result.description).toContain('2 条')
   })
 
+  it('uses the file name for a legacy single global regex labeled only by its scope', async () => {
+    const script = { scriptName: '清理思维链', findRegex: '/foo/g', replaceString: 'bar' }
+    const result = await parser.parse(
+      jsonFile({ global: [script], sourceName: '全局正则' }, '清理思维链.json'),
+    )
+
+    expect(result).toMatchObject({
+      type: RESOURCE_TYPE.REGEX,
+      name: '清理思维链',
+      metadata: { regexScope: 'global', sourceName: '全局正则', itemCount: 1 },
+    })
+  })
+
+  it('keeps the source name of a multi-script global regex collection', async () => {
+    const scripts = [
+      { scriptName: '一', findRegex: '/one/g', replaceString: '1' },
+      { scriptName: '二', findRegex: '/two/g', replaceString: '2' },
+    ]
+    const result = await parser.parse(
+      jsonFile({ global: scripts, sourceName: '全局正则' }, '规则备份.json'),
+    )
+
+    expect(result.name).toBe('全局正则')
+    expect(result.metadata).toMatchObject({ regexScope: 'global', itemCount: 2 })
+  })
+
   it('detects a Tavern Helper script tree and counts scripts inside folders', async () => {
     const result = await parser.parse(
       jsonFile([

@@ -60,7 +60,7 @@ async function resetReadingState(): Promise<void> {
   await nextTick()
   if (body.value) body.value.scrollTop = 0
   checkReachedEnd()
-  dialog.value?.focus()
+  dialog.value?.focus({ preventScroll: true })
 }
 
 function preventDismiss(event: KeyboardEvent): void {
@@ -124,40 +124,26 @@ onUnmounted(() => {
           @scroll.passive="checkReachedEnd"
         >
           <p class="project-notice__lead">
-            SRL 是一个非商业、面向社区的本地优先项目。使用前请了解数据边界、免费声明与责任说明。
+            SRL 是一个本地优先的 SillyTavern 资源工具。使用前请了解数据边界与使用责任。
           </p>
 
           <section>
             <h2>数据与隐私</h2>
             <p>
-              本版本不提供账号、登录、作者管理后台、反馈服务、共享图床或作者云服务。角色卡、世界书、预设、外观配置与大多数资源数据默认保存在当前设备，不会因为打开
-              SRL 而自动上传。
+              角色卡、世界书、预设、外观配置与大多数资源数据默认保存在当前设备，不会因为打开 SRL
+              而自动上传。
             </p>
             <p>
-              只有在你主动使用自己的 GitHub 备份、自建图床、AI
-              API、第三方插件或其他外部服务时，相关数据才可能按照对应服务的规则离开本机。请自行确认这些服务的来源、权限、隐私政策与安全性。
+              当你主动使用第三方插件、AI API、外部资源、图床或 GitHub
+              备份等功能时，相关数据可能按对应第三方服务的规则离开本机。请自行确认其来源、权限、隐私政策与安全性。
             </p>
           </section>
 
           <section>
-            <h2>完全免费，请勿付费购买</h2>
+            <h2>源码与费用</h2>
             <p>
-              SRL 官方版本及公开源码本身均不收取购买费、授权费或激活费。若有人以“购买
-              SRL”“官方安装包”“激活资格”或“项目源码”等名义向你收费，该收费行为并非由本项目作者授权。建议联系收款方申请退款，并根据实际情况通过支付平台的退款或申诉渠道处理。
-            </p>
-            <p>
-              官方公开源码：
-              <a
-                href="https://github.com/jixiangruyi117/SillyTavernResourceLibrary-Public"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                github.com/jixiangruyi117/SillyTavernResourceLibrary-Public
-              </a>
-            </p>
-            <p>
-              第三方自行提供的服务器、部署或技术支持可能产生独立费用；这类第三方服务不代表 SRL
-              官方收费或官方授权销售。
+              本项目源码不收取购买费、授权费或激活费。第三方自行提供的服务器、部署或技术支持可能产生独立费用；请遵守
+              LICENSE 与 NOTICE。
             </p>
           </section>
 
@@ -165,21 +151,13 @@ onUnmounted(() => {
             <h2>使用责任</h2>
             <p>
               SRL
-              仅提供资源管理、预览、转换、生成、备份与扩展运行等工具能力。用户自行导入、创建、生成、修改、发布、传播或使用的内容，以及自行安装的第三方
-              APP、插件、脚本、角色卡、远程资源和外部服务，由相应内容提供者或实际使用者自行负责。
+              仅提供资源管理、预览、转换、生成、备份与扩展运行等工具能力。用户自行导入、创建、生成、修改、发布或传播的内容，以及自行安装的第三方
+              APP、插件、脚本和外部服务，由相应内容提供者或实际使用者自行负责。
             </p>
             <p>
               SRL
-              作者不会主动控制、审核或认可用户通过本工具产生或处理的全部内容，也不代表相关第三方内容的立场。请勿利用
-              SRL 从事违反适用法律、侵犯他人权益或恶意攻击服务的行为。
-            </p>
-          </section>
-
-          <section>
-            <h2>公开源码说明</h2>
-            <p>
-              欢迎在许可证允许范围内学习、修改公开源码并自行部署。公开源码的使用、修改与分发请遵守仓库中的
-              LICENSE 与 NOTICE；第三方内容、插件和外部服务仍受其各自条款约束。
+              作者不会主动控制、审核或认可用户通过本工具处理的全部内容，也不代表相关第三方内容的立场。请勿利用
+              SRL 从事违反适用法律、侵犯他人权益、恶意攻击服务或影响其他用户正常使用的行为。
             </p>
           </section>
         </div>

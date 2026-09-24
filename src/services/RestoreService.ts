@@ -210,12 +210,12 @@ async function readCommunitySourceSidecar(
   const descriptor = manifest.communitySources
   if (!descriptor) return undefined
   const entry = await staging.get(jobId, COMMUNITY_SOURCE_ARCHIVE_PATH)
-  if (!entry) throw new Error('备份声明包含本地社区正文，但缺少 community-sources.json')
+  if (!entry) throw new Error('备份声明包含 Discord 正文，但缺少 community-sources.json')
   let parsed: unknown
   try {
     parsed = JSON.parse(await entry.blob.text())
   } catch {
-    throw new Error('本地社区来源备份不是有效 JSON')
+    throw new Error('Discord 社区来源备份不是有效 JSON')
   }
   const data = parseCommunitySourceBackupData(parsed)
   if (
@@ -223,7 +223,7 @@ async function readCommunitySourceSidecar(
     data.messages.length !== descriptor.messageCount ||
     data.bindings.length !== descriptor.bindingCount
   ) {
-    throw new Error('本地社区来源备份数量与清单不一致')
+    throw new Error('Discord 社区来源备份数量与清单不一致')
   }
   return data
 }
@@ -486,7 +486,7 @@ export class RestoreService {
             manifest.portableData?.cloudBackup ? '云端备份配置' : '',
             manifest.portableData?.characterDraw ? '抽了么记录' : '',
             manifest.portableData?.generalPreferences ? '常用偏好' : '',
-            mappedCommunitySourceData ? '本地社区来源' : '',
+            mappedCommunitySourceData ? 'Discord 社区来源' : '',
           ].filter(Boolean),
         },
         resources: normalizedResources,

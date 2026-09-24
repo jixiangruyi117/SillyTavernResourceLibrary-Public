@@ -34,6 +34,7 @@ describe('Feature App Shell contract', () => {
       'ExternalAppHost.vue',
       'ExternalAppManager.vue',
       'FolderLibraryView.vue',
+      'FrontendWorkshopApp.vue',
       'FrontendWorkshopWorkbench.vue',
       'GeneratedImageAlbumApp.vue',
       'PresetStitcherApp.vue',

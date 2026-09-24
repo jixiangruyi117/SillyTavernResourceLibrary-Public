@@ -13,7 +13,12 @@ import {
 import { disableServiceWorkerForNativeApp, installServiceWorker } from './core/ServiceWorkerUpdate'
 import RootApp from './RootApp.vue'
 import { isCapacitorApp } from './utils/CapacitorDetection'
-import { revealMobileInputIfOccluded, restorePersonalInputScroll } from './utils/MobileInputFocus'
+import {
+  isMobileEditableElement,
+  revealMobileInputIfOccluded,
+  restorePersonalInputScroll,
+  type MobileEditableElement,
+} from './utils/MobileInputFocus'
 import './styles/Foundation.css'
 import './styles/DesignSystemRefinement.css'
 import './styles/ProjectNoticeDialog.css'
@@ -22,23 +27,138 @@ import './styles/IOSStandaloneSafeAreaSurface.css'
 let viewportFrame: number | undefined
 let lastViewportHeight = -1
 let lastLayoutHeight = -1
+let expandedVisualViewportHeight = -1
 let lastViewportOffsetTop = -1
 let lastDisplayMode = ''
-let lastIosStandalone: boolean | undefined
+let lastIOSDevice: boolean | undefined
+let layoutViewportWidth = -1
+let viewportSettleFrame: number | undefined
+let lastViewportSignature = ''
+let stableViewportFrames = 0
+let focusRevealPending = false
+let focusRevealTarget: MobileEditableElement | undefined
+let focusRevealAttempted = false
+let keyboardFocusActive = false
+
+function isIOSDevice(): boolean {
+  const browser = navigator as Navigator & { maxTouchPoints?: number }
+  return (
+    /\b(?:iPhone|iPad|iPod)\b/iu.test(browser.userAgent || '') ||
+    (browser.platform === 'MacIntel' && (browser.maxTouchPoints ?? 0) > 1)
+  )
+}
+
+function getViewportBounds() {
+  return {
+    height: window.visualViewport?.height ?? window.innerHeight,
+    offsetTop: window.visualViewport?.offsetTop ?? 0,
+  }
+}
+
+function getViewportSignature(): string {
+  const viewport = window.visualViewport
+  return [
+    window.innerWidth,
+    viewport?.height ?? window.innerHeight,
+    viewport?.offsetTop ?? 0,
+    viewport?.offsetLeft ?? 0,
+    viewport?.scale ?? 1,
+  ].join(':')
+}
+
+function markFocusedMobileInputForReveal(): void {
+  const input = document.activeElement
+  if (!isMobileEditableElement(input)) {
+    focusRevealPending = false
+    focusRevealTarget = undefined
+    return
+  }
+  focusRevealAttempted = false
+  focusRevealTarget = input
+  stableViewportFrames = 0
+  const viewport = getViewportBounds()
+  keyboardFocusActive = true
+  focusRevealPending = viewport.height < expandedVisualViewportHeight
+  scheduleViewportState()
+}
+
+function scheduleViewportSettleCheck(): void {
+  if (viewportSettleFrame !== undefined) return
+  viewportSettleFrame = window.requestAnimationFrame(checkViewportStability)
+}
+
+function checkViewportStability(): void {
+  viewportSettleFrame = undefined
+  const signature = getViewportSignature()
+  if (signature !== lastViewportSignature) {
+    stableViewportFrames = 0
+    scheduleViewportState()
+    return
+  }
+  stableViewportFrames += 1
+  if (stableViewportFrames < 2) {
+    scheduleViewportSettleCheck()
+    return
+  }
+  const input = document.activeElement
+  if (
+    focusRevealPending &&
+    !focusRevealAttempted &&
+    focusRevealTarget === input &&
+    isMobileEditableElement(input) &&
+    lastIOSDevice &&
+    window.innerWidth <= 860 &&
+    (window.visualViewport?.scale ?? 1) === 1 &&
+    getViewportBounds().height < expandedVisualViewportHeight
+  ) {
+    // Consume this focus/keyboard session before scrolling. A resulting
+    // VisualViewport event must not queue a second correction for the same field.
+    focusRevealAttempted = true
+    focusRevealPending = false
+    focusRevealTarget = undefined
+    revealMobileInputIfOccluded(input, getViewportBounds())
+  }
+}
 
 function applyViewportState(): void {
   viewportFrame = undefined
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-  const viewportOffsetTop = window.visualViewport?.offsetTop ?? 0
-  // The keyboard limits interactive content, but translucent system UI can still
-  // expose the page underneath it. Modal backgrounds need the full window size.
-  if (window.innerHeight !== lastLayoutHeight) {
-    lastLayoutHeight = window.innerHeight
-    document.documentElement.style.setProperty('--layout-viewport-height', `${lastLayoutHeight}px`)
+  const { height: viewportHeight, offsetTop: viewportOffsetTop } = getViewportBounds()
+  const windowHeight = window.innerHeight
+  const viewportWidth = window.innerWidth
+  // Keep the backdrop/layout sizing baseline separate from the visual viewport
+  // baseline used for keyboard state: Safari/PWA may report different heights
+  // for innerHeight and visualViewport even when the keyboard is closed.
+  if (viewportWidth !== layoutViewportWidth || lastLayoutHeight < 0) {
+    layoutViewportWidth = viewportWidth
+    lastLayoutHeight = Math.max(windowHeight, viewportHeight)
+    expandedVisualViewportHeight = viewportHeight
+  } else if (viewportHeight >= lastLayoutHeight || windowHeight >= lastLayoutHeight) {
+    lastLayoutHeight = Math.max(windowHeight, viewportHeight)
+  } else {
+    lastLayoutHeight = Math.max(lastLayoutHeight, windowHeight)
   }
-  const keyboardGeometryChanged =
-    viewportHeight <= lastViewportHeight &&
-    (viewportHeight !== lastViewportHeight || viewportOffsetTop !== lastViewportOffsetTop)
+  const focusedEditable = isMobileEditableElement(document.activeElement)
+  if (!focusedEditable && !keyboardFocusActive) expandedVisualViewportHeight = viewportHeight
+  else if (viewportHeight >= expandedVisualViewportHeight) {
+    expandedVisualViewportHeight = viewportHeight
+  }
+  document.documentElement.style.setProperty('--layout-viewport-height', `${lastLayoutHeight}px`)
+  const viewportSignature = getViewportSignature()
+  const viewportGeometryChanged = viewportSignature !== lastViewportSignature
+  if (viewportGeometryChanged) {
+    lastViewportSignature = viewportSignature
+    stableViewportFrames = 0
+    const input = document.activeElement
+    if (
+      isMobileEditableElement(input) &&
+      !focusRevealAttempted &&
+      viewportHeight < expandedVisualViewportHeight
+    ) {
+      focusRevealPending = true
+      focusRevealTarget = input
+      keyboardFocusActive = true
+    }
+  }
   if (viewportHeight !== lastViewportHeight) {
     lastViewportHeight = viewportHeight
     document.documentElement.style.setProperty('--visual-viewport-height', `${viewportHeight}px`)
@@ -52,6 +172,7 @@ function applyViewportState(): void {
     )
   }
   const iosStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
+  const iosDevice = iosStandalone || isIOSDevice()
   const displayMode =
     window.matchMedia('(display-mode: standalone)').matches || iosStandalone
       ? 'standalone'
@@ -61,35 +182,32 @@ function applyViewportState(): void {
     lastDisplayMode = displayMode
     document.documentElement.dataset.displayMode = displayMode
   }
-  if (iosStandalone !== lastIosStandalone) {
-    lastIosStandalone = iosStandalone
+  if (iosDevice !== lastIOSDevice) {
+    lastIOSDevice = iosDevice
+  }
+  if (document.documentElement.dataset.iosStandalone !== String(iosStandalone)) {
     document.documentElement.dataset.iosStandalone = iosStandalone ? 'true' : 'false'
   }
-  // Ignore browser chrome/safe-area changes and pinch zoom; a hardware keyboard
-  // leaves the visual viewport at full height, so the actions stay available.
+  // On iOS Safari and standalone PWA, the visual viewport is the keyboard
+  // signal. Do not compare it to innerHeight: WebKit may shrink both values
+  // during the same keyboard animation, making that delta report a false negative.
   const iosKeyboardOpen =
-    iosStandalone &&
+    iosDevice &&
     window.innerWidth <= 860 &&
     (window.visualViewport?.scale ?? 1) === 1 &&
-    window.innerHeight - viewportHeight > 120
+    keyboardFocusActive &&
+    viewportHeight < expandedVisualViewportHeight
   if (document.documentElement.dataset.iosKeyboardOpen !== String(iosKeyboardOpen)) {
     document.documentElement.dataset.iosKeyboardOpen = String(iosKeyboardOpen)
   }
-  if (viewportHeight >= window.innerHeight && (window.visualViewport?.scale ?? 1) === 1) {
+  if (viewportHeight >= expandedVisualViewportHeight && (window.visualViewport?.scale ?? 1) === 1) {
     restorePersonalInputScroll()
+    keyboardFocusActive = false
+    focusRevealPending = false
+    focusRevealTarget = undefined
+    focusRevealAttempted = false
   }
-  const input = document.activeElement
-  if (
-    iosStandalone &&
-    keyboardGeometryChanged &&
-    window.innerWidth <= 860 &&
-    viewportHeight < window.innerHeight &&
-    (window.visualViewport?.scale ?? 1) === 1 &&
-    (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) &&
-    input.closest('[role="dialog"], [role="alertdialog"]')
-  ) {
-    revealMobileInputIfOccluded(input, { height: viewportHeight, offsetTop: viewportOffsetTop })
-  }
+  if (viewportGeometryChanged || focusRevealPending) scheduleViewportSettleCheck()
 }
 
 function scheduleViewportState(): void {
@@ -108,6 +226,10 @@ window.addEventListener('orientationchange', scheduleViewportState, { passive: t
 window.visualViewport?.addEventListener('resize', scheduleViewportState, { passive: true })
 window.visualViewport?.addEventListener('scroll', scheduleViewportState, { passive: true })
 window.addEventListener('pageshow', scheduleViewportState, { passive: true })
+window.addEventListener('focusin', markFocusedMobileInputForReveal, {
+  capture: true,
+  passive: true,
+})
 
 const app = createApp(RootApp)
 installGlobalErrorHandlers(app)

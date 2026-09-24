@@ -1,0 +1,7 @@
+```
+<body><main data-fixture="multiple-a">anonymous A</main></body>
+```
+
+```html
+<html><body><main data-fixture="multiple-b">anonymous B</main></body></html>
+```

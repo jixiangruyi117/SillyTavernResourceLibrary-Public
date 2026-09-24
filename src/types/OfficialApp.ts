@@ -46,7 +46,8 @@ export const OFFICIAL_APP_ASSET_CACHE = 'srl-official-app-assets-v1'
 export const OFFICIAL_APP_DATA_DESCRIPTION: Record<OfficialAppId, string> = {
   draw: '抽取记录和显示偏好',
   stitch: '缝合草稿、恢复点、模板、收藏段落和最近使用记录',
-  frontendWorkshop: '全部本地前端工程、源码、历史、恢复点、组件和最近颜色；共用 API 与图床设置保留',
+  frontendWorkshop:
+    '全部本地前端工程、源码、历史、恢复点、组件、旧草稿和最近颜色；共用 API 与图床设置保留',
   imageGeneration: '生图草稿、模板、接口设置及本机保存的生图密钥；已保存的相册图片保留',
   imageAlbum: '全部本地相册记录及原图；云端图片和资源库中的副本保留',
   userPersona: '人设模板；资源库中的人设文件保留',

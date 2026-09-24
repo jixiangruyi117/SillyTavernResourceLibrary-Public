@@ -248,10 +248,32 @@ export function githubError(
   )
 }
 
-export function friendlyNetworkError(error: unknown, _provider: CloudBackupProvider): Error {
+export function proxyPayloadTooLargeError(
+  body: BodyInit | null | undefined,
+  cause?: unknown,
+): Error {
+  const size = body instanceof Blob ? `本次上传 ${(body.size / 1024 / 1024).toFixed(1)} MiB，` : ''
+  return new Error(
+    `${size}同源中转拒绝了这次请求（413）。云备份单卷上限为 64 MiB，若服务器 Nginx 的 client_max_body_size 小于该值就会在转发前拒绝；请将其调整为 128m 后重新加载 Nginx。`,
+    cause === undefined ? undefined : { cause },
+  )
+}
+
+export function cloudProxyUnavailableError(cause: unknown): Error {
+  return new Error(
+    '本站 Koofr 云端中转没有收到响应。请先刷新页面重试；若仍失败，说明当前 Cloudflare/VPS 的 /api/cloud/proxy/koofr 路由或上游连接异常，不是邮箱或应用密码填写错误。',
+    { cause },
+  )
+}
+
+export function friendlyNetworkError(error: unknown, provider: CloudBackupProvider): Error {
+  // 413 等已带可执行结论的错误不再套用通用网络文案
+  if (error instanceof Error && /（413）/.test(error.message)) return error
   if (error instanceof Error && /Failed to fetch|NetworkError|Load failed/i.test(error.message)) {
     return new Error(
-      'GitHub 直连请求没有收到响应。请检查浏览器到 api.github.com / uploads.github.com 的网络、代理、VPN、广告拦截与 DNS；令牌或仓库配置错误通常会返回明确的 401/403/404.',
+      provider === 'webdav'
+        ? 'Koofr 拒绝了普通网页的跨域 WebDAV 请求（CORS）。这通常不是邮箱或应用密码错误：纯浏览器/Netlify 静态版无法直接绕过，需使用 APK 原生网络层或可信的同源后端。'
+        : 'GitHub 直连请求没有收到响应。请检查浏览器到 api.github.com / uploads.github.com 的网络、代理、VPN、广告拦截与 DNS；令牌或仓库配置错误通常会返回明确的 401/403/404。',
     )
   }
   return error instanceof Error ? error : new Error('云端操作失败')

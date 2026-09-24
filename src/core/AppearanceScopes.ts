@@ -1,4 +1,5 @@
 import { FEATURE_APP_REGISTRY, type FeatureAppDescriptor } from './FeatureAppRegistry'
+import { isOfficialAppId } from '../types/OfficialApp'
 import type { CustomCssPreset, CustomCssScope } from '../types/BrowserPreferences'
 
 export const SCOPED_CSS_REMOVED_EVENT = 'srl:scoped-css-removed'
@@ -47,13 +48,13 @@ export function appearanceScopes(
         value: appAppearanceKey(app.id),
         title: app.name,
         appId: app.id,
-        selector: `.feature-hub[data-feature-page="${app.page}"]`,
+        selector: `.feature-hub[data-feature-page="${app.page}"]${isOfficialAppId(app.id) ? `:has([data-official-app-ready="${app.id}"])` : ''}`,
         hint: app.description,
       })),
     {
       value: 'settings',
-      title: '设置弹窗',
-      selector: '.layout-settings-sheet',
+      title: '设置页面',
+      selector: '.layout-settings-page',
       hint: '设置与数据安全面板',
     },
   ]
@@ -72,7 +73,7 @@ export function compileAppearancePreset(preset: CustomCssPreset): string {
 
 export function upgradeLegacyAppearanceCss(css: string, presets: CustomCssPreset[]): string {
   for (const scope of appearanceScopes()) {
-    if (!scope.appId) continue
+    if (!scope.appId || !isOfficialAppId(scope.appId)) continue
     const legacy = { ...scope, selector: `.feature-hub[data-feature-page="${scope.appId}"]` }
     for (const preset of presets) {
       const value = preset.scopedCss?.[scope.value]
@@ -168,11 +169,10 @@ export function removeAppAppearanceCss(
 ): string {
   const scope = appearanceScopes().find((item) => item.appId === appId)
   if (!scope) return css
-  const legacySelectors = [
-    scope.selector,
-    `.feature-hub[data-feature-page="${scope.appId}"]`,
-    `.feature-hub[data-feature-page="${scope.appId}"]:has([data-official-app-ready="${scope.appId}"])`,
-  ]
+  const legacy = {
+    ...scope,
+    selector: scope.selector.replace(/:has\(\[data-official-app-ready="[^"]+"\]\)$/, ''),
+  }
   const global =
     presets
       .map((preset) => preset.globalCss.trim())
@@ -182,7 +182,7 @@ export function removeAppAppearanceCss(
     global +
     removeScopedBlocks(
       css.slice(global.length),
-      legacySelectors.map((selector) => `@scope (${selector}) {\n`),
+      [scope, legacy].map((definition) => `@scope (${definition.selector}) {\n`),
     )
   ).trim()
 }

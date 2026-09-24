@@ -32,7 +32,7 @@ class MemoryStorage implements Storage {
 }
 
 const enabled = process.env.SRL_REAL_CLOUD_E2E === '1'
-const owner = process.env.SRL_REAL_CLOUD_GITHUB_OWNER ?? 'example-owner'
+const owner = process.env.SRL_REAL_CLOUD_GITHUB_OWNER ?? 'jixiangruyi117'
 const repository = process.env.SRL_REAL_CLOUD_GITHUB_REPOSITORY ?? 'srl-cloud-v3-e2e'
 const token = process.env.SRL_REAL_CLOUD_GITHUB_TOKEN ?? ''
 const mode = process.env.SRL_REAL_CLOUD_MODE ?? 'web-upload'

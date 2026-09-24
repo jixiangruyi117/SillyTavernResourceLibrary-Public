@@ -7,13 +7,74 @@ export default tseslint.config(
     ignores: [
       'dist',
       'node_modules',
+      'server',
+      'android',
+      '.wrangler',
       // Task-local builds and browser fixtures are generated verification artifacts.
       '.codex-tmp',
+      // S0 runtime probes are pasted into real TavernHelper iframes/scripts and intentionally
+      // reference host-provided globals that do not exist in the SRL build environment.
+      'docs/frontend-workshop/runtime/probes/**',
     ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
+  {
+    files: ['cloudflare/BridgeParcels.js', 'src/services/BridgeParcelCodec.mjs'],
+    languageOptions: {
+      globals: {
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        Uint8Array: 'readonly',
+        DataView: 'readonly',
+        crypto: 'readonly',
+        Response: 'readonly',
+        URL: 'readonly',
+        Blob: 'readonly',
+        File: 'readonly',
+        fetch: 'readonly',
+        btoa: 'readonly',
+        atob: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        AbortController: 'readonly',
+        DOMException: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['cloudflare/Worker.js', 'cloudflare/Worker[A-Z]*.js', 'cloudflare/BridgeSession.js'],
+    languageOptions: {
+      globals: {
+        TextEncoder: 'readonly',
+        Uint8Array: 'readonly',
+        btoa: 'readonly',
+        atob: 'readonly',
+        crypto: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        URL: 'readonly',
+        Headers: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['cloudflare/*.test.js'],
+    languageOptions: {
+      globals: {
+        Uint8Array: 'readonly',
+        Request: 'readonly',
+        structuredClone: 'readonly',
+        crypto: 'readonly',
+        TextEncoder: 'readonly',
+      },
+    },
+  },
   {
     // Service Worker 环境：importScripts 引入的分享接收器
     files: ['public/sw-share-target.js'],
@@ -22,6 +83,16 @@ export default tseslint.config(
         self: 'readonly',
         caches: 'readonly',
         Response: 'readonly',
+        URL: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['cloudflare/BootstrapAdmin.mjs', 'cloudflare/ExportVpsAuthToD1.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
         URL: 'readonly',
         console: 'readonly',
       },

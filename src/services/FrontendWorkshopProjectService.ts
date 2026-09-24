@@ -41,7 +41,7 @@ const LEGACY_GREETING_PROJECT_KEYS = [
   'componentPresets',
 ] as const
 
-export interface FrontendWorkshopGreetingCleanupResult {
+export interface FrontendWorkshopLegacyCleanupResult {
   skipped: boolean
   preservedStatusProjects: number
   cleanedGreetingProjects: number
@@ -297,7 +297,7 @@ function cleanupGreetingRecord(value: unknown): {
 
 export class FrontendWorkshopProjectService {
   private readonly storage: FrontendWorkshopProjectStorage
-  private cleanupPromise?: Promise<FrontendWorkshopGreetingCleanupResult>
+  private cleanupPromise?: Promise<FrontendWorkshopLegacyCleanupResult>
 
   constructor(storage: FrontendWorkshopProjectStorage) {
     this.storage = storage
@@ -308,12 +308,12 @@ export class FrontendWorkshopProjectService {
    * and Source components all finish successfully; an interrupted cleanup is therefore safe to retry.
    * Status projects are never rewritten.
    */
-  cleanupLegacyGreetingDataOnce(): Promise<FrontendWorkshopGreetingCleanupResult> {
+  cleanupLegacyGreetingDataOnce(): Promise<FrontendWorkshopLegacyCleanupResult> {
     this.cleanupPromise ??= this.runLegacyGreetingCleanup()
     return this.cleanupPromise
   }
 
-  private async runLegacyGreetingCleanup(): Promise<FrontendWorkshopGreetingCleanupResult> {
+  private async runLegacyGreetingCleanup(): Promise<FrontendWorkshopLegacyCleanupResult> {
     if (await this.storage.hasMaintenanceMarker(FRONTEND_WORKSHOP_GREETING_LEGACY_CLEANUP_ID)) {
       return {
         skipped: true,

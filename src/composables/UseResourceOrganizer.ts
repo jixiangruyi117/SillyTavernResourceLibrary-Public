@@ -37,6 +37,7 @@ export type DetailTab = 'overview' | 'content' | 'relations' | 'versions' | 'fil
 
 export type ResourceOrganizerProps = {
   settingsOpen?: boolean
+  initialTab?: DetailTab
   resource: Resource
   resources: ResourceSummary[]
   boundResources: Resource[]
@@ -147,7 +148,7 @@ export function useResourceOrganizer(
 
   const isPreviewExpanded = ref(false)
 
-  const activeTab = ref<DetailTab>('overview')
+  const activeTab = ref<DetailTab>(props.initialTab ?? 'overview')
 
   const detailSheet = useTemplateRef<HTMLElement>('detailSheet')
 
@@ -476,7 +477,7 @@ export function useResourceOrganizer(
       preservePersonalDraft = false
       isPreviewExpanded.value = false
       if (!previous || previous.id !== resource.id) {
-        activeTab.value = 'overview'
+        activeTab.value = props.initialTab ?? 'overview'
         tabScrollPositions.clear()
       }
       const isImage =

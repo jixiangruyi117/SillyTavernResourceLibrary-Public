@@ -13,7 +13,7 @@ const cancelButton = ref<HTMLButtonElement>()
 watch(activeDialog, async (dialog) => {
   if (!dialog) return
   await nextTick()
-  ;(dialog.danger ? cancelButton.value : confirmButton.value)?.focus()
+  ;(dialog.danger ? cancelButton.value : confirmButton.value)?.focus({ preventScroll: true })
 })
 
 function handleKeydown(event: KeyboardEvent): void {

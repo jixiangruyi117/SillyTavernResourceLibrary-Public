@@ -1,4 +1,5 @@
 import type { Component } from 'vue'
+import { entries } from 'virtual:srl-official-app-entries'
 import { BUILD_INFO } from './BuildInfo'
 import { appDatabase } from './AppDatabaseInstance'
 import { InstalledOfficialAppStorage } from '../storage/InstalledOfficialAppStorage'
@@ -6,13 +7,6 @@ import { clearOfficialAppData } from '../storage/OfficialAppDataStorage'
 import { OfficialAppService } from '../services/OfficialAppService'
 import { OFFICIAL_APP_IDS, type OfficialAppId } from '../types/OfficialApp'
 import { isCapacitorApp } from '../utils/CapacitorDetection'
-
-type OfficialAppEntry = {
-  url?: string
-  load?: () => Promise<{ default: Component; prepare?: () => Promise<void> }>
-}
-// The public local draft does not ship the official-app package channel.
-const entries = {} as Record<OfficialAppId, OfficialAppEntry>
 
 const expectedEntries = Object.fromEntries(
   Object.entries(entries).map(([id, entry]) => [

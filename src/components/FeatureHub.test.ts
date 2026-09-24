@@ -7,6 +7,16 @@ import type { InstalledExternalApp } from '../types/ExternalApp'
 import FeatureHub from './FeatureHub.vue'
 import FolderLibraryView from './FolderLibraryView.vue'
 import ActionSheet from './ActionSheet.vue'
+vi.mock('../core/OfficialAppRuntime', () => ({
+  officialAppService: { ready: async () => true, list: () => listOfficialApps() },
+  acquireOfficialAppUse: async () => () => {},
+  loadOfficialApp: async (id: string) => {
+    if (id === 'draw') return (await import('./DrawApp.vue')).default
+    if (id === 'imageGeneration') return (await import('./ImageGenerationApp.vue')).default
+    if (id === 'imageAlbum') return (await import('./GeneratedImageAlbumApp.vue')).default
+    throw new Error('Unexpected test app')
+  },
+}))
 
 vi.mock('./ImageGenerationApp.vue', () => ({
   __esModule: true,
@@ -23,7 +33,19 @@ vi.mock('./GeneratedImageAlbumApp.vue', () => ({
   },
 }))
 
-const { loadDrawState, listExternalApps } = vi.hoisted(() => ({
+const { loadDrawState, listExternalApps, listOfficialApps } = vi.hoisted(() => ({
+  listOfficialApps: vi.fn(async () =>
+    [
+      'draw',
+      'stitch',
+      'frontendWorkshop',
+      'imageGeneration',
+      'imageAlbum',
+      'userPersona',
+      'resourceBundle',
+      'tavernBridge',
+    ].map((id) => ({ id })),
+  ),
   loadDrawState: vi.fn(),
   listExternalApps: vi.fn<() => Promise<InstalledExternalApp[]>>(async () => []),
 }))
@@ -215,12 +237,18 @@ describe('FeatureHub', () => {
     ])
   })
 
-  it('shows every visible built-in app without an installed official app state', async () => {
+  it('removes uninstalled apps from the desktop while keeping management available', async () => {
+    listOfficialApps.mockResolvedValueOnce([{ id: 'draw' }]).mockResolvedValueOnce([{ id: 'draw' }])
     const wrapper = render()
     await flushPromises()
-    expect(wrapper.findAll('.feature-desktop > .feature-app')).toHaveLength(12)
-    expect(wrapper.find('.feature-app--stitch').exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('APP 管理')
+    expect(wrapper.find('.feature-app--draw').exists()).toBe(true)
+    expect(wrapper.find('.feature-app--stitch').exists()).toBe(false)
+    await wrapper.get('.feature-app--folders').trigger('click')
+    listOfficialApps.mockResolvedValueOnce([])
+    await wrapper.get('.feature-app-header__back').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.feature-app--draw').exists()).toBe(false)
+    expect(wrapper.text()).toContain('APP 管理')
     wrapper.unmount()
   })
 
@@ -344,16 +372,21 @@ describe('FeatureHub', () => {
     let wrapper = render()
     await flushPromises()
     expect(wrapper.emitted('feature-app-active')).toEqual([[false]])
-    for (const [id, testId] of [
-      ['imageGeneration', 'generation-page'],
-      ['imageAlbum', 'album-page'],
+    for (const [id, testId, scrollLock] of [
+      ['imageGeneration', 'generation-page', true],
+      ['imageAlbum', 'album-page', false],
     ]) {
       await wrapper.get(`.feature-app--${id}`).trigger('click')
       await flushPromises()
       expect(wrapper.attributes('data-feature-page')).toBe(id)
       expect(wrapper.emitted('feature-app-active')?.at(-1)).toEqual([true])
+      expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(scrollLock)
+      expect(document.documentElement.classList.contains('feature-app-scroll-lock')).toBe(
+        scrollLock,
+      )
       await vi.waitFor(() => expect(wrapper.find(`[data-testid="${testId}"]`).exists()).toBe(true))
       wrapper.unmount()
+      expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(false)
       wrapper = render()
       await flushPromises()
       expect(wrapper.attributes('data-feature-page')).toBe(id)
@@ -361,7 +394,22 @@ describe('FeatureHub', () => {
       await wrapper.get(`[data-testid="${testId}"]`).trigger('click')
       expect(wrapper.attributes('data-feature-page')).toBe('home')
       expect(wrapper.emitted('feature-app-active')?.at(-1)).toEqual([false])
+      expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(false)
+      expect(document.documentElement.classList.contains('feature-app-scroll-lock')).toBe(false)
     }
+    wrapper.unmount()
+  })
+
+  it('keeps document scrolling available for the appearance app', async () => {
+    const wrapper = render()
+    await flushPromises()
+
+    await wrapper.get('.feature-app--appearance').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.attributes('data-feature-page')).toBe('appearance')
+    expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(false)
+    expect(document.documentElement.classList.contains('feature-app-scroll-lock')).toBe(false)
     wrapper.unmount()
   })
 })

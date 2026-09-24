@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { toRef, type ShallowUnwrapRef } from 'vue'
+import PresetStitchEditorPortal from './PresetStitchEditorPortal.vue'
 import type { usePresetStitcherApp } from '../composables/UsePresetStitcherApp'
 
 type PanelModel = Pick<
@@ -15,6 +16,7 @@ type PanelModel = Pick<
   | 'insertFavoriteFromAction'
   | 'editor'
   | 'editorOverlayStyle'
+  | 'mobileEditorOverlay'
   | 'ROLE_OPTIONS'
   | 'setEditorTextarea'
   | 'rememberEditorSelection'
@@ -67,6 +69,7 @@ const startSourceDrag = toRef(input.model, 'startSourceDrag')
 const insertFavoriteFromAction = toRef(input.model, 'insertFavoriteFromAction')
 const editor = toRef(input.model, 'editor')
 const editorOverlayStyle = toRef(input.model, 'editorOverlayStyle')
+const mobileEditorOverlay = toRef(input.model, 'mobileEditorOverlay')
 const ROLE_OPTIONS = toRef(input.model, 'ROLE_OPTIONS')
 const setEditorTextarea = toRef(input.model, 'setEditorTextarea')
 const rememberEditorSelection = toRef(input.model, 'rememberEditorSelection')
@@ -161,63 +164,65 @@ const sourcePage = toRef(input.model, 'sourcePage')
             class="stitch-entry__detail"
           >
             <template v-if="editor?.scope === 'favorite' && editor.key === favorite.id">
-              <div class="stitch-editor" :style="editorOverlayStyle">
-                <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
-                <label
-                  >角色<select v-model="editor.role">
-                    <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
-                      {{ role.label }}
-                    </option>
-                  </select></label
-                >
-                <label
-                  >正文<textarea
-                    :ref="setEditorTextarea"
-                    v-model="editor.content"
-                    rows="8"
-                    @click="rememberEditorSelection"
-                    @focus="rememberEditorSelection"
-                    @input="rememberEditorSelection"
-                    @keyup="rememberEditorSelection"
-                    @select="rememberEditorSelection"
-                  ></textarea>
-                </label>
-                <div class="stitch-editor__macros">
-                  <button
-                    v-for="item in QUICK_VARIABLES"
-                    :key="item.value"
-                    class="button button--quiet"
-                    type="button"
-                    @click="insertVariable(item.value, item.placeholder, $event)"
+              <PresetStitchEditorPortal :active="mobileEditorOverlay">
+                <div class="stitch-editor" :style="editorOverlayStyle">
+                  <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
+                  <label
+                    >角色<select v-model="editor.role">
+                      <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
+                        {{ role.label }}
+                      </option>
+                    </select></label
                   >
-                    {{ item.label }}
-                  </button>
-                  <button class="button button--quiet" type="button" @click="openVariableWriter">
-                    写入聊天变量
-                  </button>
-                  <select
-                    v-if="unreadWrittenVariables.length"
-                    aria-label="读取尚未使用的已写变量"
-                    @change="insertUnreadWrittenVariable"
-                  >
-                    <option value="">读取未使用的已写变量</option>
-                    <option
-                      v-for="variable in unreadWrittenVariables"
-                      :key="`${variable.scope}:${variable.name}`"
-                      :value="`${variable.scope}:${variable.name}`"
+                  <label
+                    >正文<textarea
+                      :ref="setEditorTextarea"
+                      v-model="editor.content"
+                      rows="8"
+                      @click="rememberEditorSelection"
+                      @focus="rememberEditorSelection"
+                      @input="rememberEditorSelection"
+                      @keyup="rememberEditorSelection"
+                      @select="rememberEditorSelection"
+                    ></textarea>
+                  </label>
+                  <div class="stitch-editor__macros">
+                    <button
+                      v-for="item in QUICK_VARIABLES"
+                      :key="item.value"
+                      class="button button--quiet"
+                      type="button"
+                      @click="insertVariable(item.value, item.placeholder, $event)"
                     >
-                      {{ variable.label }}
-                    </option>
-                  </select>
+                      {{ item.label }}
+                    </button>
+                    <button class="button button--quiet" type="button" @click="openVariableWriter">
+                      写入聊天变量
+                    </button>
+                    <select
+                      v-if="unreadWrittenVariables.length"
+                      aria-label="读取尚未使用的已写变量"
+                      @change="insertUnreadWrittenVariable"
+                    >
+                      <option value="">读取未使用的已写变量</option>
+                      <option
+                        v-for="variable in unreadWrittenVariables"
+                        :key="`${variable.scope}:${variable.name}`"
+                        :value="`${variable.scope}:${variable.name}`"
+                      >
+                        {{ variable.label }}
+                      </option>
+                    </select>
+                  </div>
+                  <div class="stitch-editor__actions">
+                    <button type="button" class="button button--primary" @click="saveEdit">
+                      保存修改</button
+                    ><button class="button button--quiet" type="button" @click="cancelEdit">
+                      取消
+                    </button>
+                  </div>
                 </div>
-                <div class="stitch-editor__actions">
-                  <button type="button" class="button button--primary" @click="saveEdit">
-                    保存修改</button
-                  ><button class="button button--quiet" type="button" @click="cancelEdit">
-                    取消
-                  </button>
-                </div>
-              </div>
+              </PresetStitchEditorPortal>
             </template>
             <template v-else>
               <!-- eslint-disable-next-line vue/no-v-html -- 高亮函数先转义正文，仅插入固定 span。 -->
@@ -353,63 +358,65 @@ const sourcePage = toRef(input.model, 'sourcePage')
           </div>
           <div v-if="expandedSourceKeys.has(segment.identifier)" class="stitch-entry__detail">
             <template v-if="editor?.scope === 'source' && editor.key === sourceKey(segment)">
-              <div class="stitch-editor" :style="editorOverlayStyle">
-                <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
-                <label
-                  >角色<select v-model="editor.role">
-                    <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
-                      {{ role.label }}
-                    </option>
-                  </select></label
-                >
-                <label
-                  >正文<textarea
-                    :ref="setEditorTextarea"
-                    v-model="editor.content"
-                    rows="8"
-                    @click="rememberEditorSelection"
-                    @focus="rememberEditorSelection"
-                    @input="rememberEditorSelection"
-                    @keyup="rememberEditorSelection"
-                    @select="rememberEditorSelection"
-                  ></textarea>
-                </label>
-                <div class="stitch-editor__macros">
-                  <button
-                    v-for="item in QUICK_VARIABLES"
-                    :key="item.value"
-                    class="button button--quiet"
-                    type="button"
-                    @click="insertVariable(item.value, item.placeholder, $event)"
+              <PresetStitchEditorPortal :active="mobileEditorOverlay">
+                <div class="stitch-editor" :style="editorOverlayStyle">
+                  <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
+                  <label
+                    >角色<select v-model="editor.role">
+                      <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
+                        {{ role.label }}
+                      </option>
+                    </select></label
                   >
-                    {{ item.label }}
-                  </button>
-                  <button class="button button--quiet" type="button" @click="openVariableWriter">
-                    写入聊天变量
-                  </button>
-                  <select
-                    v-if="unreadWrittenVariables.length"
-                    aria-label="读取尚未使用的已写变量"
-                    @change="insertUnreadWrittenVariable"
-                  >
-                    <option value="">读取未使用的已写变量</option>
-                    <option
-                      v-for="variable in unreadWrittenVariables"
-                      :key="`${variable.scope}:${variable.name}`"
-                      :value="`${variable.scope}:${variable.name}`"
+                  <label
+                    >正文<textarea
+                      :ref="setEditorTextarea"
+                      v-model="editor.content"
+                      rows="8"
+                      @click="rememberEditorSelection"
+                      @focus="rememberEditorSelection"
+                      @input="rememberEditorSelection"
+                      @keyup="rememberEditorSelection"
+                      @select="rememberEditorSelection"
+                    ></textarea>
+                  </label>
+                  <div class="stitch-editor__macros">
+                    <button
+                      v-for="item in QUICK_VARIABLES"
+                      :key="item.value"
+                      class="button button--quiet"
+                      type="button"
+                      @click="insertVariable(item.value, item.placeholder, $event)"
                     >
-                      {{ variable.label }}
-                    </option>
-                  </select>
+                      {{ item.label }}
+                    </button>
+                    <button class="button button--quiet" type="button" @click="openVariableWriter">
+                      写入聊天变量
+                    </button>
+                    <select
+                      v-if="unreadWrittenVariables.length"
+                      aria-label="读取尚未使用的已写变量"
+                      @change="insertUnreadWrittenVariable"
+                    >
+                      <option value="">读取未使用的已写变量</option>
+                      <option
+                        v-for="variable in unreadWrittenVariables"
+                        :key="`${variable.scope}:${variable.name}`"
+                        :value="`${variable.scope}:${variable.name}`"
+                      >
+                        {{ variable.label }}
+                      </option>
+                    </select>
+                  </div>
+                  <div class="stitch-editor__actions">
+                    <button type="button" class="button button--primary" @click="saveEdit">
+                      保存修改</button
+                    ><button class="button button--quiet" type="button" @click="cancelEdit">
+                      取消
+                    </button>
+                  </div>
                 </div>
-                <div class="stitch-editor__actions">
-                  <button type="button" class="button button--primary" @click="saveEdit">
-                    保存修改</button
-                  ><button class="button button--quiet" type="button" @click="cancelEdit">
-                    取消
-                  </button>
-                </div>
-              </div>
+              </PresetStitchEditorPortal>
             </template>
             <template v-else>
               <!-- eslint-disable-next-line vue/no-v-html -- 高亮函数先转义正文，仅插入固定 span。 -->

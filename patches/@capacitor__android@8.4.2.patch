@@ -1,0 +1,21 @@
+diff --git a/capacitor/src/main/java/com/getcapacitor/plugin/SystemBars.java b/capacitor/src/main/java/com/getcapacitor/plugin/SystemBars.java
+index fd71370945b645c9e9cb7ed1a5030c30bd08b8b7..b613b4d92cbd458d2729bc9592025ccea1242200 100644
+--- a/capacitor/src/main/java/com/getcapacitor/plugin/SystemBars.java
++++ b/capacitor/src/main/java/com/getcapacitor/plugin/SystemBars.java
+@@ -262,10 +262,12 @@ public class SystemBars extends Plugin {
+                     Locale.US,
+                     """
+                     try {
+-                      document.documentElement.style.setProperty("--safe-area-inset-top", "%dpx");
+-                      document.documentElement.style.setProperty("--safe-area-inset-right", "%dpx");
+-                      document.documentElement.style.setProperty("--safe-area-inset-bottom", "%dpx");
+-                      document.documentElement.style.setProperty("--safe-area-inset-left", "%dpx");
++                      if (document.documentElement) {
++                        document.documentElement.style.setProperty("--safe-area-inset-top", "%dpx");
++                        document.documentElement.style.setProperty("--safe-area-inset-right", "%dpx");
++                        document.documentElement.style.setProperty("--safe-area-inset-bottom", "%dpx");
++                        document.documentElement.style.setProperty("--safe-area-inset-left", "%dpx");
++                      }
+                     } catch(e) { console.error('Error injecting safe area CSS:', e); }
+                     """,
+                     (int) topPx,

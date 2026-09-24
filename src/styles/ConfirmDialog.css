@@ -5,15 +5,27 @@
   z-index: 2147483600;
   display: grid;
   place-items: center;
+  box-sizing: border-box;
+  height: 100dvh;
+  min-height: 100svh;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: max(1rem, var(--safe-top)) max(1rem, var(--safe-right)) max(1rem, var(--safe-bottom))
     max(1rem, var(--safe-left));
   background: rgba(18, 24, 21, 0.45);
   backdrop-filter: blur(2px);
 }
 
+.confirm-dialog__overlay.is-centered {
+  align-items: center;
+}
+
 .confirm-dialog {
+  box-sizing: border-box;
   color: var(--color-ink);
   width: min(26rem, 100%);
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 2rem);
+  overflow: auto;
   padding: 1.25rem 1.4rem;
   border: 1px solid rgba(31, 106, 84, 0.3);
   border-radius: 0.9rem;
@@ -78,6 +90,10 @@
 
   .confirm-dialog {
     width: 100%;
+  }
+
+  .confirm-dialog__overlay.is-centered {
+    align-items: center;
   }
 
   .confirm-dialog > footer button {

@@ -481,6 +481,26 @@ export class ResourceService {
     let upgradedCount = 0
 
     for (const summary of resources) {
+      const legacyGlobalRegexName = summary.fileName.replace(/\.json$/i, '').trim()
+      if (
+        summary.fileName.toLocaleLowerCase().endsWith('.json') &&
+        summary.metadata.parserVersion === JSON_RESOURCE_PARSER_VERSION &&
+        summary.metadata.detectedVariant === 'regexCollection' &&
+        summary.metadata.regexScope === 'global' &&
+        summary.metadata.itemCount === 1 &&
+        summary.metadata.sourceName === '全局正则' &&
+        summary.metadata.legacyGlobalRegexNameRepaired !== true &&
+        summary.name === '全局正则' &&
+        legacyGlobalRegexName !== '全局正则' &&
+        legacyGlobalRegexName
+      ) {
+        await this.storage.update(summary.id, {
+          name: legacyGlobalRegexName,
+          metadata: { ...summary.metadata, legacyGlobalRegexNameRepaired: true },
+        })
+        upgradedCount += 1
+        continue
+      }
       const isLegacyJson =
         summary.fileName.toLocaleLowerCase().endsWith('.json') &&
         summary.metadata.parserVersion !== JSON_RESOURCE_PARSER_VERSION

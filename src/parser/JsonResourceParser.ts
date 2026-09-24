@@ -264,7 +264,10 @@ function detectRecord(record: Record<string, unknown>, fallbackName: string): De
       return {
         type: RESOURCE_TYPE.REGEX,
         variant: 'regexCollection',
-        name: readString(record.sourceName) || fallbackName,
+        name:
+          regexScope === 'global' && itemCount === 1 && readString(record.sourceName) === '全局正则'
+            ? fallbackName
+            : readString(record.sourceName) || fallbackName,
         description: `${scopeLabel}正则，包含 ${itemCount} 条脚本`,
         itemCount,
         metadata: {

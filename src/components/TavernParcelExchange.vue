@@ -1,0 +1,413 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { tavernHttpFetch } from '../services/TavernHttpTransport'
+import { resourceService } from '../core/AppContainer'
+import {
+  createParcel,
+  readParcel,
+  removeParcel,
+  type ParcelFile,
+} from '../services/BridgeParcelCodec.mjs'
+import { bridgeKindOfResource } from '../utils/TavernBridgeDiff'
+import type { ResourceSummary } from '../types/Resource'
+
+const props = defineProps<{ resources: ResourceSummary[]; initialIds?: string[] }>()
+const emit = defineEmits<{ 'import-files': [files: File[]] }>()
+const selected = ref<string[]>(props.initialIds ?? [])
+const resources = computed(() => props.resources.filter((item) => bridgeKindOfResource(item)))
+const busy = ref(false)
+const progress = ref('')
+const error = ref('')
+const outgoing = ref('')
+const incoming = ref('')
+const files = ref<ParcelFile[]>([])
+const search = ref('')
+const mode = ref<'receive' | 'send'>('receive')
+const shown = ref(50)
+let operation: AbortController | undefined
+onBeforeUnmount(() => operation?.abort())
+const visible = computed(() =>
+  resources.value.filter((item) =>
+    item.name.toLocaleLowerCase().includes(search.value.toLocaleLowerCase()),
+  ),
+)
+const base = window.location.origin
+async function run(action: () => Promise<void>) {
+  if (busy.value) return
+  busy.value = true
+  operation = new AbortController()
+  error.value = ''
+  progress.value = '正在准备…'
+  try {
+    await action()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '暂存失败'
+  } finally {
+    busy.value = false
+    operation = undefined
+  }
+}
+async function send() {
+  await run(async () => {
+    if (outgoing.value) throw new Error('请先复制当前口令，或删除当前暂存后再发送')
+    if (selected.value.length > 100) throw new Error('每次最多暂存 100 项，请分批发送')
+    const payload: ParcelFile[] = []
+    let bytes = 0
+    for (const id of selected.value) {
+      if (operation?.signal.aborted) throw new Error('已取消暂存')
+      const resource = await resourceService.get(id)
+      const kind = resource && bridgeKindOfResource(resource)
+      if (!resource || !kind) throw new Error('所选资源已不存在或不支持暂存')
+      bytes += resource.originalBlob.size
+      if (bytes > 16 * 1024 * 1024) throw new Error('所选内容超过 16 MiB，请分批暂存或使用实时互传')
+      payload.push({
+        file: new File([resource.originalBlob], resource.fileName, { type: resource.mimeType }),
+        kind,
+        displayName: resource.name,
+        targetName:
+          typeof resource.metadata.extractedFromCharacterName === 'string'
+            ? resource.metadata.extractedFromCharacterName
+            : typeof resource.metadata.extractedFromPresetName === 'string'
+              ? resource.metadata.extractedFromPresetName
+              : typeof resource.metadata.sourceName === 'string'
+                ? resource.metadata.sourceName
+                : undefined,
+      })
+    }
+    const result = await createParcel(
+      base,
+      payload,
+      (message) => {
+        progress.value = message
+      },
+      { signal: operation?.signal, fetcher: tavernHttpFetch },
+    )
+    outgoing.value = result.ticket
+  })
+}
+async function receive() {
+  await run(async () => {
+    files.value = []
+    files.value = await readParcel(
+      base,
+      incoming.value,
+      (message) => {
+        progress.value = message
+      },
+      { signal: operation?.signal, fetcher: tavernHttpFetch },
+    )
+  })
+}
+async function copy() {
+  await run(async () => {
+    try {
+      await navigator.clipboard.writeText(outgoing.value)
+    } catch {
+      throw new Error('复制未成功，请长按下方口令全选复制')
+    }
+    progress.value = '口令已复制，现在可以切换到酒馆领取'
+  })
+}
+async function remove() {
+  await run(async () => {
+    await removeParcel(base, outgoing.value, {
+      signal: operation?.signal,
+      fetcher: tavernHttpFetch,
+    })
+    outgoing.value = ''
+    progress.value = '暂存已删除'
+  })
+}
+function importReceived() {
+  emit(
+    'import-files',
+    files.value.map((item) => item.file),
+  )
+  files.value = []
+  progress.value = '文件已交给资源库导入；请查看导入结果通知。暂存将在到期后删除。'
+}
+</script>
+
+<template>
+  <details class="tavern-parcel">
+    <summary>
+      <span><strong>加密暂存</strong><small>两端不方便同时在线时使用</small></span
+      ><span class="tavern-parcel__chevron" aria-hidden="true">⌄</span>
+    </summary>
+    <div class="tavern-parcel__body">
+      <p class="tavern-parcel__hint">
+        实时互传仍可正常使用。暂存完成后再切换应用，30 分钟内凭口令领取；每次最多 16 MiB。
+      </p>
+      <div class="tavern-parcel__modes" aria-label="暂存方向">
+        <button
+          type="button"
+          :aria-pressed="mode === 'receive'"
+          :disabled="busy"
+          @click="mode = 'receive'"
+        >
+          从酒馆领取
+        </button>
+        <button
+          type="button"
+          :aria-pressed="mode === 'send'"
+          :disabled="busy"
+          @click="mode = 'send'"
+        >
+          发给酒馆
+        </button>
+      </div>
+      <fieldset v-if="mode === 'receive'" :disabled="busy">
+        <label
+          >提取口令<textarea
+            v-model="incoming"
+            rows="3"
+            placeholder="粘贴 SRL1 开头的完整口令"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+        </label>
+        <button
+          class="tavern-parcel__primary"
+          type="button"
+          :disabled="!incoming.trim()"
+          @click="receive"
+        >
+          领取并校验
+        </button>
+        <div v-if="files.length" class="tavern-parcel__result">
+          <strong>已校验 {{ files.length }} 项</strong>
+          <ul>
+            <li v-for="(item, index) in files" :key="index">{{ item.displayName }}</li>
+          </ul>
+          <button class="tavern-parcel__primary" type="button" @click="importReceived">
+            导入资源库
+          </button>
+        </div>
+      </fieldset>
+      <fieldset v-else :disabled="busy">
+        <template v-if="!outgoing">
+          <label
+            >选择资源<input
+              v-model="search"
+              type="search"
+              placeholder="搜索资源名称"
+              @input="shown = 50"
+          /></label>
+          <div class="tavern-parcel__resources">
+            <label v-for="item in visible.slice(0, shown)" :key="item.id"
+              ><input v-model="selected" type="checkbox" :value="item.id" /><span
+                >{{ item.name }}<small>{{ item.fileName }}</small></span
+              ></label
+            >
+            <p v-if="!visible.length" class="tavern-parcel__hint">没有匹配的资源</p>
+            <button v-if="visible.length > shown" type="button" @click="shown += 50">
+              再显示 50 项
+            </button>
+          </div>
+          <button
+            class="tavern-parcel__primary"
+            type="button"
+            :disabled="!selected.length"
+            @click="send"
+          >
+            暂存所选 {{ selected.length }} 项
+          </button>
+        </template>
+        <div v-else class="tavern-parcel__result">
+          <strong>暂存就绪，可以切换到酒馆</strong>
+          <label
+            >提取口令<textarea
+              :value="outgoing"
+              readonly
+              rows="3"
+              @focus="($event.target as HTMLTextAreaElement).select()"
+            />
+          </label>
+          <small>口令包含解密密钥，仅交给接收方。关闭本页前请先复制。</small>
+          <div class="tavern-parcel__actions">
+            <button class="tavern-parcel__primary" type="button" @click="copy">复制口令</button
+            ><button type="button" @click="remove">删除暂存</button>
+          </div>
+        </div>
+      </fieldset>
+      <div v-if="busy || progress || error" class="tavern-parcel__feedback">
+        <p v-if="error" role="alert">{{ error }}</p>
+        <p v-else role="status">{{ progress }}</p>
+        <button v-if="busy" type="button" @click="operation?.abort()">取消</button>
+      </div>
+    </div>
+  </details>
+</template>
+
+<style scoped>
+.tavern-parcel {
+  width: min(100%, 34rem);
+  min-width: 0;
+  margin: 0.75rem auto;
+  border-block: 1px solid var(--color-line);
+  color: var(--color-ink);
+}
+summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 0.25rem;
+  cursor: pointer;
+  list-style: none;
+}
+summary::-webkit-details-marker {
+  display: none;
+}
+summary > span:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+summary strong {
+  font-size: var(--text-body);
+}
+small,
+.tavern-parcel__hint {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+}
+.tavern-parcel__chevron {
+  font-size: 1.2rem;
+}
+.tavern-parcel[open] .tavern-parcel__chevron {
+  transform: rotate(180deg);
+}
+.tavern-parcel__body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 0.25rem 0.85rem;
+}
+p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.tavern-parcel__modes {
+  display: flex;
+  padding: 0.2rem;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-line);
+}
+.tavern-parcel__modes button {
+  flex: 1;
+  border-color: transparent;
+  background: transparent;
+}
+.tavern-parcel__modes button[aria-pressed='true'] {
+  background: var(--color-surface);
+  color: var(--color-accent);
+  border-color: var(--color-line);
+  font-weight: 700;
+}
+fieldset {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: var(--text-body);
+}
+input:not([type='checkbox']),
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  resize: vertical;
+}
+button {
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: inherit;
+  background: var(--color-surface);
+  font: inherit;
+  font-size: var(--text-body);
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.tavern-parcel__primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent, white);
+  border-color: transparent;
+  font-weight: 650;
+}
+.tavern-parcel__resources {
+  max-height: 240px;
+  overflow: auto;
+  border-block: 1px solid var(--color-line);
+}
+.tavern-parcel__resources label {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 48px;
+  padding: 0.5rem 0.25rem;
+  border-bottom: 1px solid var(--color-line);
+  cursor: pointer;
+}
+.tavern-parcel__resources span {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  gap: 0.15rem;
+}
+input[type='checkbox'] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-accent);
+}
+.tavern-parcel__result {
+  display: grid;
+  gap: 0.6rem;
+}
+.tavern-parcel__actions,
+.tavern-parcel__feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tavern-parcel__actions > button:first-child,
+.tavern-parcel__feedback p {
+  flex: 1;
+}
+.tavern-parcel__feedback {
+  padding-top: 0.5rem;
+  font-size: var(--text-caption);
+}
+.tavern-parcel__feedback button {
+  flex: none;
+}
+ul {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+</style>

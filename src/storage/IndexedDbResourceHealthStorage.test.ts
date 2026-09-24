@@ -64,7 +64,7 @@ describe('IndexedDbResourceHealthStorage', () => {
     const storedSource = await database.resources.get(source.id)
     expect(
       storedSource && 'originalBlob' in storedSource && storedSource.originalBlob,
-    ).toBeInstanceOf(Blob)
+    ).toBeInstanceOf(ArrayBuffer)
     expect((await database.resourceSummaries.get(source.id))?.contentHash).toBe('hash-source')
     expect((await database.resourceListSummaries.get(source.id))?.contentHash).toBe('hash-source')
   })

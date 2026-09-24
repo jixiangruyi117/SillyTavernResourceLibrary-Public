@@ -1,4 +1,4 @@
-/* 首次使用说明：正文独立滚动，必须完整阅读到底后才能确认。 */
+/* 首次使用说明：强调本地优先和社区约定，不使用可被误触关闭的轻量提示。 */
 .project-notice__overlay {
   position: fixed;
   z-index: 2147483646;
@@ -7,7 +7,7 @@
   place-items: center;
   padding: max(1rem, var(--safe-top)) max(1rem, var(--safe-right)) max(1rem, var(--safe-bottom))
     max(1rem, var(--safe-left));
-  overflow: hidden;
+  overflow: auto;
   background: rgba(17, 36, 35, 0.82);
 }
 
@@ -20,6 +20,7 @@
   border: 1px solid var(--glass-border, rgba(31, 91, 73, 0.26));
   border-radius: clamp(1rem, 4vw, 1.5rem);
   color: var(--color-ink);
+  /* 首次阅读时，正文不能被资源列表透出干扰。 */
   background: var(--color-surface-raised, #fffdf7);
   box-shadow: 0 1.25rem 4rem rgba(3, 23, 22, 0.36);
   outline: 0;

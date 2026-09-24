@@ -160,7 +160,7 @@ export async function listBackupResourceSummaries(
   categoryService: Pick<CategoryService, 'list'>,
   restoreService: Pick<RestoreService, 'prepare'>,
 ): Promise<ResourceSummary[]> {
-  if (item.kind === 'githubSnapshot') {
+  if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
     return listStructuredBackupResources(await readStructuredSnapshot())
   }
   return listArchiveBackupResources(

@@ -22,6 +22,8 @@ import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 import { readNativeResourceObject } from './NativeResourceFileMirror'
 import {
   cloneResourceForStorage,
+  hydrateResourceFromIndexedDb,
+  materializeResourceForIndexedDb,
   stripStableResourceBinaryFields,
   stripStableSummaryBinaryFields,
 } from './ResourceStorageClone'
@@ -385,7 +387,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         listSummary?: StoredResourceSummary
       }> = []
       for (const stored of batch) {
-        const decoded = this.vault ? await this.vault.decodeResource(stored) : (stored as Resource)
+        const decoded = hydrateResourceFromIndexedDb(
+          (this.vault ? await this.vault.decodeResource(stored) : stored) as StoredResource,
+        )
         if (!(decoded.thumbnailBlob instanceof Blob)) continue
         const externalized = await this.assets.externalizeResourceThumbnail(
           normalizeResource(decoded),
@@ -455,7 +459,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
   }
 
   private async prepareResourceForStorage(resource: Resource): Promise<Resource> {
-    return this.assets.externalizeResourceThumbnail(cloneResourceForStorage(resource))
+    return this.assets.externalizeResourceThumbnail(await cloneResourceForStorage(resource))
   }
 
   private hydrateResourceThumbnail(resource: Resource): Promise<Resource> {
@@ -477,8 +481,10 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         })()
       : this.vault
         ? await this.vault.decodeResource(resource)
-        : (resource as Resource)
-    return this.hydrateResourceThumbnail(normalizeResource(decoded))
+        : hydrateResourceFromIndexedDb(resource)
+    return this.hydrateResourceThumbnail(
+      normalizeResource(hydrateResourceFromIndexedDb(decoded as StoredResource)),
+    )
   }
 
   async list(): Promise<Resource[]> {
@@ -774,7 +780,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         isNativeBackedResource(record) ||
         record.contentHash.toLowerCase() !== normalizedHash ||
         record.fileSize !== size ||
-        record.originalBlob.size !== size
+        hydrateResourceFromIndexedDb(record).originalBlob.size !== size
       )
         return false
       const { originalBlob: _originalBlob, ...metadata } = record
@@ -790,7 +796,8 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
   async saveVersion(version: Resource): Promise<void> {
     if (!version.versionGroupId) throw new Error('历史版本缺少资源组 ID')
     const normalized = await this.prepareResourceForStorage(version)
-    const stored = this.vault ? await this.vault.encodeResource(normalized) : normalized
+    const encoded = this.vault ? await this.vault.encodeResource(normalized) : normalized
+    const stored = await materializeResourceForIndexedDb(encoded)
     await this.database.transaction(
       'rw',
       this.database.resourceVersions,
@@ -805,7 +812,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
   async updateVersion(versionId: string, changes: Partial<Resource>): Promise<void> {
     const stored = await this.database.resourceVersions.get(versionId)
     if (!stored) return
-    const current = this.vault ? await this.vault.decodeResource(stored) : (stored as Resource)
+    const current = hydrateResourceFromIndexedDb(
+      (this.vault ? await this.vault.decodeResource(stored) : stored) as StoredResource,
+    )
     const merged = { ...current, ...changes }
     if (
       Object.prototype.hasOwnProperty.call(changes, 'thumbnailBlob') &&
@@ -814,7 +823,8 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       merged.thumbnailAssetId = undefined
     }
     const normalized = await this.prepareResourceForStorage(merged)
-    const updated = this.vault ? await this.vault.encodeResource(normalized) : normalized
+    const encoded = this.vault ? await this.vault.encodeResource(normalized) : normalized
+    const updated = await materializeResourceForIndexedDb(encoded)
     await this.database.transaction(
       'rw',
       this.database.resourceVersions,
@@ -882,7 +892,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         )
           throw new Error('小手机内容已被其他操作修改，请重新打开后编辑')
         // Clone only the metadata. The original file never enters decryption, hashing or mirroring.
-        const normalized = cloneResourceForStorage({
+        const normalized = await cloneResourceForStorage({
           ...current,
           ...changes,
           metadata: { ...current.metadata, ...changes.metadata },
@@ -918,7 +928,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     }
     const stored = await this.database.resources.get(id)
     if (!stored) return
-    const resource = this.vault ? await this.vault.decodeResource(stored) : (stored as Resource)
+    const resource = hydrateResourceFromIndexedDb(
+      (this.vault ? await this.vault.decodeResource(stored) : stored) as StoredResource,
+    )
     const merged = { ...resource, ...changes }
     if (
       Object.prototype.hasOwnProperty.call(changes, 'thumbnailBlob') &&
@@ -965,7 +977,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       stored
         .flatMap((item) => (item ? [item] : []))
         .map(async (item) => {
-          const resource = this.vault ? await this.vault.decodeResource(item) : (item as Resource)
+          const resource = hydrateResourceFromIndexedDb(
+            (this.vault ? await this.vault.decodeResource(item) : item) as StoredResource,
+          )
           const merged = { ...resource, ...changes }
           if (
             Object.prototype.hasOwnProperty.call(changes, 'thumbnailBlob') &&
@@ -1034,7 +1048,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       return summary
     }
     if (!isEncryptedResource(resource))
-      return { ...toResourceSummary(resource), thumbnailBlob: undefined }
+      return { ...toResourceSummary(resource as Resource), thumbnailBlob: undefined }
     return {
       id: resource.id,
       contentHash: resource.contentHash,
@@ -1050,7 +1064,8 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     replaceStableBinaryIds = new Set<string>(),
   ): Promise<void> {
     if (!resources.length) return
-    const summaries = resources.map((resource) => this.toStoredSummary(resource))
+    const storedResources = await Promise.all(resources.map(materializeResourceForIndexedDb))
+    const summaries = storedResources.map((resource) => this.toStoredSummary(resource))
     const listSummaries = await this.createStoredListSummariesFromSummaries(summaries)
     await this.database.transaction(
       'rw',
@@ -1058,7 +1073,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       this.database.resourceSummaries,
       this.database.resourceListSummaries,
       async () => {
-        for (const resource of resources) {
+        for (const resource of storedResources) {
           const existing = await this.database.resources.get(resource.id)
           if (
             existing?.contentHash === resource.contentHash &&

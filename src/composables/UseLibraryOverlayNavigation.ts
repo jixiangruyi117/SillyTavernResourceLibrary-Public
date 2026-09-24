@@ -75,7 +75,10 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
     {
       id: 'import-chooser',
       isOpen: () => context.isImportChooserOpen.value,
-      close: () => (context.isImportChooserOpen.value = false),
+      close: () => {
+        if (context.isLinkImportOpen.value) context.isLinkImportOpen.value = false
+        else context.isImportChooserOpen.value = false
+      },
     },
     {
       id: 'settings',
@@ -174,11 +177,6 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
       id: 'data-protection',
       isActive: () => context.isDataProtectionOpen.value,
       back: () => (context.isDataProtectionOpen.value = false),
-    },
-    {
-      id: 'link-import',
-      isActive: () => context.isLinkImportOpen.value,
-      back: () => (context.isLinkImportOpen.value = false),
     },
     {
       id: 'browse',

@@ -9,7 +9,7 @@ const { generate, album, hosting, confirmAction, saveConfiguration } = vi.hoiste
   generate: vi.fn(),
   album: { saveGenerated: vi.fn(), getOriginalBlob: vi.fn(), setHostedUrl: vi.fn() },
   hosting: {
-    getSelfHostedConfiguration: vi.fn(() => null),
+    getSelfHostedConfiguration: vi.fn((): { origin: string } | null => null),
     uploadBlobSelfHosted: vi.fn(),
   },
 }))
@@ -74,6 +74,7 @@ beforeEach(() => {
     id: result.id,
     hostedUrl: 'https://img.example/result.png',
   })
+  hosting.getSelfHostedConfiguration.mockReturnValue({ origin: 'https://img.example/upload' })
   hosting.uploadBlobSelfHosted.mockResolvedValue({ url: 'https://img.example/result.png' })
 })
 
@@ -83,6 +84,15 @@ describe('ImageGenerationApp', () => {
     if (!control) throw new Error(`Missing button: ${label}`)
     return control.trigger('click')
   }
+  it('marks the full-screen workspace as the mobile input focus scope', () => {
+    const wrapper = mount(ImageGenerationApp)
+    expect(wrapper.get('.image-generation-app').attributes()).toMatchObject({
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': 'AI 生图',
+    })
+    expect(wrapper.get('.image-generation-controls').classes()).toContain('scroll')
+  })
   it('preserves provider drafts and session keys without serializing credentials', async () => {
     const wrapper = mount(ImageGenerationApp)
     await wrapper.get('[aria-label="画面描述"]').setValue('NAI draft')

@@ -142,6 +142,16 @@ function render() {
   })
 }
 
+function renderWithRealTeleport() {
+  return mount(PresetStitcherApp, {
+    attachTo: document.body,
+    props: {
+      resources: [summary('base-1', '破限底板', 2), summary('source-1', '文风来源', 12)],
+      categories: [],
+    },
+  })
+}
+
 async function pickBaseAndSource(wrapper: ReturnType<typeof render>) {
   await wrapper
     .findAll('.stitch__preset-list button')
@@ -153,6 +163,22 @@ async function pickBaseAndSource(wrapper: ReturnType<typeof render>) {
     .findAll('.stitch__preset-list button')
     .find((button) => button.text().includes('文风来源'))!
     .trigger('click')
+  await flushPromises()
+}
+
+async function pickBaseAndSourceWithRealTeleport(
+  wrapper: ReturnType<typeof renderWithRealTeleport>,
+) {
+  await wrapper
+    .findAll('.stitch__preset-list button')
+    .find((button) => button.text().includes('破限底板'))!
+    .trigger('click')
+  await flushPromises()
+  const sourceButton = Array.from(
+    document.body.querySelectorAll<HTMLButtonElement>('.stitch-sheet .stitch__preset-list button'),
+  ).find((button) => button.textContent?.includes('文风来源'))
+  expect(sourceButton).toBeTruthy()
+  sourceButton!.click()
   await flushPromises()
 }
 
@@ -252,6 +278,54 @@ describe('PresetStitcherApp', () => {
     expect(targetRow(wrapper, '文风段').find('.stitch-entry__change-badge').text()).toBe('新增')
     await targetRow(wrapper, 'Chat History').find('.stitch-entry__copy').trigger('click')
     expect(targetRow(wrapper, 'Chat History').find('.is-danger').exists()).toBe(false)
+  })
+
+  it('小屏条目编辑器与遮罩脱离触控滚动条目，避免 iOS fixed 编辑层被裁切', async () => {
+    const originalMatchMedia = window.matchMedia
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === '(max-width: 52rem)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+    const wrapper = renderWithRealTeleport()
+    try {
+      await pickBaseAndSourceWithRealTeleport(wrapper)
+
+      const target = targetRow(wrapper, '主提示')
+      await target.find('.stitch-entry__copy').trigger('click')
+      await target.find('.stitch-entry__actions button').trigger('click')
+      await flushPromises()
+
+      const portal = wrapper.find('#stitch-entry-editor-portal')
+      expect(portal.find('.stitch-editor-backdrop').exists()).toBe(true)
+      expect(portal.find('.stitch-editor').exists()).toBe(true)
+      expect(portal.find('.stitch-editor').element.closest('.stitch-entry')).toBeNull()
+      expect(target.find('.stitch-editor').exists()).toBe(false)
+
+      await portal.findAll('.stitch-editor__actions button')[1].trigger('click')
+      const source = sourceRow(wrapper, '文风段')
+      await source.find('.stitch-entry__copy').trigger('click')
+      await source.find('.stitch-entry__detail button').trigger('click')
+      await flushPromises()
+
+      expect(portal.find('.stitch-editor').exists()).toBe(true)
+      expect(portal.find('.stitch-editor').element.closest('.stitch-entry')).toBeNull()
+      expect(source.find('.stitch-editor').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      })
+    }
   })
 
   it('来源和主预设条目均可编辑保存或取消，并可快速插入官方变量语法', async () => {
@@ -746,9 +820,16 @@ describe('PresetStitcherApp', () => {
       addEventListener: landscapeListener,
       removeEventListener: vi.fn(),
     } as unknown as MediaQueryList
+    const mobileQuery = {
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList
     vi.stubGlobal(
       'matchMedia',
-      vi.fn(() => landscapeQuery),
+      vi.fn((query: string) =>
+        query === '(orientation: landscape) and (max-height: 34rem)' ? landscapeQuery : mobileQuery,
+      ),
     )
     try {
       const wrapper = render()

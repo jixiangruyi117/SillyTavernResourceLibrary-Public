@@ -20,7 +20,7 @@ const { album, hosting } = vi.hoisted(() => ({
   hosting: {
     initializeCredentials: vi.fn(async () => undefined),
     getSelfHostedConfiguration: vi.fn(() => undefined),
-    uploadBlobSelfHosted: vi.fn(),
+    uploadBlobShared: vi.fn(),
   },
 }))
 vi.mock('../core/ImageAlbumContainer', () => ({
@@ -38,6 +38,7 @@ describe('FrontendWorkshopAssetLibrary 当前图片选择 Owner', () => {
   it('手动直链校验后只发出插入意图，不建立第二份项目状态', async () => {
     const wrapper = mount(FrontendWorkshopAssetLibrary, {
       props: { project: createFrontendWorkshopProject('greeting') },
+      global: { stubs: { Teleport: true } },
     })
     wrapper.vm.open('library', 'workspace')
     await flushPromises()
@@ -59,6 +60,7 @@ describe('FrontendWorkshopAssetLibrary 当前图片选择 Owner', () => {
   it('直链标签返回相册时保留输入，再次返回才交给原路由', async () => {
     const wrapper = mount(FrontendWorkshopAssetLibrary, {
       props: { project: createFrontendWorkshopProject('greeting') },
+      global: { stubs: { Teleport: true } },
     })
     wrapper.vm.open('hosting', 'workspace')
     await flushPromises()
@@ -105,6 +107,7 @@ describe('FrontendWorkshopAssetLibrary 当前图片选择 Owner', () => {
     })
     const wrapper = mount(FrontendWorkshopAssetLibrary, {
       props: { project: createFrontendWorkshopProject('greeting') },
+      global: { stubs: { Teleport: true } },
     })
     wrapper.vm.open('library', 'workspace')
     await flushPromises()
@@ -114,6 +117,6 @@ describe('FrontendWorkshopAssetLibrary 当前图片选择 Owner', () => {
     expect(wrapper.emitted('insertAsset')).toEqual([
       [expect.objectContaining({ url: 'https://img.test/hosted.png' })],
     ])
-    expect(hosting.uploadBlobSelfHosted).not.toHaveBeenCalled()
+    expect(hosting.uploadBlobShared).not.toHaveBeenCalled()
   })
 })

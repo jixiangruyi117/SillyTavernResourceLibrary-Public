@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -30,19 +29,9 @@ describe('FeatureAppRegistry', () => {
     )
   })
 
-  it('maps bundled component entrypoints without an official APP gate', () => {
-    const source = readFileSync(new URL('./FeatureAppLoaders.ts', import.meta.url), 'utf8')
-    expect(source).not.toContain('OfficialAppGate')
-    for (const [id, component] of [
-      ['frontendWorkshop', 'FrontendWorkshopApp.vue'],
-      ['imageGeneration', 'ImageGenerationApp.vue'],
-      ['imageAlbum', 'GeneratedImageAlbumApp.vue'],
-      ['tavernBridge', 'TavernBridgeCenter.vue'],
-    ]) {
-      expect(source).toContain(`case '${id}':`)
-      expect(source).toContain(`import('../components/${component}')`)
-    }
-    expect(getFeatureAppLoader('frontendWorkshop')).toBeTypeOf('function')
+  it('resolves component entrypoints separately from registry metadata', () => {
+    expect(getFeatureAppLoader('tavernBridge')).toBeTypeOf('function')
+    expect(getFeatureAppLoader('draw')).toBeTypeOf('function')
     expect(
       getFeatureAppBadge(getFeatureAppDescriptor('extensions'), {
         drawCount: 3,

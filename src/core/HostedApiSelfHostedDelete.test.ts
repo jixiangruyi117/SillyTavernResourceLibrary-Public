@@ -15,7 +15,7 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({}),
 }))
 
-import { selfHostedImageDelete } from './SelfHostedImageTransport'
+import { selfHostedImageDelete } from './HostedApiTransport'
 
 describe('selfHostedImageDelete', () => {
   afterEach(() => {

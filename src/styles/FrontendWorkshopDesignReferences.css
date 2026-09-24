@@ -1,0 +1,415 @@
+.frontend-workshop__references {
+  padding-bottom: 0.7rem;
+}
+.frontend-workshop__references > header label {
+  display: inline-grid;
+  min-height: var(--control-visual-secondary);
+  place-items: center;
+  margin: 0;
+  padding: 0 0.7rem;
+  border: 1px solid var(--color-line-strong);
+  cursor: pointer;
+  font-size: var(--text-caption);
+}
+.frontend-workshop__references > header input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.frontend-workshop__references > p,
+.frontend-workshop__references > input,
+.frontend-workshop__references > div {
+  margin-inline: 0.7rem;
+}
+.frontend-workshop__references > p {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__reference-guidance {
+  display: block;
+  width: calc(100% - 1.4rem) !important;
+}
+.frontend-workshop__reference-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  min-width: 0;
+  margin-top: 0.6rem;
+}
+.frontend-workshop__references figure {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+}
+.frontend-workshop__references img {
+  width: 100%;
+  aspect-ratio: 4/3;
+  object-fit: cover;
+  border: 1px solid var(--color-line);
+}
+.frontend-workshop__references figcaption {
+  overflow: hidden;
+  margin-top: 0.25rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frontend-workshop__references figure button {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  width: var(--size-touch);
+  height: var(--size-touch);
+  color: white;
+  background: rgb(20 20 20 / 75%);
+}
+.frontend-workshop__blocks,
+.frontend-workshop__design-tokens,
+.frontend-workshop__conditions {
+  margin-top: 0.8rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.frontend-workshop__blocks > summary,
+.frontend-workshop__design-tokens > summary,
+.frontend-workshop__conditions > summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--size-touch);
+  gap: 0.75rem;
+  padding: 0.6rem 0.7rem;
+  cursor: pointer;
+}
+.frontend-workshop__blocks > summary span,
+.frontend-workshop__design-tokens > summary span,
+.frontend-workshop__conditions > summary span {
+  display: grid;
+  min-width: 0;
+}
+.frontend-workshop__blocks > summary strong,
+.frontend-workshop__design-tokens > summary strong,
+.frontend-workshop__conditions > summary strong {
+  min-width: 0;
+  margin: 0;
+  font: var(--weight-title) var(--text-body)/1.35 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__blocks > summary em,
+.frontend-workshop__design-tokens > summary em,
+.frontend-workshop__conditions > summary em {
+  flex: 0 0 auto;
+  color: var(--color-ink-soft);
+  font: var(--weight-body) var(--text-caption)/1.4 var(--font-ui);
+  font-style: normal;
+}
+.frontend-workshop__blocks > p,
+.frontend-workshop__conditions > p {
+  margin: 0 0.7rem 0.55rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__design-tokens > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  padding: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__design-tokens fieldset {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--color-line);
+  overflow-anchor: none;
+}
+.frontend-workshop__design-tokens legend {
+  padding-inline: 0.2rem;
+  color: var(--color-accent);
+  font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
+}
+.frontend-workshop__design-tokens fieldset > button {
+  display: grid;
+  min-width: 0;
+  min-height: 3.5rem;
+  align-content: center;
+  gap: 0.15rem;
+  padding: 0.5rem;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  text-align: left;
+}
+.frontend-workshop__design-tokens fieldset > button.is-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+.frontend-workshop__design-tokens fieldset > button strong {
+  min-width: 0;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__design-tokens fieldset > button small {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.frontend-workshop__design-tokens fieldset > button.is-active small {
+  color: var(--color-ink-soft);
+}
+.frontend-workshop__material-recipe {
+  grid-column: 1 / -1;
+  padding: 0.65rem;
+  border: 1px solid var(--color-line);
+  border-left: 0.2rem solid var(--color-accent);
+  background: var(--color-surface);
+}
+.frontend-workshop__material-recipe small,
+.frontend-workshop__material-recipe strong {
+  display: block;
+}
+.frontend-workshop__material-recipe strong {
+  margin-top: 0.1rem;
+  font-size: var(--text-body);
+  font-weight: var(--weight-ui);
+}
+.frontend-workshop__material-recipe p {
+  margin: 0.3rem 0 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__condition-form {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1.2fr) minmax(6rem, 0.8fr) minmax(7rem, 1fr) auto auto auto;
+  gap: 0.4rem;
+  padding: 0 0.7rem 0.7rem;
+}
+.frontend-workshop__condition-form > select,
+.frontend-workshop__condition-form > input,
+.frontend-workshop__condition-form > label {
+  min-width: 0;
+  min-height: var(--size-touch);
+}
+.frontend-workshop__condition-form > button {
+  min-width: var(--control-visual);
+  min-height: var(--control-visual);
+}
+.frontend-workshop__condition-form > label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2.75rem;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__condition-form input[type='color'] {
+  width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0.15rem;
+}
+.frontend-workshop__conditions > ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0 0.7rem 0.7rem;
+  list-style: none;
+}
+.frontend-workshop__conditions > ul li {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  border: 1px solid var(--color-line);
+}
+.frontend-workshop__conditions > ul span {
+  display: grid;
+  min-width: 0;
+  min-height: var(--size-touch);
+  place-items: center;
+  padding: 0.3rem 0.55rem;
+  font-size: var(--text-caption);
+  overflow-wrap: anywhere;
+}
+.frontend-workshop__conditions > ul button {
+  min-width: var(--control-visual);
+  min-height: var(--control-visual);
+  padding-inline: 0.5rem;
+  border: 0;
+}
+
+.frontend-workshop__module-prompt {
+  min-width: 0;
+  margin: 0 0.7rem 0.7rem;
+  padding: 0.15rem 0.6rem 0.6rem;
+  border: 1px dashed var(--color-line-strong);
+  background: var(--color-surface);
+}
+
+.frontend-workshop__design-tokens .frontend-workshop__module-prompt {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.frontend-workshop__module-prompt > summary {
+  min-height: var(--size-touch);
+  padding: 0.55rem 0;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+}
+
+.frontend-workshop__module-switch {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  justify-items: start;
+  gap: 0.45rem;
+  min-height: var(--size-touch);
+  margin-bottom: 0.55rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface-raised));
+}
+
+.frontend-workshop .frontend-workshop__module-switch input[type='checkbox'] {
+  flex: 0 0 auto;
+  justify-self: start;
+  width: 1.1rem;
+  min-width: 1.1rem;
+  max-width: 1.1rem;
+  height: 1.1rem;
+  min-height: 1.1rem;
+  max-height: 1.1rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 0.15rem;
+  accent-color: var(--color-accent);
+}
+
+.frontend-workshop__module-switch span {
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
+  writing-mode: horizontal-tb;
+}
+
+.frontend-workshop__module-prompt pre {
+  max-height: 12rem;
+  margin: 0 0 0.65rem;
+  padding: 0.6rem;
+  overflow: auto;
+  border-left: 0.18rem solid var(--color-accent);
+  color: var(--color-ink-soft);
+  background: var(--color-surface-raised);
+  font: var(--weight-body) var(--text-caption)/1.55 var(--font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.frontend-workshop__module-prompt label:not(.frontend-workshop__module-switch),
+.frontend-workshop__module-prompt label:not(.frontend-workshop__module-switch) span {
+  display: grid;
+  min-width: 0;
+}
+
+.frontend-workshop__module-prompt label:not(.frontend-workshop__module-switch) span {
+  margin-bottom: 0.35rem;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+}
+
+.frontend-workshop__module-prompt .frontend-workshop__module-switch {
+  display: grid;
+}
+
+.frontend-workshop__module-prompt .frontend-workshop__module-switch span {
+  display: block;
+  margin-bottom: 0;
+  color: var(--color-ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-ui);
+}
+
+.frontend-workshop__module-prompt textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+
+.frontend-workshop__module-prompt > button {
+  min-height: var(--control-visual-secondary);
+  margin-top: 0.45rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--color-line);
+  color: var(--color-ink-soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+@media (max-width: 48rem) {
+  .frontend-workshop__condition-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .frontend-workshop__condition-form > select:first-child,
+  .frontend-workshop__condition-form > input,
+  .frontend-workshop__condition-form > button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 30rem) {
+  .frontend-workshop__reference-grid,
+  .frontend-workshop__design-tokens > div,
+  .frontend-workshop__design-tokens fieldset,
+  .frontend-workshop__condition-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .frontend-workshop__condition-form > select:first-child,
+  .frontend-workshop__condition-form > input,
+  .frontend-workshop__condition-form > button {
+    grid-column: 1;
+  }
+
+  .frontend-workshop__blocks > summary,
+  .frontend-workshop__design-tokens > summary,
+  .frontend-workshop__conditions > summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

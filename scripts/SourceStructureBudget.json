@@ -1,0 +1,9 @@
+{
+  "defaultMaxLines": 1000,
+  "exceptions": {
+    "src/services/CloudBackupService.ts": {
+      "maxLines": 1020,
+      "reason": "云端凭据、传输、快照提交与恢复编排共用同一公开服务；逐资源恢复筛选已拆至 BackupRestoreSelection，剩余边界仍是该服务的单一协调职责。"
+    }
+  }
+}

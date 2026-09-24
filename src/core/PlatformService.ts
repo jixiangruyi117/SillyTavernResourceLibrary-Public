@@ -157,4 +157,9 @@ export const platform = {
       await (await import('../utils/LibraryFormatting')).downloadBlob(blob, fileName)
     },
   },
+  update: {
+    isAndroidApk(): boolean {
+      return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+    },
+  },
 } as const

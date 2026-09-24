@@ -2,6 +2,7 @@
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import FeatureBackButton from './FeatureBackButton.vue'
 import TavernBridgeInstallGuide from './TavernBridgeInstallGuide.vue'
+import TavernParcelExchange from './TavernParcelExchange.vue'
 import {
   useTavernBridgeCenter,
   type TavernBridgeCenterProps,
@@ -15,7 +16,12 @@ const emit = defineEmits<TavernBridgeCenterEvents>()
 const {
   state,
   busy,
+  canBindDirectory,
+  bindDirectory,
   acceptPairing,
+  canShowDeviceJoin,
+  joinDeviceRelay,
+  deviceCode,
   canUseLocalTavernHost,
   connectLocalTavern,
   installGuideOpen,
@@ -58,6 +64,9 @@ const {
   resourceLabel,
   resourceExistsInTavern,
   conflictPolicy,
+  personaAvatarMode,
+  selectedPersonaCount,
+  canCheckPersonaAvatars,
   sendConflictCount,
   sendToTavern,
   reports,
@@ -110,17 +119,72 @@ const {
       </section>
 
       <template v-else>
+        <form v-if="canShowDeviceJoin" class="tavern-device-join" @submit.prevent="joinDeviceRelay">
+          <label>
+            <span>酒馆设备码</span>
+            <input
+              v-model="deviceCode"
+              class="tavern-device-join__code"
+              type="text"
+              autocomplete="one-time-code"
+              autocapitalize="characters"
+              maxlength="8"
+              placeholder="AB23CD45"
+            />
+          </label>
+          <button class="tavern-bridge__primary" type="submit" :disabled="busy">
+            {{ busy ? '正在连接' : '连接酒馆' }}
+          </button>
+          <small>在酒馆扩展生成八位设备码，两分钟内输入。</small>
+        </form>
+
         <section v-if="canUseLocalTavernHost" class="tavern-local-connect">
           <div>
             <strong>同一台手机上的酒馆</strong>
-            <p>不需要额外确认码，在酒馆扩展确认一次即可。</p>
+            <p>不需要设备码，在酒馆扩展确认一次即可。</p>
           </div>
           <button type="button" :disabled="busy" @click="connectLocalTavern">
             {{ busy ? '连接中' : '直连' }}
           </button>
         </section>
 
+        <details v-if="canBindDirectory" class="tavern-directory-guide">
+          <summary>
+            <span
+              ><strong>直接读写酒馆文件夹</strong><small>不用启动酒馆 · 下次打开生效</small></span
+            ><span aria-hidden="true">⌄</span>
+          </summary>
+          <div>
+            <p>选择酒馆根目录或 data 文件夹，会自动定位唯一用户；找到多个用户时会提示你重选。</p>
+            <ol>
+              <li>
+                <strong>电脑：</strong>右键酒馆启动快捷方式 → 打开文件所在位置，找到
+                <code>SillyTavern/data/default-user</code>。
+              </li>
+              <li>
+                <strong>安卓 Termux：</strong>文件选择器左侧菜单 → Termux →
+                <code>SillyTavern/data/default-user</code>。多用户请选择自己的用户文件夹。
+              </li>
+              <li>
+                <strong>核对：</strong>同一层应有 <code>settings.json</code> 和
+                <code>characters</code> 文件夹。
+              </li>
+            </ol>
+            <p>
+              看不到 Termux
+              或目录不可选时，表示当前安装方式没有向文件选择器开放目录，请使用上面的在线互传；不要复制或移动整个酒馆来绕过权限。
+            </p>
+            <p>写入前完全关闭酒馆，避免它用内存中的旧设置覆盖文件。不会自动同步或联动删除。</p>
+            <div class="tavern-directory-guide__actions">
+              <button type="button" :disabled="busy" @click="bindDirectory()">
+                选择 / 继续使用目录</button
+              ><button type="button" :disabled="busy" @click="bindDirectory(false)">重选</button>
+            </div>
+          </div>
+        </details>
+
         <button
+          v-if="canShowDeviceJoin"
           class="tavern-bridge-help-toggle"
           type="button"
           :aria-expanded="installGuideOpen"
@@ -130,7 +194,7 @@ const {
           <span>{{ installGuideOpen ? '收起' : '查看' }}</span>
         </button>
 
-        <TavernBridgeInstallGuide v-if="installGuideOpen" />
+        <TavernBridgeInstallGuide v-if="canShowDeviceJoin && installGuideOpen" />
       </template>
 
       <div v-if="error || progress" class="tavern-bridge-inline-report" aria-live="polite">
@@ -143,36 +207,35 @@ const {
       <section class="tavern-bridge-connected-summary" aria-label="连接状态">
         <span>
           <i aria-hidden="true"></i>
-          <strong>已连接</strong>
+          <strong>{{ state.transport === 'directory' ? '已绑定酒馆目录' : '已连接酒馆' }}</strong>
         </span>
         <small>{{ state.detail }}</small>
-      </section>
-      <label v-if="canUseLocalTavernHost" class="tavern-bridge-local-direct">
-        <input v-model="localDirectEnabled" type="checkbox" @change="setLocalDirectEnabled" />
-        <span>
-          <strong>本机酒馆直传</strong>
-          <small v-if="localDirectAvailable"
-            >文件只在本机 127.0.0.1:8000 与 APK 间传输；失败自动回退当前连接的分块传输。</small
-          >
-          <small v-else
-            >需将酒馆互传扩展更新至
-            {{ LOCAL_DIRECT_BRIDGE_EXTENSION_VERSION }}；未满足时仍使用普通分块传输。</small
-          >
-        </span>
-      </label>
-      <section class="tavern-bridge-session-actions" aria-label="酒馆连接操作">
-        <p>连接保持在当前资源库会话中；退出此页后返回会自动重新读取酒馆目录。</p>
-        <div>
-          <button type="button" :disabled="busy" @click="refreshTavernResources">
-            重新确认并刷新
-          </button>
-          <button type="button" :disabled="busy" @click="disconnectTavern">断开连接</button>
-        </div>
+        <details class="tavern-bridge-connection-tools">
+          <summary>连接管理</summary>
+          <div>
+            <label
+              v-if="canUseLocalTavernHost && state.transport !== 'directory'"
+              class="tavern-bridge-local-direct"
+            >
+              <input v-model="localDirectEnabled" type="checkbox" @change="setLocalDirectEnabled" />
+              <span>
+                <strong>本机酒馆直传</strong>
+                <small v-if="localDirectAvailable">文件经本机传输；失败时回退设备码。</small>
+                <small v-else
+                  >需酒馆互传扩展 {{ LOCAL_DIRECT_BRIDGE_EXTENSION_VERSION }} 或更新版本。</small
+                >
+              </span>
+            </label>
+            <p>连接与已读取的目录在当前资源库会话中保持；需要最新内容时可在酒馆资源处刷新目录。</p>
+            <button type="button" @click="disconnectTavern">断开连接</button>
+          </div>
+        </details>
       </section>
       <nav class="tavern-bridge-tabs" aria-label="传输方向">
         <button
           type="button"
           :class="{ 'is-active': activeDirection === 'fromTavern' }"
+          :aria-current="activeDirection === 'fromTavern' ? 'page' : undefined"
           @click="activeDirection = 'fromTavern'"
         >
           <strong>从酒馆取回</strong>
@@ -180,65 +243,77 @@ const {
         <button
           type="button"
           :class="{ 'is-active': activeDirection === 'toTavern' }"
+          :aria-current="activeDirection === 'toTavern' ? 'page' : undefined"
           @click="activeDirection = 'toTavern'"
         >
           <strong>发送到酒馆</strong>
         </button>
       </nav>
 
-      <aside v-if="bridgeDiffSummary" class="tavern-bridge-diff" aria-label="两端差异总览">
-        <button
-          type="button"
-          :disabled="!bridgeDiffSummary.tavernOnly"
-          @click="
-            () => {
-              selectSyncEntries('fromTavern', ['tavern-only'])
-              showOnlyMissingTavern = true
-            }
-          "
-        >
-          <strong>{{ bridgeDiffSummary.tavernOnly }}</strong>
-          <span>项酒馆有而库中缺</span>
-        </button>
-        <button
-          type="button"
-          :disabled="!bridgeDiffSummary.localOnly"
-          @click="
-            () => {
-              selectSyncEntries('toTavern', ['local-only'])
-              showOnlyMissingLocal = true
-            }
-          "
-        >
-          <strong>{{ bridgeDiffSummary.localOnly }}</strong>
-          <span>项库中有而酒馆缺</span>
-        </button>
-        <button
-          type="button"
-          :disabled="!bridgeDiffSummary.localNewer"
-          @click="selectSyncEntries('toTavern', ['local-newer'])"
-        >
-          <strong>{{ bridgeDiffSummary.localNewer }}</strong>
-          <span>项本地较新</span>
-        </button>
-        <button
-          type="button"
-          :disabled="!bridgeDiffSummary.tavernNewer"
-          @click="selectSyncEntries('fromTavern', ['tavern-newer'])"
-        >
-          <strong>{{ bridgeDiffSummary.tavernNewer }}</strong>
-          <span>项酒馆较新</span>
-        </button>
-        <small>
-          {{ bridgeDiffSummary.consistent }} 项一致 · {{ bridgeDiffSummary.unverified }}
-          项旧版 Bridge 无指纹，需复核
-        </small>
-      </aside>
+      <details v-if="bridgeDiffSummary" class="tavern-bridge-diff" aria-label="两端差异总览">
+        <summary>
+          <strong>两端差异</strong>
+          <span
+            >酒馆独有 {{ bridgeDiffSummary.tavernOnly }} · 本地独有
+            {{ bridgeDiffSummary.localOnly }}</span
+          >
+        </summary>
+        <div class="tavern-bridge-diff__actions">
+          <button
+            type="button"
+            :disabled="!bridgeDiffSummary.tavernOnly"
+            @click="
+              () => {
+                selectSyncEntries('fromTavern', ['tavern-only'])
+                showOnlyMissingTavern = true
+              }
+            "
+          >
+            <strong>{{ bridgeDiffSummary.tavernOnly }}</strong>
+            <span>酒馆独有</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!bridgeDiffSummary.localOnly"
+            @click="
+              () => {
+                selectSyncEntries('toTavern', ['local-only'])
+                showOnlyMissingLocal = true
+              }
+            "
+          >
+            <strong>{{ bridgeDiffSummary.localOnly }}</strong>
+            <span>本地独有</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!bridgeDiffSummary.localNewer"
+            @click="selectSyncEntries('toTavern', ['local-newer'])"
+          >
+            <strong>{{ bridgeDiffSummary.localNewer }}</strong>
+            <span>本地较新</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!bridgeDiffSummary.tavernNewer"
+            @click="selectSyncEntries('fromTavern', ['tavern-newer'])"
+          >
+            <strong>{{ bridgeDiffSummary.tavernNewer }}</strong>
+            <span>酒馆较新</span>
+          </button>
+          <small>
+            {{ bridgeDiffSummary.consistent }} 项一致
+            <template v-if="bridgeDiffSummary.unverified">
+              · {{ bridgeDiffSummary.unverified }} 项待复核</template
+            >
+          </small>
+        </div>
+      </details>
 
       <section v-if="activeDirection === 'fromTavern'" class="tavern-bridge-workspace">
         <header>
           <div>
-            <h2>酒馆现有资源</h2>
+            <h2>酒馆资源</h2>
           </div>
           <button type="button" :disabled="busy" @click="refreshTavernResources">刷新目录</button>
         </header>
@@ -260,7 +335,11 @@ const {
             <input v-model="tavernSearch" type="search" placeholder="搜索酒馆资源" />
           </label>
           <div class="tavern-bridge-selectbar">
-            <button type="button" :disabled="!visibleTavernItems.length" @click="selectAllTavern">
+            <button
+              type="button"
+              :disabled="busy || !visibleTavernItems.length"
+              @click="selectAllTavern"
+            >
               {{
                 visibleTavernItems.length &&
                 visibleTavernItems.every((item) => selectedTavernIds.has(item.id))
@@ -294,6 +373,8 @@ const {
             type="button"
             class="tavern-bridge-resource-card"
             :class="{ 'is-selected': selectedTavernIds.has(item.id) }"
+            :aria-pressed="selectedTavernIds.has(item.id)"
+            :disabled="busy"
             @click="toggleSelection('tavern', item.id)"
           >
             <i aria-hidden="true"></i>
@@ -316,15 +397,14 @@ const {
           :disabled="busy || !selectedTavernIds.size"
           @click="pullFromTavern"
         >
-          <span>{{ busy ? '正在接收…' : `取回 ${selectedTavernIds.size} 项并导入 SRL` }}</span>
-          <small v-if="!busy">已选内容会直接进入本地资源库</small>
+          <span>{{ busy ? '正在接收…' : `取回 ${selectedTavernIds.size} 项到资源库` }}</span>
         </button>
       </section>
 
       <section v-else class="tavern-bridge-workspace">
         <header>
           <div>
-            <h2>选择本地资源</h2>
+            <h2>本地资源</h2>
           </div>
         </header>
         <div class="tavern-bridge-type-filter" aria-label="本地资源类型筛选">
@@ -360,7 +440,18 @@ const {
           </label>
         </div>
         <div class="tavern-bridge-selectbar">
-          <button type="button" @click="selectAllLocal">全选当前结果</button>
+          <button
+            type="button"
+            :disabled="busy || !filteredLocalResources.length"
+            @click="selectAllLocal"
+          >
+            {{
+              filteredLocalResources.length &&
+              filteredLocalResources.every((resource) => selectedLocalIds.has(resource.id))
+                ? '取消当前全选'
+                : '全选当前结果'
+            }}
+          </button>
           <span>已选 {{ selectedLocalIds.size }} / {{ filteredLocalResources.length }}</span>
           <div class="tavern-bridge-filter-actions">
             <label v-if="tavernItems.length" class="tavern-bridge-missing-toggle">
@@ -377,6 +468,112 @@ const {
             </button>
           </div>
         </div>
+        <details class="tavern-bridge-send-options">
+          <summary>
+            <strong>发送设置</strong>
+            <span>
+              同名{{
+                conflictPolicy === 'copy' ? '保留副本' : conflictPolicy === 'skip' ? '跳过' : '覆盖'
+              }}
+              <template v-if="selectedPersonaCount">
+                ·
+                {{
+                  personaAvatarMode === 'none'
+                    ? '只传人设'
+                    : personaAvatarMode === 'missing'
+                      ? '补传封面'
+                      : '替换封面'
+                }}
+              </template>
+            </span>
+          </summary>
+          <div class="tavern-bridge-send-options__body">
+            <fieldset class="tavern-bridge-conflicts">
+              <legend>{{ selectedPersonaCount ? '人设同名时' : '资源同名时' }}</legend>
+              <label
+                ><input
+                  v-model="conflictPolicy"
+                  type="radio"
+                  value="copy"
+                  :disabled="busy || !!selectedPersonaCount"
+                /><span
+                  ><strong>保留副本</strong
+                  ><small>{{
+                    selectedPersonaCount ? '人设不支持同名副本' : '推荐，不改动酒馆原资源'
+                  }}</small></span
+                ></label
+              >
+              <label
+                ><input v-model="conflictPolicy" type="radio" value="skip" :disabled="busy" /><span
+                  ><strong>跳过同名</strong
+                  ><small>{{
+                    selectedPersonaCount ? '人设有改动时可选择另存一份' : '只发送酒馆里没有的资源'
+                  }}</small></span
+                ></label
+              >
+              <label
+                ><input
+                  v-model="conflictPolicy"
+                  type="radio"
+                  value="overwrite"
+                  :disabled="busy"
+                /><span><strong>覆盖同名</strong><small>发送前会再次确认</small></span></label
+              >
+            </fieldset>
+            <fieldset
+              v-if="selectedPersonaCount"
+              class="tavern-bridge-conflicts tavern-bridge-avatar-options"
+            >
+              <legend>默认封面 · 可选</legend>
+              <label
+                ><input
+                  v-model="personaAvatarMode"
+                  type="radio"
+                  value="none"
+                  :disabled="busy"
+                /><span
+                  ><strong>只传人设</strong><small>不传封面；酒馆缺头像时生成默认图</small></span
+                ></label
+              >
+              <label :class="{ 'is-disabled': !canCheckPersonaAvatars }"
+                ><input
+                  v-model="personaAvatarMode"
+                  type="radio"
+                  value="missing"
+                  :disabled="busy || !canCheckPersonaAvatars"
+                /><span
+                  ><strong>补传缺少的封面</strong
+                  ><small>默认；无缓存封面时只传人设，同名头像保留原图</small></span
+                ></label
+              >
+              <label :class="{ 'is-disabled': !canCheckPersonaAvatars }"
+                ><input
+                  v-model="personaAvatarMode"
+                  type="radio"
+                  value="replace"
+                  :disabled="busy || !canCheckPersonaAvatars"
+                /><span><strong>替换同名封面</strong><small>逐项核对后确认覆盖</small></span></label
+              >
+              <p v-if="!canCheckPersonaAvatars" class="tavern-bridge-avatar-options__note">
+                传送封面需要更新酒馆互传扩展；当前仍可只传人设。
+              </p>
+              <p v-else class="tavern-bridge-avatar-options__note">
+                仅处理已缓存的默认人设封面；发送前核对文件名和酒馆现状。封面策略与人设同名策略相互独立。
+              </p>
+            </fieldset>
+          </div>
+        </details>
+        <p v-if="sendConflictCount" class="tavern-bridge-conflict-note" role="status">
+          所选中有 {{ sendConflictCount }} 项与酒馆同名：{{
+            conflictPolicy === 'copy'
+              ? '将以副本名发送，不改动酒馆原资源'
+              : conflictPolicy === 'skip'
+                ? selectedPersonaCount
+                  ? '人设会先核对内容；有改动时可选择另存，其他同名项跳过'
+                  : '这些项将被跳过'
+                : '这些项将覆盖酒馆中的同名资源'
+          }}。
+        </p>
         <div class="tavern-bridge-resource-grid">
           <button
             v-for="resource in filteredLocalResources"
@@ -384,6 +581,8 @@ const {
             type="button"
             class="tavern-bridge-resource-card"
             :class="{ 'is-selected': selectedLocalIds.has(resource.id) }"
+            :aria-pressed="selectedLocalIds.has(resource.id)"
+            :disabled="busy"
             @click="toggleSelection('local', resource.id)"
           >
             <i aria-hidden="true"></i>
@@ -402,33 +601,6 @@ const {
             当前筛选没有可发送资源，请切换分类或清除筛选。
           </p>
         </div>
-        <fieldset class="tavern-bridge-conflicts">
-          <legend>酒馆遇到同名资源时</legend>
-          <label
-            ><input v-model="conflictPolicy" type="radio" value="copy" /><span
-              ><strong>保留副本</strong><small>推荐，不改动酒馆原资源</small></span
-            ></label
-          >
-          <label
-            ><input v-model="conflictPolicy" type="radio" value="skip" /><span
-              ><strong>跳过同名</strong><small>只发送酒馆里没有的资源</small></span
-            ></label
-          >
-          <label
-            ><input v-model="conflictPolicy" type="radio" value="overwrite" /><span
-              ><strong>覆盖同名</strong><small>发送前会再次确认</small></span
-            ></label
-          >
-        </fieldset>
-        <p v-if="sendConflictCount" class="tavern-bridge-conflict-note" role="status">
-          所选中有 {{ sendConflictCount }} 项与酒馆同名：{{
-            conflictPolicy === 'copy'
-              ? '将以副本名发送，不改动酒馆原资源'
-              : conflictPolicy === 'skip'
-                ? '这些项将被跳过'
-                : '这些项将覆盖酒馆中的同名资源'
-          }}。
-        </p>
         <button
           class="tavern-bridge__primary tavern-bridge__sticky-action"
           type="button"
@@ -436,7 +608,6 @@ const {
           @click="sendToTavern"
         >
           <span>{{ busy ? '正在发送…' : `发送 ${selectedLocalIds.size} 项到酒馆` }}</span>
-          <small v-if="!busy">按上方分类筛选后可批量选择</small>
         </button>
       </section>
 
@@ -481,15 +652,18 @@ const {
         >
       </aside>
     </template>
+    <TavernParcelExchange
+      :resources="resources"
+      :initial-ids="initialLocalIds"
+      @import-files="emit('import-files', $event)"
+    />
     <section
       v-if="!initialKind"
       class="tavern-bridge-author-tools"
       aria-labelledby="author-tools-title"
     >
       <div>
-        <small>MADE BY THE AUTHOR</small>
-        <h2 id="author-tools-title">还想试试其他小工具？</h2>
-        <p>独立维护的酒馆扩展；查看用途、兼容边界和项目地址。</p>
+        <h2 id="author-tools-title">作者的其他小工具</h2>
       </div>
       <button type="button" @click="openAuthorTools">查看其他小工具</button>
     </section>

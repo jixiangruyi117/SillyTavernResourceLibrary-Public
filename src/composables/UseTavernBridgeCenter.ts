@@ -1,6 +1,7 @@
 import type { EmitFn } from 'vue'
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { confirmAction } from '../composables/UseConfirmDialog'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
+import { parseSillyTavernPersonaBackup } from '../parser/SillyTavernPersonaBackup'
 import { browserStorageService, resourceService } from '../core/AppContainer'
 import { tavernConnectionStore, type TavernConnectionSnapshot } from '../core/TavernConnectionStore'
 import { canUseLocalTavernDirect } from '../services/LanDirectService'
@@ -12,6 +13,8 @@ import type {
 import { tavernBridgeService } from '../services/TavernBridgeService'
 import {
   getResourceCategoryIds,
+  getRelatedResourceIds,
+  isUserPersonaAvatarAttachment,
   RESOURCE_TYPE,
   type Category,
   type ResourceSummary,
@@ -27,6 +30,7 @@ import {
   tavernItemExistsLocally,
 } from '../utils/TavernBridgeDiff'
 import { buildTavernSyncPlan, summarizeTavernSyncPlan } from '../utils/TavernSyncPlan'
+import { copyPersonaForTavern, personaContentMatches } from '../utils/TavernPersonaTransfer'
 
 export type TavernBridgeCenterProps = {
   resources: ResourceSummary[]
@@ -59,6 +63,19 @@ export interface TransferQueueItem {
   label: string
   status: 'pending' | 'active' | 'done' | 'failed'
   detail: string
+  operationId?: string
+}
+
+type PersonaAvatarMode = 'none' | 'missing' | 'replace'
+interface PersonaAvatarPlan {
+  avatarId: string
+  file: File
+  exists: boolean
+}
+interface PersonaSendPlan {
+  skip?: boolean
+  file?: File
+  avatarId?: string
 }
 
 export function useTavernBridgeCenter(
@@ -69,6 +86,7 @@ export function useTavernBridgeCenter(
   emit: EmitFn<TavernBridgeCenterEvents>,
 ) {
   const state = ref<TavernConnectionSnapshot>(tavernConnectionStore.getSnapshot())
+  let disposed = false
 
   const activeDirection = ref<'fromTavern' | 'toTavern'>('fromTavern')
 
@@ -89,8 +107,30 @@ export function useTavernBridgeCenter(
   const conflictPolicy = ref<TavernConflictPolicy>(
     props.initialKind === 'userPersona' ? 'skip' : 'copy',
   )
+  const personaAvatarMode = ref<PersonaAvatarMode>(
+    state.value.status === 'connected' &&
+      !state.value.capabilities?.includes('persona-avatar-check-v1')
+      ? 'none'
+      : 'missing',
+  )
 
   const busy = ref(false)
+  const canBindDirectory = tavernBridgeService.canBindDirectory()
+  async function bindDirectory(reuse = true): Promise<void> {
+    if (busy.value) return
+    busy.value = true
+    error.value = ''
+    try {
+      await tavernBridgeService.bindDirectory(reuse)
+      await tavernConnectionStore.refreshInventory()
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+        error.value = reason instanceof Error ? reason.message : '无法绑定酒馆目录'
+      }
+    } finally {
+      busy.value = false
+    }
+  }
 
   const progress = ref('')
 
@@ -135,7 +175,7 @@ export function useTavernBridgeCenter(
         '不改写正则、预设、角色卡或正常聊天内容；不支持的酒馆版本会停止接管。',
         '当前已审计支持 SillyTavern 1.18.0。',
       ],
-      repository: 'https://example.invalid/author-tools/chat-reload-guard',
+      repository: 'https://github.com/jixiangruyi117/SillyTavern-ChatReloadGuard',
     },
     {
       id: 'sceneSwitcher',
@@ -147,7 +187,7 @@ export function useTavernBridgeCenter(
         '支持常用组合、角色与聊天记录搜索，以及可选的聊天页快速切换悬浮球。',
         '不会保存 API 密钥、代理密码或聊天记录，也不替代酒馆原生连接档案。',
       ],
-      repository: 'https://example.invalid/author-tools/scene-switcher',
+      repository: 'https://github.com/jixiangruyi117/SillyTavern-SceneSwitcher',
     },
     {
       id: 'characterLorebooks',
@@ -159,7 +199,7 @@ export function useTavernBridgeCenter(
         '可查看当前角色、公共和全部世界书，并标记共享、聊天、人设与全局启用状态。',
         '可在明确确认后关闭其他角色的全局启用世界书；当前角色书和公共书保持原样。',
       ],
-      repository: 'https://example.invalid/author-tools/character-lorebooks',
+      repository: 'https://github.com/jixiangruyi117/SillyTavern-CharacterLorebooks',
     },
   ] as const
 
@@ -169,13 +209,35 @@ export function useTavernBridgeCenter(
       : undefined,
   )
 
-  const transferQueue = ref<TransferQueueItem[]>([])
+  const restoredDraft = browserStorageService.getBridgeTransferDraft()
+  const transferQueue = ref<TransferQueueItem[]>(
+    restoredDraft?.items.map((item) => ({
+      ...item,
+      ...(item.status === 'active' || item.status === 'pending'
+        ? { status: 'failed' as const, detail: '上次传输中断，请连接原酒馆后重试' }
+        : {}),
+    })) ?? [],
+  )
 
   const failedTransferKeys = computed(() =>
     transferQueue.value.filter((item) => item.status === 'failed').map((item) => item.key),
   )
 
-  let lastTransferDirection: 'pull' | 'send' = 'pull'
+  let lastTransferDirection: 'pull' | 'send' = restoredDraft?.direction ?? 'pull'
+  let transferOrigin = restoredDraft?.origin ?? ''
+  if (restoredDraft) conflictPolicy.value = restoredDraft.policy
+  watch(
+    transferQueue,
+    (items) =>
+      browserStorageService.setBridgeTransferDraft({
+        direction: lastTransferDirection,
+        origin: transferOrigin,
+        policy: conflictPolicy.value,
+        at: Date.now(),
+        items: items.map((item) => ({ ...item })),
+      }),
+    { deep: true, flush: 'sync' },
+  )
 
   const localNameIndex = computed(() => buildLocalNameIndex(props.resources))
 
@@ -221,6 +283,21 @@ export function useTavernBridgeCenter(
         (resource) => selectedLocalIds.value.has(resource.id) && resourceExistsInTavern(resource),
       ).length,
   )
+  const selectedPersonaCount = computed(
+    () =>
+      supportedLocalResources.value.filter(
+        (resource) =>
+          resource.type === RESOURCE_TYPE.USER_PERSONA && selectedLocalIds.value.has(resource.id),
+      ).length,
+  )
+  const canCheckPersonaAvatars = computed(() =>
+    state.value.capabilities?.includes('persona-avatar-check-v1'),
+  )
+  const deviceCode = ref('')
+
+  const canShowDeviceJoin = computed(
+    () => !tavernBridgeService.hasInvitation() || state.value.status === 'error',
+  )
 
   const canUseLocalTavernHost = computed(() => canUseLocalTavernDirect())
 
@@ -242,6 +319,16 @@ export function useTavernBridgeCenter(
         (resource.type === RESOURCE_TYPE.BEAUTIFICATION &&
           resource.metadata.detectedVariant === 'theme'),
     ),
+  )
+  watch(selectedPersonaCount, (count) => {
+    if (count && conflictPolicy.value === 'copy') conflictPolicy.value = 'skip'
+    if (!count) personaAvatarMode.value = 'missing'
+  })
+  watch(
+    () => state.value.status,
+    (status) => {
+      if (status === 'connected' && !canCheckPersonaAvatars.value) personaAvatarMode.value = 'none'
+    },
   )
 
   const filteredLocalResources = computed(() => {
@@ -370,6 +457,30 @@ export function useTavernBridgeCenter(
     }
   }
 
+  async function joinDeviceRelay(): Promise<void> {
+    error.value = ''
+    if (busy.value) return
+    const code = deviceCode.value.trim().toUpperCase()
+    if (!/^[2-9A-HJ-NP-Z]{8}$/u.test(code)) {
+      error.value = '请输入酒馆显示的 8 位设备码'
+      return
+    }
+    busy.value = true
+    try {
+      progress.value = '正在通过 HTTPS 安全中继连接酒馆…'
+      await tavernBridgeService.joinSecureRelay(code)
+      progress.value = '已找到酒馆，请核对两端显示的六位确认码'
+    } catch (reason) {
+      progress.value = ''
+      error.value =
+        reason instanceof Error
+          ? reason.message
+          : '无法连接 HTTPS 酒馆中继，请确认云服务器和酒馆扩展均已更新。'
+    } finally {
+      busy.value = false
+    }
+  }
+
   async function connectLocalTavern(): Promise<void> {
     error.value = ''
     if (busy.value) return
@@ -387,13 +498,12 @@ export function useTavernBridgeCenter(
   }
 
   function disconnectTavern(): void {
-    if (busy.value) return
     tavernBridgeService.disconnect('已手动断开酒馆连接')
     tavernItems.value = []
     selectedTavernIds.value = new Set()
     localDirectEnabled.value = false
     error.value = ''
-    progress.value = '已断开；可从酒馆扩展重新打开互传页面，或使用本机连接。'
+    progress.value = '已断开；可用本机连接或设备码重新连接。'
   }
 
   async function refreshTavernResources(): Promise<void> {
@@ -477,9 +587,11 @@ export function useTavernBridgeCenter(
     busy.value = true
     error.value = ''
     const files: File[] = []
+    const receivedEntries: TransferQueueItem[] = []
     let done = 0
     try {
       for (const item of items) {
+        if (disposed) break
         const entry = transferQueue.value.find((queued) => queued.key === item.id)
         if (!entry) continue
         entry.status = 'active'
@@ -488,16 +600,20 @@ export function useTavernBridgeCenter(
           const [file] = await tavernBridgeService.pullResources([item])
           if (!file) throw new Error('酒馆没有返回文件，资源可能已被删除')
           files.push(file)
-          entry.status = 'done'
-          entry.detail = '已接收'
+          receivedEntries.push(entry)
+          entry.detail = '已接收，等待交给资源库导入'
         } catch (reason) {
           entry.status = 'failed'
           entry.detail = reason instanceof Error ? reason.message : '接收失败'
         }
         done += 1
       }
-      if (files.length) {
+      if (files.length && !disposed) {
         emit('import-files', files)
+        for (const entry of receivedEntries) {
+          entry.status = 'done'
+          entry.detail = '已交给资源库导入，请查看结果通知'
+        }
         selectedTavernIds.value = new Set()
       }
       const failed = transferQueue.value.filter((item) => item.status === 'failed').length
@@ -514,6 +630,8 @@ export function useTavernBridgeCenter(
   async function pullFromTavern(): Promise<void> {
     const items = tavernItems.value.filter((item) => selectedTavernIds.value.has(item.id))
     if (!items.length || busy.value) return
+    lastTransferDirection = 'pull'
+    transferOrigin = state.value.tavernOrigin
     transferQueue.value = items.map((item) => ({
       key: item.id,
       name: item.name,
@@ -526,19 +644,22 @@ export function useTavernBridgeCenter(
 
   async function retryFailedTransfers(): Promise<void> {
     if (busy.value || !failedTransferKeys.value.length) return
-    const keys = new Set(failedTransferKeys.value)
-    for (const entry of transferQueue.value) {
-      if (keys.has(entry.key)) {
-        entry.status = 'pending'
-        entry.detail = ''
-      }
+    if (state.value.status !== 'connected') {
+      error.value = '请先重新连接原来的酒馆'
+      return
     }
+    if (transferOrigin !== state.value.tavernOrigin) {
+      error.value = '当前连接与上次任务的目标不同，请重新选择资源发起传输'
+      return
+    }
+    const keys = new Set(failedTransferKeys.value)
     if (lastTransferDirection === 'pull') {
       const items = tavernItems.value.filter((item) => keys.has(item.id))
       if (!items.length) {
         error.value = '失败的条目已不在酒馆目录中，请刷新目录后重新选择'
         return
       }
+      for (const entry of transferQueue.value) if (keys.has(entry.key)) entry.status = 'pending'
       await runPullQueue(items)
     } else {
       const summaries = supportedLocalResources.value.filter((resource) => keys.has(resource.id))
@@ -546,7 +667,25 @@ export function useTavernBridgeCenter(
         error.value = '失败的条目已不在本地列表中'
         return
       }
-      await runSendQueue(summaries)
+      if (!(await confirmDirectoryWrite())) return
+      let avatarPlans: Map<string, PersonaAvatarPlan>
+      let personaPlans: Map<string, PersonaSendPlan>
+      busy.value = true
+      try {
+        const prepared = await preparePersonaSendPlans(summaries)
+        if (!prepared) return
+        personaPlans = prepared
+        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans)
+        if (!avatars) return
+        avatarPlans = avatars
+        if (state.value.status !== 'connected') throw new Error('酒馆连接已断开，请重新连接后重试')
+        for (const entry of transferQueue.value) if (keys.has(entry.key)) entry.status = 'pending'
+        await runSendQueue(summaries, avatarPlans, personaPlans)
+      } catch (reason) {
+        error.value = reason instanceof Error ? reason.message : '无法核对酒馆头像'
+      } finally {
+        busy.value = false
+      }
     }
   }
 
@@ -582,47 +721,228 @@ export function useTavernBridgeCenter(
     )
   }
 
+  async function confirmDirectoryWrite(): Promise<boolean> {
+    if (state.value.transport !== 'directory') return true
+    return confirmAction({
+      title: '写入本地酒馆目录',
+      message: `目标：${state.value.tavernOrigin}。请先关闭酒馆页面和程序，避免它保存旧设置覆盖本次修改。覆盖前会保存原文件到 .srl-backups，写入后下次启动生效。`,
+      confirmLabel: '酒馆已关闭，继续',
+    })
+  }
+
   async function sendToTavern(): Promise<void> {
     const summaries = supportedLocalResources.value.filter((resource) =>
       selectedLocalIds.value.has(resource.id),
     )
     if (!summaries.length || busy.value) return
-    const scriptCount = summaries.filter(
-      (resource) => resource.type === RESOURCE_TYPE.SCRIPT,
-    ).length
-    if (
-      scriptCount &&
-      !(await confirmAction({
-        title: '发送助手脚本',
-        message: `所选中包含 ${scriptCount} 个酒馆助手脚本。脚本会以“全部停用”状态进入酒馆的全局脚本库，需要你在酒馆助手中确认内容后手动启用；不会自动运行任何代码。
+    busy.value = true
+    try {
+      if (!(await confirmDirectoryWrite())) return
+      const scriptCount = summaries.filter(
+        (resource) => resource.type === RESOURCE_TYPE.SCRIPT,
+      ).length
+      if (
+        scriptCount &&
+        !(await confirmAction({
+          title: '发送助手脚本',
+          message: `所选中包含 ${scriptCount} 个酒馆助手脚本。脚本会以“全部停用”状态进入酒馆的全局脚本库，需要你在酒馆助手中确认内容后手动启用；不会自动运行任何代码。
 接收端页面扩展需为 ${BRIDGE_EXTENSION_VERSION} 或更高版本。`,
-        confirmLabel: '以停用状态发送',
+          confirmLabel: '以停用状态发送',
+        }))
+      ) {
+        return
+      }
+      if (
+        conflictPolicy.value === 'overwrite' &&
+        !(await confirmAction({
+          title: '覆盖同名资源',
+          message: '覆盖模式会替换酒馆中的同名资源。SRL 内的原文件不会改变，确定继续吗？',
+          confirmLabel: '覆盖发送',
+          danger: true,
+        }))
+      ) {
+        return
+      }
+      let avatarPlans: Map<string, PersonaAvatarPlan>
+      let personaPlans: Map<string, PersonaSendPlan>
+      try {
+        const prepared = await preparePersonaSendPlans(summaries)
+        if (!prepared) return
+        personaPlans = prepared
+        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans)
+        if (!avatars) return
+        avatarPlans = avatars
+      } catch (reason) {
+        error.value = reason instanceof Error ? reason.message : '无法核对酒馆头像'
+        return
+      }
+      if (state.value.status !== 'connected') {
+        error.value = '酒馆连接已断开，请重新连接后重试'
+        return
+      }
+      lastTransferDirection = 'send'
+      transferOrigin = state.value.tavernOrigin
+      transferQueue.value = summaries.map((summary) => ({
+        key: summary.id,
+        name: summary.name,
+        label: '发送',
+        status: 'pending',
+        detail: '',
+        operationId: crypto.randomUUID(),
       }))
-    ) {
-      return
+      await runSendQueue(summaries, avatarPlans, personaPlans)
+    } finally {
+      busy.value = false
     }
-    if (
-      conflictPolicy.value === 'overwrite' &&
-      !(await confirmAction({
-        title: '覆盖同名资源',
-        message: '覆盖模式会替换酒馆中的同名资源。SRL 内的原文件不会改变，确定继续吗？',
-        confirmLabel: '覆盖发送',
-        danger: true,
-      }))
-    ) {
-      return
-    }
-    transferQueue.value = summaries.map((summary) => ({
-      key: summary.id,
-      name: summary.name,
-      label: '发送',
-      status: 'pending',
-      detail: '',
-    }))
-    await runSendQueue(summaries)
   }
 
-  async function runSendQueue(summaries: ResourceSummary[]): Promise<void> {
+  async function preparePersonaSendPlans(
+    summaries: ResourceSummary[],
+  ): Promise<Map<string, PersonaSendPlan> | null> {
+    const plans = new Map<string, PersonaSendPlan>()
+    if (
+      conflictPolicy.value !== 'skip' ||
+      !summaries.some((item) => item.type === RESOURCE_TYPE.USER_PERSONA)
+    )
+      return plans
+    // 目录用于展示，可能是旧快照；发送前单独核对酒馆当前的人设键和内容。
+    const current = await tavernBridgeService.listResources()
+    for (const summary of summaries) {
+      if (summary.type !== RESOURCE_TYPE.USER_PERSONA) continue
+      const resource = await resourceService.get(summary.id)
+      if (!resource) throw new Error(`人设“${summary.name}”已不存在`)
+      const local = parseSillyTavernPersonaBackup(JSON.parse(await resource.originalBlob.text()))
+      if (local.entries.length !== 1) continue
+      const avatarId = local.entries[0]!.avatarId
+      const remote = current.find((item) => item.id === `userPersona:${avatarId}`)
+      if (!remote) continue
+      const [remoteFile] = await tavernBridgeService.pullResources([remote])
+      if (!remoteFile) throw new Error(`无法核对酒馆人设“${summary.name}”`)
+      if (personaContentMatches(local.raw, JSON.parse(await remoteFile.text()), avatarId)) {
+        plans.set(summary.id, { skip: true })
+        continue
+      }
+      const decision = await chooseAction({
+        title: '酒馆人设已有不同内容',
+        message: `“${summary.name}”仍使用酒馆原头像标识，但名称或描述已修改。跳过会保留酒馆原版；另存为新人设会生成新的头像标识，不覆盖原版，也不切换当前使用的人设。`,
+        confirmLabel: '另存为新人设',
+        alternativeLabel: '跳过这项',
+        cancelLabel: '取消发送',
+      })
+      if (decision === 'cancel') return null
+      if (decision === 'alternative') {
+        plans.set(summary.id, { skip: true })
+        continue
+      }
+      const nextAvatarId = `persona-${crypto.randomUUID()}.png`
+      const copy = copyPersonaForTavern(local.raw, avatarId, nextAvatarId)
+      plans.set(summary.id, {
+        avatarId: nextAvatarId,
+        file: new File([JSON.stringify(copy, null, 2)], `${nextAvatarId.slice(0, -4)}.json`, {
+          type: 'application/json',
+        }),
+      })
+    }
+    return plans
+  }
+
+  async function preparePersonaAvatarPlans(
+    summaries: ResourceSummary[],
+    personaPlans = new Map<string, PersonaSendPlan>(),
+  ): Promise<Map<string, PersonaAvatarPlan> | null> {
+    const plans = new Map<string, PersonaAvatarPlan>()
+    if (
+      personaAvatarMode.value === 'none' ||
+      !summaries.some((item) => item.type === RESOURCE_TYPE.USER_PERSONA)
+    ) {
+      return plans
+    }
+    if (!canCheckPersonaAvatars.value) {
+      throw new Error('当前酒馆扩展不支持头像核对，请更新页面扩展后再传封面')
+    }
+    const unavailable: string[] = []
+    for (const summary of summaries) {
+      if (summary.type !== RESOURCE_TYPE.USER_PERSONA) continue
+      if (personaPlans.get(summary.id)?.skip) continue
+      const resource = await resourceService.get(summary.id)
+      if (!resource) throw new Error(`人设“${summary.name}”已不存在`)
+      const view = parseSillyTavernPersonaBackup(JSON.parse(await resource.originalBlob.text()))
+      const avatarId =
+        view.defaultPersona || (view.entries.length === 1 ? view.entries[0]!.avatarId : '')
+      if (!avatarId) {
+        unavailable.push(`${summary.name}（未设默认人设）`)
+        continue
+      }
+      if (
+        avatarId !== avatarId.trim() ||
+        avatarId.length > 120 ||
+        /[\\/:*?"<>|]/u.test(avatarId) ||
+        Array.from(avatarId).some((character) => character.charCodeAt(0) < 32) ||
+        !/\.png$/iu.test(avatarId)
+      ) {
+        unavailable.push(`${summary.name}（头像文件名不符合酒馆要求）`)
+        continue
+      }
+      let avatar: Awaited<ReturnType<typeof resourceService.get>>
+      for (const id of getRelatedResourceIds(resource)) {
+        const candidate = await resourceService.get(id)
+        if (
+          candidate &&
+          isUserPersonaAvatarAttachment(candidate) &&
+          candidate.metadata.avatarId === avatarId
+        ) {
+          avatar = candidate
+          break
+        }
+      }
+      if (!avatar) {
+        unavailable.push(`${summary.name}（没有已缓存的封面）`)
+        continue
+      }
+      plans.set(summary.id, {
+        avatarId: personaPlans.get(summary.id)?.avatarId ?? avatarId,
+        file: new File([avatar.originalBlob], personaPlans.get(summary.id)?.avatarId ?? avatarId, {
+          type: 'image/png',
+        }),
+        exists: false,
+      })
+    }
+    if (!plans.size) return plans
+    const existing = new Set<string>()
+    const avatarIds = Array.from(plans.values(), (plan) => plan.avatarId)
+    for (let index = 0; index < avatarIds.length; index += 100) {
+      const batch = await tavernBridgeService.checkUserAvatarIds(
+        avatarIds.slice(index, index + 100),
+      )
+      for (const id of batch) existing.add(id)
+    }
+    for (const plan of plans.values()) plan.exists = existing.has(plan.avatarId)
+    const lines = summaries.flatMap((summary) => {
+      const plan = plans.get(summary.id)
+      if (!plan) return []
+      const outcome = plan.exists
+        ? personaAvatarMode.value === 'replace'
+          ? '替换酒馆同名头像'
+          : '酒馆已有，保留原图'
+        : '酒馆缺少，将新增'
+      return [`${summary.name} → ${plan.avatarId}：${outcome}`]
+    })
+    const confirmed = await confirmAction({
+      title: '核对人设封面传送',
+      message: `${lines.join('\n')}${unavailable.length ? `\n无法传封面：${unavailable.join('、')}` : ''}\n头像与人设分别传送；一项失败时会报告实际结果，便于重试。`,
+      confirmLabel: '按此范围发送',
+      danger:
+        personaAvatarMode.value === 'replace' &&
+        Array.from(plans.values()).some((plan) => plan.exists),
+    })
+    return confirmed ? plans : null
+  }
+
+  async function runSendQueue(
+    summaries: ResourceSummary[],
+    avatarPlans = new Map<string, PersonaAvatarPlan>(),
+    personaPlans = new Map<string, PersonaSendPlan>(),
+  ): Promise<void> {
     lastTransferDirection = 'send'
     busy.value = true
     error.value = ''
@@ -634,17 +954,56 @@ export function useTavernBridgeCenter(
         if (!entry) continue
         entry.status = 'active'
         progress.value = `正在发送 ${index + 1} / ${summaries.length}：${summary.name}`
+        const personaPlan = personaPlans.get(summary.id)
+        if (personaPlan?.skip) {
+          entry.status = 'done'
+          entry.detail = '酒馆已有相同人设，已跳过'
+          continue
+        }
+        let avatarDetail = ''
         try {
           const resource = await resourceService.get(summary.id)
           if (!resource) throw new Error('资源已不存在')
+          const avatarPlan = avatarPlans.get(summary.id)
+          if (
+            summary.type === RESOURCE_TYPE.USER_PERSONA &&
+            personaAvatarMode.value !== 'none' &&
+            !avatarPlan
+          ) {
+            avatarDetail = '没有已缓存封面；仅传人设'
+          }
+          if (avatarPlan) {
+            if (avatarPlan.exists && personaAvatarMode.value === 'missing') {
+              avatarDetail = '酒馆同名头像已保留'
+            } else {
+              const [avatarResult] = await tavernBridgeService.sendFiles(
+                [
+                  {
+                    file: avatarPlan.file,
+                    kind: 'userAvatar',
+                    displayName: avatarPlan.avatarId,
+                    targetName: avatarPlan.avatarId,
+                  },
+                ],
+                personaAvatarMode.value === 'replace' ? 'overwrite' : 'skip',
+              )
+              avatarDetail =
+                avatarResult?.status === 'skipped'
+                  ? '酒馆同名头像已保留'
+                  : `头像${avatarResult?.status === 'overwritten' ? '已替换' : '已上传'}`
+            }
+          }
           const [result] = await tavernBridgeService.sendFiles(
             [
               {
-                file: new File([resource.originalBlob], resource.fileName, {
-                  type: resource.mimeType,
-                }),
+                file:
+                  personaPlan?.file ??
+                  new File([resource.originalBlob], resource.fileName, {
+                    type: resource.mimeType,
+                  }),
                 kind: bridgeKind(summary),
                 displayName: summary.name,
+                operationId: entry.operationId,
                 targetName:
                   typeof resource.metadata.extractedFromCharacterName === 'string'
                     ? resource.metadata.extractedFromCharacterName
@@ -655,17 +1014,34 @@ export function useTavernBridgeCenter(
                         : undefined,
               },
             ],
-            conflictPolicy.value,
+            personaPlan?.file ? 'skip' : conflictPolicy.value,
+            (_completed, _total, detail) => {
+              if (detail) progress.value = detail
+            },
           )
           entry.status = 'done'
-          entry.detail = result ?? '已发送'
-          sentCount += 1
+          entry.detail = [
+            result?.status === 'skipped'
+              ? '已跳过相同或同名资源'
+              : state.value.transport === 'directory'
+                ? '已写入并校验，下次启动酒馆生效'
+                : '酒馆已确认导入',
+            avatarDetail,
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          if (result?.status !== 'skipped') sentCount += 1
         } catch (reason) {
           entry.status = 'failed'
           const message = reason instanceof Error ? reason.message : '发送失败'
-          entry.detail = message.includes('暂不支持')
-            ? `${message}；助手脚本互传需要页面扩展 ${BRIDGE_EXTENSION_VERSION}+，请在酒馆扩展管理中点击更新`
-            : message
+          entry.detail = [
+            avatarDetail,
+            message.includes('暂不支持')
+              ? `${message}；助手脚本互传需要页面扩展 ${BRIDGE_EXTENSION_VERSION}+，请在酒馆扩展管理中点击更新`
+              : message,
+          ]
+            .filter(Boolean)
+            .join(' · ')
         }
       }
       const failed = transferQueue.value.filter((item) => item.status === 'failed').length
@@ -678,9 +1054,9 @@ export function useTavernBridgeCenter(
       recordReport(`发送 ${sentCount} 项到酒馆${failed ? `（${failed} 项失败）` : ''}`)
       progress.value = failed
         ? `发送完成：成功 ${sentCount} 项、失败 ${failed} 项；失败项可单独重试`
-        : `已发送 ${sentCount} 项到酒馆；如果酒馆界面未刷新，请在酒馆内刷新对应列表`
-      busy.value = false
-      if (sentCount) await refreshTavernResources()
+        : state.value.transport === 'directory'
+          ? `已写入 ${sentCount} 项到酒馆目录；下次启动酒馆后生效`
+          : `已发送 ${sentCount} 项到酒馆；如果酒馆界面未刷新，请在酒馆内刷新对应列表`
     } finally {
       busy.value = false
     }
@@ -706,7 +1082,7 @@ export function useTavernBridgeCenter(
   function closeAuthorTools(): void {
     authorToolsDialog.value = null
     copiedAuthorToolId.value = null
-    void nextTick(() => authorToolsTrigger?.focus())
+    void nextTick(() => authorToolsTrigger?.focus({ preventScroll: true }))
   }
 
   function showAuthorToolDetails(toolId: (typeof AUTHOR_TOOLS)[number]['id']): void {
@@ -735,14 +1111,22 @@ export function useTavernBridgeCenter(
     if (selectedLocalIds.value.size) activeDirection.value = 'toTavern'
     // 离开“功能 → 酒馆互传”只会卸载页面，不会关闭 Service 的中继端口。
     // 此时不会再收到新的 connected 事件，必须主动恢复目录，不能显示为空列表。
-    if (state.value.status === 'connected') void refreshTavernResources()
+    if (state.value.status === 'connected' && !state.value.lastSyncAt) void refreshTavernResources()
   })
 
-  onUnmounted(() => tavernConnectionStore.removeEventListener('change', handleState))
+  onUnmounted(() => {
+    disposed = true
+    tavernConnectionStore.removeEventListener('change', handleState)
+  })
   return {
+    canBindDirectory,
+    bindDirectory,
     state,
     busy,
     acceptPairing,
+    canShowDeviceJoin,
+    joinDeviceRelay,
+    deviceCode,
     canUseLocalTavernHost,
     connectLocalTavern,
     installGuideOpen,
@@ -785,6 +1169,9 @@ export function useTavernBridgeCenter(
     resourceLabel,
     resourceExistsInTavern,
     conflictPolicy,
+    personaAvatarMode,
+    selectedPersonaCount,
+    canCheckPersonaAvatars,
     sendConflictCount,
     sendToTavern,
     reports,

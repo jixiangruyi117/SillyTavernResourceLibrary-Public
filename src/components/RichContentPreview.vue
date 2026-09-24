@@ -105,7 +105,7 @@ const {
         :key="`${previewPolicy.allowRemoteResources}-${previewPolicy.allowScripts}-${renderShell}-${sourceKind}-${previewRevision}`"
         :srcdoc="preview?.document"
         :class="{ 'is-loading': isPreviewLoading }"
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-same-origin"
         :allow="previewPolicy.allowRemoteResources ? 'autoplay' : undefined"
         :style="frameStyle"
         loading="lazy"

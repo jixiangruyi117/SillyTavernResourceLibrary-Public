@@ -20,6 +20,7 @@ const {
   goBack,
   openTransfer,
   importTransferredFiles,
+  selectedResourceId,
   headerMoreOpen,
   headerMoreActions,
   selectHeaderMore,
@@ -80,6 +81,7 @@ const {
     v-if="transferOpen"
     :resources="resources"
     :categories="categories"
+    :initial-local-ids="selectedResourceId ? [selectedResourceId] : []"
     initial-kind="userPersona"
     @back="goBack"
     @import-files="importTransferredFiles"
@@ -222,7 +224,7 @@ const {
                     placeholder="https://"
                     @input="onAvatarUrlInput"
                 /></label>
-                <small>仅作资源封面，不随人设传入酒馆。</small>
+                <small>默认只留在资源库；酒馆互传时可选择发送已缓存封面。</small>
                 <p v-if="avatarPreviewFailed" class="persona-app__error">
                   图片无法预览，请检查地址或选择本地图片。
                 </p>

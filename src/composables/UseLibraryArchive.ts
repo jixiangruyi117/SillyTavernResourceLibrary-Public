@@ -267,6 +267,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       data.mainApiProfiles?.profiles.some((profile) => profile.apiKey) ? '主 API 密钥' : '',
       data.credentials?.imageGeneration?.length ? '生图 API 密钥' : '',
       data.credentials?.imageHosting ? '自建图床 Token' : '',
+      data.credentials?.legacyFrontendWorkshopApi?.apiKey ? '旧状态项目专用 API 密钥' : '',
+      data.credentials?.discordSource?.botToken ? 'Discord Bot Token' : '',
       data.credentials?.cloudBackup && Object.keys(data.credentials.cloudBackup).length
         ? '云备份凭据'
         : '',

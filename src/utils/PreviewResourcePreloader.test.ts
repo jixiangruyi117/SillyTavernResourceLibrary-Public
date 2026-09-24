@@ -181,7 +181,7 @@ describe('PreviewResourcePreloader', () => {
           'url',
           {
             value:
-              'https://example.invalid/_capacitor_http_interceptor_?u=https%3A%2F%2Fcdn.example%2Fassets%2Ftheme.css',
+              'https://srl.example.test/_capacitor_http_interceptor_?u=https%3A%2F%2Fcdn.example%2Fassets%2Ftheme.css',
           },
         )
       }
@@ -207,7 +207,7 @@ describe('PreviewResourcePreloader', () => {
   it('APK 使用原生文件缓存地址，不再把图片经 WebView fetch 和 Base64 桥接', async () => {
     nativeMocks.available.mockReturnValue(true)
     nativeMocks.download.mockResolvedValue({
-      resourceUrl: 'https://example.invalid/_capacitor_file_/data/user/0/cache/cover.png',
+      resourceUrl: 'https://srl.example.test/_capacitor_file_/data/user/0/cache/cover.png',
       resolvedUrl: 'https://cdn.example/cover.png',
       contentType: 'image/png',
       size: 5,
@@ -253,7 +253,7 @@ describe('PreviewResourcePreloader', () => {
   it('APK 保持 Catbox 原始外链，不按图床改写传输地址', async () => {
     nativeMocks.available.mockReturnValue(true)
     nativeMocks.download.mockResolvedValue({
-      resourceUrl: 'https://example.invalid/_capacitor_file_/data/user/0/cache/catbox.png',
+      resourceUrl: 'https://srl.example.test/_capacitor_file_/data/user/0/cache/catbox.png',
       resolvedUrl: 'https://files.catbox.moe/abc123.png',
       contentType: 'image/png',
       size: 5,

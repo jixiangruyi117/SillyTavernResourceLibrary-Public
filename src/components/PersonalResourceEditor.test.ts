@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { Resource } from '../types/Resource'
 import type { PersonalResourceDocument } from '../types/PersonalResource'
@@ -47,6 +48,22 @@ const mountEditor = (kind: PersonalResourceDocument['kind'], existing = true) =>
     props: { kind, resource: existing ? resource : undefined },
     global: { stubs: { Teleport: true } },
   })
+it('opens reactive pocket-phone metadata and cancels edits without changing its saved source', async () => {
+  const saved = reactive(document('pocketPhone'))
+  mocks.read.mockResolvedValue(saved)
+  const w = mountEditor('pocketPhone')
+  await flushPromises()
+  expect(w.text()).not.toContain('could not be cloned')
+  expect(w.text()).toContain('已保存正文')
+  await button(w, '编辑').trigger('click')
+  await w.get('textarea').setValue('未保存的说明')
+  expect(saved.text).toBe('已保存正文')
+  w.vm.requestBack()
+  await flushPromises()
+  expect(w.text()).toContain('已保存正文')
+  expect(w.text()).not.toContain('未保存的说明')
+  expect(mocks.save).not.toHaveBeenCalled()
+})
 it('starts with name only and lets each field own its label, value and privacy without folding away the focused control', async () => {
   const w = mountEditor('secret', false)
   await flushPromises()

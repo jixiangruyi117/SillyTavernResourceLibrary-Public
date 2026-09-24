@@ -619,7 +619,7 @@ export function useStructuredResourceDetails(props: Readonly<StructuredResourceD
   }
 
   function handleGreetingPreviewClose(): void {
-    nextTick(() => greetingPreviewTrigger?.focus())
+    nextTick(() => greetingPreviewTrigger?.focus({ preventScroll: true }))
   }
 
   const scriptText = computed(

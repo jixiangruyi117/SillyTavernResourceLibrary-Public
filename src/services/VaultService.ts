@@ -5,6 +5,7 @@ import {
   mirrorNativeResourceFile,
   readNativeResourceObject,
 } from '../storage/NativeResourceFileMirror'
+import { hydrateResourceFromIndexedDb } from '../storage/ResourceStorageClone'
 import {
   normalizeResource,
   toResourceListSummary,
@@ -215,7 +216,7 @@ export class VaultService {
 
   async decodeResource(resource: StoredResource): Promise<Resource> {
     if (isNativeBackedResource(resource)) return this.materializeNativeResource(resource)
-    if (!isEncryptedResource(resource)) return resource
+    if (!isEncryptedResource(resource)) return hydrateResourceFromIndexedDb(resource)
     return this.decryptResourceWithKey(resource, this.requireKey())
   }
 
@@ -420,7 +421,7 @@ export class VaultService {
               : await this.encryptResourceWithKey(
                   isNativeBackedResource(resource)
                     ? await this.materializeNativeResource(resource)
-                    : resource,
+                    : hydrateResourceFromIndexedDb(resource),
                   key,
                 )
             : await this.decryptResourceWithKey(resource, key),
@@ -450,7 +451,7 @@ export class VaultService {
               : await this.encryptResourceWithKey(
                   isNativeBackedResource(version)
                     ? await this.materializeNativeResource(version)
-                    : version,
+                    : hydrateResourceFromIndexedDb(version),
                   key,
                 )
             : await this.decryptResourceWithKey(version, key),
@@ -730,7 +731,7 @@ export class VaultService {
     key: CryptoKey,
   ): Promise<Resource> {
     if (isNativeBackedResource(resource)) return this.materializeNativeResource(resource)
-    if (!isEncryptedResource(resource)) return resource
+    if (!isEncryptedResource(resource)) return hydrateResourceFromIndexedDb(resource)
     const payload = JSON.parse(
       new TextDecoder().decode(await this.decryptBytes(resource.payload, key)),
     ) as ResourcePayload
