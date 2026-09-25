@@ -1220,14 +1220,23 @@ textarea {
 .page-mode .reading-flow {
   transition: none;
 }
+.reading-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.reading-modes button {
+  min-height: 44px;
+  padding: 7px 3px;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+}
+.mode-hint {
+  margin: 8px 0 16px;
+}
 #readerHeader {
   z-index: 6;
-}
-#chapterNav {
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  padding: 20px 0;
 }
 .reading-flow .reading-end {
   margin: 24px 0 12px;

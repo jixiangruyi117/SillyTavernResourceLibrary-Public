@@ -449,6 +449,11 @@
       document.documentElement.style.setProperty('--' + k, v)
     document.documentElement.style.colorScheme = prefs.theme === 'night' ? 'dark' : 'light'
     $('#reader').classList.toggle('page-mode', prefs.mode === 'page')
+    $('#reader').classList.toggle('continuous-mode', prefs.mode === 'continuous')
+    $('#prevPage').hidden = prefs.mode === 'continuous'
+    $('#nextPage').hidden = prefs.mode === 'continuous'
+    $('#prevPage').setAttribute('aria-label', prefs.mode === 'scroll' ? '上一楼' : '上一页')
+    $('#nextPage').setAttribute('aria-label', prefs.mode === 'scroll' ? '下一楼' : '下一页')
     $('#readingFlow').classList.toggle(
       'tavern-layout',
       prefs.layout === 'tavern' && prefs.renderMode !== 'plain',
@@ -564,6 +569,9 @@
   let layoutFrame = 0
   let pendingLayout = null
   let lineMeasurements = new WeakMap()
+  let virtualTopHeight = 0
+  let virtualBottomHeight = 0
+  let continuousLoading = false
   function clearPanelFrames() {
     window.cancelAnimationFrame(layoutFrame)
     layoutFrame = 0
@@ -577,6 +585,98 @@
     panelFrames.clear()
     pagePosition = null
     for (const frame of frames) frame.remove()
+  }
+  function renderMessage(entry, content) {
+    const m = entry.message
+    if (prefs.hideUser && m.is_user) return
+    const section = document.createElement('section')
+    section.setAttribute('is_user', String(m.is_user))
+    section.setAttribute('mesid', String(entry.index))
+    section.className = 'floor mes ' + (m.is_user ? 'user' : '')
+    section.dataset.floor = entry.index
+    section.classList.add(m.is_user ? 'user_mes' : 'bot_mes')
+    section.setAttribute('ch_name', masked(m.name))
+    const block = document.createElement('div')
+    block.className = 'mes_block'
+    if (prefs.renderMode !== 'plain' && !m.is_user && avatarCache.get(role)) {
+      const portrait = document.createElement('div')
+      portrait.className = 'mesAvatarWrapper'
+      portrait.innerHTML = `<div class="avatar"><img src="${esc(avatarCache.get(role))}" alt="${esc(masked(m.name))}"></div>`
+      section.append(portrait)
+    }
+    const speaker = document.createElement('div')
+    speaker.className = 'speaker ch_name name_text'
+    speaker.textContent =
+      (m.is_user && prefs.mask ? '你' : masked(m.name)) +
+      ' · ' +
+      (entry.index + 1) +
+      (state.marks.some((x) => x.floor === entry.index) ? ' ◆' : '')
+    block.append(speaker)
+    const body = document.createElement('div')
+    body.className = 'mes_text'
+    body.innerHTML =
+      entry.html ||
+      (prefs.regex && entry.displaySource?.trim() === '' && m.mes.trim()
+        ? `<p class="muted">本楼内容已被显示正则隐藏。</p><button class="secondary" data-hidden-rules="${entry.index}">查看隐藏原因</button>`
+        : prefs.renderMode === 'plain'
+          ? '<p class="muted">本楼没有正文文字，可继续翻阅。</p>'
+          : '')
+    body.querySelectorAll('[data-chat-frontend]').forEach((panel) => {
+      const index = Number(panel.dataset.chatFrontend)
+      const staticHost = document.createElement('div')
+      panel.append(staticHost)
+      const root = staticHost.attachShadow({ mode: 'open' })
+      root.addEventListener('load', mediaLayoutChanged, true)
+      root.addEventListener('toggle', mediaLayoutChanged, true)
+      root.innerHTML = entry.frontends?.[index] || ''
+      maskNodes(root)
+      if (prefs.renderMode === 'full') {
+        lazyPanels.set(panel, {
+          entry,
+          index,
+          visible: false,
+          frame: null,
+          loading: false,
+        })
+        panelObserver.observe(panel)
+      } else
+        panel.addEventListener('click', (event) => {
+          event.stopPropagation()
+          if (event.composedPath().some((node) => node?.matches?.('summary'))) return
+          run(async () => enableInteractions())
+        })
+    })
+    maskNodes(body)
+    block.append(body)
+    section.append(block)
+    if (entry.errors?.length) {
+      const warning = document.createElement('p')
+      warning.className = 'error'
+      warning.textContent = '部分正则未执行：' + entry.errors.join('；')
+      section.append(warning)
+    }
+    content.append(section)
+    return section
+  }
+  function virtualSpacer(id, height) {
+    const spacer = document.createElement('div')
+    spacer.id = id
+    spacer.setAttribute('aria-hidden', 'true')
+    spacer.style.cssText = `display:block!important;min-height:0!important;height:${Math.max(0, height)}px!important;max-height:none!important;padding:0!important;margin:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;`
+    return spacer
+  }
+  function releaseFloor(section) {
+    const floor = Number(section.dataset.floor)
+    for (const [panel, item] of lazyPanels) {
+      if (Number(item.entry.index) !== floor) continue
+      panelObserver.unobserve(panel)
+      lazyPanels.delete(panel)
+    }
+    for (const frame of section.querySelectorAll('iframe')) {
+      panelFrames.delete(frame)
+      frame.remove()
+    }
+    floorDocuments.delete(floor)
   }
   window.addEventListener('message', (event) => {
     if (event.data?.type !== 'SRL_PREVIEW_HEIGHT') return
@@ -619,11 +719,10 @@
     scheduleLayout({ pos, anchor, top })
   })
   function enableInteractions(position = currentPosition()) {
-    if (prefs.mask) throw Error('请先关闭隐藏身份，再启用交互状态栏')
     if (!runtime.network) throw Error('请在扩展管理中使用兼容模式打开，再启用交互状态栏')
     sheet(
-      '启用完整阅读',
-      '<p class="hint">状态栏会直接在正文中交互，可读取当前楼层的归档快照，不会修改聊天原件。远程资源仍由独立开关控制。开启后可直接在正文操作；可随时在阅读显示中关闭。</p><button class="primary" id="enableInteractions">启用完整模式</button>',
+      prefs.mask ? '完整预览与打码' : '启用完整阅读',
+      '<p class="hint">状态栏会直接在正文中交互，可读取当前楼层的归档快照，不会修改聊天原件。远程资源仍由独立开关控制。开启后可直接在正文操作；可随时在阅读显示中关闭。</p><p class="hint">开启打码时，正文继续打码；交互状态栏保持原文，可能显示姓名。图片内文字不保证打码。</p><button class="primary" id="enableInteractions">启用完整模式</button>',
     )
     $('#enableInteractions').onclick = () =>
       run(async () => {
@@ -708,96 +807,23 @@
           )) +
       '\n#chat .mes_block{min-width:0;max-width:100%;box-sizing:border-box}#chat.page-layout .mes_block{transform:none!important}#chat:not(.tavern-layout) .mes_text,#chat:not(.tavern-layout) .mes_text :is(p,q,em,strong,a,span){font-size:var(--font)!important;line-height:var(--leading)!important}'
     shadow.append(style)
+    if (prefs.mode === 'continuous')
+      shadow.append(virtualSpacer('reader-virtual-top', virtualTopHeight))
     const content = document.createElement('div')
     content.id = 'chat'
     content.className =
       'reading-flow' +
       (prefs.layout === 'tavern' && prefs.renderMode !== 'plain' ? ' tavern-layout' : '')
     shadow.append(content)
-    for (const entry of pageData.messages) {
-      const m = entry.message
-      if (prefs.hideUser && m.is_user) continue
-      const section = document.createElement('section')
-      section.setAttribute('is_user', String(m.is_user))
-      section.setAttribute('mesid', String(entry.index))
-      section.className = 'floor mes ' + (m.is_user ? 'user' : '')
-      section.dataset.floor = entry.index
-      section.classList.add(m.is_user ? 'user_mes' : 'bot_mes')
-      section.setAttribute('ch_name', masked(m.name))
-      const block = document.createElement('div')
-      block.className = 'mes_block'
-      if (prefs.renderMode !== 'plain' && !m.is_user && avatarCache.get(role)) {
-        const portrait = document.createElement('div')
-        portrait.className = 'mesAvatarWrapper'
-        portrait.innerHTML = `<div class="avatar"><img src="${esc(avatarCache.get(role))}" alt="${esc(masked(m.name))}"></div>`
-        section.append(portrait)
-      }
-      const speaker = document.createElement('div')
-      speaker.className = 'speaker ch_name name_text'
-      speaker.textContent =
-        (m.is_user && prefs.mask ? '你' : masked(m.name)) +
-        ' · ' +
-        (entry.index + 1) +
-        (state.marks.some((x) => x.floor === entry.index) ? ' ◆' : '')
-      block.append(speaker)
-      const body = document.createElement('div')
-      body.className = 'mes_text'
-      body.innerHTML =
-        entry.html ||
-        (prefs.regex && entry.displaySource?.trim() === '' && m.mes.trim()
-          ? `<p class="muted">本楼内容已被显示正则隐藏。</p><button class="secondary" data-hidden-rules="${entry.index}">查看隐藏原因</button>`
-          : prefs.renderMode === 'plain'
-            ? '<p class="muted">本楼没有正文文字，可继续翻阅。</p>'
-            : '')
-      body.querySelectorAll('[data-chat-frontend]').forEach((panel) => {
-        const index = Number(panel.dataset.chatFrontend)
-        const staticHost = document.createElement('div')
-        panel.append(staticHost)
-        const root = staticHost.attachShadow({ mode: 'open' })
-        root.addEventListener('load', mediaLayoutChanged, true)
-        root.addEventListener('toggle', mediaLayoutChanged, true)
-        root.innerHTML = entry.frontends?.[index] || ''
-        maskNodes(root)
-        if (!prefs.mask && prefs.renderMode === 'full') {
-          lazyPanels.set(panel, {
-            entry,
-            index,
-            visible: false,
-            frame: null,
-            loading: false,
-          })
-          panelObserver.observe(panel)
-        } else
-          panel.addEventListener('click', (event) => {
-            event.stopPropagation()
-            if (event.composedPath().some((node) => node?.matches?.('summary'))) return
-            run(async () => enableInteractions())
-          })
-      })
-      maskNodes(body)
-      block.append(body)
-      section.append(block)
-      if (entry.errors?.length) {
-        const warning = document.createElement('p')
-        warning.className = 'error'
-        warning.textContent = '部分正则未执行：' + entry.errors.join('；')
-        section.append(warning)
-      }
-      content.append(section)
-    }
+    for (const entry of pageData.messages) renderMessage(entry, content)
     if (pageData.nextOffset === null) {
       const end = document.createElement('p')
       end.className = 'reading-end'
       end.textContent = pageData.messages.length ? '已阅读完全部内容' : '当前记录没有角色回复'
       ;(content.lastElementChild?.querySelector('.mes_block') || content).append(end)
     }
-    // Page turns already cross chapter/batch boundaries; a flow footer creates empty columns.
-    if (prefs.mode === 'scroll') {
-      const nav = document.createElement('div')
-      nav.id = 'chapterNav'
-      nav.innerHTML = `${previousOffset() !== null ? '<button data-batch="prev">' + (prefs.progressMode === 'chapters' ? '上一章' : '上一段') + '</button>' : '<span></span>'}${pageData.nextOffset !== null ? '<button data-batch="next">' + (prefs.progressMode === 'chapters' ? '下一章' : '继续阅读下一段') + '</button>' : ''}`
-      content.append(nav)
-    }
+    if (prefs.mode === 'continuous')
+      shadow.append(virtualSpacer('reader-virtual-bottom', virtualBottomHeight))
     applyPrefs()
     page = 0
     scroll.scrollTop = 0
@@ -839,7 +865,7 @@
       pageOffset:
         prefs.mode === 'page' && element ? Math.max(0, page - pageForElement(element)) : 0,
       offset:
-        prefs.mode === 'scroll'
+        prefs.mode !== 'page'
           ? Math.max(0, rect.top - (element?.getBoundingClientRect().top || rect.top))
           : 0,
       hash: pageData?.contentHash,
@@ -1016,7 +1042,20 @@
   function previousOffset() {
     if (prefs.hideUser && pageData.previousOffset !== undefined) return pageData.previousOffset
     const first = pageData.messages[0]?.index || 0
-    return first > 0 ? Math.max(0, first - (prefs.progressMode === 'chapters' ? 1 : 3)) : null
+    const step =
+      prefs.mode === 'scroll'
+        ? 1
+        : prefs.mode === 'continuous'
+          ? 3
+          : prefs.progressMode === 'chapters'
+            ? 1
+            : 3
+    return first > 0 ? Math.max(0, first - step) : null
+  }
+  function readStart(floor) {
+    if (prefs.mode === 'scroll') return floor
+    if (prefs.mode === 'continuous') return Math.max(0, floor - 2)
+    return prefs.progressMode === 'chapters' ? floor : Math.floor(floor / 3) * 3
   }
   async function read(offset = 0, pos = null, backward = false) {
     const version = ++readVersion
@@ -1027,7 +1066,14 @@
       ...readOptions(),
       id: activeId,
       offset,
-      limit: prefs.progressMode === 'chapters' ? 1 : 3,
+      limit:
+        prefs.mode === 'continuous'
+          ? 5
+          : prefs.mode === 'scroll'
+            ? 1
+            : prefs.progressMode === 'chapters'
+              ? 1
+              : 3,
       hideUser: prefs.hideUser,
       backward,
       interactive: false,
@@ -1038,6 +1084,10 @@
     if (pos && offset < pos.floor && result.nextOffset !== null && result.nextOffset <= pos.floor)
       return read(pos.floor, pos)
     pageData = result
+    if (prefs.mode === 'continuous') {
+      virtualTopHeight = 0
+      virtualBottomHeight = 0
+    }
     renderPage()
     if (pos?.hash && pos.hash !== result.contentHash) {
       notify('聊天原件已变化，请重新确认阅读位置')
@@ -1051,15 +1101,17 @@
     )
     if (chat?.id !== activeId || version !== readVersion) return
     $('#readerSubtitle').textContent =
-      boundRole(chat).name +
-      ' · ' +
-      (prefs.mask
-        ? '已隐藏用户身份'
-        : prefs.renderMode === 'full'
-          ? '完整阅读'
-          : prefs.renderMode === 'plain'
-            ? '纯净阅读'
-            : '精简阅读')
+      prefs.mask && prefs.renderMode === 'full'
+        ? '完整阅读 · 正文打码，状态栏未打码'
+        : boundRole(chat).name +
+          ' · ' +
+          (prefs.mask
+            ? '已开启文字打码'
+            : prefs.renderMode === 'full'
+              ? '完整阅读'
+              : prefs.renderMode === 'plain'
+                ? '纯净阅读'
+                : '精简阅读')
     warnHiddenFloor()
   }
   async function openChat(id) {
@@ -1071,6 +1123,11 @@
     }
     chat = c
     role = boundRole(c).id
+    // Record the interrupted-reading session before resource reads finish. A host reload
+    // while a large chat or its regexes are still loading must still resume this chat.
+    indexState.lastChat = id
+    indexState.resumeReading = true
+    await store('reader-index-v1', indexState)
     state = await getState(id)
     roleAppearance = (await api.storage.get('appearance:' + role)) || null
     resolveAppearance()
@@ -1089,15 +1146,15 @@
     $('#toast').hidden = true
     try {
       const floor = state.position?.floor || 0
-      await read(
-        prefs.progressMode === 'chapters' ? floor : Math.floor(floor / 3) * 3,
-        state.position,
-      )
+      await read(readStart(floor), state.position)
       indexState.lastChat = id
+      indexState.resumeReading = true
       await store('reader-index-v1', indexState)
     } catch (e) {
       shadow.innerHTML = ''
       toggleChrome(true)
+      indexState.resumeReading = false
+      await store('reader-index-v1', indexState)
       throw e
     }
   }
@@ -1111,6 +1168,8 @@
     readVersion++
     clearTimeout(saveTimer)
     await recordPosition()
+    indexState.resumeReading = false
+    await store('reader-index-v1', indexState)
     clearPanelFrames()
     $('#reader').hidden = true
     $('#library').hidden = false
@@ -1161,7 +1220,17 @@
     }
   }
   async function turn(delta) {
-    if (prefs.mode !== 'page') return
+    if (prefs.mode === 'continuous') return
+    if (prefs.mode === 'scroll') {
+      if (delta > 0 && pageData.nextOffset !== null) {
+        await read(pageData.nextOffset)
+      } else if (delta < 0 && previousOffset() !== null) {
+        await read(previousOffset(), null, true)
+      }
+      await recordPosition()
+      warnHiddenFloor()
+      return
+    }
     flushLayout()
     $('#readingViewport').scrollTop = 0
     if (delta > 0 && page === pages - 1 && pageData.nextOffset !== null) {
@@ -1177,6 +1246,91 @@
     await recordPosition()
     warnHiddenFloor()
   }
+  async function extendContinuous(direction) {
+    if (prefs.mode !== 'continuous' || continuousLoading || !pageData) return
+    const oldPage = pageData
+    const offset = direction === 'next' ? oldPage.nextOffset : previousOffset()
+    if (offset === null || offset === undefined) return
+    continuousLoading = true
+    const activeId = chat.id
+    const viewport = $('#readingViewport')
+    try {
+      const result = await api.resources.readChat({
+        ...readOptions(),
+        id: activeId,
+        offset,
+        limit: 3,
+        hideUser: prefs.hideUser,
+        backward: direction === 'previous',
+        interactive: false,
+        prefetch: true,
+      })
+      if (
+        chat?.id !== activeId ||
+        pageData !== oldPage ||
+        result.contentHash !== oldPage.contentHash
+      )
+        return
+      const content = shadow.querySelector('#chat')
+      if (!content) return
+      content.querySelector('.reading-end')?.remove()
+      const current = [...content.querySelectorAll('[data-floor]')]
+      const currentFloors = new Set(current.map((item) => Number(item.dataset.floor)))
+      const incoming = result.messages.filter((entry) => !currentFloors.has(entry.index))
+      const fragment = document.createDocumentFragment()
+      for (const entry of incoming) renderMessage(entry, fragment)
+      const addedSections = [...fragment.children]
+      if (direction === 'next') content.append(fragment)
+      else content.insertBefore(fragment, current[0] || null)
+      const addedHeight = addedSections.reduce(
+        (total, section) => total + section.getBoundingClientRect().height,
+        0,
+      )
+
+      const merged = [...oldPage.messages, ...incoming].sort((a, b) => a.index - b.index)
+      let kept
+      if (direction === 'next') {
+        virtualBottomHeight = Math.max(0, virtualBottomHeight - addedHeight)
+        kept = merged.slice(-5)
+      } else {
+        const previousTopHeight = virtualTopHeight
+        virtualTopHeight = Math.max(0, virtualTopHeight - addedHeight)
+        if (addedHeight > previousTopHeight) viewport.scrollTop += addedHeight - previousTopHeight
+        kept = merged.slice(0, 5)
+      }
+      const keepFloors = new Set(kept.map((entry) => entry.index))
+      for (const section of [...content.querySelectorAll('[data-floor]')]) {
+        if (keepFloors.has(Number(section.dataset.floor))) continue
+        const height = section.getBoundingClientRect().height
+        if (direction === 'next') virtualTopHeight += height
+        else virtualBottomHeight += height
+        releaseFloor(section)
+        section.remove()
+      }
+      pageData = {
+        ...oldPage,
+        ...result,
+        messages: kept,
+        previousOffset: direction === 'previous' ? result.previousOffset : oldPage.previousOffset,
+        nextOffset: direction === 'next' ? result.nextOffset : oldPage.nextOffset,
+      }
+      shadow
+        .querySelector('#reader-virtual-top')
+        ?.style.setProperty('height', `${virtualTopHeight}px`, 'important')
+      shadow
+        .querySelector('#reader-virtual-bottom')
+        ?.style.setProperty('height', `${virtualBottomHeight}px`, 'important')
+      if (pageData.nextOffset === null) {
+        const end = document.createElement('p')
+        end.className = 'reading-end'
+        end.textContent = pageData.messages.length ? '已阅读完全部内容' : '当前记录没有角色回复'
+        ;(content.lastElementChild?.querySelector('.mes_block') || content).append(end)
+      }
+      positionLabel()
+    } finally {
+      continuousLoading = false
+    }
+  }
   async function jump(floor) {
     if (!Number.isInteger(floor) || floor < 0 || floor >= pageData.total)
       throw Error('楼层超出范围')
@@ -1185,7 +1339,7 @@
     const pos = { floor, offset: 0 }
     if (pageData.messages.some((e) => e.index === floor)) {
       restore(pos)
-    } else await read(prefs.progressMode === 'chapters' ? floor : Math.floor(floor / 3) * 3, pos)
+    } else await read(readStart(floor), pos)
     await recordPosition()
     warnHiddenFloor()
   }
@@ -1540,10 +1694,7 @@
         `<div class="segmented">${items.map(([v, t]) => `<button data-setting="${key}" data-value="${v}" class="${prefs[key] === v ? 'active' : ''}">${t}</button>`).join('')}</div>`
       sheet(
         '阅读显示',
-        `<label class="field-label">阅读方式</label>${segments('mode', [
-          ['scroll', '上下滚动'],
-          ['page', '左右翻页'],
-        ])}<label class="field-label">阅读效果</label><div class="segmented"><button data-reading-mode="plain" class="${prefs.renderMode === 'plain' ? 'active' : ''}">纯净</button><button data-reading-mode="simple" class="${prefs.renderMode === 'simple' ? 'active' : ''}">精简</button><button data-reading-mode="full" class="${prefs.renderMode === 'full' ? 'active' : ''}">完整</button></div><label class="field-label">排版</label>${segments(
+        `<label class="field-label">阅读方式</label><div class="segmented reading-modes"><button data-setting="mode" data-value="continuous" class="${prefs.mode === 'continuous' ? 'active' : ''}">上下滚动</button><button data-setting="mode" data-value="scroll" class="${prefs.mode === 'scroll' ? 'active' : ''}">上下左右</button><button data-setting="mode" data-value="page" class="${prefs.mode === 'page' ? 'active' : ''}">左右翻页</button></div><p class="hint mode-hint">上下滚动自动续读，只保留最近 5 楼；上下左右可纵向读完单楼，再横向切换楼层；左右翻页保留分页阅读。</p><label class="field-label">阅读效果</label><div class="segmented"><button data-reading-mode="plain" class="${prefs.renderMode === 'plain' ? 'active' : ''}">纯净</button><button data-reading-mode="simple" class="${prefs.renderMode === 'simple' ? 'active' : ''}">精简</button><button data-reading-mode="full" class="${prefs.renderMode === 'full' ? 'active' : ''}">完整</button></div><label class="field-label">排版</label>${segments(
           'layout',
           [
             ['novel', '小说排版'],
@@ -1555,7 +1706,7 @@
           ['remote', '允许远程图片与媒体'],
           ['blendPanels', '状态栏背景融入阅读页'],
           ['hideUser', '只看角色回复'],
-          ['mask', '隐藏用户身份'],
+          ['mask', '用户名打码'],
         ]
           .map(
             ([k, t]) =>
@@ -1563,7 +1714,7 @@
           )
           .join(
             '',
-          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。隐藏身份时自动使用精简模式。</p><button class="secondary" id="regexRules">管理显示正则</button><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。应用后开启打码，只改变阅读显示。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><label class="identity-field"><span>打码方式</span><select id="maskMode"><option value="replace">替换文字</option><option value="cover">遮住姓名</option></select></label><div class="identity-actions"><label class="identity-field" id="replacementField"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">应用打码</button></div></div></details>`,
+          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。打码与完整模式可同时开启：正文继续打码，交互状态栏保持原文，可能显示姓名；图片内文字不保证打码。</p><button class="secondary" id="regexRules">管理显示正则</button><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。上方“用户名打码”可随时关闭，保留填写的配置。完整模式只对正文打码，交互状态栏保持原文。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><label class="identity-field"><span>打码方式</span><select id="maskMode"><option value="replace">替换文字</option><option value="cover">遮住姓名</option></select></label><div class="identity-actions"><label class="identity-field" id="replacementField"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">应用打码</button></div></div></details>`,
       )
       $$('[data-option]').forEach(
         (el) =>
@@ -1601,8 +1752,8 @@
           await read(pageData?.messages[0]?.index || 0, pos)
           notify(
             prefs.maskMode === 'cover'
-              ? '已开启遮挡，用户名不保留在显示文字中'
-              : '已开启打码并更新替换文字',
+              ? '已开启文字遮挡；完整模式的交互状态栏和图片不在打码范围内'
+              : '已更新打码文字；完整模式的交互状态栏和图片不在打码范围内',
           )
         })
     } else if (name === 'appearance') {
@@ -1846,10 +1997,7 @@
         const pos = currentPosition()
         prefs.progressMode = t.dataset.progressMode
         await savePrefs()
-        await read(
-          prefs.progressMode === 'chapters' ? pos.floor : Math.floor(pos.floor / 3) * 3,
-          pos,
-        )
+        await read(readStart(pos.floor), pos)
         if ($('#sheet').open && controls?.isConnected) await panel('progress')
       }
       if (t.dataset.chapterPage !== undefined) await chapterPanel(Number(t.dataset.chapterPage))
@@ -1882,8 +2030,11 @@
         const pos = pageData ? currentPosition() : null
         prefs[t.dataset.setting] = t.dataset.value
         if (pageData) {
-          renderPage()
-          restore(pos)
+          if (t.dataset.setting === 'mode') await read(readStart(pos.floor), pos)
+          else {
+            renderPage()
+            restore(pos)
+          }
         }
         await savePrefs()
         if ($('#sheet').open && controls?.isConnected) await panel('display')
@@ -1912,7 +2063,7 @@
           state.replyOverrides = { ...state.replyOverrides, [m.floor]: m.replyId }
           await saveState()
           $('#sheet').close()
-          await read(prefs.progressMode === 'chapters' ? m.floor : Math.floor(m.floor / 3) * 3, {
+          await read(readStart(m.floor), {
             floor: m.floor,
             offset: 0,
           })
@@ -1945,13 +2096,7 @@
       }
       const t = e.target.closest('button')
       if (t?.dataset.hiddenRules !== undefined) hiddenRulePanel(Number(t.dataset.hiddenRules))
-      else if (t?.dataset.batch) {
-        const offset = t.dataset.batch === 'next' ? pageData.nextOffset : previousOffset()
-        if (offset !== null) {
-          await read(offset, null, t.dataset.batch === 'prev')
-          await recordPosition()
-        }
-      } else if (!interactive && !window.getSelection()?.toString()) toggleChrome()
+      else if (!interactive && !window.getSelection()?.toString()) toggleChrome()
     })
   })
   let down
@@ -1968,9 +2113,21 @@
     down = null
     const dx = e.clientX - d.x,
       dy = e.clientY - d.y
+    if (!d.blocked && !window.getSelection()?.toString() && prefs.mode === 'continuous') {
+      const viewport = $('#readingViewport')
+      if (
+        viewport.scrollHeight <= viewport.clientHeight + 2 &&
+        Math.abs(dy) > 55 &&
+        Math.abs(dy) > Math.abs(dx) * 1.4
+      ) {
+        suppress = true
+        run(() => extendContinuous(dy < 0 ? 'next' : 'previous'))
+        return
+      }
+    }
     if (
       !d.blocked &&
-      prefs.mode === 'page' &&
+      prefs.mode !== 'continuous' &&
       Math.abs(dx) > 55 &&
       Math.abs(dx) > Math.abs(dy) * 1.4 &&
       !window.getSelection()?.toString()
@@ -1983,6 +2140,18 @@
     'scroll',
     () => {
       positionLabel()
+      if (prefs.mode === 'continuous' && pageData && !continuousLoading) {
+        const viewport = $('#readingViewport')
+        const distanceToBottom = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop
+        if (
+          distanceToBottom < 240 &&
+          viewport.scrollHeight > viewport.clientHeight + 1 &&
+          pageData.nextOffset !== null
+        )
+          run(() => extendContinuous('next'))
+        else if (viewport.scrollTop < 240 && previousOffset() !== null)
+          run(() => extendContinuous('previous'))
+      }
       clearTimeout(saveTimer)
       saveTimer = setTimeout(() => run(recordPosition), 600)
     },
@@ -2019,6 +2188,11 @@
     if (e.key === 'ArrowLeft') run(() => turn(-1))
     if (e.key === 'ArrowRight') run(() => turn(1))
     if (e.key === 'Escape') toggleChrome(false)
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return
+    clearTimeout(saveTimer)
+    run(recordPosition)
   })
   let size = ''
   const readerSizeObserver = new ResizeObserver(() => {
@@ -2081,6 +2255,8 @@
       applyShellCss(runtime.readerUiCss)
       applyPrefs()
       await refresh()
+      const resume = chats.find((item) => item.id === indexState.lastChat)
+      if (indexState.resumeReading && resume && boundRole(resume)) await openChat(resume.id)
     })
     .catch((error) => {
       loading(error.message)
