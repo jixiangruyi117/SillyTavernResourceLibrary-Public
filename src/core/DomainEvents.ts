@@ -1,3 +1,5 @@
+import type { NativeResourceStorageInfo } from '../storage/NativeResourceFileMirror'
+
 export interface DomainEventMap {
   ResourceImported: { resourceIds: string[]; operationId: string }
   ResourceUpdated: { resourceIds: string[]; operationId: string }
@@ -6,6 +8,7 @@ export interface DomainEventMap {
   TavernConnected: { mode: string }
   BackupCompleted: { backupId: string; operationId: string }
   SettingsChanged: { keys: string[] }
+  NativeTemporaryCachesCleared: { storage: NativeResourceStorageInfo | null; measuredAt: number }
 }
 
 type DomainEventName = keyof DomainEventMap

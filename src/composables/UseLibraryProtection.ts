@@ -9,6 +9,7 @@ import {
   vaultService,
 } from '../core/AppContainer'
 import { mutationGuard } from '../core/MutationGuard'
+import { domainEvents } from '../core/DomainEvents'
 import { taskCenter } from '../core/TaskCenter'
 import type { StorageHealth } from '../services/BrowserStorageService'
 import {
@@ -77,10 +78,14 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     try {
       const clearedBytes = await clearNativeTemporaryCaches()
       await refreshStorageHealth()
+      domainEvents.emit('NativeTemporaryCachesCleared', {
+        storage: context.nativeStorageInfo.value,
+        measuredAt: Date.now(),
+      })
       context.showNotice(
         clearedBytes > 0
-          ? `已清理 ${formatBytes(clearedBytes)} 临时缓存`
-          : '没有可清理的 APK 临时缓存',
+          ? `已清理 ${formatBytes(clearedBytes)} 临时缓存；网页容器中的数据库等数据未清理`
+          : '没有可清理的 APK 临时缓存；网页容器中的数据库等数据未清理',
       )
     } catch (error) {
       context.showNotice(error instanceof Error ? error.message : 'APK 临时缓存清理失败')

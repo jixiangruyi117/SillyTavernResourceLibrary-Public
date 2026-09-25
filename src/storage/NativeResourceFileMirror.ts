@@ -79,6 +79,13 @@ export interface NativeResourceStorageInfo {
   availableBytes: number
   /** Subsets of totalBytes. Never add these to totalBytes or objectBytes. */
   webViewBytes?: number
+  /** Disjoint directory-based subsets of webViewBytes, available in newer APKs only. */
+  webViewBreakdown?: {
+    siteDataBytes: number
+    cacheBytes: number
+    temporaryBlobBytes: number
+    otherBytes: number
+  }
   cacheBytes?: number
   /** Android cache directory; safe to clear manually when no transfer is active. */
   appCacheBytes?: number

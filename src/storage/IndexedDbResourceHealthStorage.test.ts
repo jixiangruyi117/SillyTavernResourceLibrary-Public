@@ -94,4 +94,35 @@ describe('IndexedDbResourceHealthStorage', () => {
     expect(audit.orphanGeneratedImageFiles).toEqual(['file-only'])
     expect(await database.generatedImageFiles.get('file-only')).toBeDefined()
   })
+
+  it.each(['application/x-ndjson', ''])(
+    'checks JSONL line by line with MIME %s',
+    async (mimeType) => {
+      const body =
+        '\uFEFF{"chat_metadata":{}}\r\n\n' +
+        JSON.stringify({ name: '角色', mes: '文字'.repeat(150000), is_user: false }) +
+        '\n'
+      const valid = { ...resource('chat', body), fileName: 'chat.jsonl', mimeType }
+      const broken = { ...resource('broken-chat', body + '{'), fileName: 'broken.jsonl', mimeType }
+      await storage.save(valid)
+      await storage.save(broken)
+      // Real chunk boundaries and trailing invalid lines, not just a two-line mock.
+      const audit = await health.audit()
+      expect(audit.corruptJsonResources).toEqual(['broken-chat'])
+      for (const original of [valid, broken]) {
+        const saved = (await storage.get(original.id))!
+        expect(
+          Buffer.compare(
+            Buffer.from(await saved.originalBlob.arrayBuffer()),
+            Buffer.from(await original.originalBlob.arrayBuffer()),
+          ),
+        ).toBe(0)
+      }
+    },
+  )
+
+  it('reports an empty JSONL file rather than silently treating it as healthy', async () => {
+    await storage.save({ ...resource('empty', '\n  '), fileName: 'empty.jsonl' })
+    expect((await health.audit()).corruptJsonResources).toEqual(['empty'])
+  })
 })

@@ -31,6 +31,7 @@ vi.mock('../storage/NativeResourceFileMirror', () => ({
   getNativeResourceStorageInfo: api.info,
 }))
 import ResourceHealthCenter from './ResourceHealthCenter.vue'
+import { domainEvents } from '../core/DomainEvents'
 const accounting = {
   currentOriginalBytes: 10,
   versionOriginalBytes: 5,
@@ -75,6 +76,65 @@ beforeEach(() => {
   api.mirrors.mockResolvedValue({ currentCount: 0, versionCount: 0, reclaimableBytes: 0 })
 })
 describe('ResourceHealthCenter recovery controls', () => {
+  it('uses the post-cleanup measurement without another scan and unsubscribes on close', async () => {
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查原件与空间')!
+      .trigger('click')
+    await flushPromises()
+    expect(view.text()).toContain('应用数据 700 B')
+    domainEvents.emit('NativeTemporaryCachesCleared', {
+      storage: {
+        ...(await api.info()),
+        totalBytes: 530,
+        webViewBytes: 163,
+        webViewBreakdown: {
+          siteDataBytes: 120,
+          cacheBytes: 20,
+          temporaryBlobBytes: 10,
+          otherBytes: 13,
+        },
+      },
+      measuredAt: Date.now(),
+    })
+    await flushPromises()
+    expect(view.text()).toContain('应用数据 530 B')
+    expect(view.text()).toContain('非实时值')
+    expect(view.text()).toContain('临时 Blob 10 B')
+    expect(api.candidates).toHaveBeenCalledOnce()
+    expect(api.accounting).toHaveBeenCalledOnce()
+    expect(api.scan).not.toHaveBeenCalled()
+    const calls = api.info.mock.calls.length
+    view.unmount()
+    domainEvents.emit('NativeTemporaryCachesCleared', { storage: null, measuredAt: Date.now() })
+    expect(api.info).toHaveBeenCalledTimes(calls)
+  })
+
+  it('does not overwrite a post-cleanup measurement with an older in-flight inspection', async () => {
+    const info = await api.info()
+    let resolveInfo!: (value: unknown) => void
+    api.info.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInfo = resolve
+      }),
+    )
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查原件与空间')!
+      .trigger('click')
+    domainEvents.emit('NativeTemporaryCachesCleared', {
+      storage: { ...info, totalBytes: 530 },
+      measuredAt: Date.now(),
+    })
+    resolveInfo(info)
+    await flushPromises()
+    expect(view.text()).toContain('应用数据 530 B')
+    expect(view.text()).not.toContain('应用数据 700 B')
+    view.unmount()
+  })
+
   it('shows recognized names and emits a refresh without re-running the full audit after recovery', async () => {
     const view = mount(ResourceHealthCenter)
     await view

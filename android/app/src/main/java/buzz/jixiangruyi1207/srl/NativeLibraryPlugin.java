@@ -62,7 +62,14 @@ public class NativeLibraryPlugin extends Plugin {
             result.put("externalDataBytes", externalDataBytes);
             result.put("totalBytes", appDataBytes + externalDataBytes);
             // Named subsets, not additive peers of totalBytes/objectBytes.
-            result.put("webViewBytes", directoryBytes(new File(appData, "app_webview")));
+            NativeWebViewStorageUsage webView = NativeWebViewStorageUsage.measure(new File(appData, "app_webview"));
+            result.put("webViewBytes", webView.totalBytes());
+            JSObject webViewBreakdown = new JSObject();
+            webViewBreakdown.put("siteDataBytes", webView.siteDataBytes);
+            webViewBreakdown.put("cacheBytes", webView.cacheBytes);
+            webViewBreakdown.put("temporaryBlobBytes", webView.temporaryBlobBytes);
+            webViewBreakdown.put("otherBytes", webView.otherBytes);
+            result.put("webViewBreakdown", webViewBreakdown);
             result.put("cacheBytes", appCacheBytes + codeCacheBytes);
             result.put("appCacheBytes", appCacheBytes);
             result.put("codeCacheBytes", codeCacheBytes);

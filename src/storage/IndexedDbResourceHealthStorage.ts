@@ -1,4 +1,5 @@
 import type { ParsedResource } from '../types/Import'
+import { chatLines } from '../parser/ChatResourceParser'
 import type { NativeResourceLinkRecord } from './NativeResourceFileMirror'
 import type { AppDatabase } from '../database/AppDatabase'
 import {
@@ -178,7 +179,20 @@ export class IndexedDbResourceHealthStorage {
       const resource = await this.resourceStorage.get(summary.id)
       if (!resource) return summary.id
       try {
-        JSON.parse(await resource.originalBlob.text())
+        if (this.isJsonLinesResource(summary)) {
+          // JSONL is a sequence of JSON values, not one JSON document. Reuse the
+          // bounded UTF-8 reader so long chats do not require a second full text copy.
+          let lines = 0
+          for await (const { text } of chatLines(resource.originalBlob)) {
+            const source = text.replace(/^\uFEFF/, '').trim()
+            if (!source) continue
+            JSON.parse(source)
+            lines++
+          }
+          if (!lines) return summary.id
+        } else {
+          JSON.parse(await resource.originalBlob.text())
+        }
         return undefined
       } catch {
         return summary.id
@@ -662,7 +676,16 @@ export class IndexedDbResourceHealthStorage {
 
   private isJsonResource(resource: Pick<ResourceSummary, 'mimeType' | 'fileName'>): boolean {
     return (
-      resource.mimeType.includes('json') || resource.fileName.toLocaleLowerCase().endsWith('.json')
+      resource.mimeType.includes('json') ||
+      resource.fileName.toLocaleLowerCase().endsWith('.json') ||
+      this.isJsonLinesResource(resource)
+    )
+  }
+
+  private isJsonLinesResource(resource: Pick<ResourceSummary, 'mimeType' | 'fileName'>): boolean {
+    return (
+      /\.(jsonl|ndjson)$/i.test(resource.fileName) ||
+      /(?:ndjson|jsonl|jsonlines)/i.test(resource.mimeType)
     )
   }
 }

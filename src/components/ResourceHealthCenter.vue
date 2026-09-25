@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 
 import { BUILD_INFO } from '../core/BuildInfo'
+import { domainEvents } from '../core/DomainEvents'
 import { healthCenter, type HealthIssue } from '../core/HealthCenter'
 import { noticeCenter } from '../core/NoticeCenter'
 import { confirmAction } from '../composables/UseConfirmDialog'
@@ -25,6 +26,16 @@ const scanning = ref(false)
 const repairing = ref(false)
 const scanned = ref(false)
 const nativeStorage = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
+const storageMeasuredAt = ref(0)
+let storageRequest = 0
+onUnmounted(
+  domainEvents.on('NativeTemporaryCachesCleared', ({ storage, measuredAt }) => {
+    // Reuse the completed measurement; do not reread originals or rerun the health audit.
+    storageRequest++
+    nativeStorage.value = storage
+    storageMeasuredAt.value = storage ? measuredAt : 0
+  }),
+)
 const recoveryCandidates = ref<Array<NativeRecoveryCandidate & Partial<NativeRecoveryPreview>>>([])
 const accounting =
   ref<Awaited<ReturnType<typeof nativeResourceRecoveryService.storageAccounting>>>()
@@ -54,13 +65,16 @@ async function scanNativeRecovery(reset = true, includeAccounting = false): Prom
   try {
     const cursor = reset ? undefined : recoveryNextCursor.value
     if (!reset && !cursor) return
+    const request = ++storageRequest
     const info = await getNativeResourceStorageInfo()
+    if (request === storageRequest) {
+      nativeStorage.value = info
+      storageMeasuredAt.value = info ? Date.now() : 0
+    }
     const page = await nativeResourceRecoveryService.listCandidates(cursor, 100)
     if (!page || !info) {
-      nativeStorage.value = null
       return
     }
-    nativeStorage.value = info
     const previews: typeof recoveryCandidates.value = []
     for (const candidate of page.candidates) {
       const preview = info.recoveryMetadataVersion
@@ -307,6 +321,9 @@ async function exportDiagnostics(): Promise<void> {
             应用数据 {{ formatBytes(nativeStorage.totalBytes) }} · 原件对象
             {{ formatBytes(nativeStorage.objectBytes) }} · {{ nativeStorage.objectCount }} 个对象
           </small>
+          <small v-if="storageMeasuredAt">
+            占用统计于 {{ new Date(storageMeasuredAt).toLocaleTimeString('zh-CN') }}，非实时值
+          </small>
         </span>
         <span v-if="recoveryScanned" class="resource-health__candidate-count">
           已扫描 {{ recoveryScanned }} 项
@@ -405,6 +422,21 @@ async function exportDiagnostics(): Promise<void> {
           {{ formatBytes(nativeStorage.libraryBytes ?? 0) }}（其中原件
           {{ formatBytes(nativeStorage.objectBytes) }}，恢复暂存
           {{ formatBytes(nativeStorage.restoreTemporaryBytes ?? 0) }}）。
+        </p>
+        <p v-if="nativeStorage.webViewBreakdown">
+          网页容器内：数据库与站点存储
+          {{ formatBytes(nativeStorage.webViewBreakdown.siteDataBytes) }}；网络与代码缓存
+          {{ formatBytes(nativeStorage.webViewBreakdown.cacheBytes) }}；临时 Blob
+          {{ formatBytes(nativeStorage.webViewBreakdown.temporaryBlobBytes) }}；其他
+          {{ formatBytes(nativeStorage.webViewBreakdown.otherBytes) }}。
+          按目录分类，均包含在网页容器总量中；临时 Blob 不包含数据库保存的附件。
+        </p>
+        <p v-else-if="nativeStorage.webViewBytes !== undefined">
+          当前 APK 未提供网页容器内部明细，不能把这部分全部当作缓存。
+        </p>
+        <p>
+          “清理缓存”仅清理 APK 临时缓存与代码缓存，不会清空网页容器。
+          数据库空间与临时文件可能由系统延后回收；这些数字是磁盘占用，不是运行内存。
         </p>
         <p>
           数据库逻辑载荷：当前原件 {{ formatBytes(accounting.currentOriginalBytes) }}；历史原件
