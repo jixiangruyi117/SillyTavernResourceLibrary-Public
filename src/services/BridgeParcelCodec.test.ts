@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createParcel, readParcel, removeParcel } from './BridgeParcelCodec.mjs'
 import { handleParcel, cleanupParcels } from '../../cloudflare/BridgeParcels.js'
+import { createChatArchive, readChatArchive } from './TavernChatArchiveCodec.mjs'
 
 function mailbox() {
   const values = new Map<string, unknown>()
@@ -29,6 +30,22 @@ afterEach(() => {
   vi.useRealTimers()
 })
 describe('encrypted deferred Tavern parcels', () => {
+  it('retains the chat archive kind and both binary originals across encrypted deferred transfer', async () => {
+    mailbox()
+    const archive = createChatArchive(
+      new File(['PNG bytes'], 'a.png'),
+      new File(['{"mes":"原文"}\r\n'], '夜雨.jsonl'),
+      'a.png',
+    )
+    const sent = await createParcel('https://srl.test', [
+      { file: archive, kind: 'chat', displayName: '夜雨' },
+    ])
+    const [received] = await readParcel('https://srl.test', sent.ticket)
+    expect(received?.kind).toBe('chat')
+    const parts = await readChatArchive(received!.file)
+    expect(await parts.card.text()).toBe('PNG bytes')
+    expect(await parts.chat.text()).toBe('{"mes":"原文"}\r\n')
+  })
   it('transfers binary files across chunks, then permits deletion without exposing the plaintext or decryption key', async () => {
     const { values, fetcher } = mailbox()
     const content = 'PRIVATE-WORLD-BOOK-'.repeat(30000)

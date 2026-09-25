@@ -82,6 +82,7 @@ export interface PortableGeneralPreferences {
   previewPolicy: PreviewPolicy
   extractCharacterAssets: boolean
   hideCharacterAssets: boolean
+  hideChatDisplayRegex?: boolean
   showManuallyBoundResources?: boolean
   searchHistory: string[]
   blurThumbnails?: boolean

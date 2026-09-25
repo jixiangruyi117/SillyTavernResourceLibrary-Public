@@ -72,6 +72,19 @@ export interface PreviewSessionContext {
   }
 }
 
+/** An exported floor, not a reconstructed conversation or a greeting at message zero. */
+export interface ArchivedMessageSnapshot {
+  message_id: number
+  last_message_id: number
+  name: string
+  role: 'user' | 'assistant' | 'system'
+  is_hidden: boolean
+  message: string
+  data: Record<string, unknown>
+  extra: Record<string, unknown>
+  swipe_id: number
+}
+
 export interface RenderCompatibilityContextInput {
   greetings: string[]
   formattedGreetings: string[]
@@ -505,6 +518,7 @@ export function normalizeRenderCompatibilityScript(content: string): string {
 export function buildRenderCompatibilityHostRuntime(
   context: RenderCompatibilityContext,
   expectedFrameCount: number,
+  archivedMessage?: ArchivedMessageSnapshot,
 ): string {
   const payload = scriptJson(context)
   const events = scriptJson(RENDER_COMPATIBILITY_TAVERN_EVENTS)
@@ -513,6 +527,7 @@ export function buildRenderCompatibilityHostRuntime(
 
   return `<script>(()=>{'use strict';
 const context=${payload};const tavernEvents=${events};const protocol=${protocol};const control=${messages};
+const archived=${scriptJson(archivedMessage ?? null)};
 const clone=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 const diagnostics=new Map(context.diagnostics.map(item=>[item.capability,{...item}]));
 const report=item=>{try{parent.postMessage({protocol,type:control.diagnostic,diagnostic:clone(item)},'*')}catch{}};
@@ -607,6 +622,31 @@ const settleSwipeTransition=(target,changed)=>{const key=String(target);const wa
   const mvu=context.mvuRecognized?Object.freeze({events:Object.freeze(mvuEvents),getMvuData:(options={type:'message',message_id:'latest'})=>clone(requireMvu(options)),replaceMvuData:async(data,options={type:'message',message_id:'latest'})=>{if(!data||typeof data!=='object'||!data.stat_data||!data.schema)throw new TypeError('Invalid MvuData');await emit(mvuEvents.VARIABLE_UPDATE_STARTED,clone(data));api.replaceVariables({},data,options);await emit(mvuEvents.VARIABLE_UPDATE_ENDED,clone(data));return clone(data)},getCurrentMvuData:()=>clone(requireMvu({type:'message',message_id:'latest'})),replaceCurrentMvuData:async data=>mvu.replaceMvuData(data,{type:'message',message_id:'latest'}),getMvuVariable:(data,path,options={})=>clone(mvuPath(mvuRecord(data,options?.category||'stat'),path,options?.default_value)),getRecordFromMvuData:(data,category)=>clone(mvuRecord(data,category))}):undefined;
   if(mvu){touch('mvu.opening-preview',{implementationStatus:'PARTIAL',parityStatus:'UNVERIFIED',source:'preview-session',failureReason:[...context.mvuErrors,...context.unsupportedMvuOpeningUpdates].join('; ')||'only opening initialization is implemented',impact:'generation-time MVU lifecycle remains unavailable'});api.initializeGlobal({},'Mvu',mvu);void emit(mvuEvents.VARIABLE_INITIALIZED,clone(context.swipesData[context.greetingIndex]),context.greetingIndex)}
   let disposed=false;let handleHostMessage;let handlePagehide;let boot;
+  if(archived){
+    const selected=value=>value===undefined||value==='latest'||Number(value)===archived.message_id||Number(value)===archived.message_id-archived.last_message_id-1;
+    const snapshot=()=>{const {last_message_id,...message}=archived;return clone(message)};
+    api.getCurrentMessageId=()=>archived.message_id;
+    api.getMessageId=()=>archived.message_id;
+    api.getLastMessageId=()=>archived.last_message_id;
+    api.getChatMessages=(_meta,range='0-{{lastMessageId}}',options={})=>{
+      const text=String(range).replaceAll('{{lastMessageId}}',String(archived.last_message_id));
+      const ids=text.match(/^(-?\\d+)(?:-(-?\\d+))?$/);
+      if(!ids)return[];
+      const resolve=id=>Number(id)<0?archived.last_message_id+1+Number(id):Number(id);
+      const start=resolve(ids[1]),end=resolve(ids[2]??ids[1]);
+      if(archived.message_id<Math.min(start,end)||archived.message_id>Math.max(start,end))return[];
+      if(options.role&&options.role!=='all'&&options.role!==archived.role)return[];
+      if(options.hide_state&&options.hide_state!=='all'&&options.hide_state!==(archived.is_hidden?'hidden':'unhidden'))return[];
+      if(options.include_swipes)throw new Error('Archived preview exposes only the saved reply');
+      return[snapshot()];
+    };
+    api.getVariables=(_meta,options={})=>{
+      if(options.type!=='message'||!selected(options.message_id))throw new Error('Only this archived floor has a variable snapshot');
+      return clone(archived.data);
+    };
+    api.getAllVariables=()=>clone(archived.data);
+    for(const name of ['setChatMessages','setChatMessage','replaceVariables','updateVariablesWith','insertVariables','insertOrAssignVariables','deleteVariable'])api[name]=()=>{throw new Error('Archived chat snapshots are read-only')};
+  }
   const host={protocol,events:tavernEvents,diagnostics:()=>clone([...diagnostics.values()]),getInitializedGlobal(name){return globals.get(String(name))},invoke(name,args=[],meta={}){if(disposed)throw new Error('Preview host has been disposed');const fn=api[name];if(typeof fn!=='function'){touch(String(name),{implementationStatus:'UNSUPPORTED',parityStatus:'UNSUPPORTED_HOST_BOUND',source:'capability-boundary',failureReason:'API is not available in the SRL preview host',impact:'the calling script may be partial'});throw new Error('Unsupported host capability: '+String(name))}return fn(meta,...args)},subscribe(type,listener,owner,once=false){if(disposed)return{stop(){}};return on(type,listener,owner,once)},emit(type,args=[]){return disposed?Promise.resolve():emit(type,...args)},transitionSwipe,detach(owner){const owned=subscriptions.get(owner);if(!owned)return;for(const [type,list] of listeners)listeners.set(type,list.filter(item=>!owned.has(item)));subscriptions.delete(owner)},teardown(){if(disposed)return;disposed=true;window.removeEventListener('message',handleHostMessage);window.removeEventListener('pagehide',handlePagehide);document.removeEventListener('DOMContentLoaded',boot);for(const waiters of swipeTransitionWaiters.values())for(const resolve of waiters)resolve(false);swipeTransitionWaiters.clear();for(const waiters of globalWaiters.values())for(const resolve of waiters)resolve(undefined);globalWaiters.clear();globals.clear();listeners.clear();subscriptions.clear();if(window.__SRL_RENDER_COMPAT_HOST__===host)delete window.__SRL_RENDER_COMPAT_HOST__;if(window.tavern_events===tavernEvents)delete window.tavern_events},context(){return{chat:context.messageContextAvailable?[clone(message())]:[],characters:context.characterContextAvailable?[clone(context.characterData)]:[],characterId:context.characterContextAvailable?0:-1,eventSource:{emit:(type,...args)=>emit(type,...args)}}}};
 Object.defineProperty(window,'__SRL_RENDER_COMPAT_HOST__',{configurable:true,value:host});window.tavern_events=tavernEvents;
   const expected=${Math.max(0, Math.trunc(expectedFrameCount))};const ready=new Set();let booted=false;

@@ -21,7 +21,8 @@
     "secret:scan:history": "node scripts/SecretScan.mjs --history",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build && pnpm secret:scan && pnpm secret:scan:history"
+    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build && pnpm secret:scan && pnpm secret:scan:history",
+    "package:chat-reader": "node scripts/Build-ChatReader.mjs"
   },
   "dependencies": {
     "@adobe/css-tools": "4.4.4",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { externalAppSdkService, externalAppService } from '../core/AppContainer'
 import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
@@ -13,12 +13,30 @@ import {
   type InstalledExternalApp,
 } from '../types/ExternalApp'
 import FeatureAppHeader from './FeatureAppHeader.vue'
+import {
+  OPAQUE_PREVIEW_DOCUMENT_URL,
+  seedOpaquePreviewDocument,
+} from '../utils/OpaquePreviewDocument'
 import { downloadBlob } from '../utils/LibraryFormatting'
 
-const props = defineProps<{ appId: string }>()
+const ChatReaderFullPreview = defineAsyncComponent(() => import('./ChatReaderFullPreview.vue'))
+const chatPreview = ref<{
+  source: string
+  title: string
+  remote: boolean
+  snapshot: import('../utils/RenderCompatibilityRuntime').ArchivedMessageSnapshot
+}>()
+
+const props = defineProps<{ appId: string; official?: boolean }>()
 const emit = defineEmits<{ back: [] }>()
 
 const app = ref<InstalledExternalApp>()
+// A data document has a fresh opaque origin. Never combine this sandbox with host-origin srcdoc/blob.
+// Compatible nested previews may share their own origin, while the library stays cross-origin.
+const compatibleDocumentUrl = computed(() =>
+  app.value?.runtimeMode === 'trustedCompatible' ? OPAQUE_PREVIEW_DOCUMENT_URL : undefined,
+)
+
 const errorMessage = ref('')
 const notice = ref('')
 const frame = ref<HTMLIFrameElement>()
@@ -48,6 +66,14 @@ const permissionRequest = ref<{
   resolve: () => void
   reject: (reason: Error) => void
 }>()
+const permissionDialog = ref<HTMLDialogElement>()
+watch(
+  permissionRequest,
+  (request) => {
+    if (request) permissionDialog.value?.showModal()
+  },
+  { flush: 'post' },
+)
 const diagnostics = ref<Array<{ level: 'warn' | 'error'; message: string }>>([])
 let port: MessagePort | undefined
 let sessionNonce = ''
@@ -71,7 +97,9 @@ const requestTimes: number[] = []
 const SDK_REQUEST_WINDOW_MS = 10_000
 const SDK_REQUEST_LIMIT = 60
 const runtimeLabel = computed(() =>
-  app.value ? `本机 .srlapp · v${app.value.manifest.version}` : '正在准备隔离工作区',
+  app.value
+    ? `${props.official ? '内置 APP' : '本机 .srlapp'} · v${app.value.manifest.version}`
+    : '正在准备阅读工作区',
 )
 const filteredPickableResources = computed(() => {
   const keyword = resourceQuery.value.trim().toLocaleLowerCase()
@@ -186,6 +214,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           await reply(request.id, true, {
             ...(await externalAppSdkService.capabilities(current.id)),
             runtime: {
+              network: current.runtimeMode === 'trustedCompatible',
               sessionStorage: true,
               locks: true,
               fullscreen: true,
@@ -227,6 +256,105 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             await externalAppSdkService.get(current.id, request.payload?.id),
           )
           return
+        case 'chat.search':
+        case 'chat.chapters':
+        case 'chat.variables':
+        case 'chat.style':
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ,
+            request.method,
+            '定位指定聊天记录。',
+          )
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ,
+            request.method,
+            '读取指定聊天的有限章节摘录、已保存变量差异，或所选美化的聊天 CSS。',
+          )
+          await reply(
+            request.id,
+            true,
+            request.method === 'chat.variables'
+              ? await externalAppSdkService.chatVariables(current.id, request.payload)
+              : request.method === 'chat.chapters'
+                ? await externalAppSdkService.chatChapters(current.id, request.payload)
+                : request.method === 'chat.style'
+                  ? await externalAppSdkService.readerStyle(current.id, request.payload)
+                  : await externalAppSdkService.searchChat(current.id, request.payload),
+          )
+          return
+        case 'chat.preview':
+        case 'chat.read':
+        case 'resources.thumbnail': {
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ,
+            request.method,
+            '定位资源库中已保存的聊天记录或角色卡。',
+          )
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ,
+            request.method,
+            '分批读取聊天原文，或读取角色卡缩略头像；不会复制整库。',
+          )
+          if (request.payload?.remote === true) {
+            if (current.runtimeMode !== 'trustedCompatible')
+              throw new Error('远程资源需要信任兼容模式')
+            await ensurePermission(
+              current,
+              EXTERNAL_APP_PERMISSION.NETWORK_HTTPS,
+              request.method,
+              '加载该楼层内容中引用的远程图片、媒体或样式。',
+            )
+          }
+          const value =
+            request.method !== 'resources.thumbnail'
+              ? await externalAppSdkService.readChat(
+                  current.id,
+                  request.method === 'chat.preview'
+                    ? { ...request.payload, limit: 1 }
+                    : request.payload,
+                )
+              : await externalAppSdkService.thumbnail(current.id, request.payload?.id)
+          if (request.method === 'chat.preview' && value && 'messages' in value) {
+            const entry = value.messages[0]
+            if (!entry) throw new Error('该楼层不存在')
+            chatPreview.value = {
+              source: entry.displaySource,
+              snapshot: entry.snapshot,
+              title: `第 ${entry.index + 1} 楼`,
+              remote: request.payload?.remote === true,
+            }
+            await reply(request.id, true, null)
+          } else await reply(request.id, true, value)
+          return
+        }
+        case 'chat.bind': {
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ,
+            request.method,
+            '查找待绑定的聊天与角色。',
+          )
+          const source = await externalAppSdkService.list(current.id, {
+            types: ['chat'],
+            limit: 50,
+          })
+          const title =
+            source.items.find((item) => item.id === request.payload?.id)?.name ??
+            String(request.payload?.id)
+          await ensurePermission(
+            current,
+            EXTERNAL_APP_PERMISSION.RESOURCES_WRITE,
+            request.method,
+            `将聊天“${title}”绑定到所选角色卡（${String(request.payload?.characterId)}），替换该聊天原有的角色关联。聊天原件不变。`,
+          )
+          await externalAppSdkService.bindChat(current.id, request.payload)
+          await reply(request.id, true, null)
+          return
+        }
         case 'resources.pick':
           await ensurePermission(
             current,
@@ -514,6 +642,12 @@ function exitFromHandle(): void {
 }
 
 function connect(): void {
+  if (
+    app.value?.runtimeMode === 'trustedCompatible' &&
+    frame.value &&
+    seedOpaquePreviewDocument(frame.value, app.value.runtimeHtml)
+  )
+    return
   port?.close()
   const target = frame.value?.contentWindow
   if (!target) return
@@ -591,6 +725,12 @@ function toggleFullscreen(): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && chatPreview.value) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    chatPreview.value = undefined
+    return
+  }
   if (event.key === 'Escape' && resourcePicker.value) {
     event.preventDefault()
     cancelResourcePick()
@@ -610,6 +750,16 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 function handleBackRequest(event: Event): void {
+  if (chatPreview.value && event instanceof CustomEvent) {
+    const detail = event.detail as SrlBackRequestDetail | undefined
+    if (detail && !detail.handled) {
+      detail.handled = true
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      chatPreview.value = undefined
+    }
+    return
+  }
   if (!isFullscreen.value || !(event instanceof CustomEvent)) return
   const detail = event.detail as SrlBackRequestDetail | undefined
   if (!detail || detail.handled) return
@@ -662,7 +812,7 @@ onBeforeUnmount(() => {
     <FeatureAppHeader
       v-if="!isFullscreen"
       :title="hostTitle || app?.manifest.name || '第三方 APP'"
-      back-label="返回扩展管理"
+      :back-label="official ? '返回功能桌面' : '返回扩展管理'"
       @back="emit('back')"
     >
       <template #actions>
@@ -696,10 +846,11 @@ onBeforeUnmount(() => {
     <Teleport :disabled="!isFullscreen" to="body">
       <section
         v-if="app"
+        v-show="!chatPreview"
         class="external-app-host__workspace"
         :class="{ 'external-app-host__workspace--immersive': isFullscreen }"
         :style="{ '--external-app-splash': app.manifest.splashColor || '#237f87' }"
-        aria-label="第三方 APP 独立工作区"
+        :aria-label="official ? '读了么阅读工作区' : '第三方 APP 独立工作区'"
       >
         <header v-if="!isFullscreen" class="external-app-host__runtime">
           <span><i aria-hidden="true"></i>独立工作区</span>
@@ -709,14 +860,19 @@ onBeforeUnmount(() => {
           v-if="previewEnabled"
           ref="frame"
           class="external-app-host__frame"
-          :srcdoc="app.runtimeHtml"
-          sandbox="allow-scripts"
+          :srcdoc="app.runtimeMode === 'trustedCompatible' ? undefined : app.runtimeHtml"
+          :src="compatibleDocumentUrl"
+          :sandbox="
+            app.runtimeMode === 'trustedCompatible'
+              ? 'allow-scripts allow-same-origin'
+              : 'allow-scripts'
+          "
           referrerpolicy="no-referrer"
-          :title="`${app.manifest.name} 第三方 APP`"
+          :title="`${app.manifest.name} ${official ? '内置 APP' : '第三方 APP'}`"
           @load="connect"
         ></iframe>
         <p v-else class="external-app-host__loading" role="status">
-          第三方 APP 已暂停，回到当前页面后自动恢复
+          APP 已暂停，回到当前页面后自动恢复
         </p>
         <p v-if="loadingLabel" class="external-app-host__loading" role="status">
           {{ loadingLabel }}
@@ -780,12 +936,14 @@ onBeforeUnmount(() => {
           <footer><button type="button" @click="cancelResourcePick">取消</button></footer>
         </div>
       </section>
-      <section
+      <dialog
         v-if="permissionRequest"
+        ref="permissionDialog"
         class="external-app-permission"
         role="dialog"
         aria-modal="true"
         aria-labelledby="external-app-permission-title"
+        @cancel.prevent="decidePermission('denied')"
         @click.self="decidePermission('denied')"
       >
         <div class="external-app-permission__panel">
@@ -818,7 +976,12 @@ onBeforeUnmount(() => {
             </button>
           </footer>
         </div>
-      </section>
+      </dialog>
+      <ChatReaderFullPreview
+        v-if="chatPreview"
+        v-bind="chatPreview"
+        @close="chatPreview = undefined"
+      />
     </Teleport>
   </main>
 </template>

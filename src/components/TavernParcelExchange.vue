@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { tavernHttpFetch } from '../services/TavernHttpTransport'
 import { resourceService } from '../core/AppContainer'
+import { confirmAction } from '../composables/UseConfirmDialog'
+import { prepareChatReturn } from '../services/TavernChatReturn'
 import {
   createParcel,
   readParcel,
@@ -14,6 +16,10 @@ import type { ResourceSummary } from '../types/Resource'
 const props = defineProps<{ resources: ResourceSummary[]; initialIds?: string[] }>()
 const emit = defineEmits<{ 'import-files': [files: File[]] }>()
 const selected = ref<string[]>(props.initialIds ?? [])
+const includeChatRegex = ref(false)
+const hasSelectedChat = computed(() =>
+  props.resources.some((item) => item.type === 'chat' && selected.value.includes(item.id)),
+)
 const resources = computed(() => props.resources.filter((item) => bridgeKindOfResource(item)))
 const busy = ref(false)
 const progress = ref('')
@@ -52,20 +58,27 @@ async function send() {
     if (outgoing.value) throw new Error('请先复制当前口令，或删除当前暂存后再发送')
     if (selected.value.length > 100) throw new Error('每次最多暂存 100 项，请分批发送')
     const payload: ParcelFile[] = []
+    const chatTargets: string[] = []
     let bytes = 0
     for (const id of selected.value) {
       if (operation?.signal.aborted) throw new Error('已取消暂存')
       const resource = await resourceService.get(id)
       const kind = resource && bridgeKindOfResource(resource)
       if (!resource || !kind) throw new Error('所选资源已不存在或不支持暂存')
+      const chatPlan =
+        kind === 'chat'
+          ? await prepareChatReturn(resource, resourceService, undefined, includeChatRegex.value)
+          : undefined
+      if (chatPlan) chatTargets.push(`${resource.name} → ${chatPlan.targetLabel}`)
       bytes += resource.originalBlob.size
       if (bytes > 16 * 1024 * 1024) throw new Error('所选内容超过 16 MiB，请分批暂存或使用实时互传')
       payload.push({
         file: new File([resource.originalBlob], resource.fileName, { type: resource.mimeType }),
         kind,
         displayName: resource.name,
-        targetName:
-          typeof resource.metadata.extractedFromCharacterName === 'string'
+        targetName: chatPlan
+          ? chatPlan.avatar
+          : typeof resource.metadata.extractedFromCharacterName === 'string'
             ? resource.metadata.extractedFromCharacterName
             : typeof resource.metadata.extractedFromPresetName === 'string'
               ? resource.metadata.extractedFromPresetName
@@ -73,7 +86,31 @@ async function send() {
                 ? resource.metadata.sourceName
                 : undefined,
       })
+      if (chatPlan?.regexFile) {
+        bytes += chatPlan.regexFile.size
+        if (bytes > 16 * 1024 * 1024) throw new Error('聊天与配套正则超过 16 MiB，请使用实时互传')
+        payload.push({
+          file: chatPlan.regexFile,
+          kind: 'regexCharacter',
+          targetName: chatPlan.avatar,
+          displayName: '聊天配套正则（停用）',
+        })
+      }
     }
+    if (
+      chatTargets.length &&
+      !(await confirmAction({
+        title: '确认聊天暂存范围',
+        message:
+          chatTargets.join('\n') +
+          '\n\n领取时请再次核对酒馆角色。聊天将保留为新记录。' +
+          (includeChatRegex.value
+            ? '配套正则会添加到目标角色并保持停用。'
+            : '只导入聊天记录，酒馆原有正则保持不变。'),
+        confirmLabel: '确认并生成口令',
+      }))
+    )
+      return
     const result = await createParcel(
       base,
       payload,
@@ -187,6 +224,12 @@ function importReceived() {
       </fieldset>
       <fieldset v-else :disabled="busy">
         <template v-if="!outgoing">
+          <label v-if="hasSelectedChat"
+            >聊天导入范围<select v-model="includeChatRegex">
+              <option :value="false">只导入聊天记录（默认）</option>
+              <option :value="true">同时导入配套正则（停用）</option>
+            </select></label
+          >
           <label
             >选择资源<input
               v-model="search"
@@ -321,6 +364,7 @@ label {
   min-width: 0;
   font-size: var(--text-body);
 }
+select,
 input:not([type='checkbox']),
 textarea {
   box-sizing: border-box;

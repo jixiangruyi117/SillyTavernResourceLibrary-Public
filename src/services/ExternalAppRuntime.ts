@@ -176,6 +176,7 @@ export const RUNTIME_BRIDGE = `<script>
     port.postMessage({ type: 'srl:request', nonce, id, sequence: nextId, method, payload });
   });
   window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
     if (event.data?.type === 'srl:fullscreen') {
       isFullscreen = event.data.enabled === true;
       return;
@@ -285,7 +286,15 @@ export const RUNTIME_BRIDGE = `<script>
       pick: (options) => request('resources.pick', options || {}),
       list: (options) => request('resources.list', options || {}),
       get: (id) => request('resources.get', { id }),
-      update: (change) => request('resources.update', change || {})
+      update: (change) => request('resources.update', change || {}),
+      searchChat: (options) => request('chat.search', options || {}),
+      chatVariables: (options) => request('chat.variables', options || {}),
+      chatChapters: (options) => request('chat.chapters', options || {}),
+      readerStyle: (id, options = {}) => request('chat.style', { ...options, id }),
+      readChat: (options) => request('chat.read', options || {}),
+      previewChat: (options) => request('chat.preview', options || {}),
+      bindChat: (id, characterId) => request('chat.bind', { id, characterId }),
+      thumbnail: (id) => request('resources.thumbnail', { id })
     }),
     notify: (message) => request('ui.notify', { message }),
     ui: Object.freeze({
@@ -387,7 +396,7 @@ export function buildRuntimeHtml(
   const policy = document.createElement('meta')
   policy.httpEquiv = 'Content-Security-Policy'
   policy.content = allowExternal
-    ? "default-src 'none'; script-src 'unsafe-inline' https: blob:; style-src 'unsafe-inline' https:; img-src data: https: blob:; font-src data: https:; media-src data: https: blob:; connect-src https:; frame-src https:; object-src 'none'; base-uri 'none'; form-action https:"
+    ? "default-src 'none'; script-src 'unsafe-inline' https: blob:; style-src 'unsafe-inline' https:; img-src data: https: blob:; font-src data: https:; media-src data: https: blob:; connect-src https:; frame-src https: data:; object-src 'none'; base-uri 'none'; form-action https:"
     : "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
   head.prepend(policy)
   policy.insertAdjacentHTML('afterend', RUNTIME_BRIDGE)

@@ -78,6 +78,72 @@ function resource(overrides: Partial<ResourceSummary>): ResourceSummary {
   } as ResourceSummary
 }
 
+describe('聊天回传确认与默认范围', () => {
+  it('sends nothing after cancel, then sends only the original chat to the confirmed avatar by default', async () => {
+    vi.clearAllMocks()
+    tavernConnectionStore.clearInventory()
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://localhost:8000',
+      bridgeVersion: '0.3.36-chat.4',
+      capabilities: ['chat-import-v1'],
+      transport: 'relay',
+    } as ReturnType<typeof bridgeMocks.getState>)
+    bridgeMocks.listResources.mockResolvedValue([
+      {
+        id: 'character:card.png',
+        kind: 'character',
+        name: '目标角色',
+        fileName: 'card.png',
+        detail: '',
+      },
+    ])
+    const card = {
+      ...resource({ id: 'card', fileName: 'card.png' }),
+      originalBlob: new Blob(['card']),
+    }
+    const chat = {
+      ...resource({
+        id: 'chat',
+        type: RESOURCE_TYPE.CHAT,
+        fileName: '雨夜.jsonl',
+        relatedResourceIds: ['card'],
+      }),
+      originalBlob: new Blob(['{"user_name":"User"}\n{"mes":"原文"}']),
+    }
+    vi.mocked(resourceService.get).mockImplementation(async (id) => (id === 'card' ? card : chat))
+    const w = mount(TavernBridgeCenter, {
+      props: { resources: [chat, card], initialLocalIds: ['chat'] },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    const send = w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((item) => item.text().includes('发送'))!
+    vi.mocked(confirmAction).mockResolvedValueOnce(false)
+    await send.trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.sendFiles).not.toHaveBeenCalled()
+    expect(confirmAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '确认导入聊天记录',
+        message: expect.stringContaining('目标角色（card.png）'),
+      }),
+    )
+    vi.mocked(confirmAction).mockResolvedValueOnce(true)
+    await send.trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1)
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledWith(
+      [expect.objectContaining({ kind: 'chat', targetName: 'card.png' })],
+      'copy',
+      expect.any(Function),
+    )
+  })
+})
+
 describe('TavernBridgeCenter 的作者小工具入口', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -216,6 +282,41 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
       .trigger('click')
     await flushPromises()
     expect(bridgeMocks.listResources).toHaveBeenCalledTimes(2)
+  })
+
+  it('loads saved chats only on request and retains the other resource inventory', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'http://127.0.0.1:8000',
+      bridgeVersion: '0.3.36-chat.1',
+      capabilities: ['chat-archive-v1'],
+    } as ReturnType<typeof bridgeMocks.getState>)
+    bridgeMocks.listResources.mockResolvedValue([
+      { id: 'theme:one', kind: 'theme', name: '保留主题', fileName: 'one.json', detail: '' },
+    ])
+    const wrapper = render()
+    await flushPromises()
+    expect(bridgeMocks.listResources).toHaveBeenCalledTimes(1)
+    bridgeMocks.listResources.mockResolvedValue([
+      {
+        id: 'chat:one',
+        kind: 'chat',
+        name: '雨夜',
+        fileName: '雨夜.srlchat',
+        detail: '陆沉 · 随附角色卡',
+      },
+    ])
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '读取聊天记录')!
+      .trigger('click')
+    await flushPromises()
+    expect(bridgeMocks.listResources).toHaveBeenLastCalledWith('chat')
+    expect(wrapper.text()).toContain('雨夜')
+    expect(wrapper.text()).toContain('随附角色卡')
+    expect(tavernConnectionStore.getSnapshot().inventory).toHaveLength(2)
   })
 
   it('shows explicit avatar choices only for selected personas and gates old Bridge versions', async () => {

@@ -16,7 +16,7 @@ const inventory = json('official-app-assets.json')
 const catalog = json(`official-apps/${inventory.shellVersion}/catalog.json`)
 const offline = json('offline-assets.json')
 const optional = new Set(inventory.files.map((path) => '/' + path))
-assert.equal(Object.keys(catalog.apps).length, 8)
+assert.equal(Object.keys(catalog.apps).length, 9)
 for (const [id, download] of Object.entries(catalog.apps)) {
   const bytes = read(download.url)
   assert.equal(bytes.length, download.downloadBytes, id)
@@ -84,5 +84,5 @@ for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
   }
 }
 console.log(
-  `Official APP packages verified: 8 current + ${retainedPackages} retained packages, ${optional.size} optional assets; final bytes and offline boundaries match.`,
+  `Official APP packages verified: ${Object.keys(catalog.apps).length} current + ${retainedPackages} retained packages, ${optional.size} optional assets; final bytes and offline boundaries match.`,
 )

@@ -76,6 +76,7 @@ export function normalizeContentSelection(
     plaintextSecretCopy: selection?.plaintextSecretCopy === true,
     aiTaggingState: selection?.aiTaggingState === true,
     externalApps: selection?.externalApps === true,
+    chatReader: selection?.chatReader !== false,
     stitchWork: selection?.stitchWork === true,
     communitySources: selection?.communitySources === true,
   }

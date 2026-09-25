@@ -1,3 +1,4 @@
+import { jsonChatRecords, summarizeChat } from './ChatResourceParser'
 import type { ParsedResource } from '../types/Import'
 import { parseGreetingResource } from '../types/GreetingResource'
 import { RESOURCE_TYPE, type ResourceType } from '../types/Resource'
@@ -430,6 +431,8 @@ export class JsonResourceParser implements ResourceParser {
     if (!isRecord(content) && !Array.isArray(content)) {
       throw new Error('JSON 顶层必须是对象或数组')
     }
+
+    if (jsonChatRecords(content)) return summarizeChat(file, 'json')
 
     if (isRecord(content) && content.format === 'srl-personal-resource') {
       const { parsePersonalResource } = await import('../types/PersonalResource')

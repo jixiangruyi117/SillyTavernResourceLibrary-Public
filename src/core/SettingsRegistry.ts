@@ -45,6 +45,12 @@ function booleanSetting(
 }
 
 const DEFINITIONS = [
+  booleanSetting('srl.library.hideChatDisplayRegex', true, {
+    scope: 'device',
+    portable: true,
+    secret: false,
+    platform: 'all',
+  }),
   booleanSetting('srl.library.showManuallyBoundResources', true, {
     scope: 'device',
     portable: true,

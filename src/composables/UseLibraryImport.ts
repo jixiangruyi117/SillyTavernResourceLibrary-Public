@@ -7,6 +7,7 @@ import {
   resourceService,
 } from '../core/AppContainer'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
+import { confirmChatImports } from './UseChatImportConfirmation'
 import { confirmAction } from './UseConfirmDialog'
 import type { ImportVersionCandidate } from '../types/Import'
 import {
@@ -320,6 +321,8 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     context.isBusy.value = true
     let resultsReceived = false
     try {
+      const chatOptions = await confirmChatImports(files, resourceService)
+      if (!chatOptions) return false
       const { protectPersonalImport } = await import('../services/PersonalResourceImport')
       const { requestSecretPassword } = await import('./UseSecretPasswordPrompt')
       const protectedFiles = []
@@ -332,6 +335,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           ),
         )
       const results = await resourceService.importFiles(protectedFiles, {
+        ...chatOptions,
         extractCharacterAssets: context.extractCharacterAssets.value,
       })
       resultsReceived = true

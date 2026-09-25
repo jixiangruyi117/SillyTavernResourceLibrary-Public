@@ -26,6 +26,7 @@ const props = defineProps<{
   preloadBeautificationPreviews: boolean
   extractCharacterAssets: boolean
   hideCharacterAssets: boolean
+  hideChatDisplayRegex: boolean
   showManuallyBoundResources: boolean
   blurThumbnails: boolean
   showPerformanceMonitor: boolean
@@ -42,6 +43,7 @@ const emit = defineEmits<{
   'update:preloadBeautificationPreviews': [value: boolean]
   'update:extractCharacterAssets': [value: boolean]
   'update:hideCharacterAssets': [value: boolean]
+  'update:hideChatDisplayRegex': [value: boolean]
   'update:showManuallyBoundResources': [value: boolean]
   'update:blurThumbnails': [value: boolean]
   'update:showPerformanceMonitor': [value: boolean]
@@ -392,6 +394,22 @@ async function clearOfflineResources(): Promise<void> {
               :checked="hideCharacterAssets"
               @change="
                 emit('update:hideCharacterAssets', ($event.target as HTMLInputElement).checked)
+              "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+          <label class="settings-switch-row">
+            <span
+              ><strong>隐藏聊天记录配套正则</strong
+              ><small
+                >只隐藏随聊天关联的显示正则；读了么、导出与备份仍可使用，独立正则不受影响。</small
+              ></span
+            >
+            <input
+              type="checkbox"
+              :checked="hideChatDisplayRegex"
+              @change="
+                emit('update:hideChatDisplayRegex', ($event.target as HTMLInputElement).checked)
               "
             />
             <i aria-hidden="true"></i>

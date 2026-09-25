@@ -65,6 +65,7 @@ export function useCloudBackupCenter(
     credentials: false,
     aiTaggingState: false,
     externalApps: false,
+    chatReader: true,
     stitchWork: false,
   }
 
@@ -242,6 +243,7 @@ export function useCloudBackupCenter(
     setScope('extra.credentials', configured.credentials, false)
     setScope('extra.aiTaggingState', configured.aiTaggingState, false)
     setScope('extra.externalApps', configured.externalApps, false)
+    setScope('extra.chatReader', configured.chatReader, true)
     setScope('extra.stitchWork', configured.stitchWork, false)
     setScope('extra.communitySources', configured.communitySources, false)
     setScope('extra.appearance', configured.appearance, true)
@@ -295,6 +297,7 @@ export function useCloudBackupCenter(
     if (activeContentSelection.value.aiTaggingState) labels.push('AI 标签草稿')
     if (activeContentSelection.value.stitchWork) labels.push('预设缝合草稿')
     if (activeContentSelection.value.externalApps) labels.push('第三方 APP 数据')
+    if (activeContentSelection.value.chatReader) labels.push('读了么阅读数据')
     if (activeContentSelection.value.communitySources) labels.push('Discord 社区内容')
     if (activeContentSelection.value.appearance) labels.push('外观与 CSS')
     if (activeContentSelection.value.generalPreferences) labels.push('常用偏好')

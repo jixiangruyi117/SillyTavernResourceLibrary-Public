@@ -1,4 +1,5 @@
 import { RestoreDuplicateIndex, restoreVersionKey } from '../utils/RestoreIdentity'
+import { remapReaderPortableData } from './ChatReaderPortableData'
 import { strFromU8 } from 'fflate'
 import { stageArchive } from './ArchiveExtraction'
 
@@ -232,12 +233,18 @@ function remapManualBindings(
   metadata: Record<string, unknown>,
   ids: Map<string, string>,
 ): Record<string, unknown> {
-  if (!Array.isArray(metadata.manuallyBoundResourceIds)) return metadata
   return {
     ...metadata,
-    manuallyBoundResourceIds: metadata.manuallyBoundResourceIds.flatMap((id) =>
-      typeof id === 'string' ? [ids.get(id) ?? id] : [],
-    ),
+    ...(typeof metadata.chatDisplayRegexId === 'string'
+      ? { chatDisplayRegexId: ids.get(metadata.chatDisplayRegexId) ?? metadata.chatDisplayRegexId }
+      : {}),
+    ...(Array.isArray(metadata.manuallyBoundResourceIds)
+      ? {
+          manuallyBoundResourceIds: metadata.manuallyBoundResourceIds.flatMap((id) =>
+            typeof id === 'string' ? [ids.get(id) ?? id] : [],
+          ),
+        }
+      : {}),
   }
 }
 
@@ -485,6 +492,7 @@ export class RestoreService {
             manifest.portableData?.appearance ? '外观与 CSS 预设' : '',
             manifest.portableData?.cloudBackup ? '云端备份配置' : '',
             manifest.portableData?.characterDraw ? '抽了么记录' : '',
+            manifest.portableData?.chatReader ? '读了么阅读数据' : '',
             manifest.portableData?.generalPreferences ? '常用偏好' : '',
             mappedCommunitySourceData ? 'Discord 社区来源' : '',
           ].filter(Boolean),
@@ -492,7 +500,7 @@ export class RestoreService {
         resources: normalizedResources,
         versions: versionsToRestore,
         categories: categoriesToCreate,
-        portableData: manifest.portableData,
+        portableData: remapReaderPortableData(manifest.portableData, resourceIdMap),
         communitySourceData: mappedCommunitySourceData,
       }
     } finally {
@@ -703,13 +711,14 @@ export class RestoreService {
           portableData.appearance ? '外观与 CSS 预设' : '',
           portableData.cloudBackup ? '云端备份配置' : '',
           portableData.characterDraw ? '抽了么记录' : '',
+          portableData.chatReader ? '读了么阅读数据' : '',
           portableData.generalPreferences ? '常用偏好' : '',
         ].filter(Boolean),
       },
       resources: normalizedResources,
       versions: versionsToRestore,
       categories: categoriesToCreate,
-      portableData,
+      portableData: remapReaderPortableData(portableData, resourceIdMap),
     }
   }
 

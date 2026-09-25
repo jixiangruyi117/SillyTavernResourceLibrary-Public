@@ -319,6 +319,15 @@ async function downloadPreviewResource(
   }
 }
 
+/** Reuse native/web asset transport without preloading a stylesheet's images or fonts. */
+export async function readPreviewStylesheet(url: string): Promise<string> {
+  const resource = await downloadPreviewResource(url, new PreviewResourceBudget())
+  if (!resource.isCss) throw new Error('外部资源不是样式表')
+  const text = resource.cssText ?? (await resource.blob?.text()) ?? ''
+  if (text.length > 200_000) throw new Error('外部样式表过大')
+  return rewriteCssUrls(text, new Map(), resource.resolvedUrl)
+}
+
 function rewriteCssUrls(
   value: string,
   resources: ReadonlyMap<string, string>,

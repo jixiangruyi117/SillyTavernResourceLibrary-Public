@@ -56,6 +56,21 @@ afterEach(async () => {
 })
 
 describe('ExternalAppService', () => {
+  it('keeps reader data through promotion and backs it up separately from third-party code', async () => {
+    const id = 'com.srl.duleme'
+    const service = createService(`reader-${crypto.randomUUID()}`)
+    await service.install(createPackage({ ...manifest, id }))
+    await service.setData(id, 'chat:rain', { note: '留住这一楼', marks: [{ floor: 2, reply: 1 }] })
+    await service.install(createPackage({ ...manifest, id, version: '2.0.0' }))
+    expect(await service.getData(id, 'chat:rain')).toMatchObject({ note: '留住这一楼' })
+    expect(await service.list()).toEqual([])
+    expect(await service.exportPortableState()).toEqual({ apps: [], data: [] })
+    const data = await service.exportReaderData()
+    const restored = createService(`reader-restore-${crypto.randomUUID()}`)
+    await restored.importReaderData(data)
+    await restored.install(createPackage({ ...manifest, id }))
+    expect(await restored.getData(id, 'chat:rain')).toEqual(data[0]!.value)
+  })
   it('restores exported apps disabled and without their former grants', async () => {
     const source = createService(`external-export-${crypto.randomUUID()}`)
     await source.install(createPackage(manifest))

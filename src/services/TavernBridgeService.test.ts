@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BRIDGE_EXTENSION_VERSION } from '../utils/BridgeInstall'
 import { TavernBridgeService, TavernHttpRelayPort } from './TavernBridgeService'
 import { tavernEnvelope } from './TavernBridgeProtocol'
+import { createChatArchive, readChatArchive } from './TavernChatArchiveCodec.mjs'
+import { hashBlob } from './HashService'
 
 interface BridgeServiceTestAccess {
   handlePortMessage(message: unknown): Promise<void>
@@ -12,6 +14,73 @@ interface BridgeServiceTestAccess {
 }
 
 describe('TavernBridgeService', () => {
+  it('requests chats only from a capable peer and receives their archive over the existing checked chunks', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      removeEventListener: vi.fn(),
+      addEventListener: vi.fn(),
+      location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+    })
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(tavernEnvelope('st-ready', { bridgeVersion: '0.3.35' }))
+    await expect(service.listResources('chat')).rejects.toThrow('不支持聊天')
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: '0.3.36-chat.1',
+        capabilities: ['chat-archive-v1'],
+      }),
+    )
+    const list = service.listResources('chat')
+    const query = port.postMessage.mock.calls.at(-1)![0]
+    expect(query.kind).toBe('chat')
+    const item = {
+      id: 'chat:fixture',
+      kind: 'chat' as const,
+      name: '夜雨',
+      fileName: '夜雨.srlchat',
+      detail: '随附角色卡',
+    }
+    await access.handlePortMessage(
+      tavernEnvelope('list-response', { requestId: query.requestId, items: [item] }),
+    )
+    expect(await list).toEqual([item])
+    const pending = service.pullResources([item])
+    const requestId = port.postMessage.mock.calls.at(-1)![0].requestId
+    const file = createChatArchive(
+      new File(['png'], 'a.png'),
+      new File(['原文'], '夜雨.jsonl'),
+      'a.png',
+    )
+    const transferId = 'chat-transfer'
+    await access.handlePortMessage(
+      tavernEnvelope('file-start', {
+        requestId,
+        transferId,
+        direction: 'to-srl',
+        name: file.name,
+        mimeType: file.type,
+        kind: 'chat',
+        size: file.size,
+        sha256: await hashBlob(file),
+      }),
+    )
+    await access.handlePortMessage(
+      tavernEnvelope('file-chunk', {
+        requestId,
+        transferId,
+        index: 0,
+        data: await file.arrayBuffer(),
+      }),
+    )
+    await access.handlePortMessage(tavernEnvelope('file-end', { requestId, transferId }))
+    await access.handlePortMessage(tavernEnvelope('pull-complete', { requestId, completed: 1 }))
+    expect(await (await readChatArchive((await pending)[0]!)).chat.text()).toBe('原文')
+    service.destroy()
+  })
   it('acknowledges identical repeated chunks without counting them twice and rejects invalid indices', async () => {
     const service = new TavernBridgeService()
     const access = service as unknown as BridgeServiceTestAccess & {

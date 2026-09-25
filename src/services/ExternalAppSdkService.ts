@@ -1,3 +1,11 @@
+import {
+  chatCharacterSummary,
+  chatCharacterThumbnail,
+  resolveChatCharacter,
+} from './ChatReaderCharacter'
+import { isRecord } from '../utils/UnknownValue'
+import { ChatReaderService } from './ChatReaderService'
+import { OPAQUE_PREVIEW_DOCUMENT_URL } from '../utils/OpaquePreviewDocument'
 import type { ResourceService } from './ResourceService'
 import type { ExternalAppResourceUpdate } from './ResourceService'
 import type { ExternalAppService } from './ExternalAppService'
@@ -32,6 +40,8 @@ export interface ExternalAppResourceSnapshot {
   revision: number
   format: string
   formatVersion: number
+  chatCharacter?: { id: string; name: string; hash: string }
+  messageCount?: number
   data?: Record<string, unknown>
 }
 
@@ -162,6 +172,12 @@ function toSnapshot(
     format: typeof resource.metadata.format === 'string' ? resource.metadata.format : 'unknown',
     formatVersion:
       typeof resource.metadata.parserVersion === 'number' ? resource.metadata.parserVersion : 1,
+    ...(resource.type === RESOURCE_TYPE.CHAT
+      ? {
+          messageCount: Number(resource.metadata.messageCount) || 0,
+          chatCharacter: chatCharacterSummary(resource.metadata),
+        }
+      : {}),
     ...(includeData ? { data: cloneMetadata(resource.metadata) } : {}),
   }
 }
@@ -197,7 +213,7 @@ export class ExternalAppSdkService {
     const types = normalizeTypes(options.types)
     const offset = normalizedInteger(options.offset, 0, 100_000)
     const limit = normalizedInteger(options.limit, 25, MAX_PAGE_SIZE)
-    const matches = (await this.resources.listSummaries()).filter(
+    const matches = (await this.resources.listResourceListSummaries()).filter(
       (resource) => !types || types.includes(resource.type),
     )
     const items = matches.slice(offset, offset + limit).map((resource) => toSnapshot(resource))
@@ -214,6 +230,306 @@ export class ExternalAppSdkService {
     const resource = await this.resources.get(normalizeResourceId(resourceId))
     if (!resource) throw new Error('资源不存在或已被删除')
     return toSnapshot(resource, true)
+  }
+
+  async readChat(appId: string, payload: unknown) {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const input = (payload ?? {}) as Record<string, unknown>
+    const textOnly = input.textOnly === true
+    if (
+      !textOnly &&
+      input.interactive === true &&
+      (await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible'
+    )
+      throw new Error('交互状态栏需要信任兼容模式')
+    if (!textOnly && input.remote === true) {
+      await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.NETWORK_HTTPS)
+      if ((await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible')
+        throw new Error('远程资源需要信任兼容模式')
+    }
+    const reader = new ChatReaderService(this.resources)
+    const id = normalizeResourceId(input.id)
+    const page = await reader.read(
+      id,
+      normalizedInteger(input.offset, 0, 10_000_000),
+      normalizedInteger(input.limit, 20, 50),
+    )
+    const chat = await reader.getChat(id)
+    const character = await resolveChatCharacter(chat, this.resources)
+    const card = character.card
+    const names = Array.isArray(chat.metadata.chatUserNames) ? chat.metadata.chatUserNames : []
+    const userName =
+      typeof input.userName === 'string' && input.userName.trim()
+        ? input.userName.trim().slice(0, 160)
+        : names.length === 1 && typeof names[0] === 'string'
+          ? names[0]
+          : undefined
+    const {
+      chatRenderInput,
+      transformChatInputs,
+      formatChatResult,
+      chatRegexProfileRules,
+      archivedChatSnapshot,
+      interactiveChatFrontend,
+      selectChatReply,
+    } = await import('./ChatReaderRendering')
+    let extraRules: unknown[] = []
+    let presetRules: unknown[] = []
+    if (typeof chat.metadata.chatDisplayRegexId === 'string') {
+      const regex = await this.resources.get(chat.metadata.chatDisplayRegexId)
+      if (regex?.type === RESOURCE_TYPE.REGEX && regex.originalBlob.size <= 2 * 1024 * 1024) {
+        const data: unknown = JSON.parse(await regex.originalBlob.text())
+        if (isRecord(data)) {
+          if (Array.isArray(data.global)) extraRules = data.global
+          if (Array.isArray(data.preset)) presetRules = data.preset
+        }
+      }
+    }
+    const regexContext = isRecord(chat.metadata.chatRegexContext)
+      ? chat.metadata.chatRegexContext
+      : {}
+    const ruleOverrides = isRecord(input.ruleOverrides)
+      ? Object.fromEntries(
+          Object.entries(input.ruleOverrides)
+            .slice(0, 384)
+            .filter((pair): pair is [string, boolean] => typeof pair[1] === 'boolean'),
+        )
+      : {}
+    const renderOptions = {
+      regex: input.regex !== false,
+      userName,
+      extraRules,
+      presetRules,
+      regexContext,
+      ruleOverrides,
+    }
+    const regexRules = await chatRegexProfileRules(
+      card,
+      renderOptions,
+      isRecord(input.profileRuleOverrides) ? input.profileRuleOverrides : {},
+    )
+    renderOptions.ruleOverrides = Object.fromEntries(
+      regexRules.map((rule) => [rule.key, rule.enabled]),
+    )
+    const replyOverrides = isRecord(input.replyOverrides) ? input.replyOverrides : {}
+    const selectedMessages = page.messages.map((entry) =>
+      selectChatReply(entry, replyOverrides[String(entry.index)]),
+    )
+    const inputs = selectedMessages.map((entry) => chatRenderInput(entry, card, renderOptions))
+    const results = await transformChatInputs(inputs)
+    const panelTheme =
+      input.panelAppearance === 'reader'
+        ? input.theme === 'night'
+          ? 'night'
+          : input.theme === 'green'
+            ? 'green'
+            : 'paper'
+        : undefined
+    const messages = []
+    const panelColor = document.createElement('span').style
+    if (input.panelAppearance === 'reader' && typeof input.panelInk === 'string')
+      panelColor.color = input.panelInk
+    let responseBytes = 0
+    let nextOffset = page.nextOffset
+    for (const [index, entry] of selectedMessages.entries()) {
+      const result = results[index]!
+      const source = result.contents[0] ?? entry.message.mes
+      const rendered = formatChatResult(
+        source,
+        input.remote === true,
+        input.blendPanels !== false,
+        panelTheme,
+        textOnly,
+      )
+      const snapshot = archivedChatSnapshot(entry, page.total)
+      const interactiveFrontends: string[] = []
+      if (!textOnly && input.interactive === true)
+        for (const frontend of rendered.formatted.frontendBlocks)
+          interactiveFrontends.push(
+            await interactiveChatFrontend(
+              frontend,
+              input.remote === true,
+              snapshot,
+              panelColor.color ||
+                (input.blendPanels === false
+                  ? undefined
+                  : input.theme === 'night'
+                    ? '#d0d3c6'
+                    : '#26382f'),
+              input.theme === 'night' ? 'dark' : 'light',
+              panelTheme,
+            ),
+          )
+      const renderedEntry = {
+        ...entry,
+        archivedSwipeId: Number(page.messages[index]!.message.swipe_id) || 0,
+        displaySource: source,
+        html: rendered.html,
+        frontends: rendered.frontends,
+        interactiveFrontends,
+        snapshot,
+        frontendCount: rendered.frontendCount,
+        errors: result.errors,
+      }
+      const bytes = textEncoder.encode(JSON.stringify(renderedEntry)).length
+      if (messages.length && responseBytes + bytes > 8 * 1024 * 1024) {
+        nextOffset = entry.index
+        break
+      }
+      if (bytes > 8 * 1024 * 1024)
+        throw new Error(`第 ${entry.index + 1} 楼渲染内容过大，请使用精简模式或关闭正则`)
+      responseBytes += bytes
+      messages.push(renderedEntry)
+    }
+    // Warm only the next adjacent floor's pure regex projection. No media/script documents are built.
+    if (input.prefetch === true && page.nextOffset !== null) {
+      void reader
+        .read(id, page.nextOffset, 1)
+        .then((neighbor) =>
+          transformChatInputs(
+            neighbor.messages.map((entry) =>
+              chatRenderInput(
+                selectChatReply(entry, replyOverrides[String(entry.index)]),
+                card,
+                renderOptions,
+              ),
+            ),
+          ),
+        )
+        .catch(() => undefined) // Speculative work; entering that floor reports errors through normal readChat.
+    }
+    let replyDiff
+    if (Array.isArray(input.compareReplies)) {
+      if (input.compareReplies.length !== 2 || !page.messages[0])
+        throw new Error('请选择两条回复比较')
+      const variants = input.compareReplies.map((value) =>
+        selectChatReply(page.messages[0]!, value),
+      )
+      const projections = await transformChatInputs(
+        variants.map((entry) => chatRenderInput(entry, card, renderOptions)),
+      )
+      const text = projections.map((result) => {
+        const rendered = formatChatResult(result.contents[0] || '', false)
+        const template = document.createElement('template')
+        template.innerHTML = rendered.html
+        template.content
+          .querySelectorAll('[data-chat-frontend],script,style')
+          .forEach((el) => el.remove())
+        template.content
+          .querySelectorAll('p,br,div,li')
+          .forEach((el) => el.append(document.createTextNode('\n')))
+        return (template.content.textContent || '').trim().slice(0, 30000)
+      })
+      const { diffLines } = await import('../utils/ResourceDiff')
+      replyDiff = {
+        lines: diffLines(text[0]!, text[1]!),
+        errors: projections.flatMap((result) => result.errors),
+        limit: 30000,
+      }
+    }
+    return {
+      ...page,
+      nextOffset,
+      messages,
+      regexRules,
+      replyDiff,
+      presetName: regexContext.presetName,
+      previewDocumentUrl: OPAQUE_PREVIEW_DOCUMENT_URL,
+      userNames: names,
+      characterId: character!.id,
+    }
+  }
+
+  async searchChat(appId: string, payload: unknown) {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const input = (payload ?? {}) as Record<string, unknown>
+    if (typeof input.query !== 'string') throw new Error('请输入搜索词')
+    return new ChatReaderService(this.resources).search(
+      normalizeResourceId(input.id),
+      input.query,
+      normalizedInteger(input.offset, 0, 10_000_000),
+    )
+  }
+
+  async chatChapters(appId: string, payload: unknown) {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const input = (payload ?? {}) as Record<string, unknown>
+    return new ChatReaderService(this.resources).chapters(
+      normalizeResourceId(input.id),
+      normalizedInteger(input.offset, 0, 10_000_000),
+    )
+  }
+
+  async chatVariables(appId: string, payload: unknown) {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const input = (payload ?? {}) as Record<string, unknown>
+    return new ChatReaderService(this.resources).variableReview(
+      normalizeResourceId(input.id),
+      normalizedInteger(input.floor, 0, 10_000_000),
+      isRecord(input.replyOverrides) ? input.replyOverrides : {},
+    )
+  }
+
+  async readerStyle(appId: string, payload: unknown) {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const input = (payload ?? {}) as Record<string, unknown>
+    if (
+      input.fonts === true &&
+      input.remote === true &&
+      (await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible'
+    )
+      throw new Error('请先使用兼容模式，再加载外部字体')
+    const resource = await this.resources.get(normalizeResourceId(input.id))
+    if (!resource || resource.type !== RESOURCE_TYPE.BEAUTIFICATION)
+      throw new Error('请选择资源库中的美化')
+    if (resource.originalBlob.size > 256 * 1024)
+      throw new Error('美化文件超过 256 KiB，请先提取聊天区域的 CSS')
+    const source = await resource.originalBlob.text()
+    let css = source
+    let theme: Record<string, unknown> = {}
+    if (resource.metadata.format !== 'css' && resource.metadata.format !== 'text') {
+      const parsed: unknown = JSON.parse(source)
+      if (!isRecord(parsed) || typeof parsed.custom_css !== 'string')
+        throw new Error('美化不含可用的聊天 CSS')
+      theme = parsed
+      css = parsed.custom_css
+    }
+    const { chatReaderCss, chatReaderFonts } = await import('./ChatReaderRendering')
+    return {
+      name: resource.name,
+      css: chatReaderCss(css, theme),
+      fonts: input.fonts === true ? await chatReaderFonts(css, input.remote === true) : undefined,
+    }
+  }
+
+  async bindChat(appId: string, payload: unknown): Promise<void> {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_WRITE)
+    const input = (payload ?? {}) as Record<string, unknown>
+    await new ChatReaderService(this.resources).bind(
+      normalizeResourceId(input.id),
+      normalizeResourceId(input.characterId),
+    )
+  }
+
+  async thumbnail(appId: string, resourceId: unknown): Promise<Blob | null> {
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
+    await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ)
+    const resource = await this.resources.get(normalizeResourceId(resourceId))
+    if (!resource) return null
+    if (resource.type === RESOURCE_TYPE.CHAT)
+      return chatCharacterThumbnail(resource.metadata) ?? null
+    if (resource.type !== RESOURCE_TYPE.CHARACTER_CARD) return null
+    // Only a bounded raster thumbnail is exposed, never the original PNG/card payload.
+    const blob = resource.thumbnailBlob
+    return blob && blob.size <= 512 * 1024 && /^image\/(png|jpeg|webp)$/.test(blob.type)
+      ? blob
+      : null
   }
 
   async listPickable(appId: string, payload: unknown): Promise<ExternalAppResourceSnapshot[]> {

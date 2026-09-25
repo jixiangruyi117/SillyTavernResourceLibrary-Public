@@ -43,6 +43,11 @@ function descriptor(
 }
 
 const REGISTRY: Record<ResourceType, ResourceInspectorDescriptor> = {
+  [RESOURCE_TYPE.CHAT]: descriptor(RESOURCE_TYPE.CHAT, {
+    actions: BASE_ACTIONS,
+    preview: 'text',
+    diffRenderer: 'text',
+  }),
   [RESOURCE_TYPE.GREETING]: descriptor(RESOURCE_TYPE.GREETING, {
     actions: BASE_ACTIONS,
     preview: 'structured',

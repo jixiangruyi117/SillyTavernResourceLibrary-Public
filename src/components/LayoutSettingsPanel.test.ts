@@ -49,6 +49,7 @@ function mountSettings() {
       preloadBeautificationPreviews: true,
       extractCharacterAssets: false,
       hideCharacterAssets: false,
+      hideChatDisplayRegex: true,
       showManuallyBoundResources: true,
       blurThumbnails: false,
       showPerformanceMonitor: false,

@@ -20,6 +20,7 @@ export interface CloudBackupContentSelection {
   credentials?: boolean
   aiTaggingState?: boolean
   externalApps?: boolean
+  chatReader?: boolean
   stitchWork?: boolean
   communitySources?: boolean
   appearance?: boolean

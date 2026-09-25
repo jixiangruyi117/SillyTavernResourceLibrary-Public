@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  buildArchivedChatFrontendDocument,
   buildRichContentPreview,
   hasRichPreviewContent,
   replacePreviewMacros,
@@ -11,6 +12,37 @@ import {
 
 const staticPolicy = { allowRemoteResources: false, allowScripts: false }
 const scriptPolicy = { allowRemoteResources: true, allowScripts: true }
+
+it('matches both archived iframe documents to the reader color scheme without changing card colors', () => {
+  const snapshot = {
+    message_id: 0,
+    last_message_id: 0,
+    name: '角色',
+    role: 'assistant' as const,
+    is_hidden: false,
+    message: '',
+    data: {},
+    extra: {},
+    swipe_id: 0,
+  }
+  const result = buildArchivedChatFrontendDocument(
+    '<body><style>.card{background:skyblue}</style><div class="card">状态</div></body>',
+    staticPolicy,
+    undefined,
+    snapshot,
+    '#d0d3c6',
+    'dark',
+  )
+  expect(result).toContain(':root{color-scheme:dark}')
+  const child = readFrontendSrcdoc(result)
+  expect(child).toContain(':root{color-scheme:dark}')
+  expect(child).toContain('background:skyblue')
+  expect(child).toContain('html,body{background:transparent!important}')
+  const original = readFrontendSrcdoc(
+    buildArchivedChatFrontendDocument('<body>状态</body>', staticPolicy, undefined, snapshot),
+  )
+  expect(original).not.toContain(':root{color-scheme:dark}')
+})
 
 function readOuterBody(documentSource: string): HTMLElement {
   return new DOMParser().parseFromString(documentSource, 'text/html').body
@@ -21,6 +53,44 @@ function readFrontendSrcdoc(documentSource: string): string {
     readOuterBody(documentSource).querySelector<HTMLIFrameElement>('div.TH-render iframe')
   return iframe?.getAttribute('srcdoc') ?? ''
 }
+
+it('relaxes only animated disclosure caps, retaining collapse and deliberate scrolling', () => {
+  const markup = `<style>
+    .contents{max-height:2000px;overflow:hidden;transition:max-height .4s}
+    .closed .contents{max-height:0}
+    .scroll{max-height:200px;overflow:auto;transition:max-height .4s}
+    .closed .scroll{max-height:0}
+    .crop{max-height:100px;overflow:hidden;transition:max-height .4s}
+  </style><div class="closed"><div class="contents">内容</div></div>`
+  const source = buildArchivedChatFrontendDocument(markup, scriptPolicy, undefined, {
+    message_id: 0,
+    last_message_id: 0,
+    name: '角色',
+    role: 'assistant',
+    is_hidden: false,
+    message: '',
+    data: {},
+    extra: {},
+    swipe_id: 0,
+  })
+  const child = new DOMParser().parseFromString(readFrontendSrcdoc(source), 'text/html')
+  const runtime = child.querySelector('script[data-srl-archive-disclosures]')?.textContent
+  expect(runtime).toBeTruthy()
+  const style = document.createElement('style')
+  // Only the author stylesheet is needed to exercise the CSSOM adaptation.
+  style.textContent = markup.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
+  document.head.append(style)
+  try {
+    new Function('document', 'CSSRule', runtime!)(document, CSSRule)
+    const rules = Array.from(style.sheet!.cssRules) as CSSStyleRule[]
+    expect(rules[0]!.style.getPropertyValue('max-height')).toBe('none')
+    expect(rules[1]!.style.getPropertyValue('max-height')).toBe('0px')
+    expect(rules[2]!.style.getPropertyValue('max-height')).toBe('200px')
+    expect(rules[4]!.style.getPropertyValue('max-height')).toBe('100px')
+  } finally {
+    style.remove()
+  }
+})
 
 function readHostContext(documentSource: string): {
   formattedGreetings?: string[]

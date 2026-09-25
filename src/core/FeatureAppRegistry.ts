@@ -1,4 +1,5 @@
 export type BuiltInFeatureAppId =
+  | 'chatReader'
   | 'draw'
   | 'appearance'
   | 'folders'
@@ -44,6 +45,16 @@ export const FEATURE_APP_REGISTRY: readonly FeatureAppDescriptor[] = [
     sortOrder: 10,
     visible: true,
     badge: (context) => `${context.drawCount} 次`,
+  },
+  {
+    id: 'chatReader',
+    page: 'chatReader',
+    name: '读了么',
+    description: '按角色整理聊天、沉浸阅读与收藏',
+    icon: 'reader',
+    sortOrder: 15,
+    visible: true,
+    badge: '聊天记录阅读器',
   },
   {
     id: 'appearance',

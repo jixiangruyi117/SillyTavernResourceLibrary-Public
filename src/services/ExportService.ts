@@ -27,6 +27,7 @@ import {
 } from './CommunitySourceAttachmentArchive'
 import {
   getRelatedResourceIds,
+  includeChatCompanionIds,
   getResourceCategoryIds,
   isUserPersonaAvatarAttachment,
   normalizeResourceLinks,
@@ -150,6 +151,7 @@ function selectResourcesForArchive(resources: Resource[], options: ArchiveOption
     )
   if (options.mode === 'full' || !options.resourceIds) return resources
   const selectedIds = new Set(options.resourceIds)
+  includeChatCompanionIds(resources, selectedIds)
   for (const resource of resources) {
     if (resource.type !== RESOURCE_TYPE.USER_PERSONA || !selectedIds.has(resource.id)) continue
     for (const relatedId of getRelatedResourceIds(resource)) {

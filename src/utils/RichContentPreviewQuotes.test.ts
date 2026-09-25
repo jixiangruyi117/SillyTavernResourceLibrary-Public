@@ -35,7 +35,7 @@ describe('RichContentPreview quote rendering parity', () => {
 
     expect(result.document).toContain("event.data?.type==='SRL_VIEWPORT_HEIGHT'")
     expect(result.document).toContain(
-      "parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound},'*')",
+      "parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound,height:Math.ceil(height)},'*')",
     )
     expect(result.document).toContain(
       "if(frame.dataset.srlViewportBound==='true')frame.contentWindow?.postMessage({type:'SRL_VIEWPORT_HEIGHT',height:hostViewportHeight},'*')",

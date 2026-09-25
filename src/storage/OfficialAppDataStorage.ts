@@ -1,6 +1,8 @@
 import type { AppDatabase } from '../database/AppDatabase'
 import type { OfficialAppId } from '../types/OfficialApp'
 import { localCredentialStore } from '../services/LocalCredentialStore'
+import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
+import { IndexedDbExternalAppStorage } from './IndexedDbExternalAppStorage'
 
 const keys: Partial<Record<OfficialAppId, string[]>> = {
   draw: ['srl.draw.showNames'],
@@ -33,6 +35,8 @@ export async function clearOfficialAppData(
   id: OfficialAppId,
 ): Promise<void> {
   localStorage.setItem(`srl.officialApps.dataRevision.${id}`, crypto.randomUUID())
+  if (id === 'chatReader')
+    await new IndexedDbExternalAppStorage(database).clearData(CHAT_READER_APP_ID)
   if (id === 'draw') await database.settings.delete('feature.characterDraw')
   if (id === 'frontendWorkshop') {
     const tables = [

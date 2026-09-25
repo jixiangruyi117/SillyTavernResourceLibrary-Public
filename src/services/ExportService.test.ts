@@ -45,6 +45,29 @@ const categories: Category[] = [
 ]
 
 describe('ExportService', () => {
+  it('exports a selected chat with its bound card and hidden display regex, excluding unrelated resources', async () => {
+    const chat = {
+      ...createResource('chat', null, '{"mes":"rain"}'),
+      type: RESOURCE_TYPE.CHAT,
+      relatedResourceIds: ['card'],
+      metadata: { chatDisplayRegexId: 'regex' },
+    }
+    const card = { ...createResource('card', null, 'card'), type: RESOURCE_TYPE.CHARACTER_CARD }
+    const regex = { ...createResource('regex', null, 'regex'), type: RESOURCE_TYPE.REGEX }
+    const result = await new ExportService().createArchive(
+      [chat, card, regex, createResource('other', null, 'x')],
+      [],
+      { mode: 'partial', resourceIds: ['chat'] },
+    )
+    expect(result.manifest.resources.map((item) => item.id).sort()).toEqual([
+      'card',
+      'chat',
+      'regex',
+    ])
+    expect(
+      result.manifest.resources.find((item) => item.id === 'chat')?.metadata.chatDisplayRegexId,
+    ).toBe('regex')
+  })
   it('streams archive output to a writer without materializing resource arrayBuffers', async () => {
     const resource = createResource('streamed', null, '正文'.repeat(200_000))
     Object.defineProperty(resource.originalBlob, 'arrayBuffer', {

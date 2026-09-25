@@ -5,6 +5,7 @@ import { parseSillyTavernPersonaBackup } from '../parser/SillyTavernPersonaBacku
 import { browserStorageService, resourceService } from '../core/AppContainer'
 import { tavernConnectionStore, type TavernConnectionSnapshot } from '../core/TavernConnectionStore'
 import { canUseLocalTavernDirect } from '../services/LanDirectService'
+import { prepareChatReturn, type ChatReturnPlan } from '../services/TavernChatReturn'
 import type {
   TavernConflictPolicy,
   TavernResourceItem,
@@ -45,6 +46,7 @@ export type TavernBridgeCenterEvents = {
 }
 
 export type LocalSendFilter =
+  | 'chat'
   | 'all'
   | 'character'
   | 'worldBook'
@@ -309,6 +311,7 @@ export function useTavernBridgeCenter(
   const supportedLocalResources = computed(() =>
     props.resources.filter(
       (resource) =>
+        (resource.type === RESOURCE_TYPE.CHAT && state.value.transport !== 'directory') ||
         resource.type === RESOURCE_TYPE.USER_PERSONA ||
         resource.type === RESOURCE_TYPE.CHARACTER_CARD ||
         resource.type === RESOURCE_TYPE.WORLD_BOOK ||
@@ -319,6 +322,14 @@ export function useTavernBridgeCenter(
         (resource.type === RESOURCE_TYPE.BEAUTIFICATION &&
           resource.metadata.detectedVariant === 'theme'),
     ),
+  )
+  const includeChatRegex = ref(false)
+  const chatReturnPlans = new Map<string, ChatReturnPlan>()
+  const selectedChatCount = computed(
+    () =>
+      supportedLocalResources.value.filter(
+        (item) => item.type === RESOURCE_TYPE.CHAT && selectedLocalIds.value.has(item.id),
+      ).length,
   )
   watch(selectedPersonaCount, (count) => {
     if (count && conflictPolicy.value === 'copy') conflictPolicy.value = 'skip'
@@ -357,6 +368,7 @@ export function useTavernBridgeCenter(
         { key: 'all', label: '全部' },
         { key: 'userPersona', label: '用户人设' },
         { key: 'character', label: '角色卡' },
+        { key: 'chat', label: '聊天记录' },
         { key: 'worldBook', label: '世界书' },
         { key: 'preset', label: '预设' },
         { key: 'regex', label: '正则' },
@@ -382,7 +394,8 @@ export function useTavernBridgeCenter(
         (!showOnlySelectedTavern.value || selectedTavernIds.value.has(item.id)) &&
         (!keyword ||
           item.name.toLocaleLowerCase().includes(keyword) ||
-          item.fileName.toLocaleLowerCase().includes(keyword)),
+          item.fileName.toLocaleLowerCase().includes(keyword) ||
+          (item.kind === 'chat' && item.detail.toLocaleLowerCase().includes(keyword))),
     )
   })
 
@@ -393,6 +406,7 @@ export function useTavernBridgeCenter(
       { key: 'all', label: '全部' },
       { key: 'userPersona', label: '用户人设' },
       { key: 'character', label: '角色卡' },
+      { key: 'chat', label: '聊天记录' },
       { key: 'worldBook', label: '世界书' },
       { key: 'preset', label: '预设' },
       { key: 'regexGlobal', label: '全局正则' },
@@ -506,13 +520,14 @@ export function useTavernBridgeCenter(
     progress.value = '已断开；可用本机连接或设备码重新连接。'
   }
 
-  async function refreshTavernResources(): Promise<void> {
+  async function refreshTavernResources(kind?: 'chat'): Promise<void> {
     if (busy.value || state.value.status !== 'connected') return
     busy.value = true
     error.value = ''
     progress.value = '正在读取酒馆资源目录…'
     try {
-      tavernItems.value = await tavernConnectionStore.refreshInventory()
+      tavernItems.value = await tavernConnectionStore.refreshInventory(kind)
+      if (kind) tavernReceiveFilter.value = kind
       selectedTavernIds.value = new Set(
         Array.from(selectedTavernIds.value).filter((id) =>
           tavernItems.value.some((item) => item.id === id),
@@ -525,7 +540,9 @@ export function useTavernBridgeCenter(
       ) {
         tavernReceiveFilter.value = tavernReceiveFilters.value[1].key
       }
-      progress.value = `已读取 ${tavernItems.value.length} 项酒馆资源`
+      progress.value = kind
+        ? `已读取 ${tavernItems.value.filter((item) => item.kind === kind).length} 条已保存聊天；接收时随附所属角色卡`
+        : `已读取 ${tavernItems.value.length} 项酒馆资源`
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : '无法读取酒馆资源'
     } finally {
@@ -565,6 +582,7 @@ export function useTavernBridgeCenter(
 
   function tavernResourceLabel(kind: TavernResourceKind): string {
     const labels: Record<TavernResourceKind, string> = {
+      chat: '聊天记录',
       character: '角色卡',
       worldBook: '世界书',
       preset: '预设',
@@ -690,6 +708,7 @@ export function useTavernBridgeCenter(
   }
 
   function bridgeKind(resource: ResourceSummary): TavernResourceKind {
+    if (resource.type === RESOURCE_TYPE.CHAT) return 'chat'
     if (resource.type === RESOURCE_TYPE.USER_PERSONA) return 'userPersona'
     if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) return 'character'
     if (resource.type === RESOURCE_TYPE.WORLD_BOOK) return 'worldBook'
@@ -707,6 +726,7 @@ export function useTavernBridgeCenter(
   }
 
   function matchesLocalSendFilter(resource: ResourceSummary, filter: LocalSendFilter): boolean {
+    if (filter === 'chat') return resource.type === RESOURCE_TYPE.CHAT
     if (filter === 'userPersona') return resource.type === RESOURCE_TYPE.USER_PERSONA
     if (filter === 'all') return true
     if (filter === 'character') return resource.type === RESOURCE_TYPE.CHARACTER_CARD
@@ -738,6 +758,38 @@ export function useTavernBridgeCenter(
     busy.value = true
     try {
       if (!(await confirmDirectoryWrite())) return
+      if (summaries.some((resource) => resource.type === RESOURCE_TYPE.CHAT)) {
+        if (!state.value.capabilities.includes('chat-import-v1'))
+          throw new Error('请先更新酒馆互传扩展：当前版本不支持聊天回传')
+        const inventory = await tavernBridgeService.listResources()
+        chatReturnPlans.clear()
+        for (const summary of summaries.filter((item) => item.type === RESOURCE_TYPE.CHAT)) {
+          const chat = await resourceService.get(summary.id)
+          if (!chat) throw new Error('聊天记录已不存在')
+          chatReturnPlans.set(
+            chat.id,
+            await prepareChatReturn(chat, resourceService, inventory, includeChatRegex.value),
+          )
+        }
+        if (
+          !(await confirmAction({
+            title: '确认导入聊天记录',
+            message:
+              [...chatReturnPlans]
+                .map(
+                  ([id, plan]) =>
+                    `${summaries.find((item) => item.id === id)!.name} → ${plan.targetLabel}`,
+                )
+                .join('\n') +
+              '\n\n聊天会作为新记录导入，不切换当前聊天，不覆盖原记录。' +
+              (includeChatRegex.value
+                ? '\n配套正则会添加为目标角色的停用正则；不修改全局或预设正则，需在酒馆选择启用。'
+                : '\n只导入聊天记录，酒馆原有正则保持不变。'),
+            confirmLabel: '确认目标并导入',
+          }))
+        )
+          return
+      }
       const scriptCount = summaries.filter(
         (resource) => resource.type === RESOURCE_TYPE.SCRIPT,
       ).length
@@ -791,6 +843,8 @@ export function useTavernBridgeCenter(
         operationId: crypto.randomUUID(),
       }))
       await runSendQueue(summaries, avatarPlans, personaPlans)
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '发送失败'
     } finally {
       busy.value = false
     }
@@ -964,6 +1018,9 @@ export function useTavernBridgeCenter(
         try {
           const resource = await resourceService.get(summary.id)
           if (!resource) throw new Error('资源已不存在')
+          const chatPlan = chatReturnPlans.get(resource.id)
+          if (resource.type === RESOURCE_TYPE.CHAT && !chatPlan)
+            throw new Error('请重新选择聊天并确认接收角色')
           const avatarPlan = avatarPlans.get(summary.id)
           if (
             summary.type === RESOURCE_TYPE.USER_PERSONA &&
@@ -1004,8 +1061,9 @@ export function useTavernBridgeCenter(
                 kind: bridgeKind(summary),
                 displayName: summary.name,
                 operationId: entry.operationId,
-                targetName:
-                  typeof resource.metadata.extractedFromCharacterName === 'string'
+                targetName: chatPlan
+                  ? chatPlan.avatar
+                  : typeof resource.metadata.extractedFromCharacterName === 'string'
                     ? resource.metadata.extractedFromCharacterName
                     : typeof resource.metadata.extractedFromPresetName === 'string'
                       ? resource.metadata.extractedFromPresetName
@@ -1014,11 +1072,27 @@ export function useTavernBridgeCenter(
                         : undefined,
               },
             ],
-            personaPlan?.file ? 'skip' : conflictPolicy.value,
+            chatPlan ? 'copy' : personaPlan?.file ? 'skip' : conflictPolicy.value,
             (_completed, _total, detail) => {
               if (detail) progress.value = detail
             },
           )
+          if (chatPlan?.regexFile) {
+            avatarDetail = '聊天已导入'
+            await tavernBridgeService.sendFiles(
+              [
+                {
+                  file: chatPlan.regexFile,
+                  kind: 'regexCharacter',
+                  displayName: '聊天配套正则（停用）',
+                  targetName: chatPlan.avatar,
+                  operationId: entry.operationId + ':regex',
+                },
+              ],
+              'copy',
+            )
+            avatarDetail = '配套正则已添加，保持停用'
+          }
           entry.status = 'done'
           entry.detail = [
             result?.status === 'skipped'
@@ -1063,6 +1137,7 @@ export function useTavernBridgeCenter(
   }
 
   function resourceLabel(resource: ResourceSummary): string {
+    if (resource.type === RESOURCE_TYPE.CHAT) return '聊天记录'
     if (resource.type === RESOURCE_TYPE.USER_PERSONA) return '用户人设'
     if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) return '角色卡'
     if (resource.type === RESOURCE_TYPE.WORLD_BOOK) return '世界书'
@@ -1155,6 +1230,8 @@ export function useTavernBridgeCenter(
     itemExistsLocally,
     pullFromTavern,
     localSendFilters,
+    includeChatRegex,
+    selectedChatCount,
     localSendFilter,
     search,
     bridgeFolderFilter,

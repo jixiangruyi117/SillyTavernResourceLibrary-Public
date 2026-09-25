@@ -65,6 +65,8 @@ const {
   resourceExistsInTavern,
   conflictPolicy,
   personaAvatarMode,
+  includeChatRegex,
+  selectedChatCount,
   selectedPersonaCount,
   canCheckPersonaAvatars,
   sendConflictCount,
@@ -315,7 +317,15 @@ const {
           <div>
             <h2>酒馆资源</h2>
           </div>
-          <button type="button" :disabled="busy" @click="refreshTavernResources">刷新目录</button>
+          <button type="button" :disabled="busy" @click="refreshTavernResources()">刷新目录</button>
+          <button
+            v-if="state.capabilities?.includes('chat-archive-v1')"
+            type="button"
+            :disabled="busy"
+            @click="refreshTavernResources('chat')"
+          >
+            读取聊天记录
+          </button>
         </header>
         <div class="tavern-bridge-explorer">
           <div class="tavern-bridge-type-filter" aria-label="酒馆资源类型筛选">
@@ -380,7 +390,7 @@ const {
             <i aria-hidden="true"></i>
             <span class="tavern-bridge-resource-card__body"
               ><strong>{{ item.name }}</strong
-              ><small>{{ item.fileName }}</small></span
+              ><small>{{ item.kind === 'chat' ? item.detail : item.fileName }}</small></span
             >
             <span class="tavern-bridge-resource-card__meta">
               <em>{{ tavernResourceLabel(item.kind) }}</em>
@@ -488,6 +498,31 @@ const {
             </span>
           </summary>
           <div class="tavern-bridge-send-options__body">
+            <fieldset v-if="selectedChatCount" class="tavern-bridge-conflicts">
+              <legend>聊天记录导入</legend>
+              <label
+                ><input
+                  v-model="includeChatRegex"
+                  type="radio"
+                  :value="false"
+                  :disabled="busy"
+                /><span
+                  ><strong>只导入聊天记录</strong
+                  ><small>默认，使用酒馆已有正则；始终保留聊天副本</small></span
+                ></label
+              >
+              <label
+                ><input
+                  v-model="includeChatRegex"
+                  type="radio"
+                  :value="true"
+                  :disabled="busy"
+                /><span
+                  ><strong>同时导入配套正则</strong
+                  ><small>添加到目标角色并保持停用，随后在酒馆选择启用</small></span
+                ></label
+              >
+            </fieldset>
             <fieldset class="tavern-bridge-conflicts">
               <legend>{{ selectedPersonaCount ? '人设同名时' : '资源同名时' }}</legend>
               <label

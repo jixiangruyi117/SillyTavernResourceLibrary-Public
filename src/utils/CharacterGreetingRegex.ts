@@ -52,16 +52,34 @@ function finiteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(number) ? number : fallback
 }
 
-function appliesAtOpeningDepth(script: Record<string, unknown>): boolean {
-  const minimum = Number(firstDefined(script, 'minDepth', 'min_depth'))
-  const maximum = Number(firstDefined(script, 'maxDepth', 'max_depth'))
-  if (Number.isFinite(minimum) && minimum >= -1 && OPENING_MESSAGE_DEPTH < minimum) return false
-  if (Number.isFinite(maximum) && maximum >= 0 && OPENING_MESSAGE_DEPTH > maximum) return false
+function appliesAtOpeningDepth(
+  script: Record<string, unknown>,
+  depth = OPENING_MESSAGE_DEPTH,
+): boolean {
+  const minimumValue = firstDefined(script, 'minDepth', 'min_depth')
+  const minimum = minimumValue == null ? NaN : Number(minimumValue)
+  const maximumValue = firstDefined(script, 'maxDepth', 'max_depth')
+  const maximum = maximumValue == null ? NaN : Number(maximumValue)
+  if (Number.isFinite(minimum) && minimum >= -1 && depth < minimum) return false
+  if (Number.isFinite(maximum) && maximum >= 0 && depth > maximum) return false
   return true
 }
 
-function resolvePhase(script: Record<string, unknown>): CharacterGreetingRegexPhase | undefined {
-  if (script.disabled === true || script.enabled === false || !appliesAtOpeningDepth(script)) {
+export interface DisplayRegexScope {
+  placement: number
+  depth: number
+  displayOnly: boolean
+}
+
+function resolvePhase(
+  script: Record<string, unknown>,
+  scope?: DisplayRegexScope,
+): CharacterGreetingRegexPhase | undefined {
+  if (
+    script.disabled === true ||
+    script.enabled === false ||
+    !appliesAtOpeningDepth(script, scope?.depth)
+  ) {
     return undefined
   }
 
@@ -70,7 +88,11 @@ function resolvePhase(script: Record<string, unknown>): CharacterGreetingRegexPh
   const placements = Array.isArray(script.placement)
     ? script.placement.map(Number).filter(Number.isFinite)
     : []
-  if (!placements.includes(AI_OUTPUT_PLACEMENT) && source?.ai_output !== true) return undefined
+  if (
+    !placements.includes(scope?.placement ?? AI_OUTPUT_PLACEMENT) &&
+    !(scope?.placement === undefined && source?.ai_output === true)
+  )
+    return undefined
 
   const displayOnly =
     script.markdownOnly === true || script.markdown_only === true || destination?.display === true
@@ -78,16 +100,19 @@ function resolvePhase(script: Record<string, unknown>): CharacterGreetingRegexPh
 
   const promptOnly =
     script.promptOnly === true || script.prompt_only === true || destination?.prompt === true
-  return promptOnly ? undefined : 'aiOutput'
+  return promptOnly || scope?.displayOnly ? undefined : 'aiOutput'
 }
 
-export function extractCharacterGreetingRegexRules(value: unknown): CharacterGreetingRegexRule[] {
+export function extractCharacterGreetingRegexRules(
+  value: unknown,
+  scope?: DisplayRegexScope,
+): CharacterGreetingRegexRule[] {
   if (!Array.isArray(value)) return []
 
   const rules: CharacterGreetingRegexRule[] = []
   for (const [index, candidate] of value.entries()) {
     if (rules.length >= RULE_LIMIT || !isRecord(candidate)) break
-    const phase = resolvePhase(candidate)
+    const phase = resolvePhase(candidate, scope)
     if (!phase) continue
 
     const find = stringValue(firstDefined(candidate, 'findRegex', 'find_regex')).trim()

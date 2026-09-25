@@ -3,6 +3,7 @@ import { isRecord } from '../utils/UnknownValue'
 export const RESOURCE_TYPE = {
   CHARACTER_CARD: 'characterCard',
   GREETING: 'greeting',
+  CHAT: 'chat',
   USER_PERSONA: 'userPersona',
   WORLD_BOOK: 'worldBook',
   BEAUTIFICATION: 'beautification',
@@ -131,6 +132,7 @@ export interface ResourceLink {
 export const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
   [RESOURCE_TYPE.CHARACTER_CARD]: '角色卡',
   [RESOURCE_TYPE.GREETING]: '开场白',
+  [RESOURCE_TYPE.CHAT]: '聊天记录',
   [RESOURCE_TYPE.USER_PERSONA]: '用户人设',
   [RESOURCE_TYPE.WORLD_BOOK]: '世界书',
   [RESOURCE_TYPE.BEAUTIFICATION]: '主题美化',
@@ -225,6 +227,12 @@ function toResourceListMetadata(metadata: Record<string, unknown>): Record<strin
       output[key] = key === 'stitchedFrom' ? [] : value.slice(0, 64)
     }
   }
+  const companion = metadata.chatCharacter
+  if (companion && typeof companion === 'object' && !Array.isArray(companion)) {
+    const value = companion as Record<string, unknown>
+    if (typeof value.hash === 'string' && typeof value.name === 'string')
+      output.chatCharacter = { hash: value.hash, name: value.name.slice(0, 160) }
+  }
   const preview = metadata.beautificationPreview
   if (preview && typeof preview === 'object' && !Array.isArray(preview)) {
     const colors = (preview as Record<string, unknown>).colors
@@ -273,6 +281,22 @@ export function getRelatedResourceIds(resource: ResourceReference): string[] {
         .filter((id) => id && id !== resource.id),
     ),
   )
+}
+
+/** Chat preview dependencies stay available when exporting/restoring only the chat category. */
+export function includeChatCompanionIds<
+  T extends Pick<ResourceReference, 'id' | 'type' | 'metadata' | 'relatedResourceIds'>,
+>(resources: readonly T[], selectedIds: Set<string>): void {
+  const byId = new Map(resources.map((resource) => [resource.id, resource]))
+  for (const chat of resources) {
+    if (chat.type !== RESOURCE_TYPE.CHAT || !selectedIds.has(chat.id)) continue
+    for (const id of chat.relatedResourceIds ?? []) {
+      if (byId.get(id)?.type === RESOURCE_TYPE.CHARACTER_CARD) selectedIds.add(id)
+    }
+    const regexId = chat.metadata.chatDisplayRegexId
+    if (typeof regexId === 'string' && byId.get(regexId)?.type === RESOURCE_TYPE.REGEX)
+      selectedIds.add(regexId)
+  }
 }
 
 function createStableResourceLinkId(url: string, label: string, index: number): string {
@@ -588,6 +612,17 @@ export function normalizeResourceLinks(value: unknown): ResourceLink[] {
       },
     ]
   })
+}
+
+export function getChatDisplayRegexIds(resources: readonly ResourceReference[]): Set<string> {
+  return new Set(
+    resources.flatMap((resource) =>
+      resource.type === RESOURCE_TYPE.CHAT &&
+      typeof resource.metadata.chatDisplayRegexId === 'string'
+        ? [resource.metadata.chatDisplayRegexId]
+        : [],
+    ),
+  )
 }
 
 export function isExtractedCharacterAsset(resource: ResourceReference): boolean {

@@ -55,6 +55,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   onUnmounted(() => window.removeEventListener(SCOPED_CSS_REMOVED_EVENT, handleScopedCssRemoval))
   const extractCharacterAssets = ref(browserStorageService.getExtractCharacterAssets())
   const showManuallyBoundResources = ref(browserStorageService.getShowManuallyBoundResources())
+  const hideChatDisplayRegex = ref(browserStorageService.getHideChatDisplayRegex())
   const hideCharacterAssets = ref(browserStorageService.getHideCharacterAssets())
   const blurThumbnails = ref(browserStorageService.getBlurThumbnails())
   // 设置面板使用受控开关，取消确认后需要重建面板才能让开关回到实际状态。
@@ -195,6 +196,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     customUiCss.value = isSafeModeActive() ? '' : browserStorageService.getCustomUiCss()
     extractCharacterAssets.value = browserStorageService.getExtractCharacterAssets()
     showManuallyBoundResources.value = browserStorageService.getShowManuallyBoundResources()
+    hideChatDisplayRegex.value = browserStorageService.getHideChatDisplayRegex()
     hideCharacterAssets.value = browserStorageService.getHideCharacterAssets()
     blurThumbnails.value = browserStorageService.getBlurThumbnails()
   }
@@ -207,6 +209,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     customUiCss,
     extractCharacterAssets,
     hideCharacterAssets,
+    hideChatDisplayRegex,
     showManuallyBoundResources,
     blurThumbnails,
     settingsPanelKey,

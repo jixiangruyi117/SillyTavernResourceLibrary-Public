@@ -207,6 +207,7 @@ const {
   previewPolicy,
   extractCharacterAssets,
   hideCharacterAssets,
+  hideChatDisplayRegex,
   showManuallyBoundResources,
   showPerformanceMonitor,
   hiddenCharacterAssetCount,
@@ -218,6 +219,7 @@ const {
   applyBeautificationPreviewPreload,
   applyExtractCharacterAssets,
   applyHideCharacterAssets,
+  applyHideChatDisplayRegex,
   applyShowManuallyBoundResources,
   applyBlurThumbnails,
   updatePerformanceMonitorVisibility,
@@ -361,7 +363,7 @@ const {
         ref="fileImportInput"
         class="import-button__input"
         type="file"
-        accept=".png,.json,.css,.txt,.zip,image/png,application/json,text/css,text/plain,application/zip"
+        accept=".png,.json,.jsonl,.srlchat,.css,.txt,.zip,image/png,application/json,text/css,text/plain,application/zip"
         multiple
         :disabled="isBusy"
         aria-label="批量选择资源文件或备份包"
@@ -875,6 +877,7 @@ const {
       :preload-beautification-previews="previewPolicy.preloadBeautificationResources === true"
       :extract-character-assets="extractCharacterAssets"
       :hide-character-assets="hideCharacterAssets"
+      :hide-chat-display-regex="hideChatDisplayRegex"
       :show-manually-bound-resources="showManuallyBoundResources"
       :blur-thumbnails="blurThumbnails"
       :show-performance-monitor="showPerformanceMonitor"
@@ -888,6 +891,7 @@ const {
       @update:preload-beautification-previews="applyBeautificationPreviewPreload"
       @update:extract-character-assets="applyExtractCharacterAssets"
       @update:hide-character-assets="applyHideCharacterAssets"
+      @update:hide-chat-display-regex="applyHideChatDisplayRegex"
       @update:show-manually-bound-resources="applyShowManuallyBoundResources"
       @update:blur-thumbnails="applyBlurThumbnails"
       @update:show-performance-monitor="updatePerformanceMonitorVisibility"

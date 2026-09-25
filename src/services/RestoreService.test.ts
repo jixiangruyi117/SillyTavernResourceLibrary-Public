@@ -106,6 +106,42 @@ const archivedCategory: Category = {
 }
 
 describe('RestoreService', () => {
+  it('restores embedded chat portraits/rules and keeps identical prose from different characters separate', async () => {
+    const content = '{"name":"角色","is_user":false,"mes":"同一正文"}'
+    const first = {
+      ...(await createResource('chat-a', null, content)),
+      type: RESOURCE_TYPE.CHAT,
+      metadata: {
+        format: 'jsonl',
+        chatCharacter: {
+          hash: 'a'.repeat(64),
+          name: '同名',
+          avatar: 'a.png',
+          thumbnail: 'data:image/webp;base64,dGh1bWJuYWls',
+          card: { extensions: { regex_scripts: [{ scriptName: '状态栏' }] } },
+        },
+      },
+    }
+    const second = {
+      ...first,
+      id: 'chat-b',
+      metadata: {
+        ...first.metadata,
+        chatCharacter: { ...first.metadata.chatCharacter, hash: 'b'.repeat(64), avatar: 'b.png' },
+      },
+    }
+    const backup = await createBackup([first, second], [])
+    const storage = new MemoryArchiveStorage()
+    const service = new RestoreService(storage)
+    const prepared = await service.prepare(backup, [], [])
+    expect(prepared.resources).toHaveLength(2)
+    await service.restore(prepared)
+    expect(storage.resources.map((r) => r.metadata.chatCharacter)).toEqual([
+      first.metadata.chatCharacter,
+      second.metadata.chatCharacter,
+    ])
+    expect((await service.prepare(backup, storage.resources, [])).resources).toHaveLength(0)
+  })
   it('selects a resource together with its persona avatar and history', async () => {
     const persona = await createResource('persona-select', null, '{"persona":true}')
     persona.type = RESOURCE_TYPE.USER_PERSONA

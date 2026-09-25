@@ -1,4 +1,5 @@
 import { toRaw } from 'vue'
+import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 import { strToU8, zipSync } from 'fflate'
 import {
   EXTERNAL_APP_PERMISSION,
@@ -73,22 +74,39 @@ export class ExternalAppService {
   }
 
   async list(): Promise<InstalledExternalAppSummary[]> {
-    return this.storage.list()
+    return (await this.storage.list()).filter((app) => app.id !== CHAT_READER_APP_ID)
   }
 
   async exportPortableState(): Promise<{
     apps: InstalledExternalApp[]
     data: ExternalAppDataRecord[]
   }> {
-    const summaries = await this.storage.list()
+    const summaries = await this.list()
     const apps = (await Promise.all(summaries.map((app) => this.storage.get(app.id)))).filter(
       (app): app is InstalledExternalApp => Boolean(app),
     )
     const dataAppIds = this.storage.listDataAppIds
       ? await this.storage.listDataAppIds()
       : apps.map((app) => app.id)
-    const data = (await Promise.all(dataAppIds.map((appId) => this.storage.listData(appId)))).flat()
+    const data = (
+      await Promise.all(
+        dataAppIds
+          .filter((id) => id !== CHAT_READER_APP_ID)
+          .map((appId) => this.storage.listData(appId)),
+      )
+    ).flat()
     return { apps, data }
+  }
+
+  async exportReaderData(): Promise<ExternalAppDataRecord[]> {
+    return this.storage.listData(CHAT_READER_APP_ID)
+  }
+
+  async importReaderData(data: ExternalAppDataRecord[]): Promise<void> {
+    await this.importPortableState({
+      apps: [],
+      data: data.filter((record) => record.appId === CHAT_READER_APP_ID),
+    })
   }
 
   async importPortableState(value: {

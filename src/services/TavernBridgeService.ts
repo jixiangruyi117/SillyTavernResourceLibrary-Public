@@ -506,14 +506,16 @@ export class TavernBridgeService extends EventTarget {
     })
   }
 
-  async listResources(): Promise<TavernResourceItem[]> {
+  async listResources(kind?: 'chat'): Promise<TavernResourceItem[]> {
+    if (kind && !this.peerCapabilities.includes('chat-archive-v1'))
+      throw new Error('此连接不支持聊天归档，请使用配套测试版酒馆扩展')
     if (this.directory) return this.directory.listResources()
     this.assertConnected()
     const requestId = crypto.randomUUID()
     const pending = new Promise<TavernResourceItem[]>((resolve, reject) => {
       this.pendingLists.set(requestId, { resolve, reject })
     })
-    void this.send('list-request', { requestId }).catch((error) =>
+    void this.send('list-request', { requestId, ...(kind ? { kind } : {}) }).catch((error) =>
       this.pendingLists.get(requestId)?.reject(error),
     )
     return this.withTimeout(pending, requestId, this.pendingLists, '读取酒馆资源超时')

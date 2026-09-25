@@ -12,6 +12,7 @@ describe('FeatureAppRegistry', () => {
   it('registers every built-in feature app in stable desktop order', () => {
     expect(FEATURE_APP_REGISTRY.map((app) => app.id)).toEqual([
       'draw',
+      'chatReader',
       'appearance',
       'folders',
       'cloud',

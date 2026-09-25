@@ -33,12 +33,14 @@ export interface ArchivePortableSelection {
   mainApiProfiles?: boolean
   aiTaggingState?: boolean
   externalApps?: boolean
+  chatReader?: boolean
   stitchWork?: boolean
   /** 完整社区帖子/评论快照与已经本地化的 Discord 附件；不包含 Discord / Worker 凭据。 */
   communitySources?: boolean
 }
 
 export interface ArchivePortableData {
+  chatReader?: ExternalAppDataRecord[]
   /** Explicit opt-in readable companion; encrypted originals remain in the resource archive. */
   plaintextSecretCopies?: PlainSecretCopy[]
   version: 1
@@ -62,6 +64,7 @@ export interface ArchivePortableData {
     previewPolicy: PreviewPolicy
     extractCharacterAssets: boolean
     hideCharacterAssets: boolean
+    hideChatDisplayRegex?: boolean
     showManuallyBoundResources?: boolean
     searchHistory: string[]
     historySnapshotLimit: number

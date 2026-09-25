@@ -10,6 +10,7 @@ export const TAVERN_BRIDGE_MAX_IN_FLIGHT_CHUNKS = 8
 export const TAVERN_BRIDGE_MAX_FILE_SIZE = 256 * 1024 * 1024
 
 export type TavernResourceKind =
+  | 'chat'
   | 'character'
   | 'worldBook'
   | 'preset'

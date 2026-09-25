@@ -2,11 +2,18 @@ import type { ComputedRef, Ref } from 'vue'
 import { browserStorageService } from '../core/AppContainer'
 import { setPerformanceMonitorVisible } from '../core/PerformanceMonitor'
 import { manualCheckForUpdate } from '../core/ServiceWorkerUpdate'
-import { isExtractedCharacterAsset, type ResourceSummary } from '../types/Resource'
+import {
+  getChatDisplayRegexIds,
+  RESOURCE_TYPE,
+  isExtractedCharacterAsset,
+  type ResourceSummary,
+} from '../types/Resource'
 
 interface LibraryDisplayPreferencesContext {
   showPerformanceMonitor: Ref<boolean, boolean>
   hideCharacterAssets: Ref<boolean, boolean>
+  hideChatDisplayRegex: Ref<boolean>
+  resources: Ref<ResourceSummary[]>
   showManuallyBoundResources: Ref<boolean>
   selectedSplitResource: ComputedRef<ResourceSummary | undefined>
   selectedSplitResourceId: Ref<string | undefined>
@@ -30,6 +37,19 @@ export function useLibraryDisplayPreferences(getContext: () => LibraryDisplayPre
   function applyShowManuallyBoundResources(enabled: boolean): void {
     getContext().showManuallyBoundResources.value = enabled
     browserStorageService.setShowManuallyBoundResources(enabled)
+  }
+
+  function applyHideChatDisplayRegex(enabled: boolean): void {
+    const context = getContext()
+    context.hideChatDisplayRegex.value = enabled
+    browserStorageService.setHideChatDisplayRegex(enabled)
+    const selected = context.selectedSplitResource.value
+    if (
+      enabled &&
+      selected?.type === RESOURCE_TYPE.REGEX &&
+      getChatDisplayRegexIds(context.resources.value).has(selected.id)
+    )
+      context.selectedSplitResourceId.value = undefined
   }
 
   function applyHideCharacterAssets(enabled: boolean): void {
@@ -88,6 +108,7 @@ export function useLibraryDisplayPreferences(getContext: () => LibraryDisplayPre
   return {
     updatePerformanceMonitorVisibility,
     applyHideCharacterAssets,
+    applyHideChatDisplayRegex,
     applyShowManuallyBoundResources,
     applyBlurThumbnails,
     handleManualUpdateCheck,

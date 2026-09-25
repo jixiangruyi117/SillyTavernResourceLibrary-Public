@@ -30,6 +30,7 @@ function createSdk(permissions: string[]) {
     ),
   }
   const resources = {
+    listResourceListSummaries: vi.fn(async () => [{ ...resource, originalBlob: undefined }]),
     listSummaries: vi.fn(async () => [{ ...resource, originalBlob: undefined }]),
     get: vi.fn(async (id: string) => (id === resource.id ? resource : undefined)),
     updateExternalAppResource: vi.fn(
@@ -48,6 +49,36 @@ function createSdk(permissions: string[]) {
 }
 
 describe('ExternalAppSdkService', () => {
+  it('requires content and write grants for chat and avatar operations', async () => {
+    const { sdk, resources } = createSdk(['resources.library.read'])
+    await expect(sdk.readChat('app', { id: 'resource-1' })).rejects.toThrow('未获得')
+    await expect(sdk.chatChapters('app', { id: 'resource-1' })).rejects.toThrow('未获得')
+    await expect(sdk.readerStyle('app', { id: 'resource-1' })).rejects.toThrow('未获得')
+    await expect(sdk.searchChat('app', { id: 'resource-1', query: 'x' })).rejects.toThrow('未获得')
+    await expect(sdk.thumbnail('app', 'resource-1')).rejects.toThrow('未获得')
+    await expect(sdk.chatVariables('app', { id: 'resource-1', floor: 0 })).rejects.toThrow('未获得')
+    await expect(sdk.bindChat('app', { id: 'resource-1', characterId: 'card' })).rejects.toThrow(
+      '未获得',
+    )
+    expect(resources.get).not.toHaveBeenCalled()
+  })
+  it('does not let a chat preview bypass isolated mode networking', async () => {
+    const { sdk, resources } = createSdk([
+      'resources.library.read',
+      'resources.content.read',
+      'network.https',
+    ])
+    await expect(sdk.readChat('app', { id: 'resource-1', remote: true })).rejects.toThrow(
+      '兼容模式',
+    )
+    await expect(sdk.readChat('app', { id: 'resource-1', interactive: true })).rejects.toThrow(
+      '兼容模式',
+    )
+    await expect(
+      sdk.readerStyle('app', { id: 'resource-1', fonts: true, remote: true }),
+    ).rejects.toThrow('兼容模式')
+    expect(resources.get).not.toHaveBeenCalled()
+  })
   it('only returns lightweight snapshots when listing the library', async () => {
     const { sdk } = createSdk(['resources.library.read'])
     const listed = await sdk.list('app', { limit: 25 })

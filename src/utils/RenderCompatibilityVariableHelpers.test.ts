@@ -37,6 +37,41 @@ function evaluateFixtureHost() {
 }
 
 describe('RenderCompatibilityRuntime variable helper coverage', () => {
+  it('exposes only the real archived floor and protects its saved snapshot from writes', () => {
+    const runtime = buildRenderCompatibilityHostRuntime(
+      createRenderCompatibilityContextFromPreviewSession({}),
+      0,
+      {
+        message_id: 7,
+        last_message_id: 9,
+        name: '角色',
+        role: 'assistant',
+        is_hidden: false,
+        message: '正文',
+        data: { stat_data: { n: 12 } },
+        extra: {},
+        swipe_id: 1,
+      },
+    )
+    window.eval(runtime.replace(/^<script>/u, '').replace(/<\/script>$/u, ''))
+    const host = (
+      window as unknown as {
+        __SRL_RENDER_COMPAT_HOST__: { invoke: (name: string, args?: unknown[]) => unknown }
+      }
+    ).__SRL_RENDER_COMPAT_HOST__
+    expect(host.invoke('getCurrentMessageId')).toBe(7)
+    expect(host.invoke('getChatMessages', [7])).toEqual([
+      expect.objectContaining({ message_id: 7, data: { stat_data: { n: 12 } } }),
+    ])
+    expect(host.invoke('getChatMessages', [0])).toEqual([])
+    expect(host.invoke('getChatMessages', ['0-{{lastMessageId}}'])).toHaveLength(1)
+    expect(host.invoke('getVariables', [{ type: 'message', message_id: 7 }])).toEqual({
+      stat_data: { n: 12 },
+    })
+    expect(() => host.invoke('getVariables', [{ type: 'chat' }])).toThrow('snapshot')
+    expect(() => host.invoke('setChatMessage', [{ message: 'rewrite' }, 7])).toThrow('read-only')
+  })
+
   it('updates a selected scope with synchronous and asynchronous updateVariablesWith callbacks', async () => {
     const host = evaluateFixtureHost()
 

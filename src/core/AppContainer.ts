@@ -1,3 +1,4 @@
+import { ChatResourceParser } from '../parser/ChatResourceParser'
 import { PersonalResourceParser } from '../parser/PersonalResourceParser'
 import { ResourceArchiveService } from '../services/ResourceArchiveService'
 import { appDatabase as database } from './AppDatabaseInstance'
@@ -71,6 +72,7 @@ const externalAppStorage = new IndexedDbExternalAppStorage(database)
 const parserRegistry = new ResourceParserRegistry([
   new PersonalResourceParser(restoreStagingStore),
   new PngResourceParser(),
+  new ChatResourceParser(),
   new JsonResourceParser(),
   new TextBeautificationParser(),
 ])
@@ -164,6 +166,7 @@ export const cloudBackupService = new CloudBackupService(
     ...(selection.externalApps
       ? { externalApps: await externalAppService.exportPortableState() }
       : {}),
+    ...(selection.chatReader ? { chatReader: await externalAppService.exportReaderData() } : {}),
     ...(selection.stitchWork ? { stitchWork: browserStorageService.exportStitchWork() } : {}),
   }),
   async (data) => {
@@ -185,6 +188,7 @@ export const cloudBackupService = new CloudBackupService(
     if (data.aiTaggingState?.draft) aiTaggingDraftService.saveDraft(data.aiTaggingState.draft)
     if (data.aiTaggingState?.undo) aiTaggingDraftService.saveUndo(data.aiTaggingState.undo)
     if (data.externalApps) await externalAppService.importPortableState(data.externalApps)
+    if (data.chatReader) await externalAppService.importReaderData(data.chatReader)
     if (data.stitchWork) browserStorageService.importStitchWork(data.stitchWork)
     if (data.plaintextSecretCopies?.length) {
       const { restorePlainSecretCopies } = await import('./PersonalResourceContainer')

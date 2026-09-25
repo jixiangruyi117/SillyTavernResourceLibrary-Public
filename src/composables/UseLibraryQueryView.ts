@@ -4,6 +4,7 @@ import { resourceQueryEngine, ResourceStatsIndex } from '../core/ResourceQueryEn
 import type { FilterValue, SortValue } from '../types/AppView'
 import {
   getRelatedResourceIds,
+  getChatDisplayRegexIds,
   getResourceCategoryIds,
   isExtractedCharacterAsset,
   isUserPersonaAvatarAttachment,
@@ -23,6 +24,7 @@ interface LibraryQueryViewContext {
   categories: Ref<Category[]>
   resources: Ref<ResourceSummary[]>
   hideCharacterAssets: Ref<boolean, boolean>
+  hideChatDisplayRegex: Ref<boolean>
   showManuallyBoundResources: Ref<boolean>
   activeCategoryId: Ref<string | null | undefined>
   searchQuery: Ref<string, string>
@@ -67,10 +69,15 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
     return ids
   })
 
+  const chatDisplayRegexIds = computed(() => getChatDisplayRegexIds(managedResources.value))
+
   const visibleLibraryResources = computed(() =>
     managedResources.value.filter(
       (resource) =>
         !isResourceHiddenByCategory(resource, hiddenCategoryIds.value) &&
+        (!context.hideChatDisplayRegex.value ||
+          resource.type !== RESOURCE_TYPE.REGEX ||
+          !chatDisplayRegexIds.value.has(resource.id)) &&
         (context.showManuallyBoundResources.value || !manuallyBoundIds.value.has(resource.id)) &&
         (!context.hideCharacterAssets.value || !isExtractedCharacterAsset(resource)),
     ),

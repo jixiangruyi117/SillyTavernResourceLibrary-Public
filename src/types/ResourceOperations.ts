@@ -1,6 +1,9 @@
 import { type Resource } from './Resource'
 
 export interface ImportOptions {
+  saveChatCharacter?: boolean
+  saveChatCharacterHashes?: string[]
+  chatCharacterBindings?: Record<string, string | null>
   extractCharacterAssets?: boolean
   detectVersions?: boolean
 }

@@ -3,6 +3,7 @@ import type { PreparedRestore } from '../types/Backup'
 import type { CloudBackupItem } from '../types/CloudBackup'
 import {
   isUserPersonaAvatarAttachment,
+  includeChatCompanionIds,
   RESOURCE_TYPE,
   toResourceListSummary,
   type Category,
@@ -15,6 +16,18 @@ import type { StructuredSnapshot } from './CloudStructuredSnapshot'
 import type { ResourceService } from './ResourceService'
 import type { RestoreService } from './RestoreService'
 
+/** Duplicate originals need no insertion, but their saved APP data still needs restoration. */
+export function canRestoreOnlyPortableData(prepared: PreparedRestore | undefined): boolean {
+  return Boolean(
+    prepared &&
+    prepared.resources.length === 0 &&
+    prepared.portableData &&
+    Object.entries(prepared.portableData).some(
+      ([key, value]) => key !== 'version' && value != null,
+    ),
+  )
+}
+
 /**
  * Limit an already verified restore plan without reopening or reparsing the archive.
  * Selectors use prepared resource IDs, which remain unique after conflict remapping.
@@ -24,9 +37,11 @@ export function selectPreparedRestore(
   selectors: ReadonlySet<string>,
 ): PreparedRestore {
   const selectedIds = new Set<string>()
+  const withCompanions = new Set(selectors)
+  includeChatCompanionIds(prepared.resources, withCompanions)
   const selectedResources: Resource[] = []
   for (const resource of prepared.resources) {
-    if (!selectors.has(resource.id)) continue
+    if (!withCompanions.has(resource.id)) continue
     selectedIds.add(resource.id)
     selectedResources.push(resource)
   }
@@ -105,8 +120,10 @@ export function selectStructuredSnapshot(
   selectors: ReadonlySet<string>,
 ): StructuredSnapshot {
   const selectedIds = new Set<string>()
+  const withCompanions = new Set(selectors)
+  includeChatCompanionIds(snapshot.resources, withCompanions)
   const resources = snapshot.resources.filter((resource) => {
-    if (!selectors.has(resource.id)) return false
+    if (!withCompanions.has(resource.id)) return false
     selectedIds.add(resource.id)
     return true
   })

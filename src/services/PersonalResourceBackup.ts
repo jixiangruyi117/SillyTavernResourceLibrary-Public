@@ -1,4 +1,5 @@
 import type { Resource, ResourceSummary } from '../types/Resource'
+import { includeChatCompanionIds } from '../types/Resource'
 import type { CloudBackupConfig } from '../types/CloudBackup'
 import { parsePersonalResource, type PersonalResourceDocument } from '../types/PersonalResource'
 
@@ -96,6 +97,7 @@ export function selectCloudResources(
   selection?: PersonalResourceSelection,
 ): ResourceSummary[] {
   const selectedIds = selection?.resourceIds ? new Set(selection.resourceIds) : undefined
+  if (selectedIds) includeChatCompanionIds(resources, selectedIds)
   return resources.filter(
     (resource) =>
       resource.metadata.cloudBackupExcluded !== true &&

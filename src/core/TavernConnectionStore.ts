@@ -27,9 +27,12 @@ export class TavernConnectionStore extends EventTarget {
     }
   }
 
-  async refreshInventory(): Promise<TavernResourceItem[]> {
-    const inventory = await tavernBridgeService.listResources()
-    this.inventory = inventory.map((item) => ({ ...item }))
+  async refreshInventory(kind?: 'chat'): Promise<TavernResourceItem[]> {
+    const inventory = await tavernBridgeService.listResources(kind)
+    this.inventory = [
+      ...(kind ? this.inventory.filter((item) => item.kind !== kind) : []),
+      ...inventory.map((item) => ({ ...item })),
+    ]
     this.lastSyncAt = Date.now()
     this.publish()
     return this.inventory.map((item) => ({ ...item }))

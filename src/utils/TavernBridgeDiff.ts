@@ -19,6 +19,7 @@ export function normalizeBridgeName(value: string): string {
 
 /** SRL 资源类型 → 互传资源种类；与发送逻辑保持同一映射。 */
 export function bridgeKindOfResource(resource: ResourceSummary): TavernResourceKind | undefined {
+  if (resource.type === RESOURCE_TYPE.CHAT) return 'chat'
   if (resource.type === RESOURCE_TYPE.USER_PERSONA) return 'userPersona'
   if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) return 'character'
   if (resource.type === RESOURCE_TYPE.WORLD_BOOK) return 'worldBook'

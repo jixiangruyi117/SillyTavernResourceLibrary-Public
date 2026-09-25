@@ -94,6 +94,7 @@ const UI_FONT_SCALE_KEY = 'srl.ui.fontScale'
 const EXTRACT_CHARACTER_ASSETS_KEY = 'srl.import.extractCharacterAssets'
 
 const SHOW_MANUALLY_BOUND_RESOURCES_KEY = 'srl.library.showManuallyBoundResources'
+const HIDE_CHAT_DISPLAY_REGEX_KEY = 'srl.library.hideChatDisplayRegex'
 const HIDE_CHARACTER_ASSETS_KEY = 'srl.library.hideCharacterAssets'
 
 const BLUR_THUMBNAILS_KEY = 'srl.library.blurThumbnails'
@@ -195,6 +196,7 @@ export class BrowserStorageService {
       previewPolicy: this.getPreviewPolicy(),
       extractCharacterAssets: this.getExtractCharacterAssets(),
       hideCharacterAssets: this.getHideCharacterAssets(),
+      hideChatDisplayRegex: this.getHideChatDisplayRegex(),
       showManuallyBoundResources: this.getShowManuallyBoundResources(),
       searchHistory: this.getSearchHistory(),
       blurThumbnails: this.getBlurThumbnails(),
@@ -217,6 +219,7 @@ export class BrowserStorageService {
     })
     this.setExtractCharacterAssets(value?.extractCharacterAssets === true)
     this.setHideCharacterAssets(value?.hideCharacterAssets !== false)
+    this.setHideChatDisplayRegex(value?.hideChatDisplayRegex !== false)
     this.setShowManuallyBoundResources(value?.showManuallyBoundResources !== false)
     this.setBlurThumbnails(value?.blurThumbnails !== false)
     this.setCabinetResourceIds(value?.cabinetResourceIds ?? [])
@@ -459,6 +462,22 @@ export class BrowserStorageService {
       localStorage.setItem(SHOW_MANUALLY_BOUND_RESOURCES_KEY, String(enabled))
     } catch {
       /* 当前会话仍应用此显示偏好。 */
+    }
+  }
+
+  getHideChatDisplayRegex(): boolean {
+    try {
+      return localStorage.getItem(HIDE_CHAT_DISPLAY_REGEX_KEY) !== 'false'
+    } catch {
+      return true
+    }
+  }
+
+  setHideChatDisplayRegex(enabled: boolean): void {
+    try {
+      localStorage.setItem(HIDE_CHAT_DISPLAY_REGEX_KEY, String(enabled))
+    } catch {
+      /* The current session still applies the display preference. */
     }
   }
 

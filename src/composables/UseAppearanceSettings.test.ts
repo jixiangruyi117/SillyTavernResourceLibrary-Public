@@ -20,6 +20,7 @@ const storage = {
   setExtractCharacterAssets: vi.fn(),
   getShowManuallyBoundResources: vi.fn(() => true),
   getHideCharacterAssets: vi.fn(() => false),
+  getHideChatDisplayRegex: vi.fn(() => true),
   getBlurThumbnails: vi.fn(() => true),
   setBlurThumbnails: vi.fn(),
   setLayoutMode: vi.fn(),

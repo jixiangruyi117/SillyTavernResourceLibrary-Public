@@ -48,6 +48,7 @@ const {
   GeneratedImageAlbumApp,
   UserPersonaApp,
   ResourceBundleApp,
+  ChatReaderApp,
   sendBundleToTavern,
   ExternalAppManager,
   handleExternalAppsChanged,
@@ -242,6 +243,7 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
       @library-changed="emit('library-changed')"
       @open-history="emit('openPersonaHistory', $event)"
     />
+    <ChatReaderApp v-else-if="activePage === 'chatReader'" @back="activePage = 'home'" />
     <ResourceBundleApp
       v-else-if="activePage === 'resourceBundle'"
       :resources="resources"

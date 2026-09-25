@@ -13,6 +13,7 @@ export type BackupScopeGroupId = 'tavernResources' | 'manualResources' | 'extraC
 export type BackupScopeId =
   | 'resource.characterCard'
   | 'resource.greeting'
+  | 'resource.chat'
   | 'resource.worldBook'
   | 'resource.userPersona'
   | 'resource.beautification'
@@ -27,6 +28,7 @@ export type BackupScopeId =
   | 'resource.secret'
   | 'extra.communitySources'
   | 'extra.externalApps'
+  | 'extra.chatReader'
   | 'extra.aiTaggingState'
   | 'extra.stitchWork'
   | 'extra.appearance'
@@ -75,6 +77,7 @@ const resourceScope = (
 
 export const BACKUP_SCOPE_REGISTRY: ReadonlyArray<BackupScopeDefinition> = [
   resourceScope('resource.characterCard', RESOURCE_TYPE.CHARACTER_CARD, 'tavernResources'),
+  resourceScope('resource.chat', RESOURCE_TYPE.CHAT, 'tavernResources'),
   resourceScope('resource.greeting', RESOURCE_TYPE.GREETING, 'tavernResources'),
   resourceScope('resource.worldBook', RESOURCE_TYPE.WORLD_BOOK, 'tavernResources'),
   resourceScope('resource.userPersona', RESOURCE_TYPE.USER_PERSONA, 'tavernResources'),
@@ -108,6 +111,14 @@ export const BACKUP_SCOPE_REGISTRY: ReadonlyArray<BackupScopeDefinition> = [
     privacyWarning: true,
     defaultLocal: false,
     defaultCloud: false,
+  },
+  {
+    id: 'extra.chatReader',
+    group: 'extraContent',
+    label: '读了么阅读数据',
+    description: '阅读进度、备注、收藏、回复选择和角色阅读外观；聊天原件请同时选择聊天记录',
+    defaultLocal: true,
+    defaultCloud: true,
   },
   {
     id: 'extra.aiTaggingState',
@@ -230,6 +241,7 @@ export function toArchivePortableSelection(
     mainApiProfiles: state.scopes.has('extra.credentials'),
     aiTaggingState: state.scopes.has('extra.aiTaggingState'),
     externalApps: state.scopes.has('extra.externalApps'),
+    chatReader: state.scopes.has('extra.chatReader'),
     stitchWork: state.scopes.has('extra.stitchWork'),
     communitySources: state.scopes.has('extra.communitySources'),
   }
@@ -248,6 +260,7 @@ export function toCloudContentSelection(
     credentials: state.scopes.has('extra.credentials'),
     aiTaggingState: state.scopes.has('extra.aiTaggingState'),
     externalApps: state.scopes.has('extra.externalApps'),
+    chatReader: state.scopes.has('extra.chatReader'),
     stitchWork: state.scopes.has('extra.stitchWork'),
     resourceIds: [...state.resourceIds],
     communitySources: state.scopes.has('extra.communitySources'),

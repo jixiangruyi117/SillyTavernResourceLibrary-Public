@@ -2,6 +2,7 @@
 import { computed, ref, toRefs, watch } from 'vue'
 
 import type { PreparedRestore, RestoreMode, RestoreReport } from '../types/Backup'
+import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import {
   isUserPersonaAvatarAttachment,
   RESOURCE_TYPE_LABELS,
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const restoreMode = ref<RestoreMode>('merge')
+const portableOnly = computed(() => canRestoreOnlyPortableData(prepared.value))
 const selectedResourceIds = ref(new Set<string>())
 
 watch(
@@ -306,13 +308,15 @@ function formatDate(value: string): string {
                     ? '当前资源库会被完整替换，操作前自动创建安全快照。'
                     : selectedResources.length
                       ? '现有资源会保留，只写入上方选中的备份内容。'
-                      : '请至少选择一项资源后继续。'
+                      : portableOnly
+                        ? '原件均已存在，仅恢复备份中的 APP 数据与设置。'
+                        : '请至少选择一项资源后继续。'
                 }}
               </span>
               <button
                 class="button button--primary"
                 type="button"
-                :disabled="busy || selectedResources.length === 0"
+                :disabled="busy || (selectedResources.length === 0 && !portableOnly)"
                 @click="emit('confirm', restoreMode, Array.from(selectedResourceIds))"
               >
                 {{ restoreMode === 'replace' ? '确认覆盖' : '确认新增' }}

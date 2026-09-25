@@ -99,6 +99,10 @@ export class ResourceService {
     this.linkInspector = linkInspector
   }
 
+  findByContentHash(hash: string): Promise<Resource | undefined> {
+    return this.storage.findByHash(hash)
+  }
+
   list(): Promise<Resource[]> {
     return this.storage.list()
   }
@@ -821,17 +825,21 @@ export class ResourceService {
 
   async importFiles(files: File[], options: ImportOptions = {}): Promise<ImportResult[]> {
     const results: ImportResult[] = []
-    const knownResources =
-      options.detectVersions === false ? [] : await this.storage.listSummaries()
-    const knownVersions =
-      options.detectVersions === false ? [] : await this.storage.listVersionSummaries()
-    const versionMatchIndex =
-      options.detectVersions === false
-        ? []
-        : await this.createVersionMatchIndex(knownResources, knownVersions)
+    const detectVersions =
+      options.detectVersions !== false && files.some((file) => !/\.srlchat$/i.test(file.name))
+    const knownResources = !detectVersions ? [] : await this.storage.listSummaries()
+    const knownVersions = !detectVersions ? [] : await this.storage.listVersionSummaries()
+    const versionMatchIndex = !detectVersions
+      ? []
+      : await this.createVersionMatchIndex(knownResources, knownVersions)
 
     for (const file of files) {
       try {
+        if (/\.srlchat$/i.test(file.name)) {
+          const { importTavernChat } = await import('./TavernChatImport')
+          results.push(await importTavernChat(file, this, this.parserRegistry, options))
+          continue
+        }
         const context = importPipeline.intake<ParsedResource>(file)
         const contentHash = await context.hash()
         const activeDuplicate = await this.storage.findByHash(contentHash)

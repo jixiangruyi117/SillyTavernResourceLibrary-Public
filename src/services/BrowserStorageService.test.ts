@@ -8,6 +8,16 @@ describe('BrowserStorageService cabinet desktop resources', () => {
     localStorage.clear()
     document.cookie = 'srl_project_notice=; Max-Age=0; Path=/'
   })
+  it('defaults to hiding companion chat regex and preserves the choice in portable preferences', () => {
+    const service = new BrowserStorageService()
+    expect(service.getHideChatDisplayRegex()).toBe(true)
+    service.setHideChatDisplayRegex(false)
+    const saved = service.exportGeneralPreferences()
+    expect(saved.hideChatDisplayRegex).toBe(false)
+    localStorage.clear()
+    service.importGeneralPreferences(saved)
+    expect(service.getHideChatDisplayRegex()).toBe(false)
+  })
 
   it('remembers bottom and side drawer sizes separately and tolerates corrupt preferences', () => {
     const service = new BrowserStorageService()
@@ -106,6 +116,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       previewPolicy: { allowRemoteResources: false, allowScripts: false },
       extractCharacterAssets: false,
       hideCharacterAssets: true,
+      hideChatDisplayRegex: true,
       searchHistory: [],
       cabinetResourceIds: ['resource-a', 'resource-a', 'resource-c'],
     })
@@ -133,6 +144,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       previewPolicy: { allowRemoteResources: false, allowScripts: false },
       extractCharacterAssets: false,
       hideCharacterAssets: true,
+      hideChatDisplayRegex: true,
       searchHistory: [],
       cabinetResourceIds: ['resource-a'],
       cabinetLayout: [{ kind: 'folder', id: 'folder-a', slot: 3, columnSpan: 1, rowSpan: 1 }],
@@ -160,6 +172,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       previewPolicy: { allowRemoteResources: false, allowScripts: false },
       extractCharacterAssets: false,
       hideCharacterAssets: true,
+      hideChatDisplayRegex: true,
       searchHistory: [],
       cabinetColumns: 3,
     })
@@ -186,6 +199,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       previewPolicy: { allowRemoteResources: false, allowScripts: false },
       extractCharacterAssets: false,
       hideCharacterAssets: true,
+      hideChatDisplayRegex: true,
       searchHistory: [],
       userPersonaTemplates: templates,
     })
@@ -302,6 +316,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       previewPolicy: { allowRemoteResources: false, allowScripts: false },
       extractCharacterAssets: false,
       hideCharacterAssets: true,
+      hideChatDisplayRegex: true,
       searchHistory: [],
       resourceBundles: bundles,
     })

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "apiVersion": "srl-app-api@1",
+  "id": "com.srl.duleme",
+  "name": "读了么",
+  "version": "0.1.13",
+  "entry": "index.html",
+  "author": "SRL",
+  "description": "按角色整理资源库聊天记录，沉浸阅读、备注、收藏与美化。资源库内置聊天记录阅读器。",
+  "icon": "icon.svg",
+  "splashColor": "#f6f3ec",
+  "immersive": true,
+  "permissions": [
+    "app.storage",
+    "resources.library.read",
+    "resources.content.read",
+    "resources.write",
+    "network.https"
+  ]
+}

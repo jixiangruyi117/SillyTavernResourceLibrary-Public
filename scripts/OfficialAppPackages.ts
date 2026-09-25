@@ -29,6 +29,7 @@ export function reuseReleasedOfficialAppPackage(
 }
 
 const entries = {
+  chatReader: 'ChatReaderApp.vue',
   draw: 'DrawApp.vue',
   stitch: 'PresetStitcherApp.vue',
   frontendWorkshop: 'FrontendWorkshopSourceAiShell.vue',

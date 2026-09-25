@@ -1,5 +1,6 @@
 import { createResourceArchiveSource } from '../services/ExportService'
 import { selectPreparedRestore } from '../services/RestoreService'
+import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import { includePersonalResource, plaintextSecretCopies } from '../services/PersonalResourceBackup'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
 import type { Ref } from 'vue'
@@ -141,6 +142,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       if (details.portableSelection.externalApps) {
         portableData.externalApps = await externalAppService.exportPortableState()
       }
+      if (details.portableSelection.chatReader)
+        portableData.chatReader = await externalAppService.exportReaderData()
       if (details.portableSelection.stitchWork) {
         portableData.stitchWork = browserStorageService.exportStitchWork()
       }
@@ -304,6 +307,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     if (data.aiTaggingState?.draft) aiTaggingDraftService.saveDraft(data.aiTaggingState.draft)
     if (data.aiTaggingState?.undo) aiTaggingDraftService.saveUndo(data.aiTaggingState.undo)
     if (data.externalApps) await externalAppService.importPortableState(data.externalApps)
+    if (data.chatReader) await externalAppService.importReaderData(data.chatReader)
     if (data.stitchWork) browserStorageService.importStitchWork(data.stitchWork)
     if (data.plaintextSecretCopies?.length) {
       const { restorePlainSecretCopies } = await import('../core/PersonalResourceContainer')
@@ -374,7 +378,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     const prepared = context.preparedRestore.value
     if (!prepared) return
     const selectedIds = new Set(resourceIds)
-    if (!selectedIds.size) {
+    if (!selectedIds.size && !(mode === 'merge' && canRestoreOnlyPortableData(prepared))) {
       context.showNotice('请至少选择一项资源后继续')
       return
     }

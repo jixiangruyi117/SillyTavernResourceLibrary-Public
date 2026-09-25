@@ -31,6 +31,7 @@ import {
   createRenderCompatibilityContextFromPreviewSession,
   normalizeRenderCompatibilityScript,
   type PreviewSessionContext,
+  type ArchivedMessageSnapshot,
   type RenderCompatibilityContext,
   type RenderCompatibilityDiagnostic,
 } from './RenderCompatibilityRuntime'
@@ -67,6 +68,7 @@ export type SillyTavernMessageAvatarMode = 'visible' | 'hidden'
 export type PreviewContentTheme = 'light' | 'dark'
 
 export interface RichContentPreviewOptions {
+  previewSessionContext?: PreviewSessionContext
   vendorLibs?: PreviewVendorLibs
   charAvatarUrl?: string
   inspectTargets?: boolean
@@ -322,12 +324,12 @@ function restoreTrustedGreetingNavigation(source: string): string {
   )
 }
 
-function buildLocalThirdParty(libs: PreviewVendorLibs | undefined): string {
-  const scripts: string[] = []
+function buildLocalThirdParty(libs: PreviewVendorLibs | undefined, isolated = false): string {
+  const scripts: string[] = isolated ? [buildOuterVendorLibs(libs)] : []
   if (libs?.fontAwesomeCss) scripts.push(buildPreviewFontStylesheet(libs.fontAwesomeCss))
   if (libs?.jqueryUiCss) scripts.push(`<style>${libs.jqueryUiCss}</style>`)
   if (libs?.toastrCss) scripts.push(`<style>${libs.toastrCss}</style>`)
-  if (libs?.jquery)
+  if (libs?.jquery && !isolated)
     scripts.push(`<script>${libs.jquery.replace(/<\/script/gi, '<\\/script')}</script>`)
   if (libs?.jqueryUi)
     scripts.push(`<script>${libs.jqueryUi.replace(/<\/script/gi, '<\\/script')}</script>`)
@@ -340,9 +342,10 @@ function buildLocalThirdParty(libs: PreviewVendorLibs | undefined): string {
     scripts.push(`<script>${libs.toastr.replace(/<\/script/gi, '<\\/script')}</script>`)
   if (libs?.tailwind)
     scripts.push(`<script>${libs.tailwind.replace(/<\/script/gi, '<\\/script')}</script>`)
-  scripts.push(
-    '<script>window._=window.parent._;window.YAML=window.parent.YAML;window.showdown=window.parent.showdown;window.z=window.parent.z;</script>',
-  )
+  if (!isolated)
+    scripts.push(
+      '<script>window._=window.parent._;window.YAML=window.parent.YAML;window.showdown=window.parent.showdown;window.z=window.parent.z;</script>',
+    )
   return scripts.join('')
 }
 
@@ -350,8 +353,9 @@ function buildLocalThirdParty(libs: PreviewVendorLibs | undefined): string {
 function buildCompatibilityFrontendDependencies(
   libs: PreviewVendorLibs | undefined,
   _allowRemoteResources: boolean,
+  isolated = false,
 ): string {
-  return buildLocalThirdParty(libs)
+  return buildLocalThirdParty(libs, isolated)
 }
 
 function buildOuterVendorLibs(libs: PreviewVendorLibs | undefined): string {
@@ -385,8 +389,8 @@ function buildCompatibilityLogRuntime(): string {
   return `<script>window.log=window.log||{trace:console.debug?.bind(console)||console.log.bind(console),debug:console.debug?.bind(console)||console.log.bind(console),info:console.info?.bind(console)||console.log.bind(console),warn:console.warn.bind(console),error:console.error.bind(console)};</script>`
 }
 
-function buildChildPolicy(policy: PreviewPolicy): string {
-  const remote = policy.allowRemoteResources ? ' https: http:' : ''
+function buildChildPolicy(policy: PreviewPolicy, httpsOnly = false): string {
+  const remote = policy.allowRemoteResources ? (httpsOnly ? ' https:' : ' https: http:') : ''
   const script = policy.allowScripts
     ? ` 'unsafe-inline' 'unsafe-eval' data: blob:${remote}`
     : " 'unsafe-inline'"
@@ -432,7 +436,7 @@ function buildCompatibilityLayoutRuntime(hasDeclaredViewportMinimum: boolean): s
   return `<script>(()=>{'use strict';
 let queued=false;let viewportHeight=0;let observer;
 const hasViewportBoundLayer=()=>Array.from(document.body?.querySelectorAll('*')||[]).some(element=>{const style=getComputedStyle(element);return style.position==='fixed'&&style.top!=='auto'&&style.bottom!=='auto'});
-const measure=()=>{queued=false;const body=document.body;if(!body)return;const contentHeight=body.scrollHeight;const viewportBound=${hasDeclaredViewportMinimum ? 'true' : 'hasViewportBoundLayer()'};const height=viewportBound&&viewportHeight>0?Math.max(contentHeight,viewportHeight):contentHeight;const frame=window.frameElement;if(frame&&Number.isFinite(height)&&height>0)frame.style.height=Math.ceil(height)+'px';parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound},'*')};
+const measure=()=>{queued=false;const body=document.body;if(!body)return;const contentHeight=body.scrollHeight;const viewportBound=${hasDeclaredViewportMinimum ? 'true' : 'hasViewportBoundLayer()'};const height=viewportBound&&viewportHeight>0?Math.max(contentHeight,viewportHeight):contentHeight;const frame=window.frameElement;if(frame&&Number.isFinite(height)&&height>0)frame.style.height=Math.ceil(height)+'px';parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound,height:Math.ceil(height)},'*')};
 const queue=()=>{if(queued)return;queued=true;requestAnimationFrame(measure)};
 const updateViewport=value=>{const next=Number(value);if(!Number.isFinite(next)||next<=0)return;viewportHeight=Math.ceil(next);rootStyle().setProperty('--TH-viewport-height',viewportHeight+'px');queue()};
 const rootStyle=()=>document.documentElement.style;
@@ -443,11 +447,13 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 })();</script>`
 }
 
-function buildCompatibilityFrontendDocument(
+export function buildCompatibilityFrontendDocument(
   source: string,
   policy: PreviewPolicy,
   libs: PreviewVendorLibs | undefined,
   avatarUrl: string,
+  isolated = false,
+  archivedMessage?: ArchivedMessageSnapshot,
 ): {
   document: string
   blockedScripts: boolean
@@ -462,7 +468,7 @@ function buildCompatibilityFrontendDocument(
   )
   const hasDeclaredViewportMinimum = content.includes('var(--TH-viewport-height)')
   const thirdParty = policy.allowScripts
-    ? buildCompatibilityFrontendDependencies(libs, policy.allowRemoteResources)
+    ? buildCompatibilityFrontendDependencies(libs, policy.allowRemoteResources, isolated)
     : ''
 
   return {
@@ -471,16 +477,18 @@ function buildCompatibilityFrontendDocument(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="${buildChildPolicy(policy)}">
+<meta http-equiv="Content-Security-Policy" content="${buildChildPolicy(policy, isolated)}">
 ${policy.allowScripts ? buildEphemeralStorageRuntime(true) : ''}
 <style>
+${isolated ? ':root{--TH-viewport-height:100dvh}' : ''}
 *,*::before,*::after{box-sizing:border-box;}
-html,body{margin:0!important;padding:0;overflow:hidden!important;max-width:100%!important;}
+html,body{margin:0!important;padding:0;overflow:${isolated ? 'auto' : 'hidden!important'};max-width:100%!important;}
 .user_avatar,.user-avatar{background-image:url('${TRANSPARENT_AVATAR}')}
 .char_avatar,.char-avatar{background-image:url('${avatarUrl}')}
 </style>
 ${thirdParty}
-${buildRenderCompatibilityChildAdapter()}
+${isolated ? buildRenderCompatibilityHostRuntime(createRenderCompatibilityContextFromPreviewSession({}), 1, archivedMessage) : ''}
+${buildRenderCompatibilityChildAdapter(undefined, { hostScope: isolated ? 'self' : 'parent' })}
 ${buildCompatibilityLogRuntime()}
 ${buildTrustedGreetingNavigationRuntime()}
 ${policy.allowScripts ? buildJavascriptHrefRuntime() : ''}
@@ -673,6 +681,83 @@ function buildOuterPolicy(policy: PreviewPolicy): string {
     "base-uri 'none'",
     "form-action 'none'",
   ].join('; ')
+}
+
+/** Opt-in reader palette. Does not change geometry, image pixels, variables or author source on disk. */
+export function archivedPanelThemeCss(
+  theme: 'paper' | 'green' | 'night',
+  root = 'body',
+  ink?: string,
+): string {
+  const palette = {
+    paper: ['#f6f3ec', '#fffcf6', '#303a32', '#dddfd3', '#586c4e'],
+    green: ['#e8eddf', '#f2f5ec', '#303a32', '#c9d3c0', '#45603c'],
+    night: ['#202622', '#2b342e', '#d0d3c6', '#465249', '#b4c69b'],
+  }[theme]
+  return `${root}{background:transparent!important;color:${ink || (root === 'body' ? palette[2] : 'inherit')}!important}
+${root} *{color:inherit!important;background-color:transparent!important;background-image:none!important;border-color:color-mix(in srgb,currentColor 25%,transparent)!important;box-shadow:none!important;text-shadow:none!important}
+${root} :is(button,input,select,textarea,summary){background-color:color-mix(in srgb,currentColor 8%,transparent)!important}`
+}
+
+// Some authored disclosures animate from zero to a fixed cap. In an archive,
+// expanding several children can exceed that cap and hide their last rows.
+// Only relax an animated, hidden-overflow cap with a more specific zero-height
+// state in the same stylesheet scope. Keep closed states and scroll areas intact.
+function buildArchivedDisclosureLayoutRuntime(): string {
+  return `<script data-srl-archive-disclosures>(()=>{'use strict';
+const visit=rules=>{
+ const styles=Array.from(rules).filter(rule=>rule.type===CSSRule.STYLE_RULE);
+ for(const rule of styles){
+  const style=rule.style,selector=rule.selectorText;
+  if(selector.includes(',')||!/^\\d+(?:\\.\\d+)?px$/.test(style.maxHeight)||parseFloat(style.maxHeight)<=0||style.getPropertyPriority('max-height')||!/(?:^|[ ,])max-height(?:[ ,]|$)/.test(style.transitionProperty||style.transition)||!['hidden','clip'].includes(style.overflowY||style.overflow))continue;
+  const closed=styles.some(other=>other!==rule&&/^0(?:px)?$/.test(other.style.maxHeight)&&other.selectorText.endsWith(' '+selector));
+  if(closed)style.maxHeight='none';
+ }
+ for(const rule of rules)if(rule.cssRules)visit(rule.cssRules);
+};
+for(const sheet of document.styleSheets){if(sheet.href)continue;visit(sheet.cssRules)}
+})();</script>`
+}
+
+/** Load this document via a data URL: an opaque outer origin, with same-origin TH children. */
+export function buildArchivedChatFrontendDocument(
+  source: string,
+  policy: PreviewPolicy,
+  libs: PreviewVendorLibs | undefined,
+  snapshot: ArchivedMessageSnapshot,
+  blendColor?: string,
+  colorScheme?: 'light' | 'dark',
+  panelTheme?: 'paper' | 'green' | 'night',
+): string {
+  const child = buildCompatibilityFrontendDocument(source, policy, libs, '')
+  const childStyle =
+    (colorScheme ? `:root{color-scheme:${colorScheme}}` : '') +
+    (blendColor
+      ? `html,body{background:transparent!important}body{color:${blendColor}!important}`
+      : '') +
+    (panelTheme ? archivedPanelThemeCss(panelTheme, 'body', blendColor) : '')
+  const childDocument = child.document.replace(
+    '</body>',
+    `<style>${childStyle}</style>${policy.allowScripts ? buildArchivedDisclosureLayoutRuntime() : ''}</body>`,
+  )
+  const frame = document.createElement('iframe')
+  frame.id = `TH-message--${snapshot.message_id}--0`
+  frame.name = frame.id
+  frame.title = '状态栏'
+  frame.srcdoc = policy.allowRemoteResources
+    ? childDocument
+    : childDocument.replace(
+        '</head>',
+        '<style>img:not([src^="data:"]):not([src^="blob:"]){display:none}</style></head>',
+      )
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${buildOuterPolicy(policy)}">
+<style>${colorScheme ? `:root{color-scheme:${colorScheme}}` : ''}html,body{margin:0;padding:0;background:transparent}div.TH-render>iframe{display:block;width:100%;height:0;border:0}</style>
+${policy.allowScripts ? buildEphemeralStorageRuntime(false) : ''}
+${buildOuterVendorLibs(libs)}
+${buildRenderCompatibilityHostRuntime(createRenderCompatibilityContextFromPreviewSession({}), 1, snapshot)}
+${buildFrameHostRuntime()}
+${buildOuterHeightRuntime()}
+</head><body><div id="chat"><div class="mes" mesid="${snapshot.message_id}"><div class="mes_text"><div class="TH-render">${frame.outerHTML}</div></div></div></div></body></html>`
 }
 
 function buildPreviewMessageMarkup(title: string, html: string, avatarUrl: string): string {
@@ -922,12 +1007,14 @@ export function buildRichContentPreview(
         : prepareRichContentPreviewMessage(greeting, policy, options)
     ).formatted.html
   })
-  const previewSessionContext = createResourcePreviewSessionContext(
-    options,
-    greetingContents,
-    formattedGreetings,
-    greetingIndex,
-  )
+  const previewSessionContext =
+    options.previewSessionContext ??
+    createResourcePreviewSessionContext(
+      options,
+      greetingContents,
+      formattedGreetings,
+      greetingIndex,
+    )
   const helperContext = createRenderCompatibilityContextFromPreviewSession(previewSessionContext)
   const hasHelperRuntime = formatted.frontendBlockCount > 0 || hasRuntimeScriptSource
   const helperRuntimeEnabled = formatted.frontendBlockCount > 0 || activeRuntimeScripts.length > 0

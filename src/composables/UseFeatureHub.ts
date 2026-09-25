@@ -116,6 +116,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const UserPersonaApp = createRegisteredAsyncPanel('userPersona')
 
   const ResourceBundleApp = createRegisteredAsyncPanel('resourceBundle')
+  const ChatReaderApp = createRegisteredAsyncPanel('chatReader')
 
   const ExternalAppManager = createRegisteredAsyncPanel('extensions')
 
@@ -547,6 +548,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     GeneratedImageAlbumApp,
     UserPersonaApp,
     ResourceBundleApp,
+    ChatReaderApp,
     sendBundleToTavern,
     ExternalAppManager,
     handleExternalAppsChanged,

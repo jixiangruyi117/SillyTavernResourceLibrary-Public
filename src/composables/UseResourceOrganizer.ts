@@ -301,6 +301,7 @@ export function useResourceOrganizer(
     const itemCount = Number(props.resource.metadata.itemCount)
     const countLabel = {
       [RESOURCE_TYPE.GREETING]: '开场白',
+      [RESOURCE_TYPE.CHAT]: '聊天楼层',
       [RESOURCE_TYPE.USER_PERSONA]: '用户人设',
       [RESOURCE_TYPE.WORLD_BOOK]: '世界书条目',
       [RESOURCE_TYPE.REGEX]: '正则逻辑',

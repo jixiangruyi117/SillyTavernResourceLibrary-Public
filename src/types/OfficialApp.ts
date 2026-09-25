@@ -1,4 +1,5 @@
 export const OFFICIAL_APP_IDS = [
+  'chatReader',
   'draw',
   'stitch',
   'frontendWorkshop',
@@ -44,6 +45,7 @@ export interface OfficialAppCatalog {
 export const OFFICIAL_APP_ASSET_CACHE = 'srl-official-app-assets-v1'
 
 export const OFFICIAL_APP_DATA_DESCRIPTION: Record<OfficialAppId, string> = {
+  chatReader: '阅读进度、备注、收藏、回复选择和阅读外观；资源库中的聊天、角色卡和正则原件保留',
   draw: '抽取记录和显示偏好',
   stitch: '缝合草稿、恢复点、模板、收藏段落和最近使用记录',
   frontendWorkshop:

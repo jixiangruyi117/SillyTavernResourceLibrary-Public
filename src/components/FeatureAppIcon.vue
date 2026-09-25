@@ -4,7 +4,18 @@ defineProps<{ name: string }>()
 
 <template>
   <svg
-    v-if="name === 'draw'"
+    v-if="name === 'reader'"
+    class="feature-app__svg"
+    viewBox="0 0 48 48"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M24 13C19 10 13 10 7 12v25c6-2 12-2 17 1 5-3 11-3 17-1V12c-6-2-12-2-17 1Zm0 0v25M12 18h7m-7 7h7m10-7h7m-7 7h7"
+    />
+  </svg>
+  <svg
+    v-else-if="name === 'draw'"
     class="feature-app__svg"
     viewBox="0 0 48 48"
     fill="none"
