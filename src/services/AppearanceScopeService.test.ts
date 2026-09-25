@@ -2,11 +2,37 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { BrowserStorageService } from './BrowserStorageService'
 import { compileAppearancePreset } from '../core/AppearanceScopes'
-import { clearOfficialAppAppearance } from './AppearanceScopeService'
+import { clearOfficialAppAppearance, readAppliedAppFrameCss } from './AppearanceScopeService'
 import { appearanceTransaction } from '../core/AppearanceSafety'
 import type { CustomCssPreset } from '../types/BrowserPreferences'
 beforeEach(() => localStorage.clear())
 describe('APP style ownership', () => {
+  it('passes only the applied reader scope to its frame and reflects rollback immediately', async () => {
+    const style = document.createElement('style')
+    style.id = 'srl-custom-ui-style'
+    document.head.append(style)
+    try {
+      style.textContent = compileAppearancePreset({
+        id: 'reader',
+        name: '阅读器',
+        createdAt: '',
+        updatedAt: '',
+        globalCss: 'body { --global-secret: red; }',
+        scopedCss: {
+          'app:chatReader': '#library { .role-row { color: blue; } }',
+          draw: '.panel{color:red}',
+        },
+      })
+      const css = await readAppliedAppFrameCss('chatReader')
+      expect(css).toContain('@scope (body)')
+      expect(css).toContain('.role-row')
+      expect(css).not.toMatch(/global-secret|\.panel|feature-hub/)
+      style.textContent = ''
+      expect(await readAppliedAppFrameCss('chatReader')).toBe('')
+    } finally {
+      style.remove()
+    }
+  })
   it('rolls back unconfirmed changes before deleting a local style, without reviving it later', () => {
     const storage = new BrowserStorageService()
     const preset: CustomCssPreset = {

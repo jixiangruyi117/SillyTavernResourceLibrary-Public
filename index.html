@@ -15,7 +15,59 @@
     <title>SRL · 酒馆资源库</title>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/src/Main.ts"></script>
+    <div id="app">
+      <style>
+        #srl-boot {
+          position: fixed;
+          inset: 0;
+          overflow: auto;
+          display: grid;
+          place-items: center;
+          padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+            max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+          box-sizing: border-box;
+          background: #e8f3f5;
+          color: #193d47;
+          font:
+            15px/1.7 system-ui,
+            sans-serif;
+        }
+        #srl-boot section {
+          width: min(100%, 340px);
+        }
+        #srl-boot h1 {
+          font-size: 20px;
+          margin: 0 0 12px;
+        }
+        #srl-boot p {
+          margin: 0 0 20px;
+        }
+        #srl-boot a {
+          display: inline-flex;
+          align-items: center;
+          min-height: 44px;
+          padding: 0 16px;
+          border: 1px solid currentColor;
+          border-radius: 10px;
+          color: inherit;
+          text-decoration: none;
+        }
+        @media (prefers-color-scheme: dark) {
+          #srl-boot {
+            background: #1d292a;
+            color: #dae8e8;
+          }
+        }
+      </style>
+      <main id="srl-boot">
+        <section aria-labelledby="srl-boot-title">
+          <h1 id="srl-boot-title" role="status">正在打开资源库</h1>
+          <p id="srl-boot-hint">正在载入页面。若长时间没有进入，可以重新打开；本机资源会保留。</p>
+          <a id="srl-boot-reload" href="">重新打开</a>
+          <noscript><p>需要启用 JavaScript 才能使用资源库。</p></noscript>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/Bootstrap.ts"></script>
   </body>
 </html>

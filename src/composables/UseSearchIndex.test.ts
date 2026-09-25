@@ -33,6 +33,31 @@ function summary(overrides: Partial<ResourceSummary> = {}): ResourceSummary {
 }
 
 describe('useSearchIndex', () => {
+  it('输入改变即停止旧任务，等待中的一次读取结束后不继续遍历其余资源', async () => {
+    let release!: (value: unknown) => void
+    resources.get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    )
+    const items = Array.from({ length: 500 }, (_, id) =>
+      summary({ id: String(id), fileName: `${id}.json` }),
+    )
+    const search = useSearchIndex(ref(items), () => false)
+    search.searchQuery.value = 'old'
+    const old = search.refreshSearchContentIndex(items)
+    expect(resources.get).toHaveBeenCalledTimes(1)
+    search.searchQuery.value = 'new'
+    release({ originalBlob: { text: async () => 'old' } })
+    await old
+    expect(resources.get).toHaveBeenCalledTimes(1)
+    expect(search.contentSearchQuery.value).toBe('')
+    expect(search.isSearchIndexing.value).toBe(false)
+    resources.get.mockResolvedValue({ originalBlob: { text: async () => 'new' } })
+    await search.refreshSearchContentIndex(items.slice(0, 1))
+    expect(search.contentSearchMatchIds.value.has('0')).toBe(true)
+  })
   beforeEach(() => {
     vi.clearAllMocks()
     storage.getSearchHistory.mockReturnValue([])

@@ -217,8 +217,8 @@ function scheduleViewportState(): void {
 
 applyViewportState()
 const startupAttempt = beginStartupAttempt()
-if (startupAttempt.rescueRequired) installStartupRescuePrompt()
-else if (isSafeModeActive()) installSafeModeBanner()
+if (isSafeModeActive()) installSafeModeBanner()
+else if (startupAttempt.rescueRequired) installStartupRescuePrompt()
 installNativeRuntime()
 void disableServiceWorkerForNativeApp()
 window.addEventListener('resize', scheduleViewportState, { passive: true })

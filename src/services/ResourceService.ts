@@ -480,11 +480,16 @@ export class ResourceService {
     }
   }
 
-  async upgradeLegacyJsonResources(): Promise<number> {
+  async upgradeLegacyJsonResources(
+    checkpoint = () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  ): Promise<number> {
+    await checkpoint()
     const resources = await this.storage.listSummaries()
     let upgradedCount = 0
 
+    let processed = 0
     for (const summary of resources) {
+      if (++processed % 32 === 0) await checkpoint()
       const legacyGlobalRegexName = summary.fileName.replace(/\.json$/i, '').trim()
       if (
         summary.fileName.toLocaleLowerCase().endsWith('.json') &&
@@ -522,13 +527,18 @@ export class ResourceService {
    * 指纹从 metadata.card 计算并写回 metadata，不触碰卡数据与原文件；
    * 已有指纹的资源跳过，因此只有首次升级时有一次性开销。
    */
-  async backfillCardFingerprints(): Promise<number> {
+  async backfillCardFingerprints(
+    checkpoint = () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  ): Promise<number> {
+    await checkpoint()
     const [summaries, versionSummaries] = await Promise.all([
       this.storage.listSummaries(),
       this.storage.listVersionSummaries(),
     ])
     let backfilled = 0
+    let processed = 0
     for (const summary of summaries) {
+      if (++processed % 32 === 0) await checkpoint()
       if (summary.type !== RESOURCE_TYPE.CHARACTER_CARD) continue
       if (
         typeof summary.metadata.cardContentHash === 'string' &&
@@ -537,17 +547,20 @@ export class ResourceService {
         continue
       const fingerprints = await computeCardFingerprints(summary.metadata)
       if (!fingerprints) continue
-      await this.storage.update(summary.id, {
+      const changes = {
         metadata: {
           ...summary.metadata,
           cardContentHash: fingerprints.full,
           cardCoreHash: fingerprints.core,
           cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
         },
-      })
+      }
+      await this.storage.update(summary.id, changes)
+      summary.metadata = changes.metadata
       backfilled += 1
     }
     for (const summary of versionSummaries) {
+      if (++processed % 32 === 0) await checkpoint()
       if (summary.type !== RESOURCE_TYPE.CHARACTER_CARD) continue
       if (
         typeof summary.metadata.cardContentHash === 'string' &&
@@ -556,29 +569,29 @@ export class ResourceService {
         continue
       const fingerprints = await computeCardFingerprints(summary.metadata)
       if (!fingerprints) continue
-      await this.storage.updateVersion(summary.id, {
+      const changes = {
         metadata: {
           ...summary.metadata,
           cardContentHash: fingerprints.full,
           cardCoreHash: fingerprints.core,
           cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
         },
-      })
+      }
+      await this.storage.updateVersion(summary.id, changes)
+      summary.metadata = changes.metadata
       backfilled += 1
     }
-    const [refreshedResources, refreshedVersions] = await Promise.all([
-      this.storage.listSummaries(),
-      this.storage.listVersionSummaries(),
-    ])
     const versionsByOwner = new Map<string, ResourceSummary[]>()
-    for (const version of refreshedVersions) {
+    for (const version of versionSummaries) {
+      if (++processed % 32 === 0) await checkpoint()
       if (!version.versionGroupId) continue
       versionsByOwner.set(version.versionGroupId, [
         ...(versionsByOwner.get(version.versionGroupId) ?? []),
         version,
       ])
     }
-    for (const resource of refreshedResources) {
+    for (const resource of summaries) {
+      if (++processed % 32 === 0) await checkpoint()
       const versionCount = countResourceLogicalVersions([
         resource,
         ...(versionsByOwner.get(resource.id) ?? []),

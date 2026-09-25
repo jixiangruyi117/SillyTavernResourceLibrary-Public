@@ -1709,7 +1709,11 @@ describe('角色卡内容指纹', () => {
       updatedAt: 1,
     } as Resource)
 
+    const readCurrent = vi.spyOn(storage, 'listSummaries')
+    const readVersions = vi.spyOn(storage, 'listVersionSummaries')
     expect(await service.backfillCardFingerprints()).toBe(2)
+    expect(readCurrent).toHaveBeenCalledTimes(1)
+    expect(readVersions).toHaveBeenCalledTimes(1)
     const updated = await storage.get('legacy')
     const [updatedHistory] = await storage.listVersionSummaries()
     expect(typeof updated?.metadata.cardContentHash).toBe('string')

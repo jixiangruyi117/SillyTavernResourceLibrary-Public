@@ -1,5 +1,9 @@
 import { onMounted, onUnmounted, ref } from 'vue'
-import { SCOPED_CSS_REMOVED_EVENT, upgradeLegacyAppearanceCss } from '../core/AppearanceScopes'
+import {
+  APPLIED_CSS_CHANGED_EVENT,
+  SCOPED_CSS_REMOVED_EVENT,
+  upgradeLegacyAppearanceCss,
+} from '../core/AppearanceScopes'
 
 import { browserStorageService } from '../core/AppContainer'
 import { appearanceTransaction, recoverInterruptedAppearance } from '../core/AppearanceSafety'
@@ -92,6 +96,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
         allowExternalResources: previewPolicy.value.allowRemoteResources,
       },
     )
+    window.dispatchEvent(new Event(APPLIED_CSS_CHANGED_EVENT))
   }
 
   function saveCustomUiCss(value: string): void {

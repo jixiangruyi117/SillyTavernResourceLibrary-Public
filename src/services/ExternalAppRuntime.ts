@@ -186,6 +186,10 @@ export const RUNTIME_BRIDGE = `<script>
     port = event.ports[0];
     port.onmessage = (message) => {
       const data = message.data;
+      if (data?.type === 'srl:reader-appearance' && data.nonce === nonce && typeof data.css === 'string') {
+        window.dispatchEvent(new CustomEvent('srlappappearance', { detail: data.css }));
+        return;
+      }
       if (data?.type === 'srl:reader-action' && data.nonce === nonce) {
         window.dispatchEvent(new CustomEvent('srlappnavigation', { detail: data.action }));
         return;

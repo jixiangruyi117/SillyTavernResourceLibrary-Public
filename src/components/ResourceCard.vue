@@ -36,12 +36,23 @@ function safePreviewColor(value: unknown, fallback: string): string {
 // blurThumbnails 为 true（默认）时，缩略图默认模糊（isRevealed = false）；
 // blurThumbnails 为 false 时，缩略图默认清晰（isRevealed = true）。
 const isRevealed = ref(props.blurThumbnails === false)
-const thumbnailBlob = useResourceThumbnail(() => props.resource)
+const cardElement = ref<Element | null>(null)
+const thumbnailBlob = useResourceThumbnail(() => props.resource, cardElement)
 const { previewUrl, replacePreview, confirmPreviewLoaded } = useLoadedObjectUrl()
 const previewRetried = ref(false)
 let previewIdentity = ''
+const hasThumbnailCover = computed(
+  () =>
+    Boolean(props.resource.thumbnailAssetId || props.resource.thumbnailBlob) &&
+    (props.resource.type === RESOURCE_TYPE.USER_PERSONA ||
+      (props.resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
+        (props.resource.mimeType === 'image/png' || /\.png$/i.test(props.resource.fileName)))),
+)
 const isJsonCharacterCover = computed(
-  () => !previewUrl.value && props.resource.type === RESOURCE_TYPE.CHARACTER_CARD,
+  () =>
+    !previewUrl.value &&
+    !hasThumbnailCover.value &&
+    props.resource.type === RESOURCE_TYPE.CHARACTER_CARD,
 )
 const previewKindLabel = computed(() =>
   props.resource.type === RESOURCE_TYPE.USER_PERSONA ? '用户头像封面' : '角色卡原图',
@@ -49,7 +60,7 @@ const previewKindLabel = computed(() =>
 const isCompact = computed(
   () =>
     props.resource.type === RESOURCE_TYPE.POCKET_PHONE ||
-    (!previewUrl.value && !isJsonCharacterCover.value),
+    (!previewUrl.value && !hasThumbnailCover.value && !isJsonCharacterCover.value),
 )
 const beautificationPreviewStyle = computed(() => {
   const preview = props.resource.metadata.beautificationPreview
@@ -125,6 +136,7 @@ watch(
 
 <template>
   <article
+    ref="cardElement"
     class="resource-card"
     :class="{
       'resource-card--compact': isCompact,
@@ -144,7 +156,7 @@ watch(
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-9" /></svg>
     </button>
     <button
-      v-if="previewUrl && resource.type !== RESOURCE_TYPE.POCKET_PHONE"
+      v-if="(previewUrl || hasThumbnailCover) && resource.type !== RESOURCE_TYPE.POCKET_PHONE"
       class="resource-card__preview"
       :class="{ 'resource-card__preview--revealed': isRevealed }"
       type="button"
@@ -160,6 +172,7 @@ watch(
       @click="selectable ? emit('select', resource) : (isRevealed = !isRevealed)"
     >
       <img
+        v-if="previewUrl"
         class="resource-card__image"
         :class="{ 'resource-card__image--revealed': isRevealed }"
         :src="previewUrl"

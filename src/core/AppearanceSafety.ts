@@ -33,7 +33,11 @@ function parsePendingAppearance(): PendingAppearance | null {
   } catch {
     // Corrupt safety metadata is discarded below.
   }
-  localStorage.removeItem(PENDING_APPEARANCE_KEY)
+  try {
+    localStorage.removeItem(PENDING_APPEARANCE_KEY)
+  } catch {
+    /* No metadata is needed for normal appearance. */
+  }
   return null
 }
 
@@ -46,8 +50,8 @@ function createProtectedHost(id: string): { host: HTMLDivElement; root: ShadowRo
     display: 'block',
     position: 'fixed',
     inset: 'auto 12px 12px 12px',
-    zIndex: '2147483647',
-    pointerEvents: 'auto',
+    'z-index': '2147483647',
+    'pointer-events': 'none',
     visibility: 'visible',
     opacity: '1',
   }
@@ -61,8 +65,12 @@ function createProtectedHost(id: string): { host: HTMLDivElement; root: ShadowRo
 export function recoverInterruptedAppearance(): string | undefined {
   const pending = parsePendingAppearance()
   if (!pending) return undefined
-  localStorage.removeItem(PENDING_APPEARANCE_KEY)
-  localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, pending.previousCss)
+  try {
+    localStorage.removeItem(PENDING_APPEARANCE_KEY)
+    localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, pending.previousCss)
+  } catch {
+    /* Still render the previous CSS if diagnostic storage is unavailable. */
+  }
   return pending.previousCss
 }
 
@@ -96,7 +104,7 @@ class AppearanceTransactionManager {
     const { host, root } = createProtectedHost(GUARD_HOST_ID)
     root.innerHTML = `<style>
       :host{font:14px/1.45 system-ui,sans-serif;color:#15342f}
-      .guard{display:flex;align-items:center;gap:12px;max-width:680px;margin:auto;padding:12px 14px;border:1px solid #6fa79d;border-radius:14px;background:#f4fffc;box-shadow:0 12px 36px #102d2850}
+      *,*::before,*::after{box-sizing:border-box}.guard{pointer-events:auto;font:14px/1.45 system-ui,sans-serif;color:#15342f;display:flex;align-items:center;gap:12px;max-width:680px;margin:auto;padding:12px 14px;border:1px solid #6fa79d;border-radius:14px;background:#f4fffc;box-shadow:0 12px 36px #102d2850}
       .copy{min-width:0;flex:1}.copy strong,.copy span{display:block}.copy span{color:#496660;font-size:12px}
       .actions{display:flex;gap:8px}.actions button{min-height:44px;padding:8px 12px;border:1px solid #6b9c93;border-radius:10px;background:#fff;color:#15342f;font:600 13px system-ui;cursor:pointer}
       .actions .keep{border-color:#187f73;background:#187f73;color:#fff}

@@ -63,6 +63,9 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
   let cloudBackupTimer: number | undefined
   let libraryMaintenanceTimer: number | undefined
   let consumingSharedFiles = false
+  let disposed = false
+  let resumeMaintenance: (() => void) | undefined
+  let maintenanceRun: Promise<void> | undefined
   let stopGreetingUpdates: (() => void) | undefined
 
   async function consumeSharedFiles(): Promise<void> {
@@ -87,13 +90,58 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     }
   }
 
-  async function runLibraryMaintenance(): Promise<void> {
+  async function maintenanceCheckpoint(wait = false): Promise<void> {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+    while (
+      !disposed &&
+      !context.vaultStatus.value.locked &&
+      (context.isOverlayOpen.value || context.isFeatureHubOpen.value)
+    ) {
+      // Do not retain a metadata snapshot across a foreground edit/import.
+      // Restart the idempotent pass after the user finishes instead.
+      if (!wait) throw new DOMException('Maintenance paused', 'AbortError')
+      await new Promise<void>((resolve) => {
+        resumeMaintenance = resolve
+      })
+    }
+    if (disposed || context.vaultStatus.value.locked)
+      throw new DOMException('Maintenance stopped', 'AbortError')
+  }
+
+  watch(
+    [context.isOverlayOpen, context.isFeatureHubOpen, () => context.vaultStatus.value.locked],
+    () => {
+      resumeMaintenance?.()
+      resumeMaintenance = undefined
+    },
+  )
+
+  async function maintainLibrary(): Promise<void> {
+    await maintenanceCheckpoint(true)
     const thumbnailRepairCount = await resourceService.repairThumbnailAssets()
-    const upgradedCount = await resourceService.upgradeLegacyJsonResources()
-    const backfilledCount = await resourceService.backfillCardFingerprints()
+    await maintenanceCheckpoint()
+    const upgradedCount = await resourceService.upgradeLegacyJsonResources(maintenanceCheckpoint)
+    const backfilledCount = await resourceService.backfillCardFingerprints(maintenanceCheckpoint)
     if (thumbnailRepairCount > 0 || upgradedCount > 0 || backfilledCount > 0) {
       await context.loadResources()
     }
+  }
+
+  function runLibraryMaintenance(): Promise<void> {
+    if (!maintenanceRun)
+      maintenanceRun = (async () => {
+        while (!disposed && !context.vaultStatus.value.locked) {
+          try {
+            await maintainLibrary()
+            return
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) throw error
+          }
+        }
+      })().finally(() => {
+        maintenanceRun = undefined
+      })
+    return maintenanceRun
   }
 
   function scheduleLibraryMaintenance(): void {
@@ -101,13 +149,15 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     libraryMaintenanceTimer = window.setTimeout(() => {
       libraryMaintenanceTimer = undefined
       void runLibraryMaintenance().catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
         console.warn('存量资源后台维护失败:', error)
       })
     }, 0)
   }
 
   async function initializeLibrary(): Promise<void> {
-    const [status] = await Promise.all([initializeVaultOnce(), context.refreshStorageHealth()])
+    const status = await initializeVaultOnce()
+    if (disposed) return
     context.vaultStatus.value = status
     if (context.vaultStatus.value.locked) {
       browserStorageService.clearSearchHistory()
@@ -116,13 +166,24 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
       context.isVaultPanelOpen.value = true
       return
     }
-    await Promise.all([
-      context.loadLibrary(),
-      context.loadHistorySnapshots(),
-      context.loadRecycleBin(),
-    ])
+    await context.loadLibrary()
+    if (disposed) return
+    markStartupReady()
+    // The usable library must not wait for backup history, recycle-bin contents or quota probes.
+    void (async () => {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+      if (disposed || context.vaultStatus.value.locked) return
+      const results = await Promise.allSettled([
+        context.refreshStorageHealth(),
+        context.loadHistorySnapshots(),
+        context.loadRecycleBin(),
+      ])
+      if (!disposed && results.some((result) => result.status === 'rejected'))
+        context.showNotice('资源库已打开，部分存储或历史信息暂时读取失败，可在对应面板重试')
+    })()
     await context.handleNativeDeepLink()
     await consumeSharedFiles()
+    if (disposed) return
     scheduleLibraryMaintenance()
     void syncNativeResourceFiles().catch((error) => {
       context.showNotice(
@@ -219,6 +280,8 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
   })
 
   onUnmounted(() => {
+    disposed = true
+    resumeMaintenance?.()
     stopGreetingUpdates?.()
     if (searchIndexTimer !== undefined) window.clearTimeout(searchIndexTimer)
     if (libraryMaintenanceTimer !== undefined) window.clearTimeout(libraryMaintenanceTimer)

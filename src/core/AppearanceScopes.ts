@@ -3,6 +3,7 @@ import { isOfficialAppId } from '../types/OfficialApp'
 import type { CustomCssPreset, CustomCssScope } from '../types/BrowserPreferences'
 
 export const SCOPED_CSS_REMOVED_EVENT = 'srl:scoped-css-removed'
+export const APPLIED_CSS_CHANGED_EVENT = 'srl:applied-css-changed'
 
 export interface AppearanceScope {
   value: CustomCssScope

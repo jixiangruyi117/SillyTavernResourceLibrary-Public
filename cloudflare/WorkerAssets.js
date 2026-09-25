@@ -16,13 +16,8 @@ export function finalizeStaticAssetResponse(response, pathname) {
       'CDN-Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
     })
-    if (/\.m?js$/i.test(pathname)) {
-      headers.set('Content-Type', 'text/javascript; charset=utf-8')
-      return new Response(
-        `location.replace('/api/force-refresh?asset-recovery=${DEPLOY_VERSION}');`,
-        { status: 200, headers },
-      )
-    }
+    // 伪造 200 恢复模块会在命名导出链接阶段失败，脚本根本没有机会执行；
+    // 真实 404 交给入口/面板的加载边界处理，也避免坏响应进入 SW 运行缓存。
     headers.set('Content-Type', 'text/plain; charset=utf-8')
     return new Response(
       'Static asset is no longer available. Refresh to load the latest version.',

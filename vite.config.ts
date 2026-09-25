@@ -23,6 +23,7 @@ const previewVendorGlobalsSourceId = 'virtual:srl-preview-vendor-globals-source'
 const resolvedPreviewVendorGlobalsSourceId = `\0${previewVendorGlobalsSourceId}`
 const appearanceStarterCssSourceId = 'virtual:srl-appearance-starter-css-source'
 const resolvedAppearanceStarterCssSourceId = `\0${appearanceStarterCssSourceId}`
+const startupPrecache = new Map<string, { url: string; revision: null; size: number }>()
 
 interface AppearanceStarterCssSource {
   file: string
@@ -162,6 +163,41 @@ function offlineAssetManifestPlugin(): Plugin {
     generateBundle: {
       order: 'post',
       handler(_options, bundle) {
+        // 文件名前缀不能证明启动依赖齐全。仅沿正式核心入口的静态依赖收集；
+        // 可选 APP、编辑器和预览编译器的动态分包仍按需缓存。
+        startupPrecache.clear()
+        const visitStartup = (name: string): void => {
+          if (startupPrecache.has(name)) return
+          const file = bundle[name]
+          if (!file) return
+          const content = file.type === 'chunk' ? file.code : file.source
+          startupPrecache.set(name, { url: name, revision: null, size: Buffer.byteLength(content) })
+          if (file.type !== 'chunk') return
+          const metadata = file as typeof file & {
+            viteMetadata?: { importedCss: Set<string>; importedAssets: Set<string> }
+          }
+          for (const dependency of [
+            ...file.imports,
+            ...(metadata.viteMetadata?.importedCss ?? []),
+            ...(metadata.viteMetadata?.importedAssets ?? []),
+          ])
+            visitStartup(dependency)
+        }
+        for (const file of Object.values(bundle)) {
+          // Vite 的独立 Worker 构建作为 asset 输出，不在主图的 imports 中。
+          if (/^assets\/ContentSearchWorker-[^/]+\.js$/u.test(file.fileName))
+            visitStartup(file.fileName)
+          if (
+            file.type === 'chunk' &&
+            Object.keys(file.modules).some(
+              (id) =>
+                /\/src\/(?:Bootstrap|Main|App|core\/AppContainer|components\/DiscordSourceHandoffIntake)\.(?:ts|vue)$/u.test(
+                  id.replaceAll('\\', '/'),
+                ) || id.replaceAll('\\', '/').includes('/workbox-window/'),
+            )
+          )
+            visitStartup(file.fileName)
+        }
         const optionalAsset = bundle['official-app-assets.json']
         const optionalFiles = new Set<string>(
           optionalAsset?.type === 'asset' ? JSON.parse(String(optionalAsset.source)).files : [],
@@ -238,12 +274,12 @@ export default defineConfig({
           'force-refresh.html',
           'manifest.webmanifest',
           'icons/*.{svg,png,ico}',
-          'assets/index-*.{js,css}',
-          'assets/App-*.{js,css}',
-          'assets/AppContainer-*.js',
-          'assets/vue.runtime*.js',
-          'assets/vue-router*.js',
-          'assets/dist-*.js',
+        ],
+        manifestTransforms: [
+          async (entries) => ({
+            manifest: [...entries, ...startupPrecache.values()],
+            warnings: [],
+          }),
         ],
         globIgnores: ['**/downloads/**', '**/official-apps/**', '**/offline-assets.json'],
         navigateFallback: 'index.html',

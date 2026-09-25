@@ -43,6 +43,7 @@
     "jquery-ui-touch-punch": "0.2.3",
     "jszip": "3.10.1",
     "lodash": "4.18.1",
+    "postcss": "8.5.19",
     "showdown": "2.1.0",
     "simple-apk-parser": "0.1.2",
     "toastr": "2.1.4",

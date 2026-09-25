@@ -3,10 +3,11 @@ import { resolve } from 'node:path'
 import process from 'node:process'
 
 const root = resolve(import.meta.dirname, '..')
+const dist = resolve(root, process.argv[2] ?? 'dist')
 const [buildInfo, manifest, serviceWorker] = await Promise.all([
   readFile(resolve(root, 'build-info.json'), 'utf8').then(JSON.parse),
-  readFile(resolve(root, 'dist/offline-assets.json'), 'utf8').then(JSON.parse),
-  readFile(resolve(root, 'dist/sw.js'), 'utf8'),
+  readFile(resolve(dist, 'offline-assets.json'), 'utf8').then(JSON.parse),
+  readFile(resolve(dist, 'sw.js'), 'utf8'),
 ])
 const failures = []
 const requireValue = (condition, message) => {
@@ -52,7 +53,7 @@ for (const compilerAsset of [
     `按需 Browser Compiler 资源不应进入默认 precache：${compilerAsset}`,
   )
 }
-await stat(resolve(root, 'dist/force-refresh.html'))
+await stat(resolve(dist, 'force-refresh.html'))
 
 if (failures.length) throw new Error(`PWA 离线门禁失败：\n- ${failures.join('\n- ')}`)
 process.stdout.write(

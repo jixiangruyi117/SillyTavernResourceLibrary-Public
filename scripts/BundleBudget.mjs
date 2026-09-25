@@ -3,7 +3,7 @@ import { extname, resolve } from 'node:path'
 import process from 'node:process'
 
 const root = resolve(import.meta.dirname, '..')
-const dist = resolve(root, 'dist')
+const dist = resolve(root, process.argv[2] ?? 'dist')
 const assetsDirectory = resolve(dist, 'assets')
 const assetNames = await readdir(assetsDirectory)
 const entries = await Promise.all(

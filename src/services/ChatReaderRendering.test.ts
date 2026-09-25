@@ -17,6 +17,64 @@ import {
 import { applyCharacterGreetingRegex } from '../utils/CharacterGreetingRegex'
 
 describe('chat history display semantics', () => {
+  it('retains nested status styles in simple mode while still blocking remote CSS resources', () => {
+    const result = formatChatResult(
+      '```html\n<style>body { p { color: blue; background: url(https://example.com/private.png) } } :host{display:none}</style><body><p>状态正文</p></body>\n```',
+      false,
+      false,
+    )
+    expect(result.frontends[0]).toMatch(/p\s*\{\s*color:\s*blue/)
+    expect(result.frontends[0]).toContain('.reader-panel-body')
+    expect(result.frontends[0]).toContain('状态正文')
+    expect(result.frontends[0]).not.toContain('private.png')
+    expect(result.frontends[0]).not.toMatch(/display:\s*none/)
+  })
+  it('identifies the exact scoped rule that clears a floor, without blaming earlier matches', () => {
+    const scripts = [
+      {
+        id: 'same',
+        scriptName: '改词',
+        findRegex: '正文',
+        replaceString: '改写正文',
+        markdownOnly: true,
+        placement: [2],
+      },
+    ]
+    const clear = {
+      ...scripts[0],
+      scriptName: '隐藏整楼',
+      findRegex: '/[\\s\\S]+/g',
+      replaceString: '',
+    }
+    const input = chatRenderInput(
+      { index: 1, depth: 0, message: { name: '角色', mes: '正文', is_user: false } },
+      {},
+      { extraRules: scripts, presetRules: [clear] },
+    )
+    const result = applyCharacterGreetingRegex([input.source], input.rules, input.context)
+    expect(result.emptyCauses).toEqual([{ contentIndex: 0, id: 'preset:same', name: '隐藏整楼' }])
+    const restored = applyCharacterGreetingRegex(
+      ['正文'],
+      [
+        ...input.rules,
+        {
+          id: 'restore',
+          name: '补回正文',
+          find: '/^$/',
+          replace: '新正文',
+        },
+      ],
+      input.context,
+    )
+    expect(restored.emptyCauses).toBeUndefined()
+    expect(
+      applyCharacterGreetingRegex(
+        ['正文'],
+        [{ id: 'none', name: '未命中', find: '不存在', replace: '' }],
+        input.context,
+      ).emptyCauses,
+    ).toBeUndefined()
+  })
   it.each([
     '```html\r\n<div>STATUS_CODE</div>\r\n```\r\n尾声',
     '    STATUS_CODE = { value: 1 };\n\n尾声',
@@ -113,10 +171,51 @@ describe('chat history display semantics', () => {
     const css = chatReaderCss(
       ':root{--bubble:red;color:black}body .sheld #chat .mes_text{color:var(--bubble)}#top-bar{display:none}@media(min-width:1px){.mes{padding:2px}.settings{display:none}}@import url(https://example.com/all.css);',
     )
-    expect(css).toContain('--bubble: red')
+    expect(css).toMatch(/--bubble:\s*red/)
     expect(css).toContain('#chat .mes_text')
     expect(css).toContain('.mes')
-    expect(css).not.toMatch(/sheld|top-bar|settings|@import|color: black/)
+    expect(css).not.toMatch(/sheld|top-bar|settings|@import|color:\s*black/)
+  })
+  it('accepts native CSS nesting without losing relative selectors or later chat rules', () => {
+    const css = chatReaderCss(`
+      .mes_text {
+        color: red;
+        p { color: blue; }
+        & > q, &:is(.focused, .active) { color: green; }
+        @media (min-width: 1px) { & strong { font-weight: 700; } }
+      }
+      #top-bar { button { display: none; } }
+      @layer reader { @container (min-width: 1px) { .mes { padding: 2px; } } }
+      .avatar img { border-radius: 4px; }
+    `)
+    expect(css).toMatch(/p\s*\{\s*color:\s*blue/)
+    expect(css).toContain('&')
+    expect(css).toMatch(/:is\(\.focused,\s*\.active\)/)
+    expect(css).toContain('@media')
+    expect(css).toContain('@container')
+    expect(css).toContain('.avatar img')
+    expect(css).not.toMatch(/top-bar|button|display:\s*none/)
+  })
+  it('keeps nested root chat styles but cannot import shadow host selectors', () => {
+    const css = chatReaderCss(`
+      body { background: pink; position: fixed; .mes_text { p { color: blue } } }
+      .mes_text { :host { display: none; } &::slotted(*) { color: red; } }
+    `)
+    expect(css).toContain('#chat')
+    expect(css).toMatch(/background:\s*pink/)
+    expect(css).toContain('.mes_text')
+    expect(css).not.toMatch(/position|:host|::slotted|display/)
+  })
+  it('extracts fonts even when the same theme contains nested message CSS', async () => {
+    const result = await chatReaderFonts(
+      `
+      .mes_text { p { color: blue; } }
+      @font-face { font-family: Archive; src: url(https://example.com/a.woff2); }
+    `,
+      true,
+    )
+    expect(result.css).toContain('a.woff2')
+    expect(result.css).not.toContain('.mes_text')
   })
   it('maps saved theme colors to chat variables and ignores invalid colors', () => {
     const css = chatReaderCss('', {
@@ -138,7 +237,7 @@ describe('chat history display semantics', () => {
     expect(css).toContain('ribbon.png')
     expect(css).toContain('.mesAvatarWrapper .avatar img')
     expect(css).toContain('#chat .mes_text q')
-    expect(css).not.toMatch(/top-bar|position: fixed/)
+    expect(css).not.toMatch(/top-bar|position:\s*fixed/)
     const shell = chatReaderCss(
       '#bg1{background-image:url(https://example.com/back.png);position:fixed}',
     )
@@ -373,7 +472,7 @@ describe('chat history display semantics', () => {
     expect(offline).toContain('时间：20:05')
     expect(offline).toContain('.reader-panel-body')
     expect(offline).toContain('color: red')
-    expect(offline).toContain('font-size: 14px')
+    expect(offline).toMatch(/font-size:\s*14px/)
     expect(offline).not.toMatch(/example\.com|onclick|<iframe|<script/)
     expect(formatChatResult(source, true).frontends[0]).toContain('https://example.com/image.png')
   })

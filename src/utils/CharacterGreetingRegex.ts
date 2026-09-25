@@ -16,11 +16,13 @@ export interface CharacterGreetingRegexResult {
   errors: string[]
   /** 兼容旧调用结构；显示正则删除的内容不会由预览层恢复。 */
   preservedBodyIndexes: number[]
+  emptyCauses?: Array<{ contentIndex: number; id: string; name: string }>
 }
 
 export interface CharacterGreetingRegexContext {
   charName?: string
   userName?: string
+  traceEmpty?: boolean
 }
 
 type CharacterGreetingRegexPhase = 'aiOutput' | 'markdown'
@@ -297,6 +299,7 @@ export function applyCharacterGreetingRegex(
 ): CharacterGreetingRegexResult {
   const matchedRuleNames = new Set<string>()
   const errors = new Set<string>()
+  const emptyCauses: NonNullable<CharacterGreetingRegexResult['emptyCauses']> = []
   const phases: CharacterGreetingRegexPhase[] = ['aiOutput', 'markdown']
 
   const transformed = contents.map((source, greetingIndex) => {
@@ -306,6 +309,7 @@ export function applyCharacterGreetingRegex(
     }
 
     let output = source
+    let emptyCause: (typeof emptyCauses)[number] | undefined
     for (const phase of phases) {
       for (const rule of rules) {
         if ((rule.phase ?? 'markdown') !== phase) continue
@@ -315,10 +319,16 @@ export function applyCharacterGreetingRegex(
           continue
         }
         const next = applyRule(output, expression, rule, context)
+        if (context.traceEmpty) {
+          if (next.trim()) emptyCause = undefined
+          else if (output.trim())
+            emptyCause = { contentIndex: greetingIndex, id: rule.id, name: rule.name }
+        }
         if (next !== output) matchedRuleNames.add(rule.name)
         output = next
       }
     }
+    if (emptyCause) emptyCauses.push(emptyCause)
     return output
   })
 
@@ -327,5 +337,6 @@ export function applyCharacterGreetingRegex(
     matchedRuleNames: [...matchedRuleNames],
     errors: [...errors],
     preservedBodyIndexes: [],
+    ...(emptyCauses.length ? { emptyCauses } : {}),
   }
 }

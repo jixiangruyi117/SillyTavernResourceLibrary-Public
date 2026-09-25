@@ -1,5 +1,7 @@
 import type { App } from 'vue'
 
+import { reloadAfterLoadFailure } from './ServiceWorkerReload'
+
 const BANNER_ID = 'srl-fatal-error'
 const REPEAT_WINDOW_MS = 5_000
 
@@ -72,7 +74,7 @@ function renderErrorDialog(source: string, detail: string, advice: string): void
   const reload = document.createElement('button')
   reload.type = 'button'
   reload.textContent = '刷新页面'
-  reload.addEventListener('click', () => window.location.reload())
+  reload.addEventListener('click', () => void reloadAfterLoadFailure())
 
   const dismiss = document.createElement('button')
   dismiss.type = 'button'

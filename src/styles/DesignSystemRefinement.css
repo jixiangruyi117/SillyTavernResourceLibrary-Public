@@ -3,7 +3,7 @@
  * 只定义产品级 token / 环境材质 / 通用可读性底线；具体 Feature 布局由各自 Owner 负责。
  * FrontendWorkshop Preview、外部 Source HTML/CSS、角色卡富内容仍按作者样式渲染。
  */
-@import url('https://registry.npmmirror.com/@lobehub/webfont-harmony-sans-sc-mini/latest/files/css/index.css');
+/* 默认界面使用本机字体。远程 @import 会阻塞主样式和应用入口，不作为启动依赖。 */
 
 :root {
   --font-ui:

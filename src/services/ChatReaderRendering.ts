@@ -1,6 +1,6 @@
 import { computeWorkerPool } from '../core/ComputeWorkerPool'
 import createDOMPurify from 'dompurify'
-import { parse, stringify } from '@adobe/css-tools'
+import postcss, { type Container } from 'postcss'
 import { mapRenderCompatibilityViewportMinimums } from '../utils/RenderCompatibilityFrontend'
 import {
   extractCharacterGreetingRegexRules,
@@ -91,16 +91,26 @@ export function selectChatReply(entry: ChatReadPage['messages'][number], selecte
 
 /** Keep chat selectors and theme variables; application panels never enter the reader shadow root. */
 export function chatReaderCss(source: string, theme: Record<string, unknown> = {}): string {
-  const ast = parse(extractPreviewCss(source, { allowExternalResources: true }))
-  const visit = (rules: NonNullable<typeof ast.stylesheet>['rules']): typeof rules =>
-    rules.filter((rule) => {
-      if (rule.type === 'import' || rule.type === 'charset') return false
-      if ('selectors' in rule && Array.isArray(rule.selectors)) {
-        const rootsOnly = rule.selectors.every((s) =>
-          /^(?:html|body|:root|#bg1|#chat)$/.test(s.trim()),
-        )
-        rule.selectors = rule.selectors.flatMap((selector) => {
+  const ast = postcss.parse(extractPreviewCss(source, { allowExternalResources: true }))
+  const visit = (container: Container, nested = false) => {
+    container.each((rule) => {
+      if (rule.type === 'atrule') {
+        const name = rule.name.toLowerCase()
+        if (name === 'import' || name === 'charset') {
+          rule.remove()
+          return
+        }
+        // Keyframes and font/property descriptors are not chat selector groups.
+        if (rule.nodes && !/^(?:font-face|property|(?:-\w+-)?keyframes)$/.test(name))
+          visit(rule, nested)
+      }
+      if (rule.type === 'rule') {
+        const rootsOnly =
+          !nested && rule.selectors.every((s) => /^(?:html|body|:root|#bg1|#chat)$/.test(s.trim()))
+        const selectors = rule.selectors.flatMap((selector) => {
           if (/:host|::slotted/.test(selector)) return []
+          // Preserve & and implicit descendants inside a retained chat rule.
+          if (nested) return [selector]
           if (/^(?:html|body|:root|#bg1|#chat)$/.test(selector.trim())) return ['#chat']
           const match =
             /#chat\b|\.(?:mes|mes_block|mes_text|mesAvatarWrapper|name_text|ch_name|avatar)\b/.exec(
@@ -110,19 +120,25 @@ export function chatReaderCss(source: string, theme: Record<string, unknown> = {
             return ['#chat .mes_text ' + selector]
           return match ? [selector.slice(match.index)] : []
         })
-        if (!rule.selectors.length) return false
-        if (rootsOnly && 'declarations' in rule && Array.isArray(rule.declarations))
-          rule.declarations = rule.declarations.filter(
-            (d) =>
-              'property' in d &&
-              (d.property.startsWith('--') ||
-                /^(?:background(?:-.+)?|font-family)$/.test(d.property)),
-          )
+        if (!selectors.length) {
+          rule.remove()
+          return
+        }
+        rule.selectors = selectors
+        if (rootsOnly)
+          rule.each((d) => {
+            if (
+              d.type === 'decl' &&
+              !d.prop.startsWith('--') &&
+              !/^(?:background(?:-.+)?|font-family)$/.test(d.prop)
+            )
+              d.remove()
+          })
+        visit(rule, true)
       }
-      if ('rules' in rule && Array.isArray(rule.rules)) rule.rules = visit(rule.rules)
-      return true
     })
-  if (ast.stylesheet) ast.stylesheet.rules = visit(ast.stylesheet.rules)
+  }
+  visit(ast)
   const colors: Record<string, string> = {
     main_text_color: '--SmartThemeBodyColor',
     italics_text_color: '--SmartThemeEmColor',
@@ -141,7 +157,7 @@ export function chatReaderCss(source: string, theme: Record<string, unknown> = {
   const defaults = variables.length
     ? `#chat{${variables.join(';')};color:var(--SmartThemeBodyColor,inherit);background:var(--SmartThemeChatTintColor,transparent)}#chat em{color:var(--SmartThemeEmColor,inherit)}#chat q{color:var(--SmartThemeQuoteColor,inherit)}#chat .mes[is_user="true"]{background:var(--SmartThemeUserMesBlurTintColor,transparent)}#chat .mes[is_user="false"]{background:var(--SmartThemeBotMesBlurTintColor,transparent)}`
     : ''
-  const css = defaults + stringify(ast)
+  const css = defaults + ast.toString()
   if (css.length > 30000) throw new Error('聊天区域 CSS 超过 30000 字符，请先精简')
   return css
 }
@@ -152,14 +168,14 @@ export async function chatReaderFonts(source: string, remote: boolean) {
   const errors: string[] = []
   const visited = new Set<string>()
   const collect = async (css: string, depth: number) => {
-    const ast = parse(extractPreviewCss(css, { allowExternalResources: remote }))
-    for (const rule of ast.stylesheet?.rules || []) {
-      if (rule.type === 'font-face')
-        fonts.push(stringify({ ...ast, stylesheet: { ...ast.stylesheet, rules: [rule] } }))
-      if (rule.type !== 'import' || !remote || depth >= 2) continue
+    const ast = postcss.parse(extractPreviewCss(css, { allowExternalResources: remote }))
+    for (const rule of ast.nodes) {
+      if (rule.type !== 'atrule') continue
+      if (rule.name.toLowerCase() === 'font-face') fonts.push(rule.toString())
+      if (rule.name.toLowerCase() !== 'import' || !remote || depth >= 2) continue
       const match =
-        /(?:url\(\s*)?["'](https:\/\/[^"']+)["']/.exec(rule.import) ||
-        /url\(\s*(https:\/\/[^\s)]+)\s*\)/.exec(rule.import)
+        /(?:url\(\s*)?["'](https:\/\/[^"']+)["']/.exec(rule.params) ||
+        /url\(\s*(https:\/\/[^\s)]+)\s*\)/.exec(rule.params)
       const url = match?.[1]
       if (!url || visited.has(url) || visited.size >= 4) continue
       visited.add(url)
@@ -237,7 +253,7 @@ export interface ChatRenderOptions {
 export interface ChatRenderInput {
   source: string
   rules: CharacterGreetingRegexRule[]
-  context: { charName?: string; userName?: string }
+  context: { charName?: string; userName?: string; traceEmpty?: boolean }
   diagnostics?: string[]
 }
 
@@ -325,7 +341,7 @@ export function chatRenderInput(
   const extra = isRecord(message.extra) ? message.extra : {}
   let source =
     typeof extra.display_text === 'string' && extra.display_text ? extra.display_text : message.mes
-  const context = { charName: message.name, userName: options.userName }
+  const context = { charName: message.name, userName: options.userName, traceEmpty: true }
   // ST 1.18.0 only substitutes the opening during display. Never replay dynamic macros in history.
   if (entry.index === 0 && !message.is_user && !message.is_system) {
     if (options.userName)
@@ -335,7 +351,7 @@ export function chatRenderInput(
   const placement = message.is_user ? 1 : extra.type === 'narrator' ? 3 : 2
   // ST also uses is_system for prompt-hidden chat. Only its own system notices skip formatting.
   const isSystemNotice = message.is_system && message.name === 'SillyTavern System'
-  const scripts = chatRegexRules(card, options).map((item) => item.rule)
+  const scripts = chatRegexRules(card, options).map((item) => ({ ...item.rule, id: item.key }))
   const diagnostics: string[] = []
   return {
     source,
@@ -478,32 +494,27 @@ function staticFrontend(
       const css = style.textContent || ''
       style.remove()
       try {
-        const ast = parse(css)
-        const visit = (rules: NonNullable<typeof ast.stylesheet>['rules']): typeof rules =>
-          rules.filter((rule) => {
-            if (rule.type === 'import' || rule.type === 'charset') return false
-            if ('selectors' in rule && Array.isArray(rule.selectors)) {
-              rule.selectors = rule.selectors
-                .filter((selector) => !/:host|::slotted/i.test(selector))
-                .map((selector) =>
-                  selector.replace(
-                    /(^|[\s>+~,])(html|body|:root|#bg1|#chat)(?=$|[\s>+~.#[:])/g,
-                    '$1.reader-panel-body',
-                  ),
-                )
-              if (!rule.selectors.length) return false
-            }
-            if (!remote && 'declarations' in rule && Array.isArray(rule.declarations))
-              rule.declarations = rule.declarations.filter(
-                (declaration) =>
-                  !('value' in declaration) ||
-                  !/url\s*\(|image-set\s*\(|\\/i.test(declaration.value || ''),
-              )
-            if ('rules' in rule && Array.isArray(rule.rules)) rule.rules = visit(rule.rules)
-            return true
+        const ast = postcss.parse(css)
+        ast.walkAtRules(/^(?:import|charset)$/i, (rule) => {
+          rule.remove()
+        })
+        ast.walkRules((rule) => {
+          const selectors = rule.selectors
+            .filter((selector) => !/:host|::slotted/i.test(selector))
+            .map((selector) =>
+              selector.replace(
+                /(^|[\s>+~,])(html|body|:root|#bg1|#chat)(?=$|[\s>+~.#[:])/g,
+                '$1.reader-panel-body',
+              ),
+            )
+          if (selectors.length) rule.selectors = selectors
+          else rule.remove()
+        })
+        if (!remote)
+          ast.walkDecls((declaration) => {
+            if (/url\s*\(|image-set\s*\(|\\/i.test(declaration.value)) declaration.remove()
           })
-        if (ast.stylesheet) ast.stylesheet.rules = visit(ast.stylesheet.rules)
-        return stringify(ast)
+        return ast.toString()
       } catch {
         return ''
       }

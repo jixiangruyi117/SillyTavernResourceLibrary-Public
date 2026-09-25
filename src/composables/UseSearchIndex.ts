@@ -1,4 +1,4 @@
-import { computed, onScopeDispose, ref, shallowRef, type Ref } from 'vue'
+import { computed, onScopeDispose, ref, shallowRef, watch, type Ref } from 'vue'
 
 import { browserStorageService, resourceService } from '../core/AppContainer'
 import type { ResourceSummary } from '../types/Resource'
@@ -25,14 +25,27 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
   let searchIndexGeneration = 0
   let requestId = 0
   const indexedHashes = new Set<string>()
-  const worker =
-    typeof Worker === 'function'
-      ? new Worker(new URL('../workers/ContentSearchWorker.ts', import.meta.url), {
-          type: 'module',
-        })
-      : undefined
-
-  onScopeDispose(() => worker?.terminate())
+  let worker: Worker | undefined
+  let cancelWorkerRequest: (() => void) | undefined
+  function cancelSearch(): void {
+    searchIndexGeneration += 1
+    cancelWorkerRequest?.()
+    worker?.postMessage({ type: 'cancel' })
+    isSearchIndexing.value = false
+  }
+  watch(
+    [searchQuery, searchScope],
+    () => {
+      cancelSearch()
+      contentSearchMatchIds.value = new Set()
+      contentSearchQuery.value = ''
+    },
+    { flush: 'sync' },
+  )
+  onScopeDispose(() => {
+    cancelSearch()
+    worker?.terminate()
+  })
 
   const nameSearchIndexById = computed(() => {
     const index = new Map<string, string>()
@@ -61,6 +74,7 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
   })
 
   async function refreshSearchContentIndex(items: ResourceSummary[]): Promise<void> {
+    cancelSearch()
     const generation = ++searchIndexGeneration
     const query = searchQuery.value.trim().toLocaleLowerCase()
     if (!query) {
@@ -69,10 +83,16 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
       isSearchIndexing.value = false
       return
     }
+    if (!worker && typeof Worker === 'function') {
+      worker = new Worker(new URL('../workers/ContentSearchWorker.ts', import.meta.url), {
+        type: 'module',
+      })
+    }
     isSearchIndexing.value = true
     try {
       const candidates: Array<{ id: string; contentHash: string; blob?: Blob }> = []
       for (const resource of items) {
+        if (generation !== searchIndexGeneration) return
         let blob: Blob | undefined
         if (
           !indexedHashes.has(resource.contentHash) &&
@@ -87,9 +107,11 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
         }
         candidates.push({ id: resource.id, contentHash: resource.contentHash, blob })
       }
+      if (generation !== searchIndexGeneration) return
 
       let matchedIds: string[]
       if (worker) {
+        const searchWorker = worker
         const currentRequestId = ++requestId
         const result = await new Promise<{ matchedIds: string[]; indexedHashes: string[] }>(
           (resolve, reject) => {
@@ -110,12 +132,17 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
               reject(event.error ?? new Error(event.message))
             }
             const cleanup = () => {
-              worker.removeEventListener('message', handleMessage)
-              worker.removeEventListener('error', handleError)
+              searchWorker.removeEventListener('message', handleMessage)
+              searchWorker.removeEventListener('error', handleError)
+              cancelWorkerRequest = undefined
             }
-            worker.addEventListener('message', handleMessage)
-            worker.addEventListener('error', handleError)
-            worker.postMessage({
+            cancelWorkerRequest = () => {
+              cleanup()
+              resolve({ matchedIds: [], indexedHashes: [] })
+            }
+            searchWorker.addEventListener('message', handleMessage)
+            searchWorker.addEventListener('error', handleError)
+            searchWorker.postMessage({
               type: 'search',
               requestId: currentRequestId,
               query,
@@ -123,11 +150,13 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
             })
           },
         )
+        if (generation !== searchIndexGeneration) return
         for (const hash of result.indexedHashes) indexedHashes.add(hash)
         matchedIds = result.matchedIds
       } else {
         matchedIds = []
         for (const candidate of candidates) {
+          if (generation !== searchIndexGeneration) return
           if (candidate.blob && (await candidate.blob.text()).toLocaleLowerCase().includes(query)) {
             matchedIds.push(candidate.id)
           }
@@ -198,6 +227,7 @@ export function useSearchIndex(resources: Ref<ResourceSummary[]>, isVaultEnabled
 
   /** 保险库上锁时清空全部搜索痕迹与正文索引。 */
   function resetSearchState(): void {
+    cancelSearch()
     browserStorageService.clearSearchHistory()
     searchQuery.value = ''
     searchHistory.value = []

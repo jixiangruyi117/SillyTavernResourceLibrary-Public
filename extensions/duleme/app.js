@@ -59,6 +59,20 @@
     )
   const api = window.srlApp ? wrapSdk(window.srlApp) : undefined
   const shadow = $('#readingFlow').attachShadow({ mode: 'open' })
+  const readingBaseCss =
+    ':host{display:block}p{margin:0 0 1em;text-align:justify;overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{display:block;max-width:100%;overflow:auto}.mes_text{overflow-wrap:anywhere}.floor{break-inside:auto}'
+  let defaultContentStyles = ''
+  function applyShellCss(css) {
+    if (!runtime.builtinReader) return
+    let style = $('#reader-shell-style')
+    if (!style) {
+      style = document.createElement('style')
+      style.id = 'reader-shell-style'
+      document.head.append(style)
+    }
+    style.textContent = css || ''
+  }
+  window.addEventListener('srlappappearance', (event) => applyShellCss(event.detail))
   let prefs = {
     renderMode: 'simple',
     mode: 'scroll',
@@ -73,6 +87,7 @@
     regex: true,
     remote: false,
     mask: false,
+    maskMode: 'replace',
     words: '',
     replacement: '某某',
     hideUser: false,
@@ -446,14 +461,19 @@
   function masked(text) {
     if (!prefs.mask) return text
     const words = [...(pageData?.userNames || []), state.userName, ...prefs.words.split(/[,，\n]/)]
+      .map((word) => String(word || '').trim())
       .filter(Boolean)
       .sort((a, b) => b.length - a.length)
     const escaped = [...new Set(words)].map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     const pattern = new RegExp(
-      escaped.concat('\\{\\{\\s*[uU][sS][eE][rR]\\s*\\}\\}').join('|'),
+      escaped.concat('\\{\\{\\s*[uU][sS][eE][rR]\\s*\\}\\}', '<USER>').join('|'),
       'g',
     )
-    return text.replace(pattern, () => prefs.replacement || '某某')
+    return text.replace(pattern, (word) =>
+      prefs.maskMode === 'cover'
+        ? '▇'.repeat(Math.min(12, Math.max(2, [...word].length)))
+        : prefs.replacement || '某某',
+    )
   }
   function maskNodes(root) {
     if (!prefs.mask) return
@@ -541,7 +561,14 @@
     }
   }
   let pagePosition = null
+  let layoutFrame = 0
+  let pendingLayout = null
+  let lineMeasurements = new WeakMap()
   function clearPanelFrames() {
+    window.cancelAnimationFrame(layoutFrame)
+    layoutFrame = 0
+    pendingLayout = null
+    lineMeasurements = new WeakMap()
     panelEpoch++
     panelObserver.disconnect()
     lazyPanels.clear()
@@ -589,13 +616,7 @@
       frame.classList.remove('panel-loading')
     }
     frame.style.height = nextHeight
-    if (anchor) {
-      calculatePages()
-      page = pageForElement(anchor)
-      calculatePages()
-      $('#readingViewport').scrollTop += anchor.getBoundingClientRect().top - top
-      pagePosition = currentPosition()
-    } else restore(pos)
+    scheduleLayout({ pos, anchor, top })
   })
   function enableInteractions(position = currentPosition()) {
     if (prefs.mask) throw Error('请先关闭隐藏身份，再启用交互状态栏')
@@ -613,6 +634,45 @@
       })
   }
   let pendingStyleId = ''
+  function defaultCssPanel() {
+    const draft = $('#cssInput').value
+    const draftStyleId = pendingStyleId
+    const variables = [
+      'paper',
+      'surface',
+      'ink',
+      'muted',
+      'line',
+      'accent',
+      'soft',
+      'font',
+      'leading',
+      'measure',
+    ]
+      .map(
+        (key) =>
+          `  --${key}: ${window
+            .getComputedStyle(document.documentElement)
+            .getPropertyValue('--' + key)
+            .trim()};`,
+      )
+      .join('\n')
+    const css = `/* 读了么默认正文样式。#chat 是正文根节点，.mes_text 是每楼正文，.speaker 是发言者。\n字体与行距也可在阅读外观中调整；状态栏作者样式不包含在这里。 */\n#chat {\n${variables}\n}\n${defaultContentStyles}`
+    sheet(
+      '默认正文样式',
+      `<p class="hint">这是当前版本的默认样式，不含已导入的美化。导出不会改动当前外观；编辑副本会替换尚未应用的 CSS 草稿。</p><textarea class="code" id="defaultCssSource" aria-label="默认正文 CSS" readonly>${esc(css)}</textarea><div class="button-row"><button class="secondary" id="backToCss">返回</button><button class="secondary" id="exportDefaultCss">导出 CSS</button><button class="primary" id="editDefaultCss">编辑副本</button></div>`,
+    )
+    const back = async (source, styleId) => {
+      await panel('appearance')
+      $('#cssInput').value = source
+      $('#cssInput').closest('details').open = true
+      pendingStyleId = styleId
+    }
+    $('#backToCss').onclick = () => run(() => back(draft, draftStyleId))
+    $('#editDefaultCss').onclick = () => run(() => back(css, ''))
+    $('#exportDefaultCss').onclick = () =>
+      run(() => api.files.shareText('读了么-默认正文.css', css))
+  }
   let fontKey = ''
   const readerFontStyle = document.createElement('style')
   document.head.append(readerFontStyle)
@@ -639,7 +699,8 @@
     const style = document.createElement('style')
     style.textContent =
       bodyStyles +
-      '\n:host{display:block}p{margin:0 0 1em;text-align:justify;overflow-wrap:anywhere}img,video{max-width:100%;height:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{display:block;max-width:100%;overflow:auto}.mes_text{overflow-wrap:anywhere}.floor{break-inside:auto}' +
+      '\n' +
+      readingBaseCss +
       (prefs.remote
         ? prefs.css
         : prefs.css.replace(/url\(\s*([^)]*)\)/gi, (match, url) =>
@@ -683,8 +744,8 @@
       body.className = 'mes_text'
       body.innerHTML =
         entry.html ||
-        (prefs.regex && entry.displaySource === '' && m.mes.trim()
-          ? '<p class="muted">本楼内容已被显示正则隐藏，可在阅读设置中调整正则。</p>'
+        (prefs.regex && entry.displaySource?.trim() === '' && m.mes.trim()
+          ? `<p class="muted">本楼内容已被显示正则隐藏。</p><button class="secondary" data-hidden-rules="${entry.index}">查看隐藏原因</button>`
           : prefs.renderMode === 'plain'
             ? '<p class="muted">本楼没有正文文字，可继续翻阅。</p>'
             : '')
@@ -789,12 +850,12 @@
     const index = pageRanges.findIndex((range) => range.end > y + 1)
     return index < 0 ? Math.max(0, pageRanges.length - 1) : index
   }
-  function calculatePages() {
+  function calculatePages(measure = true) {
     if (!pageData) return
     const vp = $('#readingViewport'),
       flow = $('#readingFlow')
-    pageRanges = []
-    if (prefs.mode === 'page') {
+    if (measure) pageRanges = []
+    if (measure && prefs.mode === 'page') {
       const top = flow.getBoundingClientRect().top
       const spans = []
       const include = (rects, media = false) => {
@@ -803,13 +864,37 @@
             spans.push({ start: rect.top - top, end: rect.bottom - top, media })
       }
       for (const body of shadow.querySelectorAll('.mes_text,.speaker,.error,.reading-end')) {
-        const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
-        const range = document.createRange()
-        while (walker.nextNode())
-          if (walker.currentNode.textContent.trim()) {
-            range.selectNodeContents(walker.currentNode)
-            include(range.getClientRects())
-          }
+        const box = body.getBoundingClientRect()
+        const text = body.textContent
+        let saved = lineMeasurements.get(body)
+        if (
+          !saved ||
+          saved.width !== box.width ||
+          saved.height !== box.height ||
+          saved.text !== text
+        ) {
+          const rects = []
+          const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+          const range = document.createRange()
+          while (walker.nextNode())
+            if (
+              walker.currentNode.textContent.trim() &&
+              !walker.currentNode.parentElement.closest('[data-chat-frontend],details,table,svg')
+            ) {
+              range.selectNodeContents(walker.currentNode)
+              for (const rect of range.getClientRects())
+                if (rect.width && rect.height)
+                  rects.push({ start: rect.top - box.top, end: rect.bottom - box.top })
+            }
+          saved = { width: box.width, height: box.height, text, rects }
+          lineMeasurements.set(body, saved)
+        }
+        for (const rect of saved.rects)
+          spans.push({
+            start: rect.start + box.top - top,
+            end: rect.end + box.top - top,
+            media: false,
+          })
       }
       for (const media of shadow.querySelectorAll(
         '[data-chat-frontend],details,img,video,svg,table',
@@ -856,8 +941,31 @@
       prefs.mode === 'page' ? Math.ceil(pageRanges[page].end - pageRanges[page].start) + 'px' : ''
     positionLabel()
   }
+  function scheduleLayout(change) {
+    pendingLayout ||= change
+    if (layoutFrame) return
+    layoutFrame = requestAnimationFrame(flushLayout)
+  }
+  function flushLayout() {
+    if (!pendingLayout) return
+    window.cancelAnimationFrame(layoutFrame)
+    layoutFrame = 0
+    const { pos, anchor, top } = pendingLayout
+    pendingLayout = null
+    if (!pageData || $('#reader').hidden) return
+    if (anchor?.isConnected) {
+      calculatePages()
+      page = pageForElement(anchor)
+      calculatePages(false)
+      $('#readingViewport').scrollTop += anchor.getBoundingClientRect().top - top
+      pagePosition = currentPosition()
+    } else restore(pos)
+  }
   function mediaLayoutChanged() {
-    if (pageData && !$('#reader').hidden) calculatePages()
+    if (pageData && !$('#reader').hidden) {
+      lineMeasurements = new WeakMap()
+      scheduleLayout({ pos: pagePosition || currentPosition() })
+    }
   }
   function positionLabel() {
     if (!pageData) return
@@ -881,7 +989,7 @@
     const vp = $('#readingViewport')
     if (prefs.mode === 'page') {
       page = pageForElement(el) + (pos.mode === 'page' ? pos.pageOffset || 0 : 0)
-      calculatePages()
+      calculatePages(false)
       vp.scrollTop = pos.mode === 'page' ? pos.pageScroll || 0 : 0
     } else {
       vp.scrollTop +=
@@ -952,6 +1060,7 @@
           : prefs.renderMode === 'plain'
             ? '纯净阅读'
             : '精简阅读')
+    warnHiddenFloor()
   }
   async function openChat(id) {
     const c = chats.find((c) => c.id === id)
@@ -1053,18 +1162,20 @@
   }
   async function turn(delta) {
     if (prefs.mode !== 'page') return
+    flushLayout()
     $('#readingViewport').scrollTop = 0
     if (delta > 0 && page === pages - 1 && pageData.nextOffset !== null) {
       await read(pageData.nextOffset)
     } else if (delta < 0 && page === 0 && previousOffset() !== null) {
       await read(previousOffset(), null, true)
       page = pages - 1
-      calculatePages()
+      calculatePages(false)
     } else {
       page = Math.min(pages - 1, Math.max(0, page + delta))
-      calculatePages()
+      calculatePages(false)
     }
     await recordPosition()
+    warnHiddenFloor()
   }
   async function jump(floor) {
     if (!Number.isInteger(floor) || floor < 0 || floor >= pageData.total)
@@ -1076,6 +1187,7 @@
       restore(pos)
     } else await read(prefs.progressMode === 'chapters' ? floor : Math.floor(floor / 3) * 3, pos)
     await recordPosition()
+    warnHiddenFloor()
   }
   async function markFloor(floor, quote = '') {
     const entry = pageData.messages.find((e) => e.index === floor)
@@ -1240,6 +1352,58 @@
     )
   }
 
+  const warnedHiddenRules = new Set()
+  function warnHiddenFloor() {
+    if ($('#sheet').open) return
+    const entry = pageData?.messages.find((item) => item.index === currentPosition().floor)
+    const causes = entry?.hiddenByRules || []
+    if (!causes.length) return
+    const key = chat.id + ':' + causes.map((cause) => cause.key).join(',')
+    if (warnedHiddenRules.has(key)) return
+    warnedHiddenRules.add(key)
+    hiddenRulePanel(entry.index)
+  }
+  function hiddenRulePanel(floor) {
+    const entry = pageData.messages.find((item) => item.index === floor)
+    const rules = (pageData.regexRules || []).filter(
+      (rule) => rule.enabled && entry?.hiddenByRules?.some((cause) => cause.key === rule.key),
+    )
+    if (!rules.length) return regexPanel()
+    sheet(
+      '这一楼被正则隐藏了',
+      `<p class="hint">第 ${floor + 1} 楼执行以下规则后，内容变为空白。是否在读了么关闭它？聊天原件和酒馆开关不会改变。</p>${rules.map((rule) => `<div class="setting-row"><label for="hidden-${esc(rule.key)}">${esc(rule.name)}</label><input id="hidden-${esc(rule.key)}" type="checkbox" data-disable-rule="${esc(rule.key)}" checked></div>`).join('')}<div class="button-row"><button class="secondary" id="keepHidden">保持隐藏</button><button class="primary" id="disableHidden">关闭所选正则</button></div>`,
+    )
+    $('#keepHidden').onclick = () => $('#sheet').close()
+    $('#disableHidden').onclick = () =>
+      run(async () => {
+        const overrides = Object.fromEntries(
+          (pageData.regexRules || []).map((rule) => [rule.key, rule.enabled]),
+        )
+        for (const input of $$('[data-disable-rule]:checked'))
+          overrides[input.dataset.disableRule] = false
+        await applyRuleOverrides(overrides)
+      })
+  }
+  async function applyRuleOverrides(overrides) {
+    const rules = pageData?.regexRules || []
+    const pos = currentPosition()
+    if (roleAppearance?.enabled) {
+      const saved = { ...roleAppearance.rules }
+      for (const rule of rules)
+        if (rule.signature) {
+          if (typeof overrides[rule.key] === 'boolean') saved[rule.signature] = overrides[rule.key]
+          else delete saved[rule.signature]
+        }
+      roleAppearance.rules = saved
+      await store('appearance:' + role, roleAppearance)
+    } else {
+      state.ruleOverrides = overrides
+      await saveState()
+    }
+    $('#sheet').close()
+    await read(pageData.messages[0]?.index || 0, pos)
+    notify(roleAppearance?.enabled ? '角色专属正则方案已更新' : '此聊天的显示正则已更新')
+  }
   function regexPanel() {
     const rules = pageData?.regexRules || []
     sheet(
@@ -1265,31 +1429,13 @@
           '',
         )}<div class="button-row"><button class="secondary" id="resetRules">恢复导出时开关</button><button class="primary" id="applyRules">应用</button></div>`,
     )
-    const apply = async (overrides) => {
-      const pos = currentPosition()
-      if (roleAppearance?.enabled) {
-        const saved = { ...roleAppearance.rules }
-        for (const rule of rules)
-          if (rule.signature) {
-            if (typeof overrides[rule.key] === 'boolean')
-              saved[rule.signature] = overrides[rule.key]
-            else delete saved[rule.signature]
-          }
-        roleAppearance.rules = saved
-        await store('appearance:' + role, roleAppearance)
-      } else {
-        state.ruleOverrides = overrides
-        await saveState()
-      }
-      $('#sheet').close()
-      await read(pageData.messages[0]?.index || 0, pos)
-      notify(roleAppearance?.enabled ? '角色专属正则方案已更新' : '此聊天的显示正则已更新')
-    }
     $('#applyRules').onclick = () =>
       run(() =>
-        apply(Object.fromEntries($$('[data-rule]').map((el) => [el.dataset.rule, el.checked]))),
+        applyRuleOverrides(
+          Object.fromEntries($$('[data-rule]').map((el) => [el.dataset.rule, el.checked])),
+        ),
       )
-    $('#resetRules').onclick = () => run(() => apply({}))
+    $('#resetRules').onclick = () => run(() => applyRuleOverrides({}))
   }
   async function regexSourcePanel(scope, offset = 0) {
     const label = { global: '全局', preset: '预设', character: '角色卡' }[scope]
@@ -1417,7 +1563,7 @@
           )
           .join(
             '',
-          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。隐藏身份时自动使用精简模式。</p><button class="secondary" id="regexRules">管理显示正则</button><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。只改变阅读显示。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><div class="identity-actions"><label class="identity-field"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">保存设置</button></div></div></details>`,
+          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。隐藏身份时自动使用精简模式。</p><button class="secondary" id="regexRules">管理显示正则</button><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。应用后开启打码，只改变阅读显示。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><label class="identity-field"><span>打码方式</span><select id="maskMode"><option value="replace">替换文字</option><option value="cover">遮住姓名</option></select></label><div class="identity-actions"><label class="identity-field" id="replacementField"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">应用打码</button></div></div></details>`,
       )
       $$('[data-option]').forEach(
         (el) =>
@@ -1435,16 +1581,29 @@
             })),
       )
       $('#regexRules').onclick = () => regexPanel()
+      $('#maskMode').value = prefs.maskMode || 'replace'
+      const showReplacement = () => {
+        $('#replacementField').hidden = $('#maskMode').value === 'cover'
+      }
+      $('#maskMode').onchange = showReplacement
+      showReplacement()
       $('#saveMask').onclick = () =>
         run(async () => {
           state.userName = $('#userName').value.trim()
           await saveState()
           prefs.words = $('#maskWords').value
+          prefs.maskMode = $('#maskMode').value
           prefs.replacement = $('#replacement').value || '某某'
+          prefs.mask = true
+          $('#opt-mask').checked = true
           await savePrefs()
           const pos = pageData ? currentPosition() : null
           await read(pageData?.messages[0]?.index || 0, pos)
-          notify('身份显示设置已保存')
+          notify(
+            prefs.maskMode === 'cover'
+              ? '已开启遮挡，用户名不保留在显示文字中'
+              : '已开启打码并更新替换文字',
+          )
         })
     } else if (name === 'appearance') {
       pendingStyleId = prefs.styleId || ''
@@ -1461,7 +1620,7 @@
           )
           .join(
             '',
-          )}</div><div class="setting-row"><span>文字大小</span><div class="stepper"><button id="fontMinus">−</button><span id="fontValue">${prefs.font}px</span><button id="fontPlus">＋</button></div></div><div class="setting-row"><label for="lineRange">行间距</label><input id="lineRange" type="range" min="1.5" max="2.5" step=".05" value="${prefs.leading}"></div><div class="button-row"><button class="secondary" id="pickBg">选择阅读背景</button><button class="secondary" id="clearBg">移除背景</button></div><p class="hint">图片背景仅本次有效。为保持文字可读，自动叠加纸色遮罩。</p><details><summary>自定义 CSS / 导入美化</summary><p class="hint">样式仅作用正文，不影响返回和设置。支持 CSS 与含 custom_css 的主题 JSON；酒馆整套界面选择器不保证直接兼容。</p><textarea class="code" id="cssInput" aria-label="正文 CSS">${esc(prefs.css)}</textarea><div class="button-row"><button class="secondary" id="libraryCss">资源库美化</button><button class="secondary" id="importCss">导入文件</button><button class="primary" id="applyCss">应用 CSS</button></div></details><div class="button-row"><button class="secondary" id="appearanceRules">正则方案</button><button class="text-button" id="resetAppearance">${roleAppearance?.values ? '重置角色外观' : '恢复初始外观'}</button></div>`,
+          )}</div><div class="setting-row"><span>文字大小</span><div class="stepper"><button id="fontMinus">−</button><span id="fontValue">${prefs.font}px</span><button id="fontPlus">＋</button></div></div><div class="setting-row"><label for="lineRange">行间距</label><input id="lineRange" type="range" min="1.5" max="2.5" step=".05" value="${prefs.leading}"></div><div class="button-row"><button class="secondary" id="pickBg">选择阅读背景</button><button class="secondary" id="clearBg">移除背景</button></div><p class="hint">图片背景仅本次有效。为保持文字可读，自动叠加纸色遮罩。</p><details><summary>自定义 CSS / 导入美化</summary><p class="hint">样式仅作用正文，不影响返回和设置。支持 CSS 与含 custom_css 的主题 JSON；酒馆整套界面选择器不保证直接兼容。</p><textarea class="code" id="cssInput" aria-label="正文 CSS">${esc(prefs.css)}</textarea><div class="button-row"><button class="secondary" id="libraryCss">资源库美化</button><button class="secondary" id="importCss">导入文件</button><button class="secondary" id="defaultCss">默认样式 / 导出</button><button class="primary" id="applyCss">应用 CSS</button></div></details><div class="button-row"><button class="secondary" id="appearanceRules">正则方案</button><button class="text-button" id="resetAppearance">${roleAppearance?.values ? '重置角色外观' : '恢复初始外观'}</button></div>`,
       )
       $('#appearanceScope').value = roleAppearance?.enabled ? 'character' : 'default'
       $('#appearanceScope').onchange = (event) =>
@@ -1505,6 +1664,7 @@
       }
       $('#libraryCss').onclick = () => run(() => libraryStylePanel())
       $('#importCss').onclick = () => $('#cssFile').click()
+      $('#defaultCss').onclick = () => defaultCssPanel()
       $('#applyCss').onclick = () =>
         run(async () => {
           const css = $('#cssInput').value
@@ -1784,7 +1944,8 @@
         return
       }
       const t = e.target.closest('button')
-      if (t?.dataset.batch) {
+      if (t?.dataset.hiddenRules !== undefined) hiddenRulePanel(Number(t.dataset.hiddenRules))
+      else if (t?.dataset.batch) {
         const offset = t.dataset.batch === 'next' ? pageData.nextOffset : previousOffset()
         if (offset !== null) {
           await read(offset, null, t.dataset.batch === 'prev')
@@ -1896,6 +2057,28 @@
       prefs = { ...defaultPrefs }
       indexState = (await api.storage.get('reader-index-v1')) || {}
       bodyStyles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n')
+      const contentRules = (rules) =>
+        [...rules].flatMap((rule) => {
+          if (
+            rule.selectorText &&
+            /\.reading-flow(?![-\w])|\.floor(?![-\w])|\.speaker(?![-\w])|\.mes_text(?![-\w])|\[data-chat-frontend\]/.test(
+              rule.selectorText,
+            )
+          )
+            return [rule.cssText]
+          if (rule.cssRules) {
+            const children = contentRules(rule.cssRules)
+            return children.length
+              ? [rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + children.join('\n') + '}']
+              : []
+          }
+          return []
+        })
+      defaultContentStyles =
+        [...document.styleSheets].flatMap((sheet) => contentRules(sheet.cssRules)).join('\n') +
+        '\n' +
+        readingBaseCss
+      applyShellCss(runtime.readerUiCss)
       applyPrefs()
       await refresh()
     })

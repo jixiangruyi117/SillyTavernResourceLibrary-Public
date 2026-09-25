@@ -14,6 +14,7 @@ import {
 } from '../types/ExternalApp'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
+import { APPLIED_CSS_CHANGED_EVENT } from '../core/AppearanceScopes'
 import {
   OPAQUE_PREVIEW_DOCUMENT_URL,
   resetOpaquePreviewDocument,
@@ -34,6 +35,22 @@ const emit = defineEmits<{ back: [] }>()
 const isBuiltinReader = computed(
   () => props.official === true && props.appId === CHAT_READER_APP_ID,
 )
+async function readerUiCss() {
+  if (!isBuiltinReader.value) return ''
+  const { readAppliedAppFrameCss } = await import('../services/AppearanceScopeService')
+  return readAppliedAppFrameCss('chatReader')
+}
+async function syncReaderUiCss() {
+  if (!isBuiltinReader.value) return
+  const nonce = sessionNonce
+  const css = await readerUiCss()
+  if (!isBuiltinReader.value || nonce !== sessionNonce) return
+  port?.postMessage({
+    type: 'srl:reader-appearance',
+    nonce,
+    css,
+  })
+}
 const readerPage = ref<'roles' | 'chats' | 'reader'>('roles')
 const readerCover = ref(false)
 const readerColors = ref<Record<string, string>>({})
@@ -245,6 +262,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             ...(await externalAppSdkService.capabilities(current.id)),
             runtime: {
               builtinReader: isBuiltinReader.value,
+              readerUiCss: await readerUiCss(),
               network: current.runtimeMode === 'trustedCompatible',
               sessionStorage: true,
               locks: true,
@@ -826,6 +844,7 @@ function handleBackRequest(event: Event): void {
 
 onMounted(() => {
   void load()
+  window.addEventListener(APPLIED_CSS_CHANGED_EVENT, syncReaderUiCss)
   window.addEventListener('keydown', handleKeydown, { capture: true })
   window.addEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest, { capture: true })
 })
@@ -838,6 +857,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  window.removeEventListener(APPLIED_CSS_CHANGED_EVENT, syncReaderUiCss)
   document.body.classList.remove('external-app-fullscreen')
   window.removeEventListener('keydown', handleKeydown, { capture: true })
   window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest, { capture: true })

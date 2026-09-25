@@ -395,6 +395,10 @@ export class ExternalAppSdkService {
         ...entry,
         archivedSwipeId: Number(page.messages[index]!.message.swipe_id) || 0,
         displaySource: source,
+        hiddenByRules:
+          result.emptyCauses
+            ?.filter((cause) => cause.contentIndex === 0)
+            .map((cause) => ({ key: cause.id, name: cause.name })) || [],
         html: rendered.html,
         frontends: rendered.frontends,
         interactiveFrontends,

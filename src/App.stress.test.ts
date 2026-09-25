@@ -26,9 +26,12 @@ const stressApi = vi.hoisted(() => ({
   summaries: [] as ResourceSummary[],
   listResourceListSummaries: vi.fn(async () => stressApi.summaries),
   repairThumbnailAssets: vi.fn(async () => 0),
-  upgradeLegacyJsonResources: vi.fn(async () => 0),
+  upgradeLegacyJsonResources: vi
+    .fn<(checkpoint?: () => Promise<void>) => Promise<number>>()
+    .mockResolvedValue(0),
   backfillCardFingerprints: vi.fn(async () => 0),
   get: vi.fn(),
+  historyList: vi.fn(async () => []),
   initializeVaultOnce: vi.fn(async () => ({ enabled: false, locked: false })),
 }))
 
@@ -55,13 +58,14 @@ vi.mock('./core/AppContainer', async (importOriginal) => {
     },
     initializeVaultOnce: stressApi.initializeVaultOnce,
     historyService: {
-      list: vi.fn(async () => []),
+      list: stressApi.historyList,
       getSnapshotLimit: vi.fn(async () => 5),
     },
     recycleBinService: {
       list: vi.fn(async () => []),
     },
     cloudBackupService: {
+      reconcileNativeJob: vi.fn(async () => undefined),
       runDueBackup: vi.fn(async () => undefined),
     },
   }
@@ -122,6 +126,58 @@ function createStressSummaries(count: number): ResourceSummary[] {
 }
 
 describe('App 资源量压力回归', () => {
+  it('前台操作打断维护后重新取得摘要，不携带旧快照继续写入', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let interrupted = false
+    stressApi.upgradeLegacyJsonResources.mockImplementationOnce(async (checkpoint) => {
+      await gate
+      try {
+        await checkpoint!()
+      } catch (error) {
+        interrupted = true
+        throw error
+      }
+      return 0
+    })
+    const wrapper = shallowMount(App, { props: { accountLabel: '维护暂停回归' } })
+    await vi.waitFor(() => expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledTimes(1))
+    await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+    release()
+    await vi.waitFor(() => expect(interrupted).toBe(true))
+    expect(stressApi.backfillCardFingerprints).not.toHaveBeenCalled()
+    await wrapper.get('.mobile-bottom-nav > button:first-child').trigger('click')
+    await vi.waitFor(() => expect(stressApi.backfillCardFingerprints).toHaveBeenCalledTimes(1))
+    expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+  it('历史记录和存储统计未返回时资源列表已就绪', async () => {
+    let releaseHistory!: (value: never[]) => void
+    stressApi.historyList.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseHistory = resolve
+        }),
+    )
+    let releaseStorage!: (value: object) => void
+    vi.spyOn(navigator.storage, 'estimate').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseStorage = resolve
+        }),
+    )
+    stressApi.summaries = createStressSummaries(24)
+    const wrapper = shallowMount(App, { props: { accountLabel: '启动等待回归' } })
+    await vi.waitFor(() => expect(wrapper.findAll('resource-card-stub')).toHaveLength(24))
+    expect(JSON.parse(sessionStorage.getItem('srl.startup.state.v1') ?? '{}').pending).toBe(false)
+    await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
+    await vi.waitFor(() => expect(stressApi.historyList).toHaveBeenCalled())
+    releaseHistory([])
+    releaseStorage({ usage: 0, quota: 1000000 })
+    wrapper.unmount()
+  })
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()
