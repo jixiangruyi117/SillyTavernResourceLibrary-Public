@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import worker from './Worker.js'
+import * as workerModule from './Worker.js'
 
 describe('public Worker routes', () => {
+  it('exports only Cloudflare Worker and Durable Object entrypoints', () => {
+    expect(Object.keys(workerModule).sort()).toEqual(['BridgeSession', 'default'])
+  })
+
   it('does not expose the removed account API', async () => {
     const response = await worker.fetch(
       new Request('https://srl.example.test/api/auth/session'),

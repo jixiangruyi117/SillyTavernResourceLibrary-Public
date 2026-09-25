@@ -106,15 +106,3 @@ export default {
     }
   },
 }
-
-export {
-  buildStaticAssetRequest,
-  DEPLOY_VERSION,
-  finalizeStaticAssetResponse,
-} from './WorkerAssets.js'
-export {
-  buildCloudProxyRequestHeaders,
-  buildCloudProxyResponseHeaders,
-  markCloudProxyResponse,
-} from './WorkerCloudProxy.js'
-export { withCors } from './WorkerHttp.js'
