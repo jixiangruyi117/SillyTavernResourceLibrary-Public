@@ -11,6 +11,11 @@ window.addEventListener('message',function receive(event){
 
 const initialized = new WeakSet<HTMLIFrameElement>()
 
+/** Moving an iframe to another parent reloads its bootstrap document, even for the same element. */
+export function resetOpaquePreviewDocument(frame: HTMLIFrameElement): void {
+  initialized.delete(frame)
+}
+
 /** First load seeds the opaque document; its subsequent load is the real APP/preview load. */
 export function seedOpaquePreviewDocument(frame: HTMLIFrameElement, html: string): boolean {
   if (initialized.has(frame)) return false

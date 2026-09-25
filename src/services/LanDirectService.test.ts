@@ -4,11 +4,74 @@ import {
   LOCAL_TAVERN_ORIGIN,
   canUseLocalTavernDirect,
   createLocalTavernDirectSession,
+  downloadLocalTavernDirectFile,
   isTrustedLocalTavernOrigin,
   uploadLocalTavernDirectFile,
 } from './LanDirectService'
 
 describe('LanDirectService', () => {
+  const session = {
+    sessionId: 'session_123456',
+    token: 'a'.repeat(32),
+    origin: LOCAL_TAVERN_ORIGIN,
+    maxFileSize: 1024,
+  }
+  const dataHash = '3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7'
+
+  it.each<Record<string, string>>([
+    {},
+    { 'content-encoding': 'gzip' },
+    { 'content-encoding': 'gzip', 'content-length': '24' },
+    { 'content-length': '4' },
+  ])('按实际解压后的字节与哈希验证直传内容 %j', async (headers) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('data', {
+          headers: { ...headers, 'x-srl-direct-sha256': dataHash },
+        }),
+      ),
+    )
+    const result = await downloadLocalTavernDirectFile(
+      session,
+      '中文聊天.srlchat',
+      'application/json',
+    )
+    expect(result.file.size).toBe(4)
+    expect(result.file.name).toBe('中文聊天.srlchat')
+    expect(result.sha256).toBe(dataHash)
+  })
+
+  it.each([
+    [{ 'content-length': '5' }, '大小不一致'],
+    [{ 'content-length': 'invalid' }, '大小无效'],
+    [{ 'x-srl-direct-sha256': 'a'.repeat(64) }, '完整性校验失败'],
+    [{ 'x-srl-direct-sha256': '' }, '有效完整性校验'],
+  ])('仍拒绝损坏或无校验的直传 %j', async (headers, error) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('data', {
+          headers: { 'x-srl-direct-sha256': dataHash, ...headers },
+        }),
+      ),
+    )
+    await expect(downloadLocalTavernDirectFile(session, 'test', '')).rejects.toThrow(error)
+  })
+
+  it('未知响应长度仍受流式读取上限约束', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('data', {
+          headers: { 'x-srl-direct-sha256': dataHash },
+        }),
+      ),
+    )
+    await expect(
+      downloadLocalTavernDirectFile({ ...session, maxFileSize: 3 }, 'test', ''),
+    ).rejects.toThrow()
+  })
   beforeEach(() => {
     vi.stubGlobal('window', {})
   })
@@ -73,10 +136,29 @@ describe('LanDirectService', () => {
         method: 'PUT',
         headers: expect.objectContaining({
           'X-SRL-Direct-Token': 'token_123456789012345678901234567890',
-          'X-SRL-File-Name': 'resource.json',
         }),
       }),
     )
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(blob)
+  })
+
+  it('中文及长文件名不进入 HTTP ByteString 请求头', async () => {
+    const fetchMock = vi.fn(async (_url, init) => {
+      const headers = new Headers(init.headers)
+      expect(headers.has('X-SRL-File-Name')).toBe(false)
+      return Response.json({ size: 4, sha256: 'a'.repeat(64) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await uploadLocalTavernDirectFile(
+      {
+        sessionId: 'session_123456',
+        token: 'a'.repeat(32),
+        origin: LOCAL_TAVERN_ORIGIN,
+        maxFileSize: 1024,
+      },
+      new Blob(['data']),
+      '中文人设与聊天'.repeat(50) + '.srlchat',
+    )
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 })

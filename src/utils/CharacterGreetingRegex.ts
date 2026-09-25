@@ -54,8 +54,10 @@ function finiteNumber(value: unknown, fallback = 0): number {
 
 function appliesAtOpeningDepth(
   script: Record<string, unknown>,
-  depth = OPENING_MESSAGE_DEPTH,
+  depth: number | undefined,
 ): boolean {
+  // ST excludes prompt-hidden messages from depth counting, but still renders them.
+  if (typeof depth !== 'number') return true
   const minimumValue = firstDefined(script, 'minDepth', 'min_depth')
   const minimum = minimumValue == null ? NaN : Number(minimumValue)
   const maximumValue = firstDefined(script, 'maxDepth', 'max_depth')
@@ -67,7 +69,7 @@ function appliesAtOpeningDepth(
 
 export interface DisplayRegexScope {
   placement: number
-  depth: number
+  depth: number | undefined
   displayOnly: boolean
 }
 
@@ -78,7 +80,7 @@ function resolvePhase(
   if (
     script.disabled === true ||
     script.enabled === false ||
-    !appliesAtOpeningDepth(script, scope?.depth)
+    !appliesAtOpeningDepth(script, scope ? scope.depth : OPENING_MESSAGE_DEPTH)
   ) {
     return undefined
   }
@@ -106,17 +108,27 @@ function resolvePhase(
 export function extractCharacterGreetingRegexRules(
   value: unknown,
   scope?: DisplayRegexScope,
+  diagnostics?: string[],
 ): CharacterGreetingRegexRule[] {
   if (!Array.isArray(value)) return []
 
   const rules: CharacterGreetingRegexRule[] = []
   for (const [index, candidate] of value.entries()) {
-    if (rules.length >= RULE_LIMIT || !isRecord(candidate)) break
+    if (!isRecord(candidate)) continue
     const phase = resolvePhase(candidate, scope)
     if (!phase) continue
+    if (rules.length >= RULE_LIMIT) {
+      diagnostics?.push(`本楼显示正则超过 ${RULE_LIMIT} 条，后续规则未执行；请关闭不需要的规则`)
+      break
+    }
 
     const find = stringValue(firstDefined(candidate, 'findRegex', 'find_regex')).trim()
-    if (!find || find.length > PATTERN_SIZE_LIMIT) continue
+    if (!find || find.length > PATTERN_SIZE_LIMIT) {
+      diagnostics?.push(
+        `${stringValue(candidate.scriptName) || `正则 ${index + 1}`} 的查找表达式${find ? '超过 8192 字符上限' : '为空'}，未执行`,
+      )
+      continue
+    }
     const rawTrimStrings = firstDefined(candidate, 'trimStrings', 'trim_strings')
 
     rules.push({

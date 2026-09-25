@@ -35,6 +35,8 @@ export interface TavernResourceItem {
   contentHash?: string
   updatedAt?: number
   size?: number
+  /** Host-reported rounded size; never interpreted as an exact byte count. */
+  sizeLabel?: string
 }
 
 export interface TavernBridgeEnvelope {

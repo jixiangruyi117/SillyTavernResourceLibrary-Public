@@ -70,7 +70,7 @@ export async function uploadLocalTavernDirectFile(
     headers: {
       ...directHeaders(session),
       'Content-Type': file.type || 'application/octet-stream',
-      'X-SRL-File-Name': name,
+      // The original name travels in file-start; HTTP headers cannot carry Unicode names.
     },
     body: file,
     cache: 'no-store',
@@ -93,8 +93,14 @@ export async function downloadLocalTavernDirectFile(
     cache: 'no-store',
   })
   if (!response.ok) throw responseError('从本机酒馆读取', response.status)
-  const size = Number(response.headers.get('content-length') ?? 0)
-  if (!Number.isFinite(size) || size < 0 || size > session.maxFileSize) {
+  // Fetch decodes HTTP compression; its Content-Length, if present, describes wire bytes.
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+  const length = response.headers.get('content-length')
+  const size = length !== null && (!encoding || encoding === 'identity') ? Number(length) : null
+  if (
+    size !== null &&
+    (!/^\d+$/.test(length!) || !Number.isSafeInteger(size) || size > session.maxFileSize)
+  ) {
     throw new Error('本机酒馆返回的文件大小无效')
   }
   const sha256 = response.headers.get('x-srl-direct-sha256') ?? ''
@@ -107,7 +113,8 @@ export async function downloadLocalTavernDirectFile(
     }).blob(),
     hashReadableStream(hashStream, { maxBytes: session.maxFileSize }),
   ])
-  if (blob.size !== size || actual.size !== size) throw new Error('本机酒馆返回的文件大小不一致')
+  if (blob.size !== actual.size || (size !== null && actual.size !== size))
+    throw new Error('本机酒馆返回的文件大小不一致')
   if (actual.hash.toLowerCase() !== sha256.toLowerCase()) {
     throw new Error('本机酒馆返回的文件完整性校验失败')
   }

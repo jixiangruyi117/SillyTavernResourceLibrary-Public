@@ -5,6 +5,7 @@ import type { ResourceService } from './ResourceService'
 export interface ChatReadPage {
   messages: Array<{ index: number; depth: number; message: ChatMessage }>
   nextOffset: number | null
+  previousOffset?: number | null
   total: number
   contentHash: string
 }
@@ -22,7 +23,12 @@ export class ChatReaderService {
     return chat
   }
 
-  async read(id: string, offset = 0, limit = 20): Promise<ChatReadPage> {
+  async read(
+    id: string,
+    offset = 0,
+    limit = 20,
+    options: { hideUser?: boolean; backward?: boolean } = {},
+  ): Promise<ChatReadPage> {
     if (
       !Number.isSafeInteger(offset) ||
       offset < 0 ||
@@ -35,6 +41,8 @@ export class ChatReaderService {
     const total = Number(chat.metadata.messageCount)
     if (!Number.isSafeInteger(total) || total < 1)
       throw new Error('聊天解析信息缺失，请重新导入原件')
+    if (options.hideUser)
+      return this.readCharacterReplies(chat, offset, limit, options.backward === true)
     const messages: ChatReadPage['messages'] = []
     let index = 0,
       visible = 0,
@@ -61,6 +69,69 @@ export class ChatReaderService {
       total,
       contentHash: chat.contentHash,
       nextOffset: index < total ? index : null,
+    }
+  }
+
+  private async readCharacterReplies(
+    chat: Resource,
+    offset: number,
+    limit: number,
+    backward: boolean,
+  ): Promise<ChatReadPage> {
+    const entries: Array<{ entry: ChatReadPage['messages'][number]; size: number }> = []
+    let index = 0,
+      visible = 0,
+      bytes = 0
+    let previousOffset: number | null = null,
+      nextOffset: number | null = null
+    let preceding: ChatReadPage['messages'][number] | undefined
+    let precedingPrevious: number | null = null
+    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
+      const floor = index++
+      if (!message.is_system) visible++
+      if (message.is_user) continue
+      const entry = {
+        index: floor,
+        depth: message.is_system ? -1 : Number(chat.metadata.visibleMessageCount) - visible,
+        message,
+      }
+      if (!backward && floor < offset) {
+        precedingPrevious = previousOffset
+        previousOffset = floor
+        preceding = entry
+        continue
+      }
+      if ((backward && floor > offset) || (!backward && entries.length >= limit)) {
+        nextOffset = floor
+        break
+      }
+      const size = new TextEncoder().encode(JSON.stringify(message)).length
+      if (size > 4 * 1024 * 1024) throw new Error(`第 ${floor + 1} 楼超过单楼读取上限`)
+      if (!backward && entries.length && bytes + size > 512 * 1024) {
+        nextOffset = floor
+        break
+      }
+      entries.push({ entry, size })
+      bytes += size
+      while (backward && entries.length > 1 && (entries.length > limit || bytes > 512 * 1024)) {
+        const removed = entries.shift()!
+        bytes -= removed.size
+        previousOffset = removed.entry.index
+      }
+    }
+    // Hiding the final user chapter returns to the last remaining reply, not an empty page.
+    if (!entries.length && preceding) {
+      const size = new TextEncoder().encode(JSON.stringify(preceding.message)).length
+      if (size > 4 * 1024 * 1024) throw new Error(`第 ${preceding.index + 1} 楼超过单楼读取上限`)
+      entries.push({ entry: preceding, size })
+      previousOffset = precedingPrevious
+    }
+    return {
+      messages: entries.map((item) => item.entry),
+      previousOffset,
+      nextOffset,
+      total: Number(chat.metadata.messageCount),
+      contentHash: chat.contentHash,
     }
   }
 

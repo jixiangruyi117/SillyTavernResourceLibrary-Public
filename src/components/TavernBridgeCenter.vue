@@ -3,6 +3,7 @@ import FeatureAppHeader from './FeatureAppHeader.vue'
 import FeatureBackButton from './FeatureBackButton.vue'
 import TavernBridgeInstallGuide from './TavernBridgeInstallGuide.vue'
 import TavernParcelExchange from './TavernParcelExchange.vue'
+import { formatBytes } from '../utils/LibraryFormatting'
 import {
   useTavernBridgeCenter,
   type TavernBridgeCenterProps,
@@ -382,7 +383,10 @@ const {
             :key="item.id"
             type="button"
             class="tavern-bridge-resource-card"
-            :class="{ 'is-selected': selectedTavernIds.has(item.id) }"
+            :class="{
+              'is-selected': selectedTavernIds.has(item.id),
+              'is-chat': item.kind === 'chat',
+            }"
             :aria-pressed="selectedTavernIds.has(item.id)"
             :disabled="busy"
             @click="toggleSelection('tavern', item.id)"
@@ -394,6 +398,11 @@ const {
             >
             <span class="tavern-bridge-resource-card__meta">
               <em>{{ tavernResourceLabel(item.kind) }}</em>
+              <small v-if="item.kind === 'chat'" class="tavern-bridge-file-size">{{
+                typeof item.size === 'number' && Number.isFinite(item.size) && item.size >= 0
+                  ? formatBytes(item.size)
+                  : item.sizeLabel || '大小未提供'
+              }}</small>
               <em v-if="itemExistsLocally(item)" class="tavern-bridge-exists">可能已在库中</em>
             </span>
           </button>
@@ -627,6 +636,9 @@ const {
             >
             <span class="tavern-bridge-resource-card__meta">
               <em>{{ resourceLabel(resource) }}</em>
+              <small v-if="resource.type === 'chat'" class="tavern-bridge-file-size">{{
+                formatBytes(resource.fileSize)
+              }}</small>
               <em v-if="resourceExistsInTavern(resource)" class="tavern-bridge-exists"
                 >酒馆可能已有</em
               >

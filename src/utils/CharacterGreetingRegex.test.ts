@@ -8,6 +8,13 @@ import {
 } from './CharacterGreetingRegex'
 
 describe('CharacterGreetingRegex', () => {
+  it('skips a malformed entry without losing following valid display rules', () => {
+    const rules = extractCharacterGreetingRegexRules([
+      null,
+      { findRegex: 'x', replaceString: 'y', markdownOnly: true, placement: [2] },
+    ])
+    expect(applyCharacterGreetingRegex(['x'], rules).contents).toEqual(['y'])
+  })
   it('按酒馆首条消息生成阶段再到 Markdown 显示阶段执行 AI 输出正则', () => {
     const rules = extractCharacterGreetingRegexRules([
       {

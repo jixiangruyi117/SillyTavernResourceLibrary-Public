@@ -38,6 +38,64 @@ async function fixture() {
   }
 }
 describe('ChatReaderService', () => {
+  it('隐藏用户时跳过连续用户章，前后导航保留原楼号与正则深度', async () => {
+    const { service, chat } = await fixture()
+    const users = [true, false, true, true, false, true, false, true]
+    chat.originalBlob = new File(
+      [
+        users
+          .map((is_user, index) =>
+            JSON.stringify({
+              name: is_user ? '用户' : '角色',
+              mes: `内容${index}`,
+              is_user,
+            }),
+          )
+          .join('\n'),
+      ],
+      'test.jsonl',
+    )
+    chat.metadata.messageCount = 8
+    chat.metadata.visibleMessageCount = 8
+    const first = await service.read('chat', 0, 1, { hideUser: true })
+    expect(first).toMatchObject({
+      previousOffset: null,
+      nextOffset: 4,
+      messages: [{ index: 1, depth: 6 }],
+    })
+    const second = await service.read('chat', first.nextOffset!, 1, { hideUser: true })
+    expect(second).toMatchObject({
+      previousOffset: 1,
+      nextOffset: 6,
+      messages: [{ index: 4, depth: 3 }],
+    })
+    const back = await service.read('chat', second.previousOffset!, 1, {
+      hideUser: true,
+      backward: true,
+    })
+    expect(back).toEqual(first)
+    const batch = await service.read('chat', 6, 2, { hideUser: true, backward: true })
+    expect(batch.messages.map((x) => x.index)).toEqual([4, 6])
+    expect(batch).toMatchObject({ previousOffset: 1, nextOffset: null })
+    expect(
+      (await service.read('chat', 7, 1, { hideUser: true })).messages.map((x) => x.index),
+    ).toEqual([6])
+    expect((await service.read('chat', 2, 1)).messages[0]?.message.is_user).toBe(true)
+  })
+
+  it('全为用户的记录没有空章节导航', async () => {
+    const { service, chat } = await fixture()
+    chat.originalBlob = new File(
+      [JSON.stringify({ name: '用户', mes: '仅用户', is_user: true })],
+      'test.jsonl',
+    )
+    chat.metadata.messageCount = 1
+    expect(await service.read('chat', 0, 1, { hideUser: true })).toMatchObject({
+      messages: [],
+      previousOffset: null,
+      nextOffset: null,
+    })
+  })
   it('reviews the selected saved reply against the nearest earlier snapshot and reports gaps', async () => {
     const { service, chat, resources } = await fixture()
     const rows = [

@@ -590,6 +590,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tavern-bridge-resource-card.is-chat .tavern-bridge-resource-card__body strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .tavern-bridge-resource-card__body small {
   color: var(--color-ink-soft);
 }
@@ -599,6 +603,12 @@
   flex-wrap: wrap;
   gap: 0.35rem;
   min-width: 0;
+  align-items: center;
+}
+.tavern-bridge-file-size {
+  color: var(--color-ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .tavern-bridge-resource-card__meta em {
   max-width: 100%;

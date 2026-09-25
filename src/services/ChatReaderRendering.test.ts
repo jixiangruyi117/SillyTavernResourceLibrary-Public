@@ -11,11 +11,56 @@ import {
   chatReaderCss,
   chatReaderFonts,
   transformChatInputs,
+  readChatRegexSource,
   type ChatRenderInput,
 } from './ChatReaderRendering'
 import { applyCharacterGreetingRegex } from '../utils/CharacterGreetingRegex'
 
 describe('chat history display semantics', () => {
+  it.each([
+    '```html\r\n<div>STATUS_CODE</div>\r\n```\r\n尾声',
+    '    STATUS_CODE = { value: 1 };\n\n尾声',
+    '&lt;div class="status"&gt;STATUS_CODE&lt;/div&gt;\n\n尾声',
+    '<code>STATUS_CODE</code>\n\n尾声',
+  ])('pure reading removes code envelopes and keeps following prose: %s', (source) => {
+    const result = formatChatResult('开头\n\n' + source, false, false, undefined, true)
+    expect(result.html).not.toContain('STATUS_CODE')
+    expect(result.html).toContain('开头')
+    expect(result.html).toContain('尾声')
+  })
+  it('loads only the chosen group from a saved regex collection', async () => {
+    const rule = {
+      findRegex: 'x',
+      replaceString: '<div>x</div>',
+      markdownOnly: true,
+      disabled: true,
+      placement: [2],
+    }
+    const resource = {
+      type: 'regex',
+      originalBlob: {
+        size: 10,
+        text: async () => JSON.stringify({ global: [], scoped: [rule], preset: [] }),
+      },
+    } as never
+    expect(await readChatRegexSource(resource, 'character')).toEqual([rule])
+    await expect(readChatRegexSource(resource, 'preset')).rejects.toThrow('没有显示正则')
+  })
+  it('reports rule limits instead of silently rendering unprocessed source', () => {
+    const rules = Array.from({ length: 129 }, () => ({
+      findRegex: 'x',
+      replaceString: '',
+      markdownOnly: true,
+      placement: [2],
+    }))
+    const input = chatRenderInput(
+      { index: 1, depth: 0, message: { name: '角色', mes: 'x', is_user: false } },
+      {},
+      { extraRules: rules },
+    )
+    expect(input.rules).toHaveLength(128)
+    expect(input.diagnostics?.join()).toContain('后续规则未执行')
+  })
   it('projects only prose in clean reading without constructing frontend panels or media', () => {
     const source = [
       '雨声停了。\n\n**窗边的人**抬起头。',
@@ -201,6 +246,40 @@ describe('chat history display semantics', () => {
       swipe_id: 1,
       data: { stat_data: { n: 12 } },
     })
+  })
+
+  it('renders prompt-hidden messages like ST while leaving actual system notices alone', () => {
+    const card = {
+      extensions: {
+        regex_scripts: [
+          {
+            id: 'panel',
+            scriptName: '面板',
+            findRegex: 'STATUS',
+            replaceString: '<div>面板</div>',
+            markdownOnly: true,
+            placement: [1, 2],
+            minDepth: 2,
+            maxDepth: 0,
+          },
+        ],
+      },
+    }
+    for (const is_user of [false, true]) {
+      const entry = {
+        index: 2,
+        depth: -1,
+        message: { name: is_user ? '用户' : '角色', mes: 'STATUS', is_user, is_system: true },
+      }
+      expect(chatRenderInput(entry, card, {}).rules).toHaveLength(1)
+      expect(
+        chatRenderInput(
+          { ...entry, message: { ...entry.message, name: 'SillyTavern System' } },
+          card,
+          {},
+        ).rules,
+      ).toHaveLength(0)
+    }
   })
 
   it('only applies display rules, respects placement/depth and does not reapply saved mutations', () => {

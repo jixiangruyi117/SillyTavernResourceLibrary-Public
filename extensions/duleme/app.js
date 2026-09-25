@@ -104,6 +104,7 @@
     pageData = null,
     page = 0,
     pages = 1,
+    pageRanges = [{ start: 0, end: 0 }],
     prior = null,
     readVersion = 0,
     version = 0,
@@ -126,6 +127,16 @@
       .then(fn)
       .catch((error) => notify(error instanceof Error ? error.message : String(error), true))
   function notify(text, error = false) {
+    if ($('#sheet').open) {
+      const feedback = $('#sheetFeedback')
+      feedback.textContent = text
+      feedback.hidden = false
+      feedback.classList.toggle('error', error)
+      feedback.setAttribute('role', error ? 'alert' : 'status')
+      feedback.scrollIntoView({ block: 'nearest' })
+      if (error) feedback.focus({ preventScroll: true })
+      return
+    }
     $('#toast').textContent = text
     $('#toast').hidden = false
     $('#toast').classList.toggle('error', error)
@@ -193,6 +204,8 @@
     await store('reader-index-v1', indexState)
   }
   function sheet(title, html) {
+    $('#sheetFeedback').hidden = true
+    $('#sheetFeedback').textContent = ''
     $('#sheetTitle').textContent = title
     $('#sheetBody').innerHTML = html
     if (!$('#sheet').open) $('#sheet').showModal()
@@ -462,14 +475,9 @@
         if (!state) continue
         state.visible = item.isIntersecting
         if (item.isIntersecting) run(() => mountPanel(item.target, state))
-        else if (state.frame && state.frame.dataset.followPage !== String(page)) {
-          state.height = state.frame.getBoundingClientRect().height
-          item.target.style.height = state.height + 'px'
-          panelFrames.delete(state.frame)
-          state.frame.remove()
-          state.frame = null
-          item.target.append(state.staticHost)
-        }
+        // Keep mounted state within this bounded read batch (at most three floors).
+        // Replacing an offscreen frame by its collapsed projection can resize pages,
+        // re-enter visibility, and repeatedly recreate the same author's script.
       }
     },
     { root: $('#readingViewport'), rootMargin: '100% 100%' },
@@ -509,7 +517,7 @@
       frame.title = `第 ${item.entry.index + 1} 楼状态栏 ${item.index + 1}`
       frame.className = 'panel-loading'
       frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
-      frame.style.cssText = `display:block;width:100%;height:${item.height || panel.getBoundingClientRect().height || 1}px;border:0;break-inside:avoid;`
+      frame.style.cssText = `display:block;width:100%;height:${panel.getBoundingClientRect().height || 1}px;border:0;`
       frame.src = result.previewDocumentUrl
       frame.addEventListener(
         'load',
@@ -578,20 +586,12 @@
       const panel = frame.parentElement
       // Do not detach/reinsert the iframe: that restarts its document and scripts.
       for (const child of [...panel.childNodes]) if (child !== frame) child.remove()
-      panel.style.height = ''
       frame.classList.remove('panel-loading')
     }
     frame.style.height = nextHeight
     if (anchor) {
       calculatePages()
-      const flow = $('#readingFlow').getBoundingClientRect()
-      page = Math.max(
-        0,
-        Math.round(
-          (anchor.getBoundingClientRect().left - flow.left) /
-            ($('#readingViewport').clientWidth + 48),
-        ),
-      )
+      page = pageForElement(anchor)
       calculatePages()
       $('#readingViewport').scrollTop += anchor.getBoundingClientRect().top - top
       pagePosition = currentPosition()
@@ -683,28 +683,24 @@
       body.className = 'mes_text'
       body.innerHTML =
         entry.html ||
-        (prefs.renderMode === 'plain' ? '<p class="muted">本楼没有正文文字，可继续翻阅。</p>' : '')
-      // Keep a whole HTML opening with its avatar/name in one extensible page.
-      // Splitting that header from an oversized panel creates header-only columns.
-      section.classList.toggle(
-        'frontend-only',
-        body.children.length === 1 &&
-          body.firstElementChild.matches('[data-chat-frontend]') &&
-          ![...body.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim()),
-      )
+        (prefs.regex && entry.displaySource === '' && m.mes.trim()
+          ? '<p class="muted">本楼内容已被显示正则隐藏，可在阅读设置中调整正则。</p>'
+          : prefs.renderMode === 'plain'
+            ? '<p class="muted">本楼没有正文文字，可继续翻阅。</p>'
+            : '')
       body.querySelectorAll('[data-chat-frontend]').forEach((panel) => {
         const index = Number(panel.dataset.chatFrontend)
         const staticHost = document.createElement('div')
         panel.append(staticHost)
         const root = staticHost.attachShadow({ mode: 'open' })
         root.addEventListener('load', mediaLayoutChanged, true)
+        root.addEventListener('toggle', mediaLayoutChanged, true)
         root.innerHTML = entry.frontends?.[index] || ''
         maskNodes(root)
         if (!prefs.mask && prefs.renderMode === 'full') {
           lazyPanels.set(panel, {
             entry,
             index,
-            staticHost,
             visible: false,
             frame: null,
             loading: false,
@@ -713,6 +709,7 @@
         } else
           panel.addEventListener('click', (event) => {
             event.stopPropagation()
+            if (event.composedPath().some((node) => node?.matches?.('summary'))) return
             run(async () => enableInteractions())
           })
       })
@@ -727,17 +724,17 @@
       }
       content.append(section)
     }
-    if (pageData.nextOffset === null && pageData.messages.length) {
+    if (pageData.nextOffset === null) {
       const end = document.createElement('p')
       end.className = 'reading-end'
-      end.textContent = '已阅读完全部内容'
+      end.textContent = pageData.messages.length ? '已阅读完全部内容' : '当前记录没有角色回复'
       ;(content.lastElementChild?.querySelector('.mes_block') || content).append(end)
     }
     // Page turns already cross chapter/batch boundaries; a flow footer creates empty columns.
     if (prefs.mode === 'scroll') {
       const nav = document.createElement('div')
       nav.id = 'chapterNav'
-      nav.innerHTML = `${pageData.messages[0]?.index > 0 ? '<button data-batch="prev">' + (prefs.progressMode === 'chapters' ? '上一章' : '上一段') + '</button>' : '<span></span>'}${pageData.nextOffset !== null ? '<button data-batch="next">' + (prefs.progressMode === 'chapters' ? '下一章' : '继续阅读下一段') + '</button>' : ''}`
+      nav.innerHTML = `${previousOffset() !== null ? '<button data-batch="prev">' + (prefs.progressMode === 'chapters' ? '上一章' : '上一段') + '</button>' : '<span></span>'}${pageData.nextOffset !== null ? '<button data-batch="next">' + (prefs.progressMode === 'chapters' ? '下一章' : '继续阅读下一段') + '</button>' : ''}`
       content.append(nav)
     }
     applyPrefs()
@@ -762,21 +759,24 @@
       (extended && extended.closest('[data-floor]')) ||
       [...shadow.querySelectorAll('[data-floor]')].find((el) =>
         [...el.getClientRects()].some(
-          (r) => r.right > rect.left + 5 && r.left < rect.right - 5 && r.bottom > rect.top + 5,
+          (r) =>
+            r.right > rect.left + 5 &&
+            r.left < rect.right - 5 &&
+            r.bottom > rect.top + 5 &&
+            r.top < rect.bottom,
         ),
       )
-    if (!element) element = shadow.querySelector('[data-floor]')
+    if (!element)
+      element =
+        [...shadow.querySelectorAll('[data-floor]')]
+          .filter((el) => el.getBoundingClientRect().top < rect.bottom)
+          .at(-1) || shadow.querySelector('[data-floor]')
     return {
       floor: Number(element?.dataset.floor || pageData?.messages[0]?.index || 0),
       mode: prefs.mode,
       pageScroll: prefs.mode === 'page' ? $('#readingViewport').scrollTop : 0,
       pageOffset:
-        prefs.mode === 'page' && element
-          ? Math.max(
-              0,
-              Math.round((rect.left - element.getBoundingClientRect().left) / (rect.width + 48)),
-            )
-          : 0,
+        prefs.mode === 'page' && element ? Math.max(0, page - pageForElement(element)) : 0,
       offset:
         prefs.mode === 'scroll'
           ? Math.max(0, rect.top - (element?.getBoundingClientRect().top || rect.top))
@@ -784,20 +784,25 @@
       hash: pageData?.contentHash,
     }
   }
+  function pageForElement(element) {
+    const y = element.getBoundingClientRect().top - $('#readingFlow').getBoundingClientRect().top
+    const index = pageRanges.findIndex((range) => range.end > y + 1)
+    return index < 0 ? Math.max(0, pageRanges.length - 1) : index
+  }
   function calculatePages() {
     if (!pageData) return
     const vp = $('#readingViewport'),
       flow = $('#readingFlow')
-    flow.style.setProperty('--column-width', vp.clientWidth + 'px')
-    flow.style.setProperty('--page-height', vp.clientHeight + 'px')
-    let contentWidth = 0
+    pageRanges = []
     if (prefs.mode === 'page') {
-      const left = flow.getBoundingClientRect().left
-      const include = (rects) => {
+      const top = flow.getBoundingClientRect().top
+      const spans = []
+      const include = (rects, media = false) => {
         for (const rect of rects)
-          if (rect.width && rect.height) contentWidth = Math.max(contentWidth, rect.right - left)
+          if (rect.width && rect.height)
+            spans.push({ start: rect.top - top, end: rect.bottom - top, media })
       }
-      for (const body of shadow.querySelectorAll('.mes_text,.reading-end')) {
+      for (const body of shadow.querySelectorAll('.mes_text,.speaker,.error,.reading-end')) {
         const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
         const range = document.createRange()
         while (walker.nextNode())
@@ -806,30 +811,49 @@
             include(range.getClientRects())
           }
       }
-      for (const media of shadow.querySelectorAll('[data-chat-frontend],img,video,svg,table'))
-        include(media.getClientRects())
-    }
-    // Author padding/shadows must not produce a last page containing only the bubble's rounded edge.
-    pages =
-      prefs.mode === 'page'
-        ? Math.max(1, Math.ceil((contentWidth + 48) / (vp.clientWidth + 48)))
-        : 1
-    page = Math.min(Math.max(0, page), pages - 1)
-    flow.style.transform =
-      prefs.mode === 'page' ? `translateX(${-page * (vp.clientWidth + 48)}px)` : ''
-    const flowRect = flow.getBoundingClientRect()
-    let height = vp.clientHeight
-    if (prefs.mode === 'page') {
-      for (const block of shadow.querySelectorAll(
-        '[data-chat-frontend], img, video, svg, table, .reading-end',
+      for (const media of shadow.querySelectorAll(
+        '[data-chat-frontend],details,img,video,svg,table',
       )) {
-        for (const rect of block.getClientRects()) {
-          const column = Math.round((rect.left - flowRect.left) / (vp.clientWidth + 48))
-          if (column === page) height = Math.max(height, rect.bottom - flowRect.top + 18)
-        }
+        if (!media.parentElement.closest('[data-chat-frontend],details,table'))
+          include(media.getClientRects(), true)
       }
+      // Pagination follows natural vertical layout. HTML stays outside browser columns,
+      // which WebKit fragments even when break-inside:avoid is set on a tall iframe.
+      spans.sort((a, b) => a.start - b.start || b.end - a.end)
+      const lines = []
+      for (const span of spans) {
+        const last = lines.at(-1)
+        if (last && span.start < last.end - 0.5) {
+          last.end = Math.max(last.end, span.end)
+          last.media ||= span.media
+        } else lines.push({ ...span })
+      }
+      let start = 0,
+        end = 0,
+        occupied = false
+      for (const line of lines) {
+        const fits = line.end <= start + vp.clientHeight + 0.5
+        const extendsPanel = line.media && line.start < start + vp.clientHeight
+        if (occupied && !fits && !extendsPanel) {
+          pageRanges.push({
+            start,
+            end: Math.min(line.start, Math.max(end, start + vp.clientHeight)),
+          })
+          start = line.start
+          occupied = false
+        }
+        if (!occupied && line.start >= start + vp.clientHeight) start = line.start
+        end = Math.max(start, line.end)
+        occupied = true
+      }
+      if (occupied) pageRanges.push({ start, end: end + 18 })
     }
-    $('#readingPage').style.height = prefs.mode === 'page' ? Math.ceil(height) + 'px' : ''
+    if (!pageRanges.length) pageRanges.push({ start: 0, end: vp.clientHeight })
+    pages = pageRanges.length
+    page = Math.min(Math.max(0, page), pages - 1)
+    flow.style.transform = prefs.mode === 'page' ? `translateY(${-pageRanges[page].start}px)` : ''
+    $('#readingPage').style.height =
+      prefs.mode === 'page' ? Math.ceil(pageRanges[page].end - pageRanges[page].start) + 'px' : ''
     positionLabel()
   }
   function mediaLayoutChanged() {
@@ -839,24 +863,24 @@
     if (!pageData) return
     $('#readerPosition').textContent =
       `第 ${currentPosition().floor + 1} / ${pageData.total} 楼${prefs.mode === 'page' ? ` · 本段 ${page + 1}/${pages} 页` : ''}`
-    $('#prevPage').disabled = page === 0 && pageData.messages[0]?.index === 0
+    $('#prevPage').disabled = page === 0 && previousOffset() === null
     $('#nextPage').disabled = page === pages - 1 && pageData.nextOffset === null
   }
   function restore(pos) {
     pagePosition = prefs.mode === 'page' ? pos : null
     calculatePages()
     if (!pos) return
-    const el = shadow.querySelector(`[data-floor="${pos.floor}"]`)
+    let el = shadow.querySelector(`[data-floor="${pos.floor}"]`)
+    if (!el && prefs.hideUser) {
+      const floors = [...shadow.querySelectorAll('[data-floor]')]
+      el = floors.find((item) => Number(item.dataset.floor) >= pos.floor) || floors.at(-1)
+      pos = { floor: Number(el?.dataset.floor || 0), offset: 0 }
+      pagePosition = prefs.mode === 'page' ? pos : null
+    }
     if (!el) return
     const vp = $('#readingViewport')
     if (prefs.mode === 'page') {
-      const x =
-        el.getBoundingClientRect().left -
-        vp.getBoundingClientRect().left +
-        page * (vp.clientWidth + 48)
-      page =
-        Math.floor((x + 1) / (vp.clientWidth + 48)) +
-        (pos.mode === 'page' ? pos.pageOffset || 0 : 0)
+      page = pageForElement(el) + (pos.mode === 'page' ? pos.pageOffset || 0 : 0)
       calculatePages()
       vp.scrollTop = pos.mode === 'page' ? pos.pageScroll || 0 : 0
     } else {
@@ -869,6 +893,7 @@
     return {
       id: chat.id,
       regex: prefs.regex,
+      regexSources: state.regexSources || {},
       ruleOverrides: roleAppearance?.enabled ? {} : state.ruleOverrides || {},
       profileRuleOverrides: roleAppearance?.enabled ? roleAppearance.rules || {} : {},
       replyOverrides: state.replyOverrides || {},
@@ -880,7 +905,12 @@
       userName: state.userName,
     }
   }
-  async function read(offset = 0, pos = null) {
+  function previousOffset() {
+    if (prefs.hideUser && pageData.previousOffset !== undefined) return pageData.previousOffset
+    const first = pageData.messages[0]?.index || 0
+    return first > 0 ? Math.max(0, first - (prefs.progressMode === 'chapters' ? 1 : 3)) : null
+  }
+  async function read(offset = 0, pos = null, backward = false) {
     const version = ++readVersion
     run(syncReaderFonts)
     const activeId = chat.id
@@ -890,10 +920,15 @@
       id: activeId,
       offset,
       limit: prefs.progressMode === 'chapters' ? 1 : 3,
+      hideUser: prefs.hideUser,
+      backward,
       interactive: false,
       prefetch: true,
     })
     if (chat?.id !== activeId || version !== readVersion) return
+    // A large preceding floor may fill the bounded SDK page before the requested floor.
+    if (pos && offset < pos.floor && result.nextOffset !== null && result.nextOffset <= pos.floor)
+      return read(pos.floor, pos)
     pageData = result
     renderPage()
     if (pos?.hash && pos.hash !== result.contentHash) {
@@ -980,6 +1015,14 @@
     chrome = value
     $('#reader').classList.toggle('reader-show', chrome)
     $('#reader').classList.toggle('reader-hide', !chrome)
+    measureChrome()
+  }
+  function measureChrome() {
+    $('#reader').style.setProperty('--reader-header-height', $('#readerHeader').offsetHeight + 'px')
+    $('#reader').style.setProperty(
+      '--reader-toolbar-height',
+      $('.reader-bottom').offsetHeight + 'px',
+    )
   }
   async function syncNavigation() {
     if (!runtime.builtinReader) return
@@ -1013,10 +1056,8 @@
     $('#readingViewport').scrollTop = 0
     if (delta > 0 && page === pages - 1 && pageData.nextOffset !== null) {
       await read(pageData.nextOffset)
-    } else if (delta < 0 && page === 0 && pageData.messages[0].index > 0) {
-      await read(
-        Math.max(0, pageData.messages[0].index - (prefs.progressMode === 'chapters' ? 1 : 3)),
-      )
+    } else if (delta < 0 && page === 0 && previousOffset() !== null) {
+      await read(previousOffset(), null, true)
       page = pages - 1
       calculatePages()
     } else {
@@ -1210,7 +1251,7 @@
       ]
         .map(
           (scope) =>
-            `<details open><summary>${{ global: '全局', preset: '预设', character: '角色卡' }[scope]}</summary>${
+            `<details open><summary>${{ global: '全局', preset: '预设', character: '角色卡' }[scope]}</summary><p class="hint">来源：${esc(pageData?.regexSources?.[scope]?.name || '聊天随附')}（只替换本组显示规则，不修改原件或角色绑定）</p><div class="button-row"><button class="secondary" data-regex-source="${scope}">从资源库替换</button>${state.regexSources?.[scope] ? `<button class="secondary" data-regex-restore="${scope}">恢复随附来源</button>` : ''}</div>${
               rules
                 .filter((r) => r.scope === scope)
                 .map(
@@ -1249,6 +1290,46 @@
         apply(Object.fromEntries($$('[data-rule]').map((el) => [el.dataset.rule, el.checked]))),
       )
     $('#resetRules').onclick = () => run(() => apply({}))
+  }
+  async function regexSourcePanel(scope, offset = 0) {
+    const label = { global: '全局', preset: '预设', character: '角色卡' }[scope]
+    if (!label) return
+    sheet('替换' + label + '正则', '<p class="hint">正在读取资源列表…</p>')
+    const types =
+      scope === 'global' ? ['regex'] : [scope === 'preset' ? 'preset' : 'characterCard', 'regex']
+    const result = await api.resources.list({ types, offset, limit: 25 })
+    if (!$('#sheet').open) return
+    sheet(
+      '替换' + label + '正则',
+      `<p class="hint">选取聊天当时使用的${label}或单独保存的正则。仅替换本组，保留所选规则的启停状态。</p><div class="results">${result.items.map((item) => `<button class="result" data-regex-pick="${esc(item.id)}" data-scope="${scope}"><span>${esc(item.name)}</span><small>${esc(item.description)}</small></button>`).join('') || '<p class="hint">暂无可选资源</p>'}</div><div class="button-row"><button class="secondary" data-regex-page="${Math.max(0, offset - 25)}" data-scope="${scope}" ${offset === 0 ? 'disabled' : ''}>上一页</button><button class="secondary" data-regex-page="${result.nextOffset || 0}" data-scope="${scope}" ${result.nextOffset === null ? 'disabled' : ''}>下一页</button><button class="secondary" id="backToRegex">返回正则设置</button></div>`,
+    )
+    $('#backToRegex').onclick = regexPanel
+  }
+  async function replaceRegexSource(scope, id) {
+    const activeChatId = chat.id
+    const next = { ...state.regexSources }
+    if (id) next[scope] = id
+    else delete next[scope]
+    const overrides = Object.fromEntries(
+      Object.entries(state.ruleOverrides || {}).filter(([key]) => !key.startsWith(scope + ':')),
+    )
+    const offset = pageData?.messages[0]?.index || 0
+    // Validate before saving: a missing/wrong resource must not strand this chat.
+    await api.resources.readChat({
+      ...readOptions(),
+      regexSources: next,
+      ruleOverrides: roleAppearance?.enabled ? {} : overrides,
+      offset,
+      limit: 1,
+    })
+    if (chat?.id !== activeChatId || !$('#sheet').open) return
+    state.regexSources = next
+    state.ruleOverrides = overrides
+    await saveState()
+    const pos = currentPosition()
+    await read(offset, pos)
+    regexPanel()
+    notify(id ? '正则来源已替换，仅对这份聊天生效' : '已恢复聊天随附正则')
   }
   async function panel(name) {
     if (!pageData && name !== 'display' && name !== 'appearance') return
@@ -1592,6 +1673,11 @@
     run(async () => {
       const t = e.target.closest('button')
       if (!t) return
+      if (t.dataset.regexSource) await regexSourcePanel(t.dataset.regexSource)
+      if (t.dataset.regexPage !== undefined)
+        await regexSourcePanel(t.dataset.scope, Number(t.dataset.regexPage))
+      if (t.dataset.regexPick) await replaceRegexSource(t.dataset.scope, t.dataset.regexPick)
+      if (t.dataset.regexRestore) await replaceRegexSource(t.dataset.regexRestore, '')
       if (t.dataset.readingMode) {
         if (t.dataset.readingMode !== prefs.renderMode) await setReadingMode(t.dataset.readingMode)
       }
@@ -1687,6 +1773,7 @@
     floorPanel(Number(el.dataset.floor), window.getSelection()?.toString() || ''),
   )
   shadow.addEventListener('load', mediaLayoutChanged, true)
+  shadow.addEventListener('toggle', mediaLayoutChanged, true)
   shadow.addEventListener('click', (e) => {
     const interactive = e
       .composedPath()
@@ -1698,12 +1785,9 @@
       }
       const t = e.target.closest('button')
       if (t?.dataset.batch) {
-        const offset =
-          t.dataset.batch === 'next'
-            ? pageData.nextOffset
-            : Math.max(0, pageData.messages[0].index - (prefs.progressMode === 'chapters' ? 1 : 3))
+        const offset = t.dataset.batch === 'next' ? pageData.nextOffset : previousOffset()
         if (offset !== null) {
-          await read(offset)
+          await read(offset, null, t.dataset.batch === 'prev')
           await recordPosition()
         }
       } else if (!interactive && !window.getSelection()?.toString()) toggleChrome()
@@ -1776,15 +1860,18 @@
     if (e.key === 'Escape') toggleChrome(false)
   })
   let size = ''
-  new ResizeObserver(() => {
+  const readerSizeObserver = new ResizeObserver(() => {
     if (!pageData || $('#reader').hidden) return
+    measureChrome()
     const vp = $('#readingViewport'),
       next = vp.clientWidth + 'x' + vp.clientHeight
     if (next === size) return
     size = next
     const pos = pagePosition || state.position
     requestAnimationFrame(() => (pos ? restore(pos) : calculatePages()))
-  }).observe($('#readingViewport'))
+  })
+  for (const element of [$('#readingViewport'), $('#readerHeader'), $('.reader-bottom')])
+    readerSizeObserver.observe(element)
   Promise.resolve()
     .then(async () => {
       if (!api) throw Error('请将读了么安装包导入资源库的“扩展”，不能作为普通网页单独打开')

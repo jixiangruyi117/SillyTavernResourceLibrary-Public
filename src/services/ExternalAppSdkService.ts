@@ -254,6 +254,7 @@ export class ExternalAppSdkService {
       id,
       normalizedInteger(input.offset, 0, 10_000_000),
       normalizedInteger(input.limit, 20, 50),
+      { hideUser: input.hideUser === true, backward: input.backward === true },
     )
     const chat = await reader.getChat(id)
     const character = await resolveChatCharacter(chat, this.resources)
@@ -276,6 +277,7 @@ export class ExternalAppSdkService {
     } = await import('./ChatReaderRendering')
     let extraRules: unknown[] = []
     let presetRules: unknown[] = []
+    const sourceErrors: string[] = []
     if (typeof chat.metadata.chatDisplayRegexId === 'string') {
       const regex = await this.resources.get(chat.metadata.chatDisplayRegexId)
       if (regex?.type === RESOURCE_TYPE.REGEX && regex.originalBlob.size <= 2 * 1024 * 1024) {
@@ -284,7 +286,7 @@ export class ExternalAppSdkService {
           if (Array.isArray(data.global)) extraRules = data.global
           if (Array.isArray(data.preset)) presetRules = data.preset
         }
-      }
+      } else sourceErrors.push('随附显示正则不存在或超过 2 MiB，未加载；可在显示正则中替换来源')
     }
     const regexContext = isRecord(chat.metadata.chatRegexContext)
       ? chat.metadata.chatRegexContext
@@ -303,6 +305,34 @@ export class ExternalAppSdkService {
       presetRules,
       regexContext,
       ruleOverrides,
+      characterRules: undefined as unknown[] | undefined,
+    }
+    const regexSources: Record<string, { id: string; name: string }> = {}
+    if (isRecord(input.regexSources)) {
+      for (const scope of ['global', 'preset', 'character'] as const) {
+        if (!input.regexSources[scope]) continue
+        const resource = await this.resources.get(normalizeResourceId(input.regexSources[scope]))
+        if (!resource) throw new Error('所选正则来源已不存在，请在显示正则中恢复随附来源')
+        const expectedType =
+          scope === 'preset'
+            ? RESOURCE_TYPE.PRESET
+            : scope === 'character'
+              ? RESOURCE_TYPE.CHARACTER_CARD
+              : RESOURCE_TYPE.REGEX
+        if (resource.type !== expectedType && resource.type !== RESOURCE_TYPE.REGEX)
+          throw new Error('所选资源类型不适用于这组正则')
+        const { readChatRegexSource } = await import('./ChatReaderRendering')
+        const rules = await readChatRegexSource(resource, scope)
+        regexSources[scope] = { id: resource.id, name: resource.name }
+        if (scope === 'global') renderOptions.extraRules = rules
+        else if (scope === 'preset') {
+          renderOptions.presetRules = rules
+          renderOptions.regexContext = { ...renderOptions.regexContext, presetEnabled: true }
+        } else {
+          renderOptions.characterRules = rules
+          renderOptions.regexContext = { ...renderOptions.regexContext, characterEnabled: true }
+        }
+      }
     }
     const regexRules = await chatRegexProfileRules(
       card,
@@ -370,7 +400,7 @@ export class ExternalAppSdkService {
         interactiveFrontends,
         snapshot,
         frontendCount: rendered.frontendCount,
-        errors: result.errors,
+        errors: [...sourceErrors, ...(inputs[index]?.diagnostics || []), ...result.errors],
       }
       const bytes = textEncoder.encode(JSON.stringify(renderedEntry)).length
       if (messages.length && responseBytes + bytes > 8 * 1024 * 1024) {
@@ -385,7 +415,7 @@ export class ExternalAppSdkService {
     // Warm only the next adjacent floor's pure regex projection. No media/script documents are built.
     if (input.prefetch === true && page.nextOffset !== null) {
       void reader
-        .read(id, page.nextOffset, 1)
+        .read(id, page.nextOffset, 1, { hideUser: input.hideUser === true })
         .then((neighbor) =>
           transformChatInputs(
             neighbor.messages.map((entry) =>
@@ -433,6 +463,7 @@ export class ExternalAppSdkService {
       nextOffset,
       messages,
       regexRules,
+      regexSources,
       replyDiff,
       presetName: regexContext.presetName,
       previewDocumentUrl: OPAQUE_PREVIEW_DOCUMENT_URL,
@@ -494,10 +525,13 @@ export class ExternalAppSdkService {
     let theme: Record<string, unknown> = {}
     if (resource.metadata.format !== 'css' && resource.metadata.format !== 'text') {
       const parsed: unknown = JSON.parse(source)
-      if (!isRecord(parsed) || typeof parsed.custom_css !== 'string')
+      if (
+        !isRecord(parsed) ||
+        (parsed.custom_css !== undefined && typeof parsed.custom_css !== 'string')
+      )
         throw new Error('美化不含可用的聊天 CSS')
       theme = parsed
-      css = parsed.custom_css
+      css = typeof parsed.custom_css === 'string' ? parsed.custom_css : ''
     }
     const { chatReaderCss, chatReaderFonts } = await import('./ChatReaderRendering')
     return {

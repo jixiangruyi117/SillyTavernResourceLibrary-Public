@@ -306,6 +306,7 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
         name: '雨夜',
         fileName: '雨夜.srlchat',
         detail: '陆沉 · 随附角色卡',
+        sizeLabel: '2.50 MB',
       },
     ])
     await wrapper
@@ -316,6 +317,7 @@ describe('TavernBridgeCenter 的作者小工具入口', () => {
     expect(bridgeMocks.listResources).toHaveBeenLastCalledWith('chat')
     expect(wrapper.text()).toContain('雨夜')
     expect(wrapper.text()).toContain('随附角色卡')
+    expect(wrapper.text()).toContain('2.50 MB')
     expect(tavernConnectionStore.getSnapshot().inventory).toHaveLength(2)
   })
 

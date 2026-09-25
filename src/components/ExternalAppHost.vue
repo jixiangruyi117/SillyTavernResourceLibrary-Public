@@ -16,6 +16,7 @@ import FeatureAppHeader from './FeatureAppHeader.vue'
 import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 import {
   OPAQUE_PREVIEW_DOCUMENT_URL,
+  resetOpaquePreviewDocument,
   seedOpaquePreviewDocument,
 } from '../utils/OpaquePreviewDocument'
 import { downloadBlob } from '../utils/LibraryFormatting'
@@ -761,6 +762,9 @@ function connect(): void {
 
 function setFullscreen(value: boolean): void {
   if (isFullscreen.value === value) return
+  // Teleport reparenting reloads the frame's data URL. Its new bootstrap needs HTML again.
+  if (frame.value && app.value?.runtimeMode === 'trustedCompatible')
+    resetOpaquePreviewDocument(frame.value)
   isFullscreen.value = value
   immersiveHint.value = value && !isBuiltinReader.value
   clearHoldGesture()

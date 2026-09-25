@@ -21,6 +21,46 @@ import {
   archivedPanelThemeCss,
 } from '../utils/RichContentPreview'
 import { detectVendorLibNeeds, loadPreviewVendorLibs } from '../utils/PreviewVendorLibs'
+import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { isEmbeddedRegex } from './ResourceEmbeddedAssets'
+
+/** Read only the selected resource; replacing rules must never rebind or rewrite a chat. */
+export async function readChatRegexSource(
+  resource: Resource,
+  scope: 'global' | 'preset' | 'character',
+): Promise<unknown[]> {
+  let data: unknown
+  if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) data = resource.metadata.card
+  else {
+    if (resource.originalBlob.size > 2 * 1024 * 1024)
+      throw new Error('正则来源超过 2 MiB，请先提取需要的正则')
+    data = JSON.parse(await resource.originalBlob.text())
+  }
+  let rules: unknown = data
+  if (isRecord(data)) {
+    if (resource.type === RESOURCE_TYPE.REGEX) {
+      rules =
+        data[scope === 'character' ? 'scoped' : scope] ??
+        (isEmbeddedRegex(data) ? [data] : undefined)
+    } else {
+      const root = isRecord(data.data) ? data.data : data
+      rules = isRecord(root.extensions) ? root.extensions.regex_scripts : undefined
+    }
+  }
+  if (!Array.isArray(rules)) throw new Error('这份资源没有对应来源的正则')
+  const scripts = rules.filter(isEmbeddedRegex)
+  if (
+    !scripts.some(
+      (rule) =>
+        isRecord(rule) &&
+        (rule.markdownOnly === true ||
+          rule.markdown_only === true ||
+          (isRecord(rule.destination) && rule.destination.display === true)),
+    )
+  )
+    throw new Error('这份资源没有显示正则；仅生成时或发送给模型的规则不用于历史阅读')
+  return scripts
+}
 
 export function selectChatReply(entry: ChatReadPage['messages'][number], selected: unknown) {
   if (selected === undefined) return entry
@@ -190,6 +230,7 @@ export interface ChatRenderOptions {
   userName?: string
   extraRules?: unknown[]
   presetRules?: unknown[]
+  characterRules?: unknown[]
   regexContext?: { characterEnabled?: boolean; presetEnabled?: boolean; presetName?: string }
   ruleOverrides?: Record<string, boolean>
 }
@@ -197,6 +238,7 @@ export interface ChatRenderInput {
   source: string
   rules: CharacterGreetingRegexRule[]
   context: { charName?: string; userName?: string }
+  diagnostics?: string[]
 }
 
 export function chatRegexRules(card: Record<string, unknown>, options: ChatRenderOptions) {
@@ -213,7 +255,9 @@ export function chatRegexRules(card: Record<string, unknown>, options: ChatRende
     {
       scope: 'character',
       label: '角色卡',
-      rules: Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts : [],
+      rules:
+        options.characterRules ??
+        (Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts : []),
       enabled: options.regexContext?.characterEnabled !== false,
     },
   ]
@@ -289,17 +333,25 @@ export function chatRenderInput(
     source = source.replace(/{{\s*char\s*}}|<CHAR>|<BOT>/gi, () => message.name)
   }
   const placement = message.is_user ? 1 : extra.type === 'narrator' ? 3 : 2
+  // ST also uses is_system for prompt-hidden chat. Only its own system notices skip formatting.
+  const isSystemNotice = message.is_system && message.name === 'SillyTavern System'
   const scripts = chatRegexRules(card, options).map((item) => item.rule)
+  const diagnostics: string[] = []
   return {
     source,
     context,
+    diagnostics,
     rules:
-      options.regex !== false && !message.is_system
-        ? extractCharacterGreetingRegexRules(scripts, {
-            placement,
-            depth: entry.depth,
-            displayOnly: true,
-          })
+      options.regex !== false && !isSystemNotice
+        ? extractCharacterGreetingRegexRules(
+            scripts,
+            {
+              placement,
+              depth: message.is_system ? undefined : entry.depth,
+              displayOnly: true,
+            },
+            diagnostics,
+          )
         : [],
   }
 }
@@ -492,13 +544,15 @@ export function formatChatResult(
     // Remove frontend/code envelopes before the formatter parses their CSS or
     // builds static panels. A template is inert: its media/scripts never mount.
     const template = document.createElement('template')
-    template.innerHTML = source.replace(
-      /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g,
-      '\n',
-    )
+    const withoutFences = source
+      .replace(/\r\n?/g, '\n')
+      .replace(/(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g, '\n')
+    // Entity-encoded HTML is still frontend markup in pure reading. Decode only
+    // tags, in an inert template; ordinary prose such as "a &lt; b" stays text.
+    template.innerHTML = withoutFences.replace(/&lt;(\/?[a-z][\s\S]*?)&gt;/gi, '<$1>')
     template.content
       .querySelectorAll(
-        'script,style,head,iframe,object,embed,svg,canvas,img,picture,video,audio,form,button,input,select,textarea,table,details,pre,div,section,article,nav,aside,header,footer,status_top,status_bottom,status_bottom1,status_bottom2,status_current_variables,updatevariable',
+        'script,style,head,iframe,object,embed,svg,canvas,img,picture,video,audio,form,button,input,select,textarea,table,details,pre,code,div,section,article,nav,aside,header,footer,status_top,status_bottom,status_bottom1,status_bottom2,status_current_variables,updatevariable',
       )
       .forEach((element) => element.remove())
     template.content.querySelectorAll('br').forEach((element) => element.replaceWith('\n'))
@@ -509,6 +563,8 @@ export function formatChatResult(
     const text = (template.content.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
     const core = formatSillyTavernCoreMessage(text, { allowExternalMedia: false })
     const html = createDOMPurify(window).sanitize(core.html, {
+      FORBID_TAGS: ['pre', 'code'],
+      FORBID_CONTENTS: ['pre', 'code'],
       ALLOWED_TAGS: [
         'p',
         'br',
