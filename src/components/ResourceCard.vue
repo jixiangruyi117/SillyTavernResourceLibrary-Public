@@ -6,6 +6,7 @@ import { useResourceThumbnail } from '../composables/UseResourceThumbnail'
 
 import {
   getRelatedResourceIds,
+  getResourceDescription,
   RESOURCE_TYPE,
   RESOURCE_TYPE_LABELS,
   type Category,
@@ -249,7 +250,7 @@ watch(
         {{ resource.name }}
       </h2>
       <p v-if="isCompact && resource.description" class="resource-card__description">
-        {{ resource.description }}
+        {{ getResourceDescription(resource) }}
       </p>
       <p class="resource-card__file" :title="resource.fileName">{{ resource.fileName }}</p>
       <p

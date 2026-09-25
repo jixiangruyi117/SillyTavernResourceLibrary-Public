@@ -6,6 +6,7 @@ import { useLoadedObjectUrl } from '../composables/UseLoadedObjectUrl'
 import { useResourceThumbnail } from '../composables/UseResourceThumbnail'
 
 import {
+  getResourceDescription,
   RESOURCE_TYPE,
   RESOURCE_TYPE_LABELS,
   type Category,
@@ -107,7 +108,7 @@ function formatSize(bytes: number): string {
       </div>
 
       <p v-if="resource.description" class="resource-inspector__description">
-        {{ resource.description }}
+        {{ getResourceDescription(resource) }}
       </p>
 
       <dl class="resource-inspector__facts">

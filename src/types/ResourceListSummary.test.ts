@@ -1,8 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
-import { RESOURCE_TYPE, toResourceListSummary, type Resource } from './Resource'
+import {
+  getResourceDescription,
+  RESOURCE_TYPE,
+  toResourceListSummary,
+  type Resource,
+} from './Resource'
 
 describe('ResourceListSummary', () => {
+  it('displays legacy chat hints without changing stored descriptions or custom notes', () => {
+    const legacy = { type: RESOURCE_TYPE.CHAT, description: '45 楼 · 请在读了么中绑定角色卡' }
+    expect(getResourceDescription(legacy)).toBe('45 楼 · 在读了么中阅读')
+    expect(legacy.description).toBe('45 楼 · 请在读了么中绑定角色卡')
+    for (const description of ['', '我的聊天备注', `${legacy.description}（我的备注）`]) {
+      expect(getResourceDescription({ ...legacy, description })).toBe(description)
+    }
+    expect(getResourceDescription({ ...legacy, type: RESOURCE_TYPE.OTHER })).toBe(
+      legacy.description,
+    )
+  })
+
   it('keeps list fields but drops full card and arbitrary nested metadata', () => {
     const resource: Resource = {
       id: 'card',

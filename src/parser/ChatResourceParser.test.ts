@@ -31,6 +31,7 @@ describe('ChatResourceParser', () => {
     expect(result).toMatchObject({
       type: 'chat',
       name: '雨夜',
+      description: '2 楼 · 在读了么中阅读',
       metadata: { messageCount: 2, visibleMessageCount: 2, chatUserNames: ['许安'] },
     })
     expect(result.metadata).not.toHaveProperty('messages')

@@ -200,6 +200,15 @@ export type ResourceSummary = Omit<Resource, 'originalBlob'>
 export type ResourceListSummary = ResourceSummary
 export type ResourceReference = Resource | ResourceSummary
 
+/** Legacy parser hints describe the import, not the chat's current binding. */
+export function getResourceDescription(
+  resource: Pick<ResourceReference, 'type' | 'description'>,
+): string {
+  return resource.type === RESOURCE_TYPE.CHAT
+    ? resource.description.replace(/^(\d+) 楼 · 请在读了么中绑定角色卡$/, '$1 楼 · 在读了么中阅读')
+    : resource.description
+}
+
 export const USER_PERSONA_AVATAR_ASSET_KIND = 'userPersonaAvatar'
 
 export function isUserPersonaAvatarAttachment(

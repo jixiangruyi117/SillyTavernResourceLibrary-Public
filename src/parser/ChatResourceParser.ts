@@ -116,7 +116,7 @@ export async function summarizeChat(file: File, format: 'json' | 'jsonl'): Promi
   return {
     type: RESOURCE_TYPE.CHAT,
     name: file.name.replace(/\.(jsonl|json)$/i, ''),
-    description: `${messageCount} 楼 · 请在读了么中绑定角色卡`,
+    description: `${messageCount} 楼 · 在读了么中阅读`,
     metadata: {
       format,
       parserVersion: 1,
