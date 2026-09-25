@@ -206,6 +206,57 @@
   height: 100%;
 }
 
+/* The built-in reader uses the shared header; only the host consumes system insets. */
+.external-app-host__workspace--builtin-reader {
+  box-sizing: border-box;
+  max-width: none;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: var(--color-canvas);
+}
+
+.external-app-host__workspace--builtin-reader[data-reader-page='reader'] {
+  grid-template-rows: minmax(0, 1fr);
+  background: var(--reader-paper, var(--color-canvas));
+}
+
+.external-app-host__workspace--builtin-reader :deep(.feature-app-header) {
+  --feature-header-viewport-width: calc(100% - 2 * var(--mobile-gutter));
+  left: auto;
+  margin-inline: auto;
+  transform: none;
+  border-bottom-color: color-mix(in srgb, var(--color-line) 45%, transparent);
+}
+
+.external-app-host__reader-action {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  background: transparent;
+  cursor: pointer;
+}
+
+.external-app-host__reader-action[aria-pressed='true'] {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.external-app-host__reader-action svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .external-app-host__immersive-hint {
   position: fixed;
   z-index: 1;

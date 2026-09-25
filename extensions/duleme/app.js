@@ -105,7 +105,7 @@
     page = 0,
     pages = 1,
     prior = null,
-    busy = false,
+    readVersion = 0,
     version = 0,
     searchVersion = 0,
     listLimit = 30
@@ -292,6 +292,7 @@
     $('#libraryTitle').textContent = role ? '聊天记录' : '读了么'
     $('#brand').hidden = !!role
     $('#libraryBack').hidden = !role
+    await syncNavigation()
     $('#librarySearch').placeholder = role ? '搜索标题或已加载备注' : '搜索角色名称'
     let html = ''
     if (!role) {
@@ -427,6 +428,7 @@
     shadow.querySelector('#chat')?.classList.toggle('page-layout', prefs.mode === 'page')
     $('#readingFlow').style.transform = ''
     $('#readingFlow').style.setProperty('--column-width', $('#readingViewport').clientWidth + 'px')
+    if (runtime.builtinReader) run(syncNavigation)
   }
   function masked(text) {
     if (!prefs.mask) return text
@@ -725,11 +727,17 @@
       }
       content.append(section)
     }
+    if (pageData.nextOffset === null && pageData.messages.length) {
+      const end = document.createElement('p')
+      end.className = 'reading-end'
+      end.textContent = '已阅读完全部内容'
+      ;(content.lastElementChild?.querySelector('.mes_block') || content).append(end)
+    }
     // Page turns already cross chapter/batch boundaries; a flow footer creates empty columns.
     if (prefs.mode === 'scroll') {
       const nav = document.createElement('div')
       nav.id = 'chapterNav'
-      nav.innerHTML = `${pageData.messages[0]?.index > 0 ? '<button data-batch="prev">' + (prefs.progressMode === 'chapters' ? '上一章' : '上一段') + '</button>' : '<span></span>'}${pageData.nextOffset !== null ? '<button data-batch="next">' + (prefs.progressMode === 'chapters' ? '下一章' : '继续阅读下一段') + '</button>' : '<span class="muted">已读到当前记录末尾</span>'}`
+      nav.innerHTML = `${pageData.messages[0]?.index > 0 ? '<button data-batch="prev">' + (prefs.progressMode === 'chapters' ? '上一章' : '上一段') + '</button>' : '<span></span>'}${pageData.nextOffset !== null ? '<button data-batch="next">' + (prefs.progressMode === 'chapters' ? '下一章' : '继续阅读下一段') + '</button>' : ''}`
       content.append(nav)
     }
     applyPrefs()
@@ -789,7 +797,7 @@
         for (const rect of rects)
           if (rect.width && rect.height) contentWidth = Math.max(contentWidth, rect.right - left)
       }
-      for (const body of shadow.querySelectorAll('.mes_text')) {
+      for (const body of shadow.querySelectorAll('.mes_text,.reading-end')) {
         const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
         const range = document.createRange()
         while (walker.nextNode())
@@ -812,7 +820,9 @@
     const flowRect = flow.getBoundingClientRect()
     let height = vp.clientHeight
     if (prefs.mode === 'page') {
-      for (const block of shadow.querySelectorAll('[data-chat-frontend], img, video, svg, table')) {
+      for (const block of shadow.querySelectorAll(
+        '[data-chat-frontend], img, video, svg, table, .reading-end',
+      )) {
         for (const rect of block.getClientRects()) {
           const column = Math.round((rect.left - flowRect.left) / (vp.clientWidth + 48))
           if (column === page) height = Math.max(height, rect.bottom - flowRect.top + 18)
@@ -871,46 +881,42 @@
     }
   }
   async function read(offset = 0, pos = null) {
-    if (busy) return
-    busy = true
+    const version = ++readVersion
     run(syncReaderFonts)
     const activeId = chat.id
-    try {
-      $('#readerSubtitle').textContent = '正在读取…'
-      const result = await api.resources.readChat({
-        ...readOptions(),
-        id: activeId,
-        offset,
-        limit: prefs.progressMode === 'chapters' ? 1 : 3,
-        interactive: false,
-        prefetch: true,
-      })
-      if (chat?.id !== activeId) return
-      pageData = result
-      renderPage()
-      if (pos?.hash && pos.hash !== result.contentHash) {
-        notify('聊天原件已变化，请重新确认阅读位置')
-        pos = null
-      }
-      await new Promise((resolve) =>
-        requestAnimationFrame(() => {
-          restore(pos)
-          resolve()
-        }),
-      )
-      $('#readerSubtitle').textContent =
-        boundRole(chat).name +
-        ' · ' +
-        (prefs.mask
-          ? '已隐藏用户身份'
-          : prefs.renderMode === 'full'
-            ? '完整阅读'
-            : prefs.renderMode === 'plain'
-              ? '纯净阅读'
-              : '精简阅读')
-    } finally {
-      busy = false
+    $('#readerSubtitle').textContent = '正在读取…'
+    const result = await api.resources.readChat({
+      ...readOptions(),
+      id: activeId,
+      offset,
+      limit: prefs.progressMode === 'chapters' ? 1 : 3,
+      interactive: false,
+      prefetch: true,
+    })
+    if (chat?.id !== activeId || version !== readVersion) return
+    pageData = result
+    renderPage()
+    if (pos?.hash && pos.hash !== result.contentHash) {
+      notify('聊天原件已变化，请重新确认阅读位置')
+      pos = null
     }
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => {
+        if (chat?.id === activeId && version === readVersion) restore(pos)
+        resolve()
+      }),
+    )
+    if (chat?.id !== activeId || version !== readVersion) return
+    $('#readerSubtitle').textContent =
+      boundRole(chat).name +
+      ' · ' +
+      (prefs.mask
+        ? '已隐藏用户身份'
+        : prefs.renderMode === 'full'
+          ? '完整阅读'
+          : prefs.renderMode === 'plain'
+            ? '纯净阅读'
+            : '精简阅读')
   }
   async function openChat(id) {
     const c = chats.find((c) => c.id === id)
@@ -927,15 +933,16 @@
     background = ''
     $('#reader').style.backgroundImage = ''
     $('#reader').style.setProperty('--veil', 0)
+    pageData = null
+    shadow.innerHTML = '<p>正在读取聊天记录…</p>'
     $('#library').hidden = true
     $('#reader').hidden = false
+    await syncNavigation()
     document.body.style.overflow = 'hidden'
     $('#readerTitle').textContent = state.title || chat.name
     toggleChrome(false)
     clearTimeout(toastTimer)
     $('#toast').hidden = true
-    pageData = null
-    shadow.innerHTML = '<p>正在读取聊天记录…</p>'
     try {
       const floor = state.position?.floor || 0
       await read(
@@ -957,6 +964,7 @@
     await saveState()
   }
   async function leaveReader() {
+    readVersion++
     clearTimeout(saveTimer)
     await recordPosition()
     clearPanelFrames()
@@ -972,6 +980,33 @@
     chrome = value
     $('#reader').classList.toggle('reader-show', chrome)
     $('#reader').classList.toggle('reader-hide', !chrome)
+  }
+  async function syncNavigation() {
+    if (!runtime.builtinReader) return
+    await api.ui.setReaderNavigation({
+      page: !$('#reader').hidden ? 'reader' : role ? 'chats' : 'roles',
+      cover: prefs.characterCover === true,
+      colors: Object.fromEntries(
+        ['paper', 'ink', 'muted', 'line', 'accent', 'soft'].map((key) => [
+          key,
+          document.documentElement.style.getPropertyValue('--' + key).trim(),
+        ]),
+      ),
+    })
+  }
+  async function navigateBack() {
+    if ($('#sheet').open) {
+      $('#sheet').close()
+    } else if (!$('#reader').hidden) {
+      await leaveReader()
+    } else if (role) {
+      role = null
+      listLimit = 30
+      $('#librarySearch').value = ''
+      await renderLibrary()
+    } else {
+      await api.ui.exitFullscreen()
+    }
   }
   async function turn(delta) {
     if (prefs.mode !== 'page') return
@@ -1501,13 +1536,18 @@
         await renderLibrary()
       }
     })
-  $('#libraryBack').onclick = () =>
-    run(async () => {
-      role = null
-      listLimit = 30
-      $('#librarySearch').value = ''
-      await renderLibrary()
-    })
+  $('#libraryBack').onclick = () => run(navigateBack)
+  window.addEventListener('srlappnavigation', (event) => {
+    if (!runtime.builtinReader) return
+    if (event.detail === 'back') run(navigateBack)
+    if (event.detail === 'search') $('#searchToggle').click()
+    if (event.detail === 'cover') $('#characterCover').click()
+  })
+  window.addEventListener('srlappback', (event) => {
+    if (!runtime.builtinReader) return
+    event.preventDefault()
+    run(navigateBack)
+  })
   $('#librarySearch').oninput = () => run(renderLibrary)
   $('#searchToggle').onclick = () => {
     $('#librarySearchWrap').hidden = !$('#librarySearchWrap').hidden
@@ -1517,6 +1557,7 @@
     run(async () => {
       prefs.characterCover = !prefs.characterCover
       applyCharacterCover()
+      await syncNavigation()
       await savePrefs()
     })
   $('#aboutBtn').onclick = () =>
@@ -1752,6 +1793,8 @@
         throw Error('资源库尚未支持聊天记录接口，请先使用本分支构建的测试版本')
       const capabilities = await api.capabilities()
       runtime = capabilities.runtime || {}
+      document.documentElement.classList.toggle('builtin-shell', runtime.builtinReader === true)
+      $('#readerFullscreen').hidden = runtime.builtinReader === true
       const savedPrefs = (await api.storage.get('preferences-v1')) || {}
       defaultPrefs = {
         ...defaultPrefs,

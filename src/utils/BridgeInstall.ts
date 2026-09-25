@@ -7,7 +7,7 @@
 export const BRIDGE_EXTENSION_VERSION = '0.3.20'
 
 /** 当前离线安装包版本，与最低兼容版本分开维护。 */
-export const BRIDGE_DOWNLOAD_VERSION = '0.3.35'
+export const BRIDGE_DOWNLOAD_VERSION = '0.3.36-chat.4'
 
 /** 仅 APK 同机本机直传所需的页面扩展版本，不影响网页和旧设备码传输。 */
 export const LOCAL_DIRECT_BRIDGE_EXTENSION_VERSION = '0.3.22'

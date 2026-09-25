@@ -13,6 +13,7 @@ import {
   type InstalledExternalApp,
 } from '../types/ExternalApp'
 import FeatureAppHeader from './FeatureAppHeader.vue'
+import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 import {
   OPAQUE_PREVIEW_DOCUMENT_URL,
   seedOpaquePreviewDocument,
@@ -29,6 +30,29 @@ const chatPreview = ref<{
 
 const props = defineProps<{ appId: string; official?: boolean }>()
 const emit = defineEmits<{ back: [] }>()
+const isBuiltinReader = computed(
+  () => props.official === true && props.appId === CHAT_READER_APP_ID,
+)
+const readerPage = ref<'roles' | 'chats' | 'reader'>('roles')
+const readerCover = ref(false)
+const readerColors = ref<Record<string, string>>({})
+const readerAppearance = computed(() => ({
+  '--reader-paper': readerColors.value.paper,
+  '--color-canvas': readerColors.value.paper,
+  '--color-ink': readerColors.value.ink,
+  '--color-ink-soft': readerColors.value.muted,
+  '--color-line': readerColors.value.line,
+  '--color-accent': readerColors.value.accent,
+  '--color-accent-soft': readerColors.value.soft,
+}))
+
+function readerAction(action: 'back' | 'search' | 'cover'): void {
+  if (action === 'back' && !port) {
+    emit('back')
+    return
+  }
+  port?.postMessage({ type: 'srl:reader-action', nonce: sessionNonce, action })
+}
 
 const app = ref<InstalledExternalApp>()
 // A data document has a fresh opaque origin. Never combine this sandbox with host-origin srcdoc/blob.
@@ -117,12 +141,16 @@ async function load(): Promise<void> {
   const next = await externalAppService.get(props.appId)
   if (!next) {
     app.value = undefined
-    errorMessage.value = '这个第三方 APP 已被卸载。'
+    errorMessage.value = props.official
+      ? '读了么未能加载，请返回 APP 管理重新下载。'
+      : '这个第三方 APP 已被卸载。'
     return
   }
   if (!next.enabled) {
     app.value = undefined
-    errorMessage.value = '这个第三方 APP 当前已禁用。'
+    errorMessage.value = props.official
+      ? '读了么当前已停用，请返回后重新打开。'
+      : '这个第三方 APP 当前已禁用。'
     return
   }
   app.value = next
@@ -140,8 +168,9 @@ async function load(): Promise<void> {
   hideExitHandle()
   startupTimer = window.setTimeout(() => {
     if (loadingLabel.value && app.value?.id === next.id) {
-      errorMessage.value =
-        '第三方 APP 启动超时：未在 12 秒内完成加载。可返回扩展管理后查看诊断或重新启动。'
+      errorMessage.value = props.official
+        ? '读了么启动超时，请返回后重新打开。'
+        : '第三方 APP 启动超时：未在 12 秒内完成加载。可返回扩展管理后查看诊断或重新启动。'
       void externalAppService.recordRuntimeError(next.id, errorMessage.value)
     }
   }, STARTUP_TIMEOUT_MS)
@@ -214,6 +243,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           await reply(request.id, true, {
             ...(await externalAppSdkService.capabilities(current.id)),
             runtime: {
+              builtinReader: isBuiltinReader.value,
               network: current.runtimeMode === 'trustedCompatible',
               sessionStorage: true,
               locks: true,
@@ -461,11 +491,28 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           await reply(request.id, true, null)
           return
         }
+        case 'ui.readerNavigation': {
+          if (!isBuiltinReader.value) throw new Error('此接口仅供内置读了么使用')
+          const page = request.payload?.page
+          if (!['roles', 'chats', 'reader'].includes(page)) throw new Error('阅读页面无效')
+          readerPage.value = page
+          readerCover.value = request.payload?.cover === true
+          const colors = request.payload?.colors
+          for (const key of ['paper', 'ink', 'muted', 'line', 'accent', 'soft']) {
+            const value = colors?.[key]
+            if (typeof value === 'string' && /^#[\da-f]{6}$/iu.test(value))
+              readerColors.value[key] = value
+          }
+          await reply(request.id, true, null)
+          return
+        }
         case 'ui.consumeBack':
           await reply(request.id, true, null)
           return
         case 'ui.exitFullscreen':
-          setFullscreen(false)
+          if (isBuiltinReader.value && readerPage.value === 'roles') emit('back')
+          else if (isBuiltinReader.value) readerAction('back')
+          else setFullscreen(false)
           await reply(request.id, true, null)
           return
         default:
@@ -632,7 +679,7 @@ function beginHoldGesture(): void {
     exitHandleVisible.value = true
     if (exitHandleTimer !== undefined) window.clearTimeout(exitHandleTimer)
     exitHandleTimer = window.setTimeout(hideExitHandle, 3000)
-  }, 3000)
+  }, 1500)
 }
 
 function exitFromHandle(): void {
@@ -661,7 +708,7 @@ function connect(): void {
       diagnostic?.nonce === sessionNonce &&
       (diagnostic?.type === 'srl:host-hold-start' || diagnostic?.type === 'srl:hold-start')
     ) {
-      beginHoldGesture()
+      if (!isBuiltinReader.value) beginHoldGesture()
       return
     }
     if (
@@ -684,12 +731,14 @@ function connect(): void {
         ...diagnostics.value,
       ].slice(0, 50)
       if (diagnostic.level === 'error' && !errorMessage.value) {
-        errorMessage.value = `第三方 APP 初始化失败：${message}`
+        errorMessage.value = `${props.official ? '读了么' : '第三方 APP'}初始化失败：${message}`
       }
       if (diagnostic.level === 'error' && app.value) {
         void externalAppService.recordRuntimeError(app.value.id, message).then((health) => {
           if (health?.disabledByWatchdog) {
-            errorMessage.value = 'APP 已连续发生 3 次运行异常，已自动停用；可在扩展管理中重新启用。'
+            errorMessage.value = props.official
+              ? '读了么连续运行异常，已暂停；请返回后重新打开。'
+              : 'APP 已连续发生 3 次运行异常，已自动停用；可在扩展管理中重新启用。'
             app.value = undefined
             port?.close()
           }
@@ -713,7 +762,7 @@ function connect(): void {
 function setFullscreen(value: boolean): void {
   if (isFullscreen.value === value) return
   isFullscreen.value = value
-  immersiveHint.value = value
+  immersiveHint.value = value && !isBuiltinReader.value
   clearHoldGesture()
   if (!value) hideExitHandle()
   document.body.classList.toggle('external-app-fullscreen', value)
@@ -745,7 +794,8 @@ function handleKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     // The host owns immersive exit; a sandboxed APP cannot consume or suppress it.
     event.stopImmediatePropagation()
-    setFullscreen(false)
+    if (isBuiltinReader.value) readerAction('back')
+    else setFullscreen(false)
   }
 }
 
@@ -766,7 +816,8 @@ function handleBackRequest(event: Event): void {
   detail.handled = true
   event.preventDefault()
   event.stopImmediatePropagation()
-  setFullscreen(false)
+  if (isBuiltinReader.value) readerAction('back')
+  else setFullscreen(false)
 }
 
 onMounted(() => {
@@ -848,10 +899,50 @@ onBeforeUnmount(() => {
         v-if="app"
         v-show="!chatPreview"
         class="external-app-host__workspace"
-        :class="{ 'external-app-host__workspace--immersive': isFullscreen }"
-        :style="{ '--external-app-splash': app.manifest.splashColor || '#237f87' }"
+        :class="{
+          'external-app-host__workspace--immersive': isFullscreen,
+          'external-app-host__workspace--builtin-reader': isBuiltinReader,
+        }"
+        :style="{
+          '--external-app-splash': app.manifest.splashColor || '#237f87',
+          ...(isBuiltinReader ? readerAppearance : {}),
+        }"
         :aria-label="official ? '读了么阅读工作区' : '第三方 APP 独立工作区'"
+        :data-reader-page="isBuiltinReader ? readerPage : undefined"
       >
+        <FeatureAppHeader
+          v-if="isBuiltinReader && readerPage !== 'reader'"
+          :title="readerPage === 'roles' ? '读了么' : '聊天记录'"
+          :back-label="readerPage === 'roles' ? '返回功能桌面' : '返回角色列表'"
+          @back="readerAction('back')"
+        >
+          <template #actions>
+            <button
+              class="external-app-host__reader-action"
+              type="button"
+              aria-label="搜索"
+              @click="readerAction('search')"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m16 16 5 5" />
+              </svg>
+            </button>
+            <button
+              class="external-app-host__reader-action"
+              type="button"
+              aria-label="角色沉浸背景"
+              :aria-pressed="readerCover"
+              @click="readerAction('cover')"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+                <circle cx="8" cy="8" r="1.5" />
+                <path d="m3 17 6-6 4 4 3-3 5 5" />
+              </svg>
+            </button>
+          </template>
+        </FeatureAppHeader>
         <header v-if="!isFullscreen" class="external-app-host__runtime">
           <span><i aria-hidden="true"></i>独立工作区</span>
           <em>{{ runtimeLabel }} · {{ app.manifest.orientation || 'auto' }}</em>
@@ -879,7 +970,7 @@ onBeforeUnmount(() => {
         </p>
         <p v-if="isFullscreen && immersiveHint" class="external-app-host__immersive-hint">
           <span class="external-app-host__desktop-exit">按 Esc 退出全屏</span>
-          <span class="external-app-host__touch-exit">长按 3 秒显示返回</span>
+          <span class="external-app-host__touch-exit">长按 1.5 秒显示返回</span>
         </p>
       </section>
     </Teleport>
@@ -890,7 +981,7 @@ onBeforeUnmount(() => {
       @change="completeFilePick"
     />
     <button
-      v-if="isFullscreen && exitHandleVisible"
+      v-if="isFullscreen && exitHandleVisible && !isBuiltinReader"
       class="external-app-host__exit-handle"
       type="button"
       aria-label="退出第三方 APP"
@@ -900,6 +991,9 @@ onBeforeUnmount(() => {
     </button>
     <p v-if="isFullscreen && errorMessage" class="external-app-host__fullscreen-error" role="alert">
       {{ errorMessage }}
+      <button v-if="isBuiltinReader" type="button" class="button" @click="emit('back')">
+        返回功能桌面
+      </button>
     </p>
     <Teleport to="body">
       <section

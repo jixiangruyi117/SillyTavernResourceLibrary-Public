@@ -186,6 +186,10 @@ export const RUNTIME_BRIDGE = `<script>
     port = event.ports[0];
     port.onmessage = (message) => {
       const data = message.data;
+      if (data?.type === 'srl:reader-action' && data.nonce === nonce) {
+        window.dispatchEvent(new CustomEvent('srlappnavigation', { detail: data.action }));
+        return;
+      }
       if (data?.type === 'srl:host-back' && data.nonce === nonce && Number.isSafeInteger(data.sequence) && data.sequence > lastHostSequence) {
         lastHostSequence = data.sequence;
         const consume = new CustomEvent('srlappback', { cancelable: true });
@@ -218,7 +222,7 @@ export const RUNTIME_BRIDGE = `<script>
     sendHostHoldSignal('srl:host-hold-end');
   };
   // 由宿主在第三方脚本之前注入并注册到 window 的捕获阶段，APP 不能通过 document
-  // 监听器阻断长按退出手势。宿主负责 3 秒计时；桥接只负责识别“仍在按住”还是已经滑动/松手。
+  // 监听器阻断长按退出手势。宿主负责计时；桥接只负责识别“仍在按住”还是已经滑动/松手。
   window.addEventListener('pointerdown', (event) => {
     if (!isFullscreen || event.isPrimary === false) return;
     activeHoldPointerId = event.pointerId;
@@ -298,6 +302,7 @@ export const RUNTIME_BRIDGE = `<script>
     }),
     notify: (message) => request('ui.notify', { message }),
     ui: Object.freeze({
+      setReaderNavigation: (state) => request('ui.readerNavigation', state),
       exitFullscreen: () => request('ui.exitFullscreen', {}),
       setTitle: (title) => request('ui.title', { title }),
       setLoading: (label) => request('ui.loading', { label: label || '' })
