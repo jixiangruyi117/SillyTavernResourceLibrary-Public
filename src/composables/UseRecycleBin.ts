@@ -2,6 +2,7 @@ import { computed, ref, shallowRef } from 'vue'
 import { recycleBinService, syncNativeResourceFiles } from '../core/AppContainer'
 import { confirmAction } from './UseConfirmDialog'
 import type { BackupRecord } from '../types/Resource'
+import { taskCenter } from '../core/TaskCenter'
 interface RecycleBinContext {
   isDataProtectionOpen: import('vue').Ref<boolean>
   loadResources: () => Promise<void>
@@ -38,16 +39,41 @@ export function useRecycleBin(context: RecycleBinContext) {
   }
 
   async function moveResourcesToRecycleBin(ids: string[]): Promise<void> {
-    const record = await recycleBinService.moveToRecycleBin(ids)
-    recycleUndoEntry.value = record
-    await Promise.all([loadResources(), loadRecycleBin(), refreshStorageHealth()])
-    showNotice(
-      record.resourceCount === 1
-        ? '资源已移入回收站，可立即恢复。'
-        : `${record.resourceCount} 项资源已移入回收站，可立即恢复。`,
-      9000,
-      true,
-    )
+    const operationId = taskCenter.start({ name: '移入回收站', phase: '打包所选资源' })
+    try {
+      const record = await recycleBinService.moveToRecycleBin(ids, (progress) => {
+        if (progress.phase === 'archive') {
+          taskCenter.update(operationId, { phase: '打包所选资源' })
+          if (progress.writtenBytes !== undefined) {
+            taskCenter.updateTransfer(operationId, { transferredBytes: progress.writtenBytes })
+          }
+        } else if (progress.phase === 'save') {
+          taskCenter.update(operationId, { phase: '保存回收站副本' })
+        } else {
+          taskCenter.update(operationId, {
+            phase: '删除原资源及历史版本',
+            progress: progress.total ? (progress.completed ?? 0) / progress.total : undefined,
+            itemProgress:
+              progress.total !== undefined
+                ? { completed: progress.completed ?? 0, total: progress.total }
+                : undefined,
+          })
+        }
+      })
+      recycleUndoEntry.value = record
+      await Promise.all([loadResources(), loadRecycleBin(), refreshStorageHealth()])
+      taskCenter.complete(operationId)
+      showNotice(
+        record.resourceCount === 1
+          ? '资源已移入回收站，可立即恢复。'
+          : `${record.resourceCount} 项资源已移入回收站，可立即恢复。`,
+        9000,
+        true,
+      )
+    } catch (error) {
+      taskCenter.fail(operationId, error)
+      throw error
+    }
   }
 
   async function handleRestoreRecycleBinEntry(id: string): Promise<void> {
@@ -75,12 +101,24 @@ export function useRecycleBin(context: RecycleBinContext) {
     })
     if (!confirmed) return
     isRecycleBinBusy.value = true
+    const operationId = taskCenter.start({
+      name: '彻底删除回收站资源',
+      phase: '删除归档及大文件数据',
+    })
     try {
-      await recycleBinService.purge(id)
+      await recycleBinService.purge(id, ({ completed, total }) => {
+        taskCenter.update(operationId, {
+          phase: '删除归档及大文件数据',
+          progress: total ? completed / total : undefined,
+          itemProgress: { completed, total },
+        })
+      })
       if (recycleUndoEntry.value?.id === id) recycleUndoEntry.value = undefined
       await Promise.all([loadRecycleBin(), refreshStorageHealth()])
+      taskCenter.complete(operationId)
       showNotice('已彻底删除回收站资源。')
     } catch (error) {
+      taskCenter.fail(operationId, error)
       showNotice(error instanceof Error ? error.message : '彻底删除失败')
     } finally {
       isRecycleBinBusy.value = false
@@ -97,12 +135,24 @@ export function useRecycleBin(context: RecycleBinContext) {
     })
     if (!confirmed) return
     isRecycleBinBusy.value = true
+    const operationId = taskCenter.start({
+      name: '清空回收站',
+      phase: `删除归档 0/${recycleBinEntries.value.length}`,
+    })
     try {
-      await recycleBinService.empty()
+      await recycleBinService.empty(({ completed, total }) => {
+        taskCenter.update(operationId, {
+          phase: `删除归档 ${completed}/${total}`,
+          progress: total ? completed / total : undefined,
+          itemProgress: { completed, total },
+        })
+      })
       recycleUndoEntry.value = undefined
       await Promise.all([loadRecycleBin(), refreshStorageHealth()])
+      taskCenter.complete(operationId)
       showNotice('回收站已清空。')
     } catch (error) {
+      taskCenter.fail(operationId, error)
       showNotice(error instanceof Error ? error.message : '清空回收站失败')
     } finally {
       isRecycleBinBusy.value = false

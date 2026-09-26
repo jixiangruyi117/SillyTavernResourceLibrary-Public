@@ -1,4 +1,8 @@
 /* 资源详情、角色卡与开场白预览 */
+.resource-detail-overlay {
+  z-index: 24;
+}
+
 .resource-detail__header {
   flex-shrink: 0;
   padding-bottom: 1rem;
@@ -226,6 +230,18 @@
 
 .resource-detail__content {
   min-width: 0;
+}
+
+.resource-detail-sheet--content-editor .resource-detail__content {
+  grid-column: 1 / -1;
+}
+.resource-detail-sheet--content-editor .resource-detail__header h2 {
+  overflow-wrap: anywhere;
+}
+.resource-detail-sheet--content-editor .resource-detail__actions .button--primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent, #fff);
+  box-shadow: none;
 }
 
 .resource-detail__organize-heading {
@@ -649,28 +665,37 @@
 }
 
 .character-record__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
   padding-bottom: 0.875rem;
   border-bottom: 1px solid var(--color-line);
 }
 
 .character-record__header h3 {
   margin: 0;
-}
-
-.character-record__header h3 {
-  margin-top: 0;
   font-family: var(--font-display);
   font-size: 1.25rem;
   font-weight: 600;
 }
 
+.character-record__edit-button {
+  min-height: 44px;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.55rem;
+  color: var(--color-accent);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
 .character-record__badges {
+  grid-column: 1 / -1;
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.25rem;
 }

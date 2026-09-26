@@ -169,11 +169,15 @@ export interface RestorePreview {
 }
 
 export interface PreparedRestore {
-  /** Reopen the verified immutable source only when committing; previews retain no file bodies. */
+  /** Replans the verified archive against an empty library before a full replacement. */
+  forReplacement?: () => Promise<PreparedRestore>
+  /** Opens staged, verified entries for the commit, then releases their bounded temporary data. */
   openFiles?: () => Promise<{
     hydrate: (resource: Resource) => Promise<Resource>
     dispose: () => Promise<void>
   }>
+  /** Releases staged data if the user closes the preview without restoring. */
+  dispose?: () => Promise<void>
 
   preview: RestorePreview
   resources: Resource[]

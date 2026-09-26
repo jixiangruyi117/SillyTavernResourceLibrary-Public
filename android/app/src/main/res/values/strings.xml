@@ -10,4 +10,8 @@
     <string name="shortcut_backup_long">打开云端备份</string>
     <string name="shortcut_favorites_short">收藏</string>
     <string name="shortcut_favorites_long">打开收藏资源</string>
+    <string name="share_route_library_backup">导入 SRL 备份</string>
+    <string name="share_route_tavern_backup">导入酒馆备份</string>
+    <string name="share_route_resource">导入普通资源</string>
+    <string name="share_route_third_party_app">导入第三方 APP</string>
 </resources>

@@ -6,6 +6,12 @@ export interface ImportOptions {
   chatCharacterBindings?: Record<string, string | null>
   extractCharacterAssets?: boolean
   detectVersions?: boolean
+  onProgress?: (progress: {
+    completed: number
+    total: number
+    fileName: string
+    phase: string
+  }) => void
 }
 
 export interface PreparedFileImportOptions {

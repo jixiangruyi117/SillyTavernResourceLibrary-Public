@@ -21,6 +21,7 @@ type PanelModel = Pick<
   | 'activeScopeLabel'
   | 'isBatchMode'
   | 'toggleBatchMode'
+  | 'openSimilarNameGroups'
 >
 const input = defineProps<{ model: PanelModel }>()
 const commitSearch = toRef(input.model, 'commitSearch')
@@ -40,6 +41,7 @@ const filteredResources = toRef(input.model, 'filteredResources')
 const activeScopeLabel = toRef(input.model, 'activeScopeLabel')
 const isBatchMode = toRef(input.model, 'isBatchMode')
 const toggleBatchMode = toRef(input.model, 'toggleBatchMode')
+const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
 </script>
 <template>
   <section class="toolbar">
@@ -110,14 +112,23 @@ const toggleBatchMode = toRef(input.model, 'toggleBatchMode')
         显示 {{ filteredResources.length }} 项
         <small>{{ activeScopeLabel }}</small>
       </span>
-      <button
-        class="batch-toggle"
-        :class="{ 'batch-toggle--active': isBatchMode }"
-        type="button"
-        @click="toggleBatchMode"
-      >
-        {{ isBatchMode ? '退出多选' : '多选整理' }}
-      </button>
+      <div class="toolbar__actions">
+        <button
+          class="batch-toggle toolbar__similar-names"
+          type="button"
+          @click="openSimilarNameGroups"
+        >
+          名称相似资源
+        </button>
+        <button
+          class="batch-toggle"
+          :class="{ 'batch-toggle--active': isBatchMode }"
+          type="button"
+          @click="toggleBatchMode"
+        >
+          {{ isBatchMode ? '退出多选' : '多选整理' }}
+        </button>
+      </div>
     </div>
   </section>
 </template>

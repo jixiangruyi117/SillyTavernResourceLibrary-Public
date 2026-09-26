@@ -27,15 +27,13 @@ function setup() {
   const activeCategoryId = ref<string | null | undefined>(undefined)
   const isOrganizing = ref(false)
   const loadLibrary = vi.fn(async () => {})
-  const captureHistory = vi.fn(async () => {})
   const manager = useCategoryManagement({
     activeCategoryId,
     isOrganizing,
     showNotice: (m) => notices.push(m),
     loadLibrary,
-    captureHistory,
   })
-  return { manager, notices, activeCategoryId, isOrganizing, loadLibrary, captureHistory }
+  return { manager, notices, activeCategoryId, isOrganizing, loadLibrary }
 }
 
 describe('useCategoryManagement', () => {
@@ -78,20 +76,18 @@ describe('useCategoryManagement', () => {
     expect(notices[0]).toContain('已恢复显示')
   })
 
-  it('删除前必须二次确认，取消则不落快照也不调用服务', async () => {
-    const { manager, captureHistory } = setup()
+  it('删除前必须二次确认，取消则不调用服务', async () => {
+    const { manager } = setup()
     confirmMock.mockResolvedValueOnce(false)
     await manager.handleCategoryDelete(folder())
-    expect(captureHistory).not.toHaveBeenCalled()
     expect(categories.delete).not.toHaveBeenCalled()
   })
 
-  it('确认删除会先落历史快照，再删除并退回全部文件夹', async () => {
-    const { manager, captureHistory, activeCategoryId } = setup()
+  it('确认删除只移除文件夹并退回全部文件夹', async () => {
+    const { manager, activeCategoryId } = setup()
     activeCategoryId.value = 'f1'
     confirmMock.mockResolvedValueOnce(true)
     await manager.handleCategoryDelete(folder())
-    expect(captureHistory).toHaveBeenCalledWith('删除文件夹“古风卡”前自动快照')
     expect(categories.delete).toHaveBeenCalledWith('f1')
     expect(activeCategoryId.value).toBeUndefined()
   })

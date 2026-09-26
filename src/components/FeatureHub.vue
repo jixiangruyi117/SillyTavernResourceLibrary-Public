@@ -254,9 +254,11 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
     />
     <ExternalAppManager
       v-else-if="activePage === 'extensions'"
+      :shared-files="sharedAppFiles ?? []"
       @back="activePage = 'home'"
       @changed="handleExternalAppsChanged"
       @installed="handleExternalAppInstalled"
+      @shared-files-consumed="emit('shared-app-files-consumed')"
     />
     <ExternalAppHost
       v-else-if="activePage === 'externalApp' && activeExternalAppId"

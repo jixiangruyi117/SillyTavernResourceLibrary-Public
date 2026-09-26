@@ -14,6 +14,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ShareReceiverPlugin.class);
         registerPlugin(NativeLibraryPlugin.class);
         registerPlugin(NativeCloudTransferPlugin.class);
+        registerPlugin(NativeImportKeepAlivePlugin.class);
         registerPlugin(NativeHostedUploadPlugin.class);
         registerPlugin(NativePreviewAssetPlugin.class);
         registerPlugin(NativeFileExportPlugin.class);
@@ -32,6 +33,7 @@ public class MainActivity extends BridgeActivity {
         });
         NativeSystemUiPlugin.applyPersistedSystemBars(this);
         NativeSecurityPlugin.applyPersistedScreenProtection(this);
+        NativeShareRouteShortcuts.retireLegacyShortcuts(this);
         NativeShortcutPlugin.captureIntent(getIntent());
         stageSystemShare(getIntent());
     }
@@ -81,7 +83,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void stageSystemShareNow(Intent intent) {
-        Intent service = new Intent(this, NativeShareImportService.class).putExtra(NativeShareImportService.EXTRA_SOURCE, intent);
+        Intent service = new Intent(this, NativeShareImportService.class)
+            .putExtra(NativeShareImportService.EXTRA_SOURCE, intent)
+            .putExtra(NativeShareImportService.EXTRA_ROUTE, NativeShareRouteShortcuts.routeFrom(intent));
         ContextCompat.startForegroundService(this, service);
         // 文件复制由前台服务负责，避免页面读取同一 URI 造成重复导入。
         setIntent(new Intent());

@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref, useTemplateRef, watch } from 'vue'
 import GreetingPreviewDialog from './GreetingPreviewDialog.vue'
 import FeatureBackButton from './FeatureBackButton.vue'
+import CharacterCardContentWorkbench from './CharacterCardContentWorkbench.vue'
 import {
   useCharacterCardDetails,
   type CharacterCardDetailsProps,
@@ -9,10 +11,25 @@ import {
 const props = withDefaults(defineProps<CharacterCardDetailsProps>(), {
   boundResources: () => [],
   overrides: () => ({}),
+  contentEdits: () => [],
 })
 const emit = defineEmits<CharacterCardDetailsEvents>()
 const controller = useCharacterCardDetails(props, emit)
+const showContentWorkbench = ref(false)
+watch(showContentWorkbench, (open) => emit('workbench-open', open), { immediate: true })
+const contentWorkbench = useTemplateRef<{ prepareSave: () => Promise<boolean> }>('contentWorkbench')
+defineExpose({
+  prepareSave: async () => {
+    const ready = (await contentWorkbench.value?.prepareSave()) ?? true
+    if (!ready) {
+      showContentWorkbench.value = true
+      controller.activePage.value = 'overview'
+    }
+    return ready
+  },
+})
 const {
+  sourceCard,
   cardData,
   activePage,
   creator,
@@ -73,6 +90,7 @@ const {
   greetingRuntimeScripts,
   characterName,
   greetingRegexRules,
+  contentEdits,
   handleGreetingPreviewClose,
 } = controller
 </script>
@@ -82,21 +100,53 @@ const {
     v-if="cardData"
     ref="characterRoot"
     class="character-record"
-    aria-labelledby="character-record-title"
+    :aria-labelledby="showContentWorkbench ? undefined : 'character-record-title'"
+    :aria-label="showContentWorkbench ? '卡内内容编辑' : undefined"
   >
+    <header
+      v-if="activePage === 'overview' && !showContentWorkbench"
+      class="character-record__header"
+    >
+      <h3 id="character-record-title">角色档案</h3>
+      <button
+        type="button"
+        class="character-record__edit-button"
+        :disabled="disabled"
+        @click="showContentWorkbench = true"
+      >
+        编辑卡内内容
+      </button>
+      <div class="character-record__badges">
+        <span v-if="creator">作者 · {{ creator }}</span>
+        <span v-if="characterVersion">版本 · {{ characterVersion }}</span>
+        <span v-if="spec">{{ spec }}</span>
+      </div>
+    </header>
+    <CharacterCardContentWorkbench
+      v-if="sourceCard"
+      v-show="showContentWorkbench && activePage === 'overview'"
+      ref="contentWorkbench"
+      :card="sourceCard"
+      :edits="contentEdits"
+      :disabled="disabled"
+      :overridden-sections="[
+        ...(overrides.worldBookResourceId ? ['worldBook' as const] : []),
+        ...(overrides.greetingResourceId ? ['greeting' as const] : []),
+      ]"
+      @update:edits="emit('update:contentEdits', $event)"
+      @draft-change="emit('draft-change', $event)"
+      @back="showContentWorkbench = false"
+      @use-original="
+        updateReplacement($event === 'worldBook' ? 'worldBookResourceId' : 'greetingResourceId', '')
+      "
+    />
     <Transition name="character-page" mode="out-in">
-      <div v-if="activePage === 'overview'" key="overview" class="character-record__overview">
-        <header class="character-record__header">
-          <div>
-            <h3 id="character-record-title">角色档案</h3>
-          </div>
-          <div class="character-record__badges">
-            <span v-if="creator">作者 · {{ creator }}</span>
-            <span v-if="characterVersion">版本 · {{ characterVersion }}</span>
-            <span v-if="spec">{{ spec }}</span>
-          </div>
-        </header>
-
+      <div
+        v-if="activePage === 'overview'"
+        v-show="!showContentWorkbench"
+        key="overview"
+        class="character-record__overview"
+      >
         <section
           v-if="worldBookReplacementSources.length || greetingReplacementSources.length"
           class="character-source-panel"

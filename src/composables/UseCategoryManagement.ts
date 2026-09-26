@@ -11,14 +11,13 @@ interface CategoryManagementContext {
   isOrganizing: Ref<boolean>
   showNotice: (message: string) => void
   loadLibrary: () => Promise<void>
-  captureHistory: (reason: string) => Promise<void>
 }
 
 /**
  * 文件夹（分类）管理。
  *
  * 隐藏只是本地展示与抽卡偏好，不删除资源、多分类关系与备份内容；
- * 删除文件夹会先落一次历史快照，其中资源退回“未放入文件夹”。
+ * 删除文件夹只移除分类记录，其中资源退回“未放入文件夹”。
  */
 export function useCategoryManagement(context: CategoryManagementContext) {
   // 管理面板使用非受控输入，完成一次操作后重建面板以清空草稿。
@@ -87,7 +86,6 @@ export function useCategoryManagement(context: CategoryManagementContext) {
 
     context.isOrganizing.value = true
     try {
-      await context.captureHistory(`删除文件夹“${category.name}”前自动快照`)
       await categoryService.delete(category.id)
       if (context.activeCategoryId.value === category.id) {
         context.activeCategoryId.value = undefined

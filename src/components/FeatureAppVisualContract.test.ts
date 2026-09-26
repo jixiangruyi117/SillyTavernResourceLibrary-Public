@@ -98,7 +98,8 @@ describe('Feature App visual contract', () => {
     expect(layout).toContain(
       '.batch-bar__tags,\n  .batch-bar__move {\n    order: 1;\n    flex: 1 1 min(20rem, 100%);',
     )
-    expect(layout).toContain('.app-shell--batch .notice,\n  .app-shell--batch .activity-center {')
+    expect(layout).toMatch(/\.app-shell--batch \.notice\s*\{[^}]*top: auto;[^}]*bottom: calc\(/)
+    expect(layout).toMatch(/\.app-shell--batch \.activity-center\s*\{[^}]*--activity-bottom:/)
   })
 
   it('puts Cloud primary operations before configuration on compact layouts', () => {
@@ -155,7 +156,9 @@ describe('Feature App visual contract', () => {
     expect(layout).toContain(':root:has(.draw-actions) {\n    --bottom-action-reserved: 3.875rem;')
     expect(bridge).toContain('bottom: var(--bottom-nav-reserved);')
     expect(monitor).toContain('bottom: var(--bottom-notice-offset);')
-    expect(activity).toContain('bottom: var(--bottom-notice-offset);')
+    expect(activity).toContain('var(--activity-bottom, var(--bottom-notice-offset))')
+    expect(activity).toContain('bottom: var(--activity-offset);')
+    expect(activity).toContain('- var(--activity-offset) - 4rem - var(--safe-top, 0px)')
   })
 
   it('keeps the resizable Workshop inspector out of canvas layout', () => {

@@ -10,6 +10,7 @@ import {
   inspectCharacterReplacementResource,
   readCharacterCardOverrides,
 } from './CharacterCardCustomization'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 
 function resource(overrides: Partial<Resource> = {}): Resource {
   return {
@@ -33,6 +34,27 @@ function resource(overrides: Partial<Resource> = {}): Resource {
 }
 
 describe('CharacterCardCustomization', () => {
+  it('refuses a modified export that would silently drop a conflicting content edit', async () => {
+    const card = { data: { character_book: { entries: [{ uid: 1, content: '作者新版' }] } } }
+    const edit: CharacterCardContentEdit = {
+      id: 'edit',
+      section: 'worldBook',
+      operation: 'update',
+      targetKey: '1',
+      label: '正文修改',
+      before: { uid: 1, content: '旧正文' },
+      after: { uid: 1, content: '我的正文' },
+      migrateToVersions: true,
+      updatedAt: 1,
+    }
+    await expect(
+      createModifiedCharacterResource(
+        resource({ metadata: { card, characterContentEdits: [edit] } }),
+        [],
+      ),
+    ).rejects.toThrow('无法应用')
+    expect(card.data.character_book.entries[0]?.content).toBe('作者新版')
+  })
   it('rewrites a PNG card using bounded header reads, preserving its pixels', async () => {
     const png = new Blob(
       [
@@ -114,6 +136,36 @@ describe('CharacterCardCustomization', () => {
     expect(data.character_book.name).toBe('新世界书')
     expect(data.alternate_greetings).toEqual(['新备用'])
     expect(source.data.first_mes).toBe('原开场')
+  })
+
+  it('exports recorded card-content edits while leaving the stored original bytes untouched', async () => {
+    const card = {
+      spec: 'chara_card_v3',
+      data: { name: '测试角色', first_mes: '原开场', alternate_greetings: [] },
+    }
+    const originalBlob = new Blob([JSON.stringify(card)], { type: 'application/json' })
+    const contentEdit: CharacterCardContentEdit = {
+      id: 'greeting-1',
+      section: 'greeting',
+      operation: 'add',
+      targetKey: 'alternate:new-1',
+      label: '备用开场白',
+      after: '新开场',
+      migrateToVersions: true,
+      updatedAt: 1,
+    }
+    const source = resource({
+      originalBlob,
+      metadata: { card, characterContentEdits: [contentEdit] },
+    })
+
+    const modified = await createModifiedCharacterResource(source, [])
+    expect(JSON.parse(await modified.originalBlob.text()).data.alternate_greetings).toEqual([
+      '新开场',
+    ])
+    expect(source.originalBlob).toBe(originalBlob)
+    expect(source.metadata.characterContentEdits).toEqual([contentEdit])
+    expect(modified.metadata.characterContentEdits).toBeUndefined()
   })
 
   it('detects world books and standalone greetings from related resources', async () => {

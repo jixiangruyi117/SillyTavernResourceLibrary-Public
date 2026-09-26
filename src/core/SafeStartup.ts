@@ -64,12 +64,16 @@ function protectedHost(): { host: HTMLDivElement; root: ShadowRoot } {
   host.id = RESCUE_HOST_ID
   for (const [property, value] of Object.entries({
     all: 'initial',
-    display: 'block',
+    display: 'flex',
     position: 'fixed',
     inset:
       'auto max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left))',
     'z-index': '2147483647',
     'pointer-events': 'none',
+    'align-items': 'flex-end',
+    'justify-content': 'center',
+    height: 'max-content',
+    'max-height': 'calc(100dvh - 24px)',
     visibility: 'visible',
     opacity: '1',
   })) {
@@ -114,7 +118,7 @@ export function isSafeModeActive(): boolean {
 
 const RECOVERY_STYLE = `<style>
   *,*::before,*::after{box-sizing:border-box}
-  .bar{pointer-events:auto;max-width:560px;max-height:calc(100dvh - 32px);overflow:auto;margin:auto;padding:12px 14px;border:1px solid #7eaaa1;border-radius:14px;background:#f4fffc;color:#173832;font:14px/1.5 system-ui,sans-serif;box-shadow:0 8px 28px #102d2833}
+  .bar{pointer-events:auto;width:100%;max-width:560px;max-height:calc(100dvh - 32px);overflow:auto;margin:0 auto;padding:12px 14px;border:1px solid #7eaaa1;border-radius:14px;background:#f4fffc;color:#173832;font:14px/1.5 system-ui,sans-serif;box-shadow:0 8px 28px #102d2833}
   strong{display:block}p{margin:6px 0 10px;color:#49645f}summary{cursor:pointer;min-height:32px;font-weight:600}
   .actions{display:flex;flex-wrap:wrap;gap:8px}.actions button{flex:1;min-height:44px;padding:8px 12px;border:1px solid #6b9c93;border-radius:10px;background:#fff;color:#173832;font:600 14px/1.4 system-ui;cursor:pointer;overflow-wrap:anywhere}
   .actions .safe{border-color:#187f73;background:#187f73;color:#fff}[hidden]{display:none!important}

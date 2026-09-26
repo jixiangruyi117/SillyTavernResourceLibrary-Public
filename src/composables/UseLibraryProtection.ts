@@ -1,6 +1,6 @@
 import { createResourceArchiveSource } from '../services/ExportService'
 import type { Ref, ShallowRef } from 'vue'
-import { confirmAction } from '../composables/UseConfirmDialog'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import {
   browserStorageService,
   communitySourceStorage,
@@ -198,18 +198,33 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   }
 
   async function handleVaultEnable(password: string): Promise<void> {
-    return mutationGuard.run('vault:enable', () => performVaultEnable(password))
+    const choice = await chooseAction({
+      title: '开启本地保险库',
+      message:
+        '加密会转换当前设备上的全部资源与历史快照。完整快照可能很大，也可能超过浏览器存储上限。请选择是否先创建完整安全快照。',
+      confirmLabel: '创建完整快照',
+      alternativeLabel: '不建快照继续',
+      cancelLabel: '取消',
+      danger: true,
+    })
+    if (choice === 'cancel') return
+    return mutationGuard.run('vault:enable', () =>
+      performVaultEnable(password, choice === 'confirm'),
+    )
   }
 
-  async function performVaultEnable(password: string): Promise<void> {
+  async function performVaultEnable(password: string, createSafetySnapshot = false): Promise<void> {
     const context = getContext()
 
     context.isVaultBusy.value = true
-    const operationId = taskCenter.start({ name: '开启本地保险库', phase: '创建安全快照' })
+    const operationId = taskCenter.start({
+      name: '开启本地保险库',
+      phase: createSafetySnapshot ? '创建用户选择的完整快照' : '准备加密',
+    })
     try {
+      if (createSafetySnapshot) await captureHistory('开启加密前用户选择的完整快照')
       taskCenter.update(operationId, { phase: '整理缩略图存储' })
       await resourceService.repairThumbnailAssets()
-      await captureHistory('开启加密前')
       taskCenter.update(operationId, { phase: '分批加密本地数据' })
       await vaultService.enable(password)
       await communitySourceStorage.migrateVaultMode('encrypted')
@@ -227,25 +242,31 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   }
 
   async function handleVaultDisable(): Promise<void> {
-    const disableConfirmed = await confirmAction({
+    const choice = await chooseAction({
       title: '关闭本地加密',
-      message: '确定关闭本地加密吗？资源和历史快照将恢复为明文存储。',
-      confirmLabel: '关闭加密',
+      message:
+        '确定关闭本地加密吗？资源和历史快照将恢复为明文存储。完整快照可能很大，也可能超过浏览器存储上限。请选择是否先创建完整安全快照。',
+      confirmLabel: '创建快照并关闭',
+      alternativeLabel: '不建快照，关闭加密',
+      cancelLabel: '取消',
       danger: true,
     })
-    if (!disableConfirmed) return
-    return mutationGuard.run('vault:disable', performVaultDisable)
+    if (choice === 'cancel') return
+    return mutationGuard.run('vault:disable', () => performVaultDisable(choice === 'confirm'))
   }
 
-  async function performVaultDisable(): Promise<void> {
+  async function performVaultDisable(createSafetySnapshot = false): Promise<void> {
     const context = getContext()
 
     context.isVaultBusy.value = true
-    const operationId = taskCenter.start({ name: '关闭本地保险库', phase: '创建安全快照' })
+    const operationId = taskCenter.start({
+      name: '关闭本地保险库',
+      phase: createSafetySnapshot ? '创建用户选择的完整快照' : '准备关闭加密',
+    })
     try {
+      if (createSafetySnapshot) await captureHistory('关闭加密前用户选择的完整快照')
       taskCenter.update(operationId, { phase: '整理缩略图存储' })
       await resourceService.repairThumbnailAssets()
-      await captureHistory('关闭加密前')
       taskCenter.update(operationId, { phase: '分批恢复明文数据' })
       await communitySourceStorage.migrateVaultMode('plain')
       await vaultService.disable()
@@ -295,16 +316,18 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
 
     const snapshot = context.historySnapshots.value.find((item) => item.id === id)
     if (!snapshot) return
-    const restoreConfirmed = await confirmAction({
+    const choice = await chooseAction({
       title: '恢复历史版本',
-      message: `确定恢复“${snapshot.reason || '本地快照'}”吗？当前整个资源库会被替换，恢复前将自动保留安全快照。`,
-      confirmLabel: '恢复',
+      message: `确定恢复“${snapshot.reason || '本地快照'}”吗？当前整个资源库会被替换。恢复失败时数据库事务会回滚；成功后无法自动撤销。完整快照可能很大，请选择是否先保存当前状态。`,
+      confirmLabel: '创建完整快照并恢复',
+      alternativeLabel: '不建快照，直接恢复',
+      cancelLabel: '取消',
       danger: true,
     })
-    if (!restoreConfirmed) return
+    if (choice === 'cancel') return
     context.isVaultBusy.value = true
     try {
-      await captureHistory('历史恢复前自动快照', [id])
+      if (choice === 'confirm') await captureHistory('历史恢复前用户选择的完整快照', [id])
       await historyService.restore(id)
       await Promise.all([context.loadLibrary(), loadHistorySnapshots(), refreshStorageHealth()])
       context.isVaultPanelOpen.value = false

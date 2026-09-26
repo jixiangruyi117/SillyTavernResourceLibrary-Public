@@ -30,6 +30,7 @@ interface LibraryQueryViewContext {
   searchQuery: Ref<string, string>
   activeFilter: Ref<FilterValue>
   activeTag: Ref<string, string>
+  activeResourceIds?: Ref<Set<string> | undefined>
   sortValue: Ref<SortValue>
   resourceNameCollator: Intl.Collator
   searchScope: Ref<SearchScope, SearchScope>
@@ -83,9 +84,16 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
     ),
   )
 
+  const scopedLibraryResources = computed(() => {
+    const ids = context.activeResourceIds?.value
+    return ids
+      ? visibleLibraryResources.value.filter((resource) => ids.has(resource.id))
+      : visibleLibraryResources.value
+  })
+
   const visibleResourceFacets = computed(() => {
     const stats = new ResourceStatsIndex()
-    stats.replace(visibleLibraryResources.value)
+    stats.replace(scopedLibraryResources.value)
     const snapshot = stats.snapshot()
     const filterCounts = new Map<FilterValue, number>([
       ['all', snapshot.total],
@@ -127,7 +135,7 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
       ['all', 0],
       ['favorites', 0],
     ])
-    for (const resource of visibleLibraryResources.value) {
+    for (const resource of scopedLibraryResources.value) {
       if (!matchesCategory(resource, context.activeCategoryId.value)) continue
       counts.set('all', (counts.get('all') ?? 0) + 1)
       if (resource.favorite) counts.set('favorites', (counts.get('favorites') ?? 0) + 1)
@@ -145,7 +153,7 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
 
   const filteredResources = computed(() => {
     const keyword = context.searchQuery.value.trim().toLocaleLowerCase()
-    return resourceQueryEngine.query(visibleLibraryResources.value, {
+    return resourceQueryEngine.query(scopedLibraryResources.value, {
       filter: context.activeFilter.value,
       categoryId: context.activeCategoryId.value,
       tag: context.activeTag.value,

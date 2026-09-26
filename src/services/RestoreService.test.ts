@@ -28,20 +28,22 @@ class MemoryArchiveStorage implements ArchiveStorageAdapter {
     categories: Category[],
     resources: Resource[],
     versions: Resource[] = [],
+    hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
   ): Promise<void> {
     this.categories.push(...categories)
-    this.resources.push(...resources)
-    this.versions.push(...versions)
+    this.resources.push(...(await Promise.all(resources.map(hydrate))))
+    this.versions.push(...(await Promise.all(versions.map(hydrate))))
   }
 
   async replace(
     categories: Category[],
     resources: Resource[],
     versions: Resource[] = [],
+    hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
   ): Promise<void> {
     this.categories = [...categories]
-    this.resources = [...resources]
-    this.versions = [...versions]
+    this.resources = await Promise.all(resources.map(hydrate))
+    this.versions = await Promise.all(versions.map(hydrate))
   }
 }
 
@@ -106,6 +108,46 @@ const archivedCategory: Category = {
 }
 
 describe('RestoreService', () => {
+  it('replans full replacement without rereading or extracting originals during preview', async () => {
+    const first = await createResource('existing', archivedCategory.id, '{"first":true}')
+    const second = await createResource('new', archivedCategory.id, '{"second":true}')
+    const identicalCopy = { ...first, id: 'separate-copy' }
+    const version = {
+      ...(await createResource('history', archivedCategory.id, '{"older":true}')),
+      versionGroupId: first.id,
+    }
+    const archive = await new ExportService().createArchive(
+      [first, second, identicalCopy],
+      [archivedCategory],
+      { mode: 'full' },
+      [version],
+    )
+    const staging = new TrackingRestoreStagingStore()
+    const reads = vi.spyOn(staging, 'get')
+    const storage = new MemoryArchiveStorage()
+    const service = new RestoreService(storage, staging)
+    const prepared = await service.prepare(
+      new File([archive.blob], archive.fileName),
+      [first],
+      [archivedCategory],
+      true,
+    )
+    expect(prepared.resources.map((resource) => resource.id)).toEqual([second.id])
+    expect(prepared.categories).toEqual([])
+    expect(reads.mock.calls.map(([, path]) => path)).toEqual(['manifest.json'])
+    const stagedChunks = staging.chunkCount
+    await service.replace(prepared)
+    expect(storage.resources.map((resource) => resource.id)).toEqual([
+      first.id,
+      second.id,
+      identicalCopy.id,
+    ])
+    expect(storage.categories).toEqual([archivedCategory])
+    expect(storage.versions[0]?.versionGroupId).toBe(first.id)
+    expect(await storage.resources[0]!.originalBlob.text()).toBe('{"first":true}')
+    expect(staging.chunkCount).toBe(stagedChunks)
+  })
+
   it('restores embedded chat portraits/rules and keeps identical prose from different characters separate', async () => {
     const content = '{"name":"角色","is_user":false,"mes":"同一正文"}'
     const first = {
@@ -365,6 +407,21 @@ describe('RestoreService', () => {
     expect(storage.resources[0]?.sourceLinks).toEqual(
       normalizeResourceLinks(archivedResource.sourceLinks),
     )
+    expect(await storage.resources[0]?.originalBlob.text()).toBe('{"name":"Atlas"}')
+  })
+
+  it('reuses the preflight staging data for a deferred full replacement', async () => {
+    const storage = new MemoryArchiveStorage()
+    const staging = new TrackingRestoreStagingStore()
+    const service = new RestoreService(storage, staging)
+    const resource = await createResource('atlas', null, '{"name":"Atlas"}')
+    const prepared = await service.prepare(await createBackup([resource], []), [], [], true)
+    const stagedChunkCount = staging.chunkCount
+
+    await service.replace(prepared)
+
+    expect(staging.chunkCount).toBe(stagedChunkCount)
+    expect(storage.resources).toHaveLength(1)
     expect(await storage.resources[0]?.originalBlob.text()).toBe('{"name":"Atlas"}')
   })
 

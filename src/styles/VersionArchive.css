@@ -840,7 +840,19 @@
 }
 
 @media (max-width: 53.75rem) {
-  :root[data-ios-keyboard-open='true'] .resource-detail__actions {
+  :root[data-ios-keyboard-open='true']
+    .resource-detail-sheet:not(.resource-detail-sheet--content-editor)
+    .resource-detail__actions {
+    display: none;
+  }
+
+  :root[data-ios-keyboard-open='true']
+    .resource-detail-sheet--content-editor
+    .resource-detail__tabs,
+  :root[data-ios-keyboard-open='true']
+    .resource-detail-sheet--content-editor
+    .resource-detail__actions
+    > span {
     display: none;
   }
 

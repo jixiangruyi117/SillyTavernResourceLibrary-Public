@@ -96,9 +96,10 @@ export async function encodeArchive(
       const resource = await options.read(planned, historical)
       throwIfArchiveAborted(options.signal)
       const entry =
-        resource.mimeType === 'image/png' || /\.png$/i.test(resource.fileName)
+        /^(image\/(png|jpeg|webp|gif)|audio\/|video\/)/i.test(resource.mimeType) ||
+        /\.(png|jpe?g|webp|gif|zip|gz|7z|rar|mp[34]|ogg|webm)$/i.test(resource.fileName)
           ? new ZipPassThrough(options.path(resource, historical))
-          : new ZipDeflate(options.path(resource, historical), { level: 6 })
+          : new ZipDeflate(options.path(resource, historical), { level: 1 })
       entry.mtime = new Date(
         Number.isFinite(resource.updatedAt)
           ? Math.min(Date.UTC(2107, 11, 31), Math.max(Date.UTC(1980, 0, 1), resource.updatedAt))
@@ -118,7 +119,7 @@ export async function encodeArchive(
       await push(entry, attachment.blob)
     }
     if (options.communitySourceData) {
-      const entry = new ZipDeflate(COMMUNITY_SOURCE_ARCHIVE_PATH, { level: 6 })
+      const entry = new ZipDeflate(COMMUNITY_SOURCE_ARCHIVE_PATH, { level: 1 })
       entry.mtime = new Date(options.manifest.createdAt)
       await push(entry, new Blob([JSON.stringify(options.communitySourceData)]))
     }
@@ -134,7 +135,7 @@ export async function encodeArchive(
       parts.push(']')
     }
     parts.push('}')
-    const manifestEntry = new ZipDeflate('manifest.json', { level: 6 })
+    const manifestEntry = new ZipDeflate('manifest.json', { level: 1 })
     manifestEntry.mtime = new Date(options.manifest.createdAt)
     await push(manifestEntry, new Blob(parts))
     throwIfArchiveAborted(options.signal)

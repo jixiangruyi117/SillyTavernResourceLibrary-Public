@@ -56,6 +56,7 @@ export type FeatureHubProps = {
   customCss: string
   folderBusy: boolean
   cabinetResourceIds: string[]
+  sharedAppFiles?: File[]
 }
 
 export type FeatureHubEvents = {
@@ -84,6 +85,7 @@ export type FeatureHubEvents = {
   'library-changed': []
   'import-files': [files: File[]]
   'feature-app-active': [active: boolean]
+  'shared-app-files-consumed': []
 }
 
 export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<FeatureHubEvents>) {
@@ -132,6 +134,14 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const FEATURE_DESKTOP_LONG_PRESS_MOVE_TOLERANCE = 10
 
   const activePage = ref<FeaturePage>('home')
+
+  watch(
+    () => props.sharedAppFiles?.length ?? 0,
+    (count) => {
+      if (count) activePage.value = 'extensions'
+    },
+    { immediate: true },
+  )
 
   const desktopFilter = ref<'all' | 'pinned' | 'recent'>('all')
 

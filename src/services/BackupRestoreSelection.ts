@@ -98,6 +98,7 @@ export function selectPreparedRestore(
 
   return {
     ...prepared,
+    forReplacement: undefined,
     resources: selectedResources,
     versions,
     categories,
@@ -207,5 +208,9 @@ export async function listArchiveBackupResources(
     categories as Category[],
     true,
   )
-  return prepared.resources.map((resource) => toResourceListSummary(resource))
+  try {
+    return prepared.resources.map((resource) => toResourceListSummary(resource))
+  } finally {
+    await prepared.dispose?.()
+  }
 }

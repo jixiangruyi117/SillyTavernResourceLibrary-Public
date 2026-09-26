@@ -4,6 +4,7 @@ import { exportService, resourceService } from '../core/AppContainer'
 import { createNativeResourceDeepLink } from '../core/NativeRuntime'
 import { referenceIndex } from '../core/ReferenceIndex'
 import type { ResourceVersionView } from '../services/ResourceService'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
   getRelatedResourceIds,
   isUserPersonaAvatarAttachment,
@@ -162,6 +163,7 @@ export function useLibraryResourceActions(getContext: () => LibraryResourceActio
     tags: string[]
     sourceLinks: ResourceLink[]
     characterOverrides?: CharacterCardOverrides
+    characterContentEdits?: CharacterCardContentEdit[]
   }): Promise<void> {
     const context = getContext()
 

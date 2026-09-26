@@ -24,6 +24,8 @@ import {
   type AiTagMutationEntry,
   type AiTagMutationResult,
 } from '../types/ResourceOperations'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
+import { readCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
 
 export async function updateExternalAppResource(
   storage: ResourceStorageAdapter,
@@ -71,6 +73,7 @@ export async function updateDetails(
     tags: string[]
     sourceLinks?: ResourceLink[]
     characterOverrides?: CharacterCardOverrides
+    characterContentEdits?: CharacterCardContentEdit[]
   },
 ): Promise<void> {
   const name = details.name.trim()
@@ -124,8 +127,12 @@ export async function updateDetails(
     } else {
       delete metadata.characterOverrides
     }
+    const contentEdits = readCharacterCardContentEdits(details.characterContentEdits)
+    if (contentEdits.length) metadata.characterContentEdits = contentEdits
+    else delete metadata.characterContentEdits
   } else {
     delete metadata.characterOverrides
+    delete metadata.characterContentEdits
   }
   const updatedSource = normalizeResource({
     ...resource,
@@ -260,19 +267,24 @@ export async function updateTagsMany(
 export async function addTagsPerResource(
   storage: ResourceStorageAdapter,
   suggestions: Array<{ resourceId: string; tags: string[] }>,
+  preserveTagLength = false,
 ): Promise<AiTagMutationResult> {
   const tagsById = new Map(
     suggestions.flatMap((suggestion) => {
       const resourceId = suggestion.resourceId.trim()
-      const tags = normalizeTags(suggestion.tags).map((tag) => tag.slice(0, 40))
+      const tags = normalizeTags(suggestion.tags).map((tag) =>
+        preserveTagLength ? tag : tag.slice(0, 40),
+      )
       return resourceId && tags.length ? [[resourceId, tags] as const] : []
     }),
   )
   if (!tagsById.size) return { resourceCount: 0, tagCount: 0, entries: [] }
-  const loaded = await Promise.all(Array.from(tagsById.keys(), (id) => storage.get(id)))
+  const loaded = storage.listResourceListSummaries
+    ? await storage.listResourceListSummaries()
+    : await storage.listSummaries()
   const now = Date.now()
   const mutations = loaded.flatMap((resource) => {
-    if (!resource) return []
+    if (!tagsById.has(resource.id)) return []
     const seen = new Set(resource.tags.map((tag) => tag.toLocaleLowerCase()))
     const nextTags = [...resource.tags]
     const addedTags: string[] = []
@@ -296,7 +308,8 @@ export async function addTagsPerResource(
           },
         ]
   })
-  if (mutations.length) await storage.saveMany(mutations.map((mutation) => mutation.resource))
+  for (const { resource } of mutations)
+    await storage.update(resource.id, { tags: resource.tags, updatedAt: now })
   const entries = mutations.map((mutation) => mutation.entry)
   return {
     resourceCount: entries.length,
@@ -349,48 +362,41 @@ export async function undoAddedTags(
 }
 
 export async function deleteResource(storage: ResourceStorageAdapter, id: string): Promise<void> {
-  const summaries = await storage.listSummaries()
-  const affectedIds = summaries
-    .filter((resource) => getRelatedResourceIds(resource).includes(id))
-    .map((resource) => resource.id)
-  const affected = await Promise.all(affectedIds.map((resourceId) => storage.get(resourceId)))
+  const summaries = storage.listResourceListSummaries
+    ? await storage.listResourceListSummaries()
+    : await storage.listSummaries()
+  const affected = summaries.filter((resource) => getRelatedResourceIds(resource).includes(id))
   const now = Date.now()
-  const changed = affected.flatMap((resource) => {
-    if (!resource) return []
-    return [
-      {
-        ...resource,
-        relatedResourceIds: getRelatedResourceIds(resource).filter((relatedId) => relatedId !== id),
-        updatedAt: now,
-      },
-    ]
-  })
-  if (changed.length) await storage.saveMany(changed)
+  for (const resource of affected)
+    await storage.update(resource.id, {
+      relatedResourceIds: getRelatedResourceIds(resource).filter((relatedId) => relatedId !== id),
+      updatedAt: now,
+    })
   await storage.delete(id)
 }
 
-export async function deleteMany(storage: ResourceStorageAdapter, ids: string[]): Promise<void> {
+export async function deleteMany(
+  storage: ResourceStorageAdapter,
+  ids: string[],
+  onProgress?: (progress: { completed: number; total: number }) => void,
+): Promise<void> {
   if (!ids.length) return
+  // Surface the destructive phase before relation cleanup and the IndexedDB
+  // transaction start; Web storage cannot report progress inside that transaction.
+  onProgress?.({ completed: 0, total: ids.length })
   const deletedIds = new Set(ids)
-  const summaries = await storage.listSummaries()
-  const affectedIds = summaries.flatMap((resource) => {
-    if (deletedIds.has(resource.id)) return []
-    return getRelatedResourceIds(resource).some((relatedId) => deletedIds.has(relatedId))
-      ? [resource.id]
-      : []
-  })
-  const affected = await Promise.all(affectedIds.map((resourceId) => storage.get(resourceId)))
+  const summaries = storage.listResourceListSummaries
+    ? await storage.listResourceListSummaries()
+    : await storage.listSummaries()
   const now = Date.now()
-  const changed = affected.flatMap((resource) => {
-    if (!resource) return []
+  for (const resource of summaries) {
+    if (deletedIds.has(resource.id)) continue
     const currentRelatedIds = getRelatedResourceIds(resource)
     const relatedResourceIds = currentRelatedIds.filter((relatedId) => !deletedIds.has(relatedId))
-    return relatedResourceIds.length === currentRelatedIds.length
-      ? []
-      : [{ ...resource, relatedResourceIds, updatedAt: now }]
-  })
-  if (changed.length) await storage.saveMany(changed)
-  await storage.deleteMany(ids)
+    if (relatedResourceIds.length !== currentRelatedIds.length)
+      await storage.update(resource.id, { relatedResourceIds, updatedAt: now })
+  }
+  await storage.deleteMany(ids, onProgress)
 }
 
 /** 同内容副本的组织信息归并；成功写入保留项后沿用 Service 删除入口清理反向关联。 */

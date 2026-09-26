@@ -17,19 +17,41 @@ import {
   type StoredResource,
   type StoredResourceSummary,
 } from '../types/Vault'
-import type { ArchiveStorageAdapter } from './ArchiveStorageAdapter'
+import type { ArchiveRestoreProgress, ArchiveStorageAdapter } from './ArchiveStorageAdapter'
 import type { StagedArchiveRecord } from '../types/RestoreStaging'
 import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 import { linkNativeResourceObjects } from './NativeResourceFileMirror'
 
-async function detachStoredBlob(blob: Blob): Promise<Blob> {
+async function detachStoredBlob(
+  blob: Blob,
+  onProgress?: (transferredBytes: number, totalBytes: number) => void,
+): Promise<Blob> {
   // Use the browser's local Blob loader. Response(blob.stream()) can stall in WebKit
   // when copying a large IDB-backed file while its write transaction is active.
   const url = URL.createObjectURL(blob)
   try {
     const response = await fetch(url)
     if (!response.ok) throw new Error('无法读取恢复暂存原文件')
-    const detached = await response.blob()
+    const reader = response.body?.getReader()
+    let detached: Blob
+    if (!reader) {
+      detached = await response.blob()
+      onProgress?.(blob.size, blob.size)
+    } else {
+      const chunks: ArrayBuffer[] = []
+      let transferredBytes = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
+        const chunk = new ArrayBuffer(value.byteLength)
+        new Uint8Array(chunk).set(value)
+        chunks.push(chunk)
+        transferredBytes += value.byteLength
+        onProgress?.(transferredBytes, blob.size)
+      }
+      detached = new Blob(chunks, { type: blob.type })
+    }
     if (detached.size !== blob.size) throw new Error('恢复暂存原文件读取不完整')
     return detached.slice(0, detached.size, blob.type)
   } finally {
@@ -77,8 +99,9 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     resources: Resource[],
     versions: Resource[] = [],
     hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void> {
-    await this.writeResources(categories, resources, versions, hydrate)
+    await this.writeResources(categories, resources, versions, hydrate, false, onProgress)
   }
 
   private async writeResources(
@@ -87,6 +110,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     versions: Resource[],
     hydrate: (resource: Resource) => Promise<Resource>,
     replace = false,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void> {
     await this.restoreStaged(
       categories,
@@ -103,6 +127,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
       },
       undefined,
       replace,
+      onProgress,
     )
   }
 
@@ -113,6 +138,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     hydrate: (resource: NativeBackedResourceRecord) => Promise<NativeBackedResourceRecord> = async (
       resource,
     ) => resource,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void> {
     if (!this.canRestoreNative()) {
       throw new Error('资源库保险箱开启时不能保存 Android 原生明文引用')
@@ -133,6 +159,8 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
           ...resources.map((resource) => nativeLinkRecord(resource, 'current')),
           ...versions.map((resource) => nativeLinkRecord(resource, 'versions')),
         ]),
+      false,
+      onProgress,
     )
   }
 
@@ -143,6 +171,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     prepare: (resource: T) => Promise<StagedArchiveRecord>,
     beforeCommit?: () => Promise<unknown>,
     replace = false,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void> {
     const storedCategories = this.vault
       ? await Promise.all(categories.map((category) => this.vault!.encodeCategory(category)))
@@ -150,11 +179,23 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     const jobId = crypto.randomUUID()
     try {
       // Release each hydrated body after IndexedDB has cloned it. The plan stays lightweight.
+      const total = resources.length + versions.length
+      const totalBytes = [...resources, ...versions].reduce(
+        (sum, resource) => sum + Math.max(0, resource.fileSize),
+        0,
+      )
+      let prepared = 0
       for (const [scope, records] of [
         ['current', resources],
         ['versions', versions],
       ] as const) {
         for (let index = 0; index < records.length; index++) {
+          onProgress?.({
+            phase: 'prepare',
+            completed: prepared,
+            total,
+            fileName: records[index]!.fileName,
+          })
           const record = await prepare(records[index]!)
           await this.database.restoreStaging.put({
             jobId,
@@ -163,6 +204,13 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
             sha256: records[index]!.contentHash,
             updatedAt: Date.now(),
             record,
+          })
+          prepared += 1
+          onProgress?.({
+            phase: 'prepare',
+            completed: prepared,
+            total,
+            fileName: records[index]!.fileName,
           })
         }
       }
@@ -189,11 +237,19 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
           }
           if (storedCategories.length) await this.database.categories.bulkPut(storedCategories)
           // Keep the final indexes atomic, including detaching staged file backing below.
+          let committed = 0
+          let committedBytes = 0
           for (const [scope, records] of [
             ['current', resources],
             ['versions', versions],
           ] as const) {
             for (let index = 0; index < records.length; index++) {
+              onProgress?.({
+                phase: 'commit',
+                completed: committed,
+                total,
+                fileName: records[index]!.fileName,
+              })
               const staged = await this.database.restoreStaging.get([jobId, `${scope}/${index}`])
               const record = staged?.record
               if (!record) throw new Error('恢复暂存记录缺失，已取消索引提交')
@@ -204,7 +260,16 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
                 // WebKit can keep the source IDB file path when cloning a stored Blob. Clearing
                 // staging then breaks the final record. Read a fresh body without arrayBuffer.
                 record.resource.originalBlob = await Dexie.waitFor(
-                  detachStoredBlob(record.resource.originalBlob),
+                  detachStoredBlob(record.resource.originalBlob, (transferredBytes) => {
+                    onProgress?.({
+                      phase: 'commit',
+                      completed: committed,
+                      total,
+                      fileName: records[index]!.fileName,
+                      transferredBytes: committedBytes + transferredBytes,
+                      totalBytes,
+                    })
+                  }),
                 )
               }
               if (scope === 'current') {
@@ -216,6 +281,16 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
                 await this.database.resourceVersionSummaries.put(toStoredSummary(record.resource))
               }
               await this.database.restoreStaging.delete([jobId, `${scope}/${index}`])
+              committed += 1
+              committedBytes += records[index]!.fileSize
+              onProgress?.({
+                phase: 'commit',
+                completed: committed,
+                total,
+                fileName: records[index]!.fileName,
+                transferredBytes: committedBytes,
+                totalBytes,
+              })
             }
           }
         },
@@ -245,8 +320,9 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     resources: Resource[],
     versions: Resource[] = [],
     hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void> {
-    await this.writeResources(categories, resources, versions, hydrate, true)
+    await this.writeResources(categories, resources, versions, hydrate, true, onProgress)
   }
 }
 

@@ -50,6 +50,22 @@ export class CommunitySourceRestoreService extends RestoreService {
     )
     return {
       ...prepared,
+      forReplacement: prepared.forReplacement
+        ? async () => {
+            const replacement = await prepared.forReplacement!()
+            return {
+              ...replacement,
+              communitySourceData: replacement.communitySourceData
+                ? sanitizeCommunitySourceAttachmentRefs(
+                    replacement.communitySourceData,
+                    availableAssetIds,
+                  )
+                : undefined,
+              communitySourceAttachments: attachments,
+              preview: { ...replacement.preview, communityAttachmentCount: attachments.length },
+            }
+          }
+        : undefined,
       communitySourceData,
       communitySourceAttachments: attachments,
       preview: {
@@ -71,11 +87,14 @@ export class CommunitySourceRestoreService extends RestoreService {
     }
   }
 
-  override async replace(prepared: PreparedRestore): Promise<RestoreReport> {
+  override async replace(
+    prepared: PreparedRestore,
+    onProgress?: Parameters<RestoreService['replace']>[1],
+  ): Promise<RestoreReport> {
     if (prepared.communitySourceAttachments?.length && this.attachmentRestore) {
       await this.attachmentRestore(prepared.communitySourceAttachments)
     }
-    const report = await super.replace(prepared)
+    const report = await super.replace(prepared, onProgress)
     return {
       ...report,
       restoredCommunityAttachments: prepared.communitySourceAttachments?.length,

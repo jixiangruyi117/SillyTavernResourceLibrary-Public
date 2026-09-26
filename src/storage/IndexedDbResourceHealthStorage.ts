@@ -653,7 +653,7 @@ export class IndexedDbResourceHealthStorage {
       result.localSnapshotBytes += record.blob?.size ?? 0
     })
     await this.database.restoreStagingChunks.toCollection().each((record) => {
-      result.restoreStagingBytes += record.blob.size
+      result.restoreStagingBytes += record.data?.byteLength ?? record.blob?.size ?? 0
     })
     await this.database.assets.toCollection().each((record) => {
       result.assetBytes += record.size

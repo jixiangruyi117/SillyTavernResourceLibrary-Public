@@ -3,6 +3,8 @@ import type { RestoreStagingStore } from '../storage/RestoreStagingStore'
 import { isRecord } from '../utils/UnknownValue'
 import { isUnmodifiedSillyTavernDefault } from './SillyTavernDefaultContent'
 import { isSillyTavernSeededPath, parseSillyTavernContentLog } from './SillyTavernContentLog'
+import { parsePersonalResource } from '../types/PersonalResource'
+import type { ArchiveStageProgress } from './ArchiveExtraction'
 
 const TAVERN_RESOURCE_DIRECTORIES = new Set([
   'characters',
@@ -17,8 +19,7 @@ const TAVERN_RESOURCE_DIRECTORIES = new Set([
   'scripts',
 ])
 
-const TAVERN_STRUCTURE_DIRECTORIES = new Set([
-  ...TAVERN_RESOURCE_DIRECTORIES,
+const TAVERN_NON_RESOURCE_DIRECTORIES = new Set([
   'chats',
   'group chats',
   'groups',
@@ -41,9 +42,16 @@ function isSettingsPath(path: string): boolean {
   return /(^|\/)settings\.json$/i.test(path) && !path.toLowerCase().includes('backups/')
 }
 
-function isTavernStructurePath(path: string): boolean {
+function isOrdinaryResourcePath(path: string): boolean {
   const parts = path.toLowerCase().split('/')
-  return isSettingsPath(path) || parts.some((part) => TAVERN_STRUCTURE_DIRECTORIES.has(part))
+  const name = parts.at(-1) ?? ''
+  return (
+    /\.(png|json|css|txt)$/i.test(name) &&
+    !['manifest.json', 'srl-resource.json', 'settings.json', 'content.log'].includes(name) &&
+    !parts.some((part) =>
+      ['backups', 'secrets.json', 'config.yaml', '.git', '__macosx'].includes(part),
+    )
+  )
 }
 
 function fileMimeType(name: string): string {
@@ -63,37 +71,119 @@ export class ResourceArchiveService {
     this.staging = staging
   }
 
-  async inspect(file: File): Promise<'library' | 'personal' | 'tavern'> {
-    let tavern = false
-    const job = await stageArchive(file, this.staging, (path) => {
-      tavern ||= isResourcePath(path) || isSettingsPath(path)
-      return path === 'manifest.json' || path === 'srl-resource.json'
-    })
+  async inspect(
+    file: File,
+    onProgress?: (progress: ArchiveStageProgress) => void,
+  ): Promise<'library' | 'personal' | 'tavern' | 'resources'> {
+    return (await this.readArchive(file, onProgress, false)).kind
+  }
+
+  async readResourceArchive(
+    file: File,
+    onProgress?: (progress: ArchiveStageProgress) => void,
+  ): Promise<{ kind: 'library' | 'personal' | 'tavern' | 'resources'; files: File[] }> {
+    return this.readArchive(file, onProgress, true)
+  }
+
+  private async readArchive(
+    file: File,
+    onProgress: ((progress: ArchiveStageProgress) => void) | undefined,
+    materialize: boolean,
+  ): Promise<{ kind: 'library' | 'personal' | 'tavern' | 'resources'; files: File[] }> {
+    let settingsFound = false
+    const structureDirectories = new Set<string>()
+    const resourcePaths: string[] = []
+    const job = await stageArchive(
+      file,
+      this.staging,
+      (path) => {
+        if (isSettingsPath(path)) settingsFound = true
+        const parts = path.toLowerCase().split('/')
+        const directory = parts.find((part) => TAVERN_NON_RESOURCE_DIRECTORIES.has(part))
+        if (directory) structureDirectories.add(directory)
+        if (isOrdinaryResourcePath(path)) resourcePaths.push(path)
+        return (
+          path === 'manifest.json' ||
+          path === 'srl-resource.json' ||
+          (materialize && isOrdinaryResourcePath(path))
+        )
+      },
+      onProgress,
+    )
     try {
       const personal = await this.staging.get(job, 'srl-resource.json')
-      if (personal) return 'personal'
-      const manifest = await this.staging.get(job, 'manifest.json')
-      if (manifest && manifest.size < 32 * 1024 * 1024) {
-        const value: unknown = JSON.parse(await manifest.blob.text())
-        if (isRecord(value) && value.format === 'srl-archive') return 'library'
+      if (personal) {
+        if (personal.size > 2 * 1024 * 1024) throw new Error('个人资源包清单超过 2 MB')
+        try {
+          parsePersonalResource(JSON.parse(await personal.blob.text()))
+        } catch (error) {
+          throw new Error(
+            `压缩包内的个人资源清单无效：${error instanceof Error ? error.message : 'JSON 格式错误'}`,
+            { cause: error },
+          )
+        }
+        return { kind: 'personal', files: [] }
       }
-      if (tavern) return 'tavern'
-      throw new Error('未识别到资源库备份或酒馆资源目录；请检查压缩包内容')
+      const manifest = await this.staging.get(job, 'manifest.json')
+      if (manifest) {
+        // SRL exports write `format` first. Large libraries can have manifests
+        // over 32 MiB; inspect only the prefix so they are not mistaken for a
+        // Tavern ZIP just because they also contain characters/ or worlds/ paths.
+        const prefix = await manifest.blob.slice(0, 4096).text()
+        if (/^\s*\{\s*"format"\s*:\s*"srl-archive"\s*(?:,|\})/u.test(prefix))
+          return { kind: 'library', files: [] }
+        if (manifest.size < 32 * 1024 * 1024) {
+          const value: unknown = JSON.parse(await manifest.blob.text())
+          if (isRecord(value) && value.format === 'srl-archive')
+            return { kind: 'library', files: [] }
+        }
+      }
+      // Settings or Tavern-only paths such as chats/ identify a Tavern backup.
+      // A lone characters/ or worlds/ folder is a common ordinary resource
+      // bundle and must remain on the ordinary import path.
+      if (settingsFound || structureDirectories.size > 0) return { kind: 'tavern', files: [] }
+      if (resourcePaths.length) {
+        if (!materialize) return { kind: 'resources', files: [] }
+        const files: File[] = []
+        for (const path of resourcePaths) {
+          const entry = await this.staging.get(job, path)
+          if (!entry) throw new Error('压缩包暂存文件不完整')
+          files.push(
+            new File([entry.blob], path.split('/').at(-1)!, {
+              type: fileMimeType(path),
+            }),
+          )
+        }
+        return { kind: 'resources', files }
+      }
+      throw new Error('未识别到资源库备份、酒馆备份或可导入资源；请检查压缩包内容')
     } finally {
       await this.staging.deleteJob(job)
     }
   }
 
-  async validateTavernBackup(file: File): Promise<void> {
-    let structureHits = 0
+  async validateTavernBackup(
+    file: File,
+    onProgress?: (progress: ArchiveStageProgress) => void,
+  ): Promise<void> {
+    const structureDirectories = new Set<string>()
     let settingsFound = false
-    const job = await stageArchive(file, this.staging, (path) => {
-      if (isSettingsPath(path)) settingsFound = true
-      if (isTavernStructurePath(path)) structureHits++
-      return false
-    })
+    const job = await stageArchive(
+      file,
+      this.staging,
+      (path) => {
+        if (isSettingsPath(path)) settingsFound = true
+        const directory = path
+          .toLowerCase()
+          .split('/')
+          .find((part) => TAVERN_NON_RESOURCE_DIRECTORIES.has(part))
+        if (directory) structureDirectories.add(directory)
+        return false
+      },
+      onProgress,
+    )
     try {
-      if (!settingsFound && structureHits < 2) {
+      if (!settingsFound && structureDirectories.size === 0) {
         throw new Error(
           '未识别到受支持的 SillyTavern 备份结构。请选择酒馆备份 ZIP；普通资源压缩包请使用“导入本地资源 / 备份”。',
         )
@@ -103,18 +193,38 @@ export class ResourceArchiveService {
     }
   }
 
-  async *tavernFiles(file: File): AsyncGenerator<File> {
-    await this.validateTavernBackup(file)
+  async *tavernFiles(
+    file: File,
+    onProgress?: (progress: ArchiveStageProgress) => void,
+  ): AsyncGenerator<File> {
     const paths: string[] = []
     let contentLogPath: string | undefined
-    const job = await stageArchive(file, this.staging, (path) => {
-      const include = isResourcePath(path) || isSettingsPath(path)
-      if (include) paths.push(path)
-      const isContentLog = /(?:^|\/)content\.log$/iu.test(path)
-      if (!contentLogPath && isContentLog) contentLogPath = path
-      return include || isContentLog
-    })
+    const structureDirectories = new Set<string>()
+    let settingsFound = false
+    const job = await stageArchive(
+      file,
+      this.staging,
+      (path) => {
+        if (isSettingsPath(path)) settingsFound = true
+        const directory = path
+          .toLowerCase()
+          .split('/')
+          .find((part) => TAVERN_NON_RESOURCE_DIRECTORIES.has(part))
+        if (directory) structureDirectories.add(directory)
+        const include = isResourcePath(path) || isSettingsPath(path)
+        if (include) paths.push(path)
+        const isContentLog = /(?:^|\/)content\.log$/iu.test(path)
+        if (!contentLogPath && isContentLog) contentLogPath = path
+        return include || isContentLog
+      },
+      onProgress,
+    )
     try {
+      if (!settingsFound && structureDirectories.size === 0) {
+        throw new Error(
+          '未识别到受支持的 SillyTavern 备份结构。请选择酒馆备份 ZIP；普通资源压缩包请使用“导入本地资源 / 备份”。',
+        )
+      }
       let seededPaths = new Set<string>()
       if (contentLogPath) {
         const contentLog = await this.staging.get(job, contentLogPath)

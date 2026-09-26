@@ -34,6 +34,12 @@ const {
   customPrompt,
   batchSize,
   AI_TAGGING_MAX_BATCH_SIZE,
+  ruleTemplates,
+  ruleTemplateName,
+  selectedRuleTemplateId,
+  applyRuleTemplate,
+  saveRuleTemplate,
+  deleteRuleTemplate,
   taxonomyTemplateId,
   AI_TAGGING_TAXONOMY_TEMPLATES,
   activeTaxonomyTemplate,
@@ -72,6 +78,11 @@ const {
   acceptedTagCount,
 } = controller
 const profiles = toRef(controller, 'profiles')
+
+function selectRuleTemplate(event: Event): void {
+  const target = event.target
+  if (target instanceof HTMLSelectElement) applyRuleTemplate(target.value)
+}
 </script>
 
 <template>
@@ -195,6 +206,33 @@ const profiles = toRef(controller, 'profiles')
               <textarea v-model="customPrompt" maxlength="4000" rows="5"></textarea>
               <small>{{ customPrompt.length }} / 4000</small>
             </label>
+            <div class="ai-tagging__rule-templates">
+              <label class="ai-tagging__field">
+                <span>已保存标签规范</span>
+                <select v-model="selectedRuleTemplateId" @change="selectRuleTemplate">
+                  <option value="">选择本机模板</option>
+                  <option v-for="template in ruleTemplates" :key="template.id" :value="template.id">
+                    {{ template.name }}
+                  </option>
+                </select>
+              </label>
+              <label class="ai-tagging__field">
+                <span>规范名称</span>
+                <input
+                  v-model="ruleTemplateName"
+                  type="text"
+                  maxlength="80"
+                  placeholder="如：古风剧情卡"
+                />
+              </label>
+              <div class="ai-tagging__template-actions">
+                <button type="button" @click="saveRuleTemplate">保存当前规范</button>
+                <button v-if="selectedRuleTemplateId" type="button" @click="deleteRuleTemplate">
+                  删除模板
+                </button>
+              </div>
+              <small>会保存上方识别规则及下方标签规范选项；只在本机保存，不包含 API 或密钥。</small>
+            </div>
             <label class="ai-tagging__field ai-tagging__field--batch">
               <span>每批资源数</span>
               <input
@@ -229,7 +267,9 @@ const profiles = toRef(controller, 'profiles')
                 />
                 <span
                   ><strong>合并模板别名</strong
-                  ><small>只规范本次 AI 建议，不改写已有标签；自由标签仍会保留。</small></span
+                  ><small
+                    >把本次建议里的同义词统一成模板写法，例如“百合”→“GL”；不会改写已有标签。</small
+                  ></span
                 >
               </label>
             </div>

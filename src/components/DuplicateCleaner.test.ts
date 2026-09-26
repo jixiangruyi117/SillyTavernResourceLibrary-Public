@@ -5,6 +5,7 @@ import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
 
 const api = vi.hoisted(() => ({
   confirm: vi.fn(),
+  choose: vi.fn(),
   capture: vi.fn(),
   merge: vi.fn(),
   source: vi.fn(),
@@ -17,7 +18,10 @@ vi.mock('../core/AppContainer', () => ({
   categoryService: { list: api.categories },
 }))
 vi.mock('../services/ExportService', () => ({ createResourceArchiveSource: api.source }))
-vi.mock('../composables/UseConfirmDialog', () => ({ confirmAction: api.confirm }))
+vi.mock('../composables/UseConfirmDialog', () => ({
+  confirmAction: api.confirm,
+  chooseAction: api.choose,
+}))
 import DuplicateCleaner from './DuplicateCleaner.vue'
 
 const resources = [
@@ -46,12 +50,13 @@ describe('DuplicateCleaner avatar cleanup', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     api.confirm.mockResolvedValue(true)
+    api.choose.mockResolvedValue('confirm')
     api.capture.mockResolvedValue({ id: 'recovery' })
     api.source.mockResolvedValue({ resources: [], versions: [], readResource: vi.fn() })
     api.categories.mockResolvedValue([])
     api.merge.mockResolvedValue(1)
   })
-  it('shows hidden attachments and snapshots before the confirmed cleanup', async () => {
+  it('shows hidden attachments and creates a snapshot only when selected', async () => {
     const view = mount(DuplicateCleaner, { props: { resources } })
     expect(view.text()).toContain('人设头像附件')
     await view.get('.duplicate-cleaner__clean').trigger('click')
@@ -75,7 +80,7 @@ describe('DuplicateCleaner avatar cleanup', () => {
     view.unmount()
   })
   it('cancellation neither snapshots nor deletes', async () => {
-    api.confirm.mockResolvedValue(false)
+    api.choose.mockResolvedValue('cancel')
     const view = mount(DuplicateCleaner, { props: { resources } })
     await view.get('.duplicate-cleaner__clean').trigger('click')
     await flushPromises()

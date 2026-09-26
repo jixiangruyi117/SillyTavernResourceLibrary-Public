@@ -3,6 +3,7 @@ import type { Resource, ResourceListSummary, ResourceSummary } from '../types/Re
 import {
   isAndroidNativeResourceMirrorAvailable,
   removeNativeResourceFile,
+  removeNativeResourceFiles,
   stageNativeResourceFile,
   type NativeMirrorHandle,
 } from './NativeResourceFileMirror'
@@ -164,14 +165,28 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
     })
   }
 
-  async deleteMany(ids: string[]): Promise<void> {
+  async deleteMany(
+    ids: string[],
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void> {
     await this.enqueueMutation(async () => {
-      const versions = await Promise.all(ids.map((id) => this.delegate.listVersions(id)))
-      await this.delegate.deleteMany(ids)
-      for (const id of ids) await removeNativeResourceFile(id, 'current')
-      for (const version of versions.flat()) {
-        await removeNativeResourceFile(version.id, 'versions')
-      }
+      const selected = new Set(ids)
+      const versionResources = (await this.listVersionListSummaries()).filter(
+        (version) => version.versionGroupId && selected.has(version.versionGroupId),
+      )
+      const fileCount = ids.length + versionResources.length
+      const total = fileCount * 2
+      await this.delegate.deleteMany(ids, (progress) => {
+        onProgress?.({ completed: Math.min(fileCount, progress.completed), total })
+      })
+      onProgress?.({ completed: fileCount, total })
+      await removeNativeResourceFiles(
+        [
+          ...ids.map((id) => ({ id, scope: 'current' as const })),
+          ...versionResources.map(({ id }) => ({ id, scope: 'versions' as const })),
+        ],
+        (completed) => onProgress?.({ completed: fileCount + completed, total }),
+      )
     })
   }
 

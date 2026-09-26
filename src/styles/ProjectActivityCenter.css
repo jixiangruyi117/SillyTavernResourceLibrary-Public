@@ -1,13 +1,20 @@
 .activity-center {
+  --activity-offset: min(
+    var(--activity-bottom, var(--bottom-notice-offset)),
+    calc(var(--app-viewport-height, 100dvh) * 0.4)
+  );
   position: fixed;
-  z-index: 1180;
+  /* Above library chrome (20), below resource/editor dialogs (24+). */
+  z-index: 21;
   right: max(0.75rem, var(--safe-right));
-  bottom: var(--bottom-notice-offset);
+  bottom: var(--activity-offset);
   width: min(24rem, calc(100vw - 1.5rem));
   color: var(--color-ink);
+  pointer-events: none;
 }
 
 .activity-center__trigger {
+  pointer-events: auto;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.55rem;
@@ -57,17 +64,101 @@
 }
 
 .activity-center__panel {
+  pointer-events: auto;
   position: absolute;
   right: 0;
   bottom: calc(100% + 0.55rem);
   width: 100%;
-  max-height: min(34rem, calc(var(--app-viewport-height) - 8rem));
+  max-height: min(
+    34rem,
+    calc(var(--app-viewport-height, 100dvh) - var(--activity-offset) - 4rem - var(--safe-top, 0px))
+  );
   overflow: auto;
   padding: 0.8rem;
   border: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
   border-radius: 1rem;
   background: var(--color-surface);
   box-shadow: 0 1.2rem 3rem var(--color-shadow);
+}
+
+.activity-center__focused-progress {
+  position: fixed;
+  z-index: 19;
+  top: calc(var(--app-viewport-height, 100dvh) / 2);
+  left: 50%;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 0.85rem 1rem 0.75rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 34%, var(--color-line));
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  box-shadow: 0 1rem 3rem var(--color-shadow);
+  color: inherit;
+  pointer-events: none;
+  backdrop-filter: blur(18px);
+}
+
+.activity-center__focused-progress > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.activity-center__focused-progress > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-center__focused-progress > header > span:last-child {
+  color: var(--color-ink-soft);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.activity-center__focused-progress progress {
+  display: block;
+  width: 100%;
+  height: 0.42rem;
+  margin-top: 0.7rem;
+  accent-color: var(--color-accent);
+}
+
+.activity-center__focused-progress p {
+  margin: 0.45rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.activity-center__focused-progress small {
+  display: block;
+  margin-top: 0.28rem;
+  color: var(--color-ink-soft);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.activity-center__focused-progress .activity-center__focused-waiting {
+  color: var(--color-warning);
+}
+
+.activity-center--inline {
+  position: static;
+  z-index: auto;
+  width: 100%;
+  margin: 0.75rem 0;
+}
+
+.activity-center--inline .activity-center__focused-progress {
+  position: static;
+  width: 100%;
+  transform: none;
+  box-shadow: none;
 }
 
 .activity-center__panel > header,
@@ -155,6 +246,19 @@
   accent-color: var(--color-accent);
 }
 
+.activity-card__elapsed {
+  display: block;
+  margin-top: 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-card__waiting {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--color-warning);
+  line-height: 1.4;
+}
+
 .activity-card p {
   margin: 0.45rem 0 0;
   color: var(--color-danger);
@@ -178,7 +282,7 @@
 }
 
 @media (max-width: 53.75rem) {
-  .activity-center {
+  .activity-center:not(.activity-center--inline) {
     right: 0.65rem;
     width: min(22rem, calc(100vw - 1.3rem));
   }

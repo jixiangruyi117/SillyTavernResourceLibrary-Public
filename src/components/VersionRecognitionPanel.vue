@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 
-import { confirmAction } from '../composables/UseConfirmDialog'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { categoryService, historyService, resourceService } from '../core/AppContainer'
 import {
   buildStoredVersionRecognitionReport,
@@ -159,21 +159,16 @@ async function mergeSelected(): Promise<void> {
   if (!selectedGroups.value.length || busy.value) return
   const confirmed = await confirmAction({
     title: '并入跨资源版本',
-    message: `将处理 ${selectedGroups.value.length} 组资源，把 ${selectedSourceCount.value} 个独立资源并入所选保留项的历史时间线。来源记录会从当前资源列表移出，原文件及已有历史会保留在目标时间线。\n\n只使用完整卡指纹、核心指纹或稳定来源 ID 等强证据；开始前会自动创建本地快照。确定继续吗？`,
+    message: `将处理 ${selectedGroups.value.length} 组资源，把 ${selectedSourceCount.value} 个独立资源并入所选保留项的历史时间线。来源记录会从当前资源列表移出，原文件及已有历史会保留在目标时间线。\n\n只使用完整卡指纹、核心指纹或稳定来源 ID 等强证据。`,
     confirmLabel: '开始并入',
     centered: true,
   })
   if (!confirmed) return
 
   busy.value = true
-  message.value = '正在创建快照并整理版本…'
+  message.value = '正在整理版本…'
   let merged = 0
   try {
-    await historyService.capture(
-      await resourceService.list(),
-      await categoryService.list(),
-      '批量版本重识别前自动快照',
-    )
     for (const group of selectedGroups.value) {
       const keeperId = keeperOf(group)
       for (const resource of group.resources) {
@@ -193,7 +188,7 @@ async function mergeSelected(): Promise<void> {
     emit('library-changed')
   } catch (error) {
     message.value = `${error instanceof Error ? error.message : '版本重识别失败'}${
-      merged ? `；中断前已完成 ${merged} 个，可从刚创建的快照恢复。` : ''
+      merged ? `；中断前已完成 ${merged} 个，原文件仍保留在版本时间线。` : ''
     }`
     if (merged) emit('library-changed')
   } finally {
@@ -212,25 +207,29 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
     .filter((group) => group.versionIds.length > 0)
   const selectedCount = selectedByOwner.reduce((total, group) => total + group.versionIds.length, 0)
   if (!selectedCount || busy.value) return
-  const confirmed = await confirmAction({
+  const choice = await chooseAction({
     title: '删除已存历史版本',
-    message: `将从 ${selectedByOwner.length} 条资源时间线删除 ${selectedCount} 个已存历史版本。当前版本不会删除。操作前会自动创建本地快照，可通过该快照恢复。确定继续吗？`,
-    confirmLabel: '删除所选历史版本',
+    message: `将从 ${selectedByOwner.length} 条资源时间线永久删除 ${selectedCount} 个已存历史版本。当前版本不会删除。整库快照可能很大，请选择是否额外创建。`,
+    confirmLabel: '创建完整快照并删除',
+    alternativeLabel: '不建快照，直接删除',
+    cancelLabel: '取消',
     danger: true,
     centered: true,
   })
-  if (!confirmed) return
+  if (choice === 'cancel') return
 
   busy.value = true
-  message.value = '正在创建快照并删除所选历史版本…'
+  message.value = choice === 'confirm' ? '正在创建快照并删除所选历史版本…' : '正在删除所选历史版本…'
   let deleted = 0
   let deletionStarted = false
   try {
-    await historyService.capture(
-      await resourceService.list(),
-      await categoryService.list(),
-      '清理已存历史版本前自动快照',
-    )
+    if (choice === 'confirm') {
+      await historyService.capture(
+        await resourceService.list(),
+        await categoryService.list(),
+        '清理已存历史版本前用户选择的完整快照',
+      )
+    }
     for (const group of selectedByOwner) {
       deletionStarted = true
       deleted += await resourceService.deleteVersions(group.ownerId, group.versionIds)
@@ -243,7 +242,7 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
   } catch (error) {
     message.value = `${error instanceof Error ? error.message : '历史版本清理失败'}${
       deletionStarted
-        ? `；已重新读取资源状态，请核对结果${deleted ? `（已确认删除 ${deleted} 个）` : ''}；可从刚创建的快照恢复。`
+        ? `；已重新读取资源状态，请核对结果${deleted ? `（已确认删除 ${deleted} 个）` : ''}。`
         : ''
     }`
     if (deletionStarted) {

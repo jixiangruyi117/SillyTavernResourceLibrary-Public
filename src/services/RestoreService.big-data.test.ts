@@ -40,6 +40,10 @@ class CountingStagingStore implements RestoreStagingStore {
     this.metadata.set(`${entry.jobId}\0${entry.path}`, entry)
   }
 
+  async getMetadata(jobId: string, path: string): Promise<RestoreStagingMetadata | undefined> {
+    return this.metadata.get(`${jobId}\0${path}`)
+  }
+
   async get(jobId: string, path: string): Promise<RestoreStagingEntry | undefined> {
     const metadata = this.metadata.get(`${jobId}\0${path}`)
     if (!metadata || path !== 'manifest.json') return undefined

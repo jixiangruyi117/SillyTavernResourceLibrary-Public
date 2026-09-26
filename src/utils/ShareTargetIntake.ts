@@ -22,6 +22,7 @@ interface NativeSharedFile extends SharedFileMeta {
   /** 新原生壳返回应用私有暂存目录中的 file:// URI，避免 Base64 放大与多次内存复制。 */
   uri?: string
   cleanupToken?: string
+  route?: SharedImportRoute
 }
 
 interface ShareReceiverPlugin {
@@ -33,8 +34,11 @@ const shareReceiver = registerPlugin<ShareReceiverPlugin>('ShareReceiver')
 
 export interface SharedFileBatch {
   files: File[]
+  route?: SharedImportRoute
   acknowledge(): Promise<void>
 }
+
+export type SharedImportRoute = 'libraryBackup' | 'tavernBackup' | 'resource' | 'thirdPartyApp'
 
 function base64File(shared: NativeSharedFile & { data: string }): File {
   const binary = atob(shared.data)
@@ -68,6 +72,7 @@ async function takeNativeSharedFiles(): Promise<SharedFileBatch> {
   }
   return {
     files,
+    route: result.files?.find((shared) => shared.route)?.route,
     acknowledge: async () => {
       if (cleanupTokens.length) await shareReceiver.cleanupPendingShare({ tokens: cleanupTokens })
     },

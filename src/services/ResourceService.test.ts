@@ -5,6 +5,7 @@ import { PngResourceParser } from '../parser/PngResourceParser'
 import { ResourceParserRegistry } from '../parser/ResourceParser'
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
 import type { ParsedResource } from '../types/Import'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
   RESOURCE_INSTALL_TARGET,
   RESOURCE_LINK_PURPOSE,
@@ -271,6 +272,46 @@ describe('ResourceService', () => {
       expect((await service.list())[0]!.metadata.creator).toBe('原作者')
     },
   )
+  it('persists character-card content edit overlays in resource metadata without rewriting original bytes', async () => {
+    const { service } = createServiceWithStorage()
+    const file = new File(
+      [
+        JSON.stringify({
+          spec: 'chara_card_v3',
+          data: { name: 'Overlay Card', first_mes: 'Original greeting' },
+        }),
+      ],
+      'Overlay Card.json',
+      { type: 'application/json' },
+    )
+    await service.importFiles([file])
+    const resource = (await service.list())[0]!
+    const contentEdit: CharacterCardContentEdit = {
+      id: 'greeting-1',
+      section: 'greeting',
+      operation: 'update',
+      targetKey: 'primary',
+      label: '主开场白',
+      before: 'Original greeting',
+      after: 'Edited greeting',
+      migrateToVersions: true,
+      updatedAt: 1,
+    }
+    await service.updateDetails(resource, {
+      name: resource.name,
+      description: resource.description,
+      type: resource.type,
+      categoryIds: [],
+      relatedResourceIds: [],
+      tags: resource.tags,
+      sourceLinks: [],
+      characterContentEdits: [contentEdit],
+    })
+    const updated = (await service.get(resource.id))!
+
+    expect(updated.metadata.characterContentEdits).toEqual([contentEdit])
+    expect(await updated.originalBlob.text()).toBe(await resource.originalBlob.text())
+  })
   it('stores validated binary assets without routing them through the character-card parser', async () => {
     const { service } = createServiceWithStorage()
     const image = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])

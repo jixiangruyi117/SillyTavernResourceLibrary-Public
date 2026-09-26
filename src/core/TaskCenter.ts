@@ -8,11 +8,17 @@ export interface TaskTransferProgress {
   lastProgressAt: number
 }
 
+export interface TaskItemProgress {
+  completed: number
+  total: number
+}
+
 export interface TaskRecord {
   operationId: string
   name: string
   phase: string
   progress?: number
+  itemProgress?: TaskItemProgress
   transfer?: TaskTransferProgress
   cancelable: boolean
   retryable?: boolean
@@ -63,7 +69,7 @@ export class TaskCenter {
 
   update(
     operationId: string,
-    changes: Partial<Pick<TaskRecord, 'phase' | 'progress' | 'cancelable'>>,
+    changes: Partial<Pick<TaskRecord, 'phase' | 'progress' | 'itemProgress' | 'cancelable'>>,
   ): void {
     const task = this.tasks.get(operationId)
     if (!task || task.status !== 'running') return

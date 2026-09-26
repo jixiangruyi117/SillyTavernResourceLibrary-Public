@@ -3,6 +3,7 @@ import type { BackupRecord, Category, Resource } from '../types/Resource'
 import type { ArchiveSource, ExportService } from './ExportService'
 import type { RestoreService } from './RestoreService'
 import type { VaultService } from './VaultService'
+import { formatBytes } from '../utils/LibraryFormatting'
 
 const LOCAL_HISTORY_ADAPTER = 'local-history'
 const HISTORY_LIMIT_SETTING_ID = 'history.snapshotLimit'
@@ -15,6 +16,7 @@ const STORAGE_HARD_LIMIT_RATIO = 0.95
 interface SnapshotStorageBudget {
   maxHistoryBytes?: number
   remainingBeforeHardLimit?: number
+  estimatedQuotaBytes?: number
 }
 
 function normalizeSnapshotLimit(value: unknown): number {
@@ -106,7 +108,12 @@ export class HistoryService {
     }
     const storageBudget = await this.getStorageBudget()
     if (storageBudget.maxHistoryBytes !== undefined && blob.size > storageBudget.maxHistoryBytes) {
-      throw new Error('单个历史快照超过浏览器可安全分配的容量，请改用完整导出备份')
+      const quotaDescription = storageBudget.estimatedQuotaBytes
+        ? `（浏览器当前估算配额 ${formatBytes(storageBudget.estimatedQuotaBytes)} 的 20%）`
+        : ''
+      throw new Error(
+        `快照约 ${formatBytes(blob.size)}，超过本应用单份内部快照上限 ${formatBytes(storageBudget.maxHistoryBytes)}${quotaDescription}。这是应用的保护阈值，不是浏览器公布的固定容量；可取消快照后继续操作，或使用完整导出备份。`,
+      )
     }
     if (
       storageBudget.remainingBeforeHardLimit !== undefined &&
@@ -159,6 +166,7 @@ export class HistoryService {
       const estimate = await navigator.storage.estimate()
       if (!estimate.quota) return {}
       return {
+        estimatedQuotaBytes: estimate.quota,
         maxHistoryBytes: Math.floor(estimate.quota * HISTORY_QUOTA_RATIO),
         remainingBeforeHardLimit: Math.max(
           0,

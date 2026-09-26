@@ -31,15 +31,22 @@ import {
   readTavernHelperScriptBlob,
 } from '../utils/TavernHelperScriptParser'
 import { isRecord } from '../utils/UnknownValue'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
+import { applyCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
 
 export type CharacterCardDetailsProps = {
   metadata: Record<string, unknown>
   boundResources?: Resource[]
   overrides?: CharacterCardOverrides
+  contentEdits?: CharacterCardContentEdit[]
+  disabled?: boolean
 }
 
 export type CharacterCardDetailsEvents = {
   'update:overrides': [value: CharacterCardOverrides]
+  'update:contentEdits': [value: CharacterCardContentEdit[]]
+  'draft-change': [dirty: boolean]
+  'workbench-open': [open: boolean]
 }
 
 export type CharacterPage = 'overview' | 'greetings' | 'worldBook' | 'regex' | 'helper'
@@ -192,7 +199,11 @@ export function useCharacterCardDetails(
 
   const effectiveCard = computed(() =>
     card.value
-      ? applyCharacterCardOverrides(card.value, props.overrides, activeReplacementContent.value)
+      ? applyCharacterCardOverrides(
+          applyCharacterCardContentEdits(card.value, props.contentEdits ?? []).card,
+          props.overrides,
+          activeReplacementContent.value,
+        )
       : undefined,
   )
 
@@ -783,7 +794,9 @@ export function useCharacterCardDetails(
     if (index !== null) activeGreetingIndex.value = index
   })
   return {
+    sourceCard: card,
     cardData,
+    contentEdits: computed(() => props.contentEdits ?? []),
     activePage,
     creator,
     characterVersion,

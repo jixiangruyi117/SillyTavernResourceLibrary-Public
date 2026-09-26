@@ -4,6 +4,16 @@ import { resourceService } from '../core/AppContainer'
 import { confirmAction } from './UseConfirmDialog'
 import type { ResourceVersionView } from '../services/ResourceService'
 import type { Resource, ResourceSummary } from '../types/Resource'
+import { RESOURCE_TYPE } from '../types/Resource'
+import { isRecord } from '../utils/UnknownValue'
+import {
+  readCharacterCardContentEdits,
+  migrateCharacterCardContentEdits,
+} from '../utils/CharacterCardContentEdits'
+import {
+  migrateCharacterCardContentWithReview,
+  selectCharacterCardMigrationEdits,
+} from '../services/CharacterCardMigrationReview'
 
 interface ResourceVersionsContext {
   /** 详情页当前打开的资源，切换版本后就地替换。 */
@@ -35,12 +45,74 @@ export function useResourceVersions(context: ResourceVersionsContext) {
     if (!resource || context.isOrganizing.value) return
     context.isOrganizing.value = true
     try {
+      const selectedVersion = context.organizingVersions.value
+        .flatMap((view) => view.carriers ?? [view.resource])
+        .find((item) => item.id === versionId)
+      if (!selectedVersion) throw new Error('历史版本已经不存在')
+      let migratedEdits: ReturnType<typeof migrateCharacterCardContentEdits> | undefined
+      if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) {
+        const tracked = readCharacterCardContentEdits(
+          resource.metadata.characterContentEdits,
+        ).filter((edit) => edit.migrateToVersions)
+        const incoming = await selectCharacterCardMigrationEdits(
+          tracked,
+          selectedVersion.versionLabel ?? selectedVersion.fileName,
+        )
+        if (!incoming) return
+        if (incoming.length) {
+          const targetCard = isRecord(selectedVersion.metadata.card)
+            ? selectedVersion.metadata.card
+            : undefined
+          if (targetCard) {
+            const targetEdits = readCharacterCardContentEdits(
+              selectedVersion.metadata.characterContentEdits,
+            )
+            const reviewResult = await migrateCharacterCardContentWithReview(
+              targetCard,
+              targetEdits,
+              incoming,
+            )
+            if (!reviewResult) return
+            migratedEdits = reviewResult
+          } else {
+            migratedEdits = {
+              card: {},
+              edits: readCharacterCardContentEdits(selectedVersion.metadata.characterContentEdits),
+              conflicts: incoming,
+              alreadyPresent: [],
+              fieldConflicts: [],
+            }
+          }
+          if (migratedEdits.conflicts.length) {
+            const conflicts = migratedEdits.conflicts.map((edit) => `• ${edit.label}`).join('\n')
+            const keepSwitching = await confirmAction({
+              title: '部分修改与新版冲突',
+              message: `以下修改不会写入新版：\n${conflicts}\n\n仍要切换到这个版本吗？未迁移的修改仍留在上一版本记录中。`,
+              confirmLabel: '切换并保留新版内容',
+              cancelLabel: '取消切换',
+            })
+            if (!keepSwitching) return
+          }
+        }
+      }
       context.organizingResource.value = await resourceService.activateVersion(
         resource.id,
         versionId,
       )
+      if (migratedEdits)
+        context.organizingResource.value = await resourceService.updateMetadata(resource.id, {
+          characterContentEdits: migratedEdits.edits,
+        })
       await reloadVersionState(resource.id)
-      context.showNotice('已切换当前展示版本，刚才的版本已收入历史')
+      const migratedCount = migratedEdits
+        ? migratedEdits.edits.length -
+          readCharacterCardContentEdits(selectedVersion.metadata.characterContentEdits).length
+        : 0
+      context.showNotice(
+        migratedEdits
+          ? `已切换版本并迁移 ${Math.max(0, migratedCount)} 项修改；刚才的版本已收入历史`
+          : '已切换当前展示版本，刚才的版本已收入历史',
+      )
     } catch (error) {
       context.showNotice(error instanceof Error ? error.message : '版本切换失败')
     } finally {

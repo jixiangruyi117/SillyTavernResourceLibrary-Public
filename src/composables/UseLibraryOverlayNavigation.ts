@@ -13,13 +13,16 @@ interface LibraryOverlayNavigationContext {
   isImportChooserOpen: Ref<boolean, boolean>
   isSettingsOpen: Ref<boolean, boolean>
   isDuplicateCleanerOpen: Ref<boolean, boolean>
+  isSimilarNameGroupsOpen: Ref<boolean, boolean>
   isExtractedCleanerOpen: Ref<boolean, boolean>
+  isParsedTagCleanerOpen: Ref<boolean, boolean>
   isVersionRecognitionOpen: Ref<boolean, boolean>
   isVaultPanelOpen: Ref<boolean, boolean>
   vaultStatus: Ref<VaultStatus>
   isVaultBusy: Ref<boolean, boolean>
   isRestorePanelOpen: Ref<boolean, boolean>
   isRestoring: Ref<boolean, boolean>
+  closeRestorePanel: () => Promise<void>
   isExportPanelOpen: Ref<boolean, boolean>
   isExporting: Ref<boolean, boolean>
   isCategoryManagerOpen: Ref<boolean, boolean>
@@ -91,9 +94,19 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
       close: () => (context.isDuplicateCleanerOpen.value = false),
     },
     {
+      id: 'similar-name-groups',
+      isOpen: () => context.isSimilarNameGroupsOpen.value,
+      close: () => (context.isSimilarNameGroupsOpen.value = false),
+    },
+    {
       id: 'extracted-cleaner',
       isOpen: () => context.isExtractedCleanerOpen.value,
       close: () => (context.isExtractedCleanerOpen.value = false),
+    },
+    {
+      id: 'parsed-tag-cleaner',
+      isOpen: () => context.isParsedTagCleanerOpen.value,
+      close: () => (context.isParsedTagCleanerOpen.value = false),
     },
     {
       id: 'version-recognition',
@@ -110,7 +123,9 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
       id: 'restore',
       isOpen: () => context.isRestorePanelOpen.value,
       canClose: () => !context.isRestoring.value,
-      close: () => (context.isRestorePanelOpen.value = false),
+      close: () => {
+        void context.closeRestorePanel()
+      },
     },
     {
       id: 'export',

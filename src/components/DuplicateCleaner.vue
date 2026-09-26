@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-import { confirmAction } from '../composables/UseConfirmDialog'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { categoryService, historyService, resourceService } from '../core/AppContainer'
 import {
   isUserPersonaAvatarAttachment,
@@ -55,21 +55,25 @@ async function cleanGroup(contentHash: string): Promise<void> {
   const keepId = keeperOf(contentHash, group.resources)
   const keeper = group.resources.find((item) => item.id === keepId) ?? group.resources[0]
   const removeIds = group.resources.filter((item) => item.id !== keeper.id).map((item) => item.id)
-  const confirmed = await confirmAction({
+  const choice = await chooseAction({
     title: '清理重复副本',
-    message: `保留「${keeper.name}」，删除其余 ${removeIds.length} 个内容相同的副本吗？\n副本的标签、文件夹、关联和收藏会先合并到保留项，清理前会自动创建历史快照。`,
-    confirmLabel: '清理',
+    message: `保留「${keeper.name}」，删除其余 ${removeIds.length} 个内容相同的副本吗？\n副本的标签、文件夹、关联和收藏会先合并到保留项。整库快照可能很大，请选择是否额外创建。`,
+    confirmLabel: '创建完整快照并清理',
+    alternativeLabel: '不建快照，直接清理',
+    cancelLabel: '取消',
     danger: true,
   })
-  if (!confirmed) return
+  if (choice === 'cancel') return
   isBusy.value = true
   message.value = ''
   try {
-    await historyService.capture(
-      await createResourceArchiveSource(resourceService),
-      await categoryService.list(),
-      '查重清理前自动快照',
-    )
+    if (choice === 'confirm') {
+      await historyService.capture(
+        await createResourceArchiveSource(resourceService),
+        await categoryService.list(),
+        '查重清理前用户选择的完整快照',
+      )
+    }
     const removed = await resourceService.mergeDuplicates(keeper.id, removeIds)
     message.value = `已保留「${keeper.name}」，删除 ${removed} 个重复副本；标签与文件夹已合并。`
     emit('library-changed')
@@ -96,11 +100,6 @@ async function mergeVariantGroup(cardContentHash: string): Promise<void> {
   isBusy.value = true
   message.value = ''
   try {
-    await historyService.capture(
-      await createResourceArchiveSource(resourceService),
-      await categoryService.list(),
-      '封装合并前自动快照',
-    )
     for (const other of others) {
       await resourceService.mergeExistingResourceAsVersion(keeper.id, other.id, '同卡不同封装合并')
     }

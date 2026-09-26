@@ -51,6 +51,15 @@ export interface AiTaggingUndoRecord {
 
 const DRAFT_KEY = 'srl.aiTagging.draft.v1'
 const UNDO_KEY = 'srl.aiTagging.lastInjection.v1'
+const RULE_TEMPLATES_KEY = 'srl.aiTagging.ruleTemplates.v1'
+
+export interface AiTaggingRuleTemplate {
+  id: string
+  name: string
+  prompt: string
+  taxonomyTemplateId: string
+  mergeAliases: boolean
+}
 
 function storage(): Storage | undefined {
   try {
@@ -184,6 +193,82 @@ function parseUndo(value: unknown): AiTaggingUndoRecord | undefined {
 }
 
 export class AiTaggingDraftService {
+  loadRuleTemplates(): AiTaggingRuleTemplate[] {
+    try {
+      const value: unknown = JSON.parse(storage()?.getItem(RULE_TEMPLATES_KEY) ?? '[]')
+      if (!Array.isArray(value)) return []
+      return value.slice(0, 30).flatMap((item) => {
+        if (!item || typeof item !== 'object') return []
+        const template = item as Partial<AiTaggingRuleTemplate>
+        const id = text(template.id, 80).trim()
+        const name = text(template.name, 80).trim()
+        const prompt = text(template.prompt, 4_000).trim()
+        return id && name && prompt
+          ? [
+              {
+                id,
+                name,
+                prompt,
+                taxonomyTemplateId: text(template.taxonomyTemplateId, 80) || 'free',
+                mergeAliases: template.mergeAliases === true,
+              },
+            ]
+          : []
+      })
+    } catch {
+      return []
+    }
+  }
+
+  saveRuleTemplate(
+    name: string,
+    prompt: string,
+    taxonomyTemplateId: string,
+    mergeAliases: boolean,
+  ): AiTaggingRuleTemplate[] {
+    const normalizedName = name.trim().slice(0, 80)
+    const normalizedPrompt = prompt.trim().slice(0, 4_000)
+    if (!normalizedName || !normalizedPrompt) throw new Error('请填写模板名称和识别规则')
+    const templates = this.loadRuleTemplates()
+    const existing = templates.find((item) => item.name === normalizedName)
+    const next = existing
+      ? templates.map((item) =>
+          item.id === existing.id
+            ? { ...item, prompt: normalizedPrompt, taxonomyTemplateId, mergeAliases }
+            : item,
+        )
+      : [
+          ...templates,
+          {
+            id: crypto.randomUUID(),
+            name: normalizedName,
+            prompt: normalizedPrompt,
+            taxonomyTemplateId,
+            mergeAliases,
+          },
+        ].slice(-30)
+    const target = storage()
+    if (!target) throw new Error('本机存储不可用，模板没有保存')
+    try {
+      target.setItem(RULE_TEMPLATES_KEY, JSON.stringify(next))
+      return next
+    } catch {
+      throw new Error('本机存储空间不足，模板没有保存')
+    }
+  }
+
+  deleteRuleTemplate(id: string): AiTaggingRuleTemplate[] {
+    const next = this.loadRuleTemplates().filter((item) => item.id !== id)
+    const target = storage()
+    if (!target) throw new Error('本机存储不可用，模板没有删除')
+    try {
+      target.setItem(RULE_TEMPLATES_KEY, JSON.stringify(next))
+    } catch {
+      throw new Error('模板删除失败')
+    }
+    return next
+  }
+
   loadDraft(): AiTaggingDraft | undefined {
     try {
       return parseDraft(JSON.parse(storage()?.getItem(DRAFT_KEY) ?? 'null'))

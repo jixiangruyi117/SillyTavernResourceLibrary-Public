@@ -621,6 +621,55 @@
   line-height: 1.55;
 }
 
+.shared-import-routes {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.55rem;
+}
+
+.shared-import-routes > p {
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.86rem;
+}
+
+.shared-import-routes > ul {
+  max-height: 7rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.55rem 0.75rem 0.55rem 1.8rem;
+  border-radius: 0.65rem;
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+}
+
+.shared-import-routes > button {
+  display: grid;
+  gap: 0.2rem;
+  min-height: var(--size-touch);
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  text-align: left;
+}
+
+.shared-import-routes > button strong {
+  font-weight: 700;
+}
+
+.shared-import-routes > button small {
+  color: var(--color-ink-soft);
+  line-height: 1.4;
+}
+
+.shared-import-routes > button:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
 @media (min-width: 721px) {
   .import-choice-overlay {
     place-items: start center;
@@ -1347,6 +1396,12 @@
   gap: 0.625rem;
 }
 
+.toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .sort-control {
   display: flex;
   align-items: center;
@@ -1394,6 +1449,10 @@
   border-color: var(--color-accent);
   color: var(--color-accent);
   background: var(--color-accent-soft);
+}
+
+.toolbar__similar-names {
+  white-space: nowrap;
 }
 
 .resource-grid {

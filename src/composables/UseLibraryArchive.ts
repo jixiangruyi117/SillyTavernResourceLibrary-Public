@@ -3,8 +3,8 @@ import { selectPreparedRestore } from '../services/RestoreService'
 import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import { includePersonalResource, plaintextSecretCopies } from '../services/PersonalResourceBackup'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
-import type { Ref } from 'vue'
-import { confirmAction } from '../composables/UseConfirmDialog'
+import { onScopeDispose, type Ref } from 'vue'
+import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import {
   aiTaggingDraftService,
   browserStorageService,
@@ -20,7 +20,15 @@ import {
   restoreService,
 } from '../core/AppContainer'
 import { mutationGuard } from '../core/MutationGuard'
+import { requestNativeNotifications } from '../core/NativeSecurity'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
+import {
+  isNativeImportKeepAliveAvailable,
+  notifyNativeImportAwaitingChoice,
+  startNativeImportKeepAlive,
+  stopNativeImportKeepAlive,
+  updateNativeImportKeepAlive,
+} from '../services/NativeImportKeepAlive'
 import {
   getNativeSafBackupStatus,
   openNativeSafBackupWriter,
@@ -63,9 +71,45 @@ interface LibraryArchiveContext {
   resources: Ref<ResourceSummary[]>
   captureHistory: (reason: string) => Promise<void>
   loadLibrary: () => Promise<void>
+  onRestoreImportComplete: () => Promise<void>
 }
 
 export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
+  let waitingForRestoreChoiceInBackground = false
+  let requestingRestoreChoiceReminder = false
+
+  async function remindForRestoreChoice(): Promise<void> {
+    const context = getContext()
+    if (
+      document.visibilityState !== 'hidden' ||
+      !context.isRestorePanelOpen.value ||
+      !context.preparedRestore.value ||
+      context.isRestoring.value ||
+      waitingForRestoreChoiceInBackground ||
+      requestingRestoreChoiceReminder ||
+      !isNativeImportKeepAliveAvailable()
+    )
+      return
+    requestingRestoreChoiceReminder = true
+    try {
+      waitingForRestoreChoiceInBackground = true
+      await notifyNativeImportAwaitingChoice(
+        '备份预检已完成',
+        '请返回 SRL，选择安全导入或覆盖当前资源库。',
+      )
+    } finally {
+      requestingRestoreChoiceReminder = false
+    }
+  }
+
+  const handleRestoreVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') void remindForRestoreChoice()
+  }
+  document.addEventListener('visibilitychange', handleRestoreVisibilityChange)
+  onScopeDispose(() =>
+    document.removeEventListener('visibilitychange', handleRestoreVisibilityChange),
+  )
+
   async function handleExport(details: {
     mode: 'full' | 'partial'
     resourceIds?: string[]
@@ -107,8 +151,10 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           taskCenter.update(operationId, { phase: `生成 ZIP：${archiveName}` })
         }
         taskCenter.updateTransfer(operationId, { transferredBytes: writtenBytes })
+        updateNativeImportKeepAlive('导出备份', `已写入 ${formatBytes(writtenBytes)}`)
       },
     }
+    let keepAliveStarted = false
     try {
       const portableData: ArchivePortableData = { version: 1 }
       if (details.portableSelection.appearance) {
@@ -191,6 +237,10 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       }
       const nativeSafStatus = await getNativeSafBackupStatus().catch(() => null)
       checkCancelled()
+      if (isNativeImportKeepAliveAvailable()) {
+        await requestNativeNotifications().catch(() => false)
+        keepAliveStarted = await startNativeImportKeepAlive('导出备份', '流式压缩并写入目标')
+      }
       taskCenter.update(operationId, { phase: '流式压缩并写入目标' })
       const streamedArchives = nativeSafStatus?.available
         ? await exportService.createArchivesFromSource(
@@ -259,6 +309,15 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice(error instanceof Error ? error.message : '导出失败')
     } finally {
       context.isExporting.value = false
+      if (keepAliveStarted) {
+        const task = taskCenter.list().find((item) => item.operationId === operationId)
+        await stopNativeImportKeepAlive({
+          title: task?.status === 'completed' ? '备份导出完成' : '备份导出未完成',
+          message: task?.error || '请在导出目标中查看备份文件。',
+          successful: task?.status === 'completed',
+          notify: document.visibilityState === 'hidden',
+        })
+      }
     }
   }
 
@@ -326,6 +385,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     context.preparedRestore.value = undefined
     context.restoreSourceFile.value = undefined
     context.restoreReport.value = undefined
+    waitingForRestoreChoiceInBackground = false
     context.restoreEntry.value = entry
     context.completedRestoreMode.value = 'merge'
     context.isRestorePanelOpen.value = true
@@ -351,24 +411,82 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     ) {
       return
     }
+    await context.preparedRestore.value?.dispose?.()
+    context.preparedRestore.value = undefined
+    waitingForRestoreChoiceInBackground = false
     context.isRestoring.value = true
-    const operationId = taskCenter.start({ name: '备份预检', phase: '流式解压并校验' })
+    const operationId = taskCenter.start({ name: '备份预检', phase: '读取 ZIP 并校验' })
     context.restoreSourceFile.value = file
     context.preparedRestore.value = undefined
     context.restoreReport.value = undefined
+    let keepAliveStarted = false
+    if (isNativeImportKeepAliveAvailable()) {
+      const notificationsGranted = await requestNativeNotifications().catch(() => false)
+      keepAliveStarted = await startNativeImportKeepAlive('备份预检', '读取 ZIP 并校验')
+      if (!notificationsGranted)
+        taskCenter.update(operationId, { phase: '读取 ZIP 并校验（系统通知未开启）' })
+      else if (!keepAliveStarted)
+        taskCenter.update(operationId, { phase: '读取 ZIP 并校验（后台任务通知未能启动）' })
+    }
     try {
       context.preparedRestore.value = await restoreService.prepare(
         file,
         context.resources.value,
         context.categories.value,
         true,
+        (progress) => {
+          const stagingStarted = progress.phase !== 'reading' || progress.stagedBytes > 0
+          const phase =
+            progress.phase === 'complete'
+              ? '备份预检完成'
+              : stagingStarted
+                ? '解压、校验并写入暂存'
+                : '读取 ZIP 并校验'
+          taskCenter.update(operationId, {
+            phase,
+            progress: undefined,
+            itemProgress: stagingStarted
+              ? { completed: progress.completedEntries, total: progress.selectedEntries }
+              : undefined,
+          })
+          const transferred =
+            stagingStarted && progress.totalStagedBytes > 0
+              ? {
+                  transferredBytes: progress.stagedBytes,
+                  totalBytes: progress.totalStagedBytes,
+                }
+              : { transferredBytes: progress.readBytes, totalBytes: progress.totalBytes }
+          taskCenter.updateTransfer(operationId, transferred)
+          updateNativeImportKeepAlive(
+            '备份预检',
+            phase,
+            transferred.totalBytes
+              ? transferred.transferredBytes / transferred.totalBytes
+              : undefined,
+          )
+        },
       )
       taskCenter.complete(operationId)
+      if (keepAliveStarted && document.visibilityState === 'hidden') {
+        waitingForRestoreChoiceInBackground = true
+        await notifyNativeImportAwaitingChoice(
+          '备份预检已完成',
+          '请返回 SRL，选择安全导入或覆盖当前资源库。',
+        )
+      }
     } catch (error) {
       taskCenter.fail(operationId, error)
       context.showNotice(error instanceof Error ? error.message : '备份预检失败')
     } finally {
       context.isRestoring.value = false
+      if (keepAliveStarted) {
+        await stopNativeImportKeepAlive({
+          title: '备份预检已结束',
+          message: '备份已校验，等待你选择恢复方式。',
+          successful: Boolean(context.preparedRestore.value),
+          notify: false,
+        })
+      }
     }
   }
 
@@ -378,7 +496,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     const prepared = context.preparedRestore.value
     if (!prepared) return
     const selectedIds = new Set(resourceIds)
-    if (!selectedIds.size && !(mode === 'merge' && canRestoreOnlyPortableData(prepared))) {
+    if (!selectedIds.size && mode === 'merge' && !canRestoreOnlyPortableData(prepared)) {
       context.showNotice('请至少选择一项资源后继续')
       return
     }
@@ -390,61 +508,128 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice('只有完整备份可以覆盖整个资源库')
       return
     }
-    if (
-      mode === 'replace' &&
-      !(await confirmAction({
+    let createSafetySnapshot = false
+    if (mode === 'replace') {
+      const estimatedCurrentBytes = context.resources.value.reduce(
+        (total, resource) => total + Math.max(0, resource.fileSize || 0),
+        0,
+      )
+      const choice = await chooseAction({
         title: '整库覆盖',
-        message: `确定用“${prepared.preview.fileName}”完整覆盖当前资源库吗？现有数据会先保存为本地安全快照。`,
-        confirmLabel: '覆盖整库',
+        message: `确定用“${prepared.preview.fileName}”完整覆盖当前资源库吗？当前资源原件至少约 ${formatBytes(estimatedCurrentBytes)}，另有历史版本；完整安全快照可能超出本机 IndexedDB 的单份快照上限。写入失败会由数据库事务回滚。`,
+        confirmLabel: '先创建完整快照',
+        alternativeLabel: '不建快照，继续覆盖',
+        cancelLabel: '取消',
         danger: true,
-      }))
-    ) {
-      return
+      })
+      if (choice === 'cancel') return
+      createSafetySnapshot = choice === 'confirm'
     }
 
     const selected =
       mode === 'replace' || selectedIds.size === prepared.resources.length
         ? prepared
         : selectPreparedRestore(prepared, selectedIds)
-    return mutationGuard.run(`archive:restore:${mode}`, () => performRestoreConfirm(selected, mode))
+    return mutationGuard.run(`archive:restore:${mode}`, () =>
+      performRestoreConfirm(selected, mode, createSafetySnapshot),
+    )
   }
 
   async function performRestoreConfirm(
     prepared: PreparedRestore,
     mode: RestoreMode,
+    createSafetySnapshot = false,
   ): Promise<void> {
     const context = getContext()
 
     context.isRestoring.value = true
-    const operationId = taskCenter.start({ name: '恢复备份', phase: '创建恢复前安全快照' })
+    const operationId = taskCenter.start({
+      name: '恢复备份',
+      phase: createSafetySnapshot ? '创建用户选择的安全快照' : '准备恢复数据',
+    })
+    waitingForRestoreChoiceInBackground = false
+    const keepAliveStarted = isNativeImportKeepAliveAvailable()
+      ? await startNativeImportKeepAlive(
+          '恢复备份',
+          createSafetySnapshot ? '创建安全快照' : '准备恢复数据',
+        )
+      : false
     try {
-      await context.captureHistory('导入备份前自动快照')
+      if (createSafetySnapshot) await context.captureHistory('整库覆盖前用户选择的安全快照')
+      if (mode === 'replace') prepared = (await prepared.forReplacement?.()) ?? prepared
       taskCenter.update(operationId, {
         phase: mode === 'replace' ? '覆盖写入资源库' : '合并写入资源库',
-        progress: 0.35,
+        progress: undefined,
+        itemProgress: { completed: 0, total: prepared.resources.length + prepared.versions.length },
       })
+      const reportWriteProgress = (progress: {
+        phase: 'prepare' | 'commit'
+        completed: number
+        total: number
+        fileName?: string
+        transferredBytes?: number
+        totalBytes?: number
+      }): void => {
+        const phaseRatio = progress.total ? progress.completed / progress.total : 1
+        const ratio = progress.phase === 'prepare' ? phaseRatio * 0.45 : 0.45 + phaseRatio * 0.5
+        const phase = `${progress.phase === 'prepare' ? '准备并校验' : '写入资源库'}：${progress.fileName ?? ''}`
+        if (progress.totalBytes !== undefined && progress.transferredBytes !== undefined) {
+          taskCenter.updateTransfer(operationId, {
+            transferredBytes: progress.transferredBytes,
+            totalBytes: progress.totalBytes,
+          })
+        }
+        taskCenter.update(operationId, {
+          phase,
+          progress: ratio,
+          itemProgress: { completed: progress.completed, total: progress.total },
+        })
+        updateNativeImportKeepAlive('恢复备份', phase, ratio)
+      }
       if (mode === 'replace') {
-        const sourceFile = context.restoreSourceFile.value
-        if (!sourceFile) throw new Error('备份源文件已经不可用，请重新选择')
-        const replacement = await restoreService.prepare(sourceFile, [], [], true)
-        context.restoreReport.value = await restoreService.replace(replacement)
-        await restorePortableData(replacement.portableData)
+        context.restoreReport.value = await restoreService.replace(prepared, reportWriteProgress)
+        await restorePortableData(prepared.portableData)
       } else {
-        context.restoreReport.value = await restoreService.restore(prepared)
+        context.restoreReport.value = await restoreService.restore(
+          prepared,
+          undefined,
+          reportWriteProgress,
+        )
         await restorePortableData(prepared.portableData)
       }
       context.completedRestoreMode.value = mode
-      taskCenter.update(operationId, { phase: '刷新资源与索引', progress: 0.85 })
+      taskCenter.update(operationId, { phase: '刷新资源与索引', progress: 0.97 })
       await context.loadLibrary()
+      await context.onRestoreImportComplete()
+      await prepared.dispose?.()
       context.preparedRestore.value = undefined
       taskCenter.complete(operationId)
     } catch (error) {
       taskCenter.fail(operationId, error)
       const reason = error instanceof Error ? `：${error.message}` : ''
-      context.showNotice(`恢复写入失败，数据库事务已回滚${reason}`)
+      context.showNotice(`恢复未全部完成，请核对资源列表与设置后重试${reason}`)
     } finally {
       context.isRestoring.value = false
+      if (keepAliveStarted) {
+        const task = taskCenter.list().find((item) => item.operationId === operationId)
+        await stopNativeImportKeepAlive({
+          title: task?.status === 'completed' ? '备份恢复完成' : '备份恢复未完成',
+          message: task?.error || '资源库恢复任务已结束',
+          successful: task?.status === 'completed',
+          notify: document.visibilityState === 'hidden',
+        })
+      }
     }
+  }
+
+  async function closeRestorePanel(): Promise<void> {
+    const context = getContext()
+    if (context.isRestoring.value) return
+    await context.preparedRestore.value?.dispose?.()
+    context.preparedRestore.value = undefined
+    context.restoreSourceFile.value = undefined
+    context.isRestorePanelOpen.value = false
+    waitingForRestoreChoiceInBackground = false
   }
   return {
     handleExport,
@@ -454,5 +639,6 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     handleRestoreInspect,
     handleRestoreConfirm,
     performRestoreConfirm,
+    closeRestorePanel,
   }
 }

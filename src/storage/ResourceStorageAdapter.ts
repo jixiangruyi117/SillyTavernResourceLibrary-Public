@@ -44,5 +44,8 @@ export interface ResourceStorageAdapter {
   update(id: string, changes: Partial<Resource>): Promise<void>
   updateMany(ids: string[], changes: Partial<Resource>): Promise<void>
   delete(id: string): Promise<void>
-  deleteMany(ids: string[]): Promise<void>
+  deleteMany(
+    ids: string[],
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void>
 }

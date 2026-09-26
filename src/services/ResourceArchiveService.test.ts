@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 import { MemoryRestoreStagingStore } from '../storage/RestoreStagingStore'
 import { ResourceArchiveService } from './ResourceArchiveService'
@@ -14,6 +14,13 @@ const zip = (files: Record<string, string>) =>
     'export.zip',
   )
 describe('SillyTavern user archive', () => {
+  it('classifies an ordinary ZIP without staging its resource payloads', async () => {
+    const staging = new MemoryRestoreStagingStore()
+    const writes = vi.spyOn(staging, 'putChunk')
+    const service = new ResourceArchiveService(staging)
+    expect(await service.inspect(zip({ 'characters/card.json': '{"name":"A"}' }))).toBe('resources')
+    expect(writes).not.toHaveBeenCalled()
+  })
   it('distinguishes SRL archives and reads supported folders without importing account secrets', async () => {
     const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
     expect(await service.inspect(zip({ 'manifest.json': '{"format":"srl-archive"}' }))).toBe(
@@ -45,11 +52,42 @@ describe('SillyTavern user archive', () => {
       'DO-NOT-IMPORT',
     )
   })
+  it('extracts multiple ordinary resources from one ZIP without classifying a lone resource folder as Tavern', async () => {
+    const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
+    const archive = zip({
+      'characters/A.png': 'character A',
+      'characters/B.json': '{"name":"B"}',
+      'worlds/Setting.json': '{"entries":{}}',
+      'secrets.json': '{"password":"must not import"}',
+      'notes.txt': 'ignored when there are importable resources',
+    })
+    const result = await service.readResourceArchive(archive)
+    expect(result.kind).toBe('resources')
+    expect(result.files.map((entry) => entry.name)).toEqual([
+      'A.png',
+      'B.json',
+      'Setting.json',
+      'notes.txt',
+    ])
+    expect((await Promise.all(result.files.map((entry) => entry.text()))).join('')).not.toContain(
+      'must not import',
+    )
+    expect(await service.inspect(zip({ 'characters/A.json': '{"name":"A"}' }))).toBe('resources')
+  })
   it('rejects a generic resource ZIP from the dedicated Tavern backup path', async () => {
     const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
     await expect(
       service.validateTavernBackup(zip({ 'characters/a.json': '{"name":"A"}' })),
     ).rejects.toThrow('未识别到受支持的 SillyTavern 备份结构')
+  })
+  it('recognizes Tavern-only archive paths while keeping resource-folder bundles ordinary', async () => {
+    const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
+    const archive = zip({
+      'characters/a.json': '{"name":"A"}',
+      'chats/1.jsonl': '{"mes":"chat"}',
+    })
+    expect(await service.inspect(archive)).toBe('tavern')
+    await expect(service.validateTavernBackup(archive)).resolves.toBeUndefined()
   })
   it('does not extract system prompt and reasoning templates from a Tavern backup', async () => {
     const service = new ResourceArchiveService(new MemoryRestoreStagingStore())

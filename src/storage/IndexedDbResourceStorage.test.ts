@@ -330,6 +330,33 @@ describe('IndexedDbResourceStorage', () => {
     await database.delete()
   })
 
+  it('deletes selected resources in bounded batches and reports versions in progress', async () => {
+    const database = new AppDatabase(`resource-delete-progress-${crypto.randomUUID()}`)
+    const storage = new IndexedDbResourceStorage(database)
+    const resources = [createResource(601), createResource(602)]
+    await storage.saveMany(resources)
+    await storage.saveVersion({
+      ...createResource(603),
+      id: 'resource-601-history',
+      versionGroupId: 'resource-601',
+      versionLabel: '历史版本',
+    })
+    const progress: Array<{ completed: number; total: number }> = []
+
+    await storage.deleteMany(
+      resources.map((resource) => resource.id),
+      (entry) => progress.push(entry),
+    )
+
+    expect(progress[0]).toEqual({ completed: 0, total: 3 })
+    expect(progress.at(-1)).toEqual({ completed: 3, total: 3 })
+    expect(await database.resources.count()).toBe(0)
+    expect(await database.resourceVersions.count()).toBe(0)
+
+    database.close()
+    await database.delete()
+  })
+
   it('repairs missing and ghost historical summaries from authoritative version records', async () => {
     const database = new AppDatabase(`resource-version-summary-repair-${crypto.randomUUID()}`)
     const storage = new IndexedDbResourceStorage(database)

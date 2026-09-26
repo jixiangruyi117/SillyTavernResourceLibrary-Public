@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ResourceParserRegistry } from '../parser/ResourceParser'
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
-import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { RESOURCE_TYPE, toResourceSummary, type Resource } from '../types/Resource'
 import { ResourceService } from './ResourceService'
 
 function resource(id: string, tags: string[]): Resource {
@@ -31,8 +31,11 @@ describe('ResourceService.addTagsPerResource', () => {
     const first = resource('r1', ['原标签', '审核期间新增'])
     const second = resource('r2', ['已有'])
     const saveMany = vi.fn(async (_resources: Resource[]) => undefined)
+    const update = vi.fn(async () => undefined)
     const storage = {
       get: vi.fn(async (id: string) => (id === 'r1' ? first : id === 'r2' ? second : undefined)),
+      listSummaries: vi.fn(async () => [first, second].map(toResourceSummary)),
+      update,
       saveMany,
     } as unknown as ResourceStorageAdapter
     const service = new ResourceService(storage, new ResourceParserRegistry([]))
@@ -48,10 +51,12 @@ describe('ResourceService.addTagsPerResource', () => {
       tagCount: 1,
       entries: [{ resourceId: 'r1', resourceName: 'r1', tags: ['甜宠'] }],
     })
-    expect(saveMany).toHaveBeenCalledOnce()
-    expect(saveMany.mock.calls[0]?.[0]).toEqual([
-      expect.objectContaining({ id: 'r1', tags: ['原标签', '审核期间新增', '甜宠'] }),
-    ])
+    expect(saveMany).not.toHaveBeenCalled()
+    expect(storage.get).not.toHaveBeenCalled()
+    expect(update).toHaveBeenCalledWith(
+      'r1',
+      expect.objectContaining({ tags: ['原标签', '审核期间新增', '甜宠'] }),
+    )
   })
 
   it('没有有效建议时不写入', async () => {

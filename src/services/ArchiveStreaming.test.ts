@@ -70,9 +70,14 @@ describe('streamed archive round trip', () => {
       )
       expect(prepared.resources.every((r) => r.originalBlob.size === 0)).toBe(true)
       expect(prepared.versions[0]?.originalBlob.size).toBe(0)
-      expect(await db.restoreStaging.count()).toBe(0)
-      expect(await db.restoreStagingChunks.count()).toBe(0)
-      await service.replace(prepared)
+      // The lazy restore preview keeps staged bytes until the user confirms it;
+      // this avoids copying a large archive into RAM before commit.
+      expect(await db.restoreStaging.count()).toBeGreaterThan(0)
+      expect(await db.restoreStagingChunks.count()).toBeGreaterThan(0)
+      const progress: Array<{ transferredBytes?: number; totalBytes?: number }> = []
+      await service.replace(prepared, (entry) => progress.push(entry))
+      expect(progress.some((entry) => (entry.totalBytes ?? 0) > 0)).toBe(true)
+      expect(progress.some((entry) => (entry.transferredBytes ?? 0) > 0)).toBe(true)
       for (const expected of records) {
         const stored = (await db.resources.get(expected.id)) as Resource
         expect(await hashBlob(stored.originalBlob)).toBe(expected.contentHash)

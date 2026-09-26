@@ -1,9 +1,12 @@
 import { RestoreDuplicateIndex, restoreVersionKey } from '../utils/RestoreIdentity'
 import { remapReaderPortableData } from './ChatReaderPortableData'
 import { strFromU8 } from 'fflate'
-import { stageArchive } from './ArchiveExtraction'
+import { stageArchive, type ArchiveStageProgress } from './ArchiveExtraction'
 
-import type { ArchiveStorageAdapter } from '../storage/ArchiveStorageAdapter'
+import type {
+  ArchiveRestoreProgress,
+  ArchiveStorageAdapter,
+} from '../storage/ArchiveStorageAdapter'
 import {
   materializeStructuredResource,
   type StructuredResource,
@@ -272,248 +275,285 @@ export class RestoreService {
     existingResources: ResourceSummary[],
     existingCategories: Category[],
     deferFiles = false,
+    onProgress?: (progress: ArchiveStageProgress) => void,
   ): Promise<PreparedRestore> {
-    const jobId = await stageArchive(file, this.staging)
+    const jobId = await stageArchive(file, this.staging, () => true, onProgress)
+    let retainedStaging = false
     try {
       const manifestEntry = await this.staging.get(jobId, 'manifest.json')
       if (!manifestEntry) throw new Error('备份包缺少 manifest.json')
       const manifest = parseManifest(new Uint8Array(await manifestEntry.blob.arrayBuffer()))
       const communitySourceData = await readCommunitySourceSidecar(jobId, manifest, this.staging)
-      const duplicates = new RestoreDuplicateIndex(existingResources, manifest.resources)
-      const existingIds = new Set(existingResources.map((resource) => resource.id))
-      const resourceIdMap = new Map<string, string>()
-      const existingCategoriesById = new Map(
-        existingCategories.map((category) => [category.id, category]),
+      const prepared = await this.prepareStaged(
+        file.name,
+        jobId,
+        manifest,
+        communitySourceData,
+        existingResources,
+        existingCategories,
+        deferFiles,
       )
-      const existingCategoriesByName = new Map(
-        existingCategories.map((category) => [category.name.toLocaleLowerCase(), category]),
-      )
-      const categoryIdMap = new Map<string, string>()
-      const categoriesToCreate: Category[] = []
-      let categoriesToReuse = 0
-
-      for (const category of manifest.categories) {
-        const sameId = existingCategoriesById.get(category.id)
-        const sameName = existingCategoriesByName.get(category.name.toLocaleLowerCase())
-        if (sameId && sameId.name === category.name && sameId.color === category.color) {
-          categoryIdMap.set(category.id, sameId.id)
-          categoriesToReuse += 1
-        } else if (sameName) {
-          categoryIdMap.set(category.id, sameName.id)
-          categoriesToReuse += 1
-        } else {
-          const restoredCategory = sameId ? { ...category, id: crypto.randomUUID() } : category
-          categoryIdMap.set(category.id, restoredCategory.id)
-          categoriesToCreate.push(restoredCategory)
-        }
-      }
-
-      const resourcesToRestore: Resource[] = []
-      let duplicatesToSkip = 0
-      let conflictsToPreserve = 0
-
-      for (const archived of manifest.resources) {
-        const stagedFile = await this.staging.get(jobId, archived.archivePath)
-        if (!stagedFile) throw new Error(`备份缺少原始文件：${archived.fileName}`)
-        if (stagedFile.size !== archived.fileSize) {
-          throw new Error(`文件大小校验失败：${archived.fileName}`)
-        }
-        const archiveHash = archived.contentHash.toLocaleLowerCase()
-        if (stagedFile.sha256 !== archiveHash) {
-          throw new Error(`文件完整性校验失败：${archived.fileName}`)
-        }
-        const isAvatarAttachment = isUserPersonaAvatarAttachment(archived)
-        const existingId = duplicates.find(archived)
-        if (existingId) {
-          resourceIdMap.set(archived.id, existingId)
-          duplicatesToSkip += 1
-          continue
-        }
-
-        let id = archived.id
-        if (existingIds.has(id)) {
-          id = crypto.randomUUID()
-          conflictsToPreserve += 1
-        }
-        resourceIdMap.set(archived.id, id)
-        duplicates.add(archived, id)
-        existingIds.add(id)
-        const originalBlob = new Blob(deferFiles ? [] : [stagedFile.blob], {
-          type: archived.mimeType,
-        })
-        const thumbnailBlob =
-          !deferFiles &&
-          (archived.type === RESOURCE_TYPE.CHARACTER_CARD || isAvatarAttachment) &&
-          (archived.mimeType === 'image/png' || /\.png$/i.test(archived.fileName))
-            ? ((await createImageThumbnail(originalBlob)) ??
-              (isAvatarAttachment ? originalBlob : undefined))
-            : undefined
-        const archivedCategoryIds = Array.isArray(archived.categoryIds)
-          ? archived.categoryIds
-          : archived.categoryId
-            ? [archived.categoryId]
-            : []
-        const categoryIds = Array.from(
-          new Set(
-            archivedCategoryIds.flatMap((categoryId) => {
-              const mappedId = categoryIdMap.get(categoryId)
-              return mappedId ? [mappedId] : []
-            }),
-          ),
-        )
-        resourcesToRestore.push({
-          id,
-          type: archived.type,
-          name: archived.name,
-          description: archived.description,
-          fileName: archived.fileName,
-          mimeType: archived.mimeType,
-          fileSize: archived.fileSize,
-          contentHash: archiveHash,
-          favorite: archived.favorite,
-          categoryId: categoryIds[0] ?? null,
-          categoryIds,
-          relatedResourceIds: Array.isArray(archived.relatedResourceIds)
-            ? archived.relatedResourceIds
-            : [],
-          sourceLinks: normalizeResourceLinks(archived.sourceLinks),
-          tags: archived.tags,
-          metadata: archived.metadata,
-          thumbnailBlob,
-          originalBlob,
-          createdAt: archived.createdAt,
-          updatedAt: archived.updatedAt,
-        })
-      }
-
-      const availableResourceIds = new Set([
-        ...existingResources.map((resource) => resource.id),
-        ...resourcesToRestore.map((resource) => resource.id),
-      ])
-      let normalizedResources = resourcesToRestore.map((resource) =>
-        normalizeResource({
-          ...resource,
-          metadata: remapManualBindings(resource.metadata, resourceIdMap),
-          relatedResourceIds: (resource.relatedResourceIds ?? [])
-            .map((relatedId) => resourceIdMap.get(relatedId) ?? relatedId)
-            .filter((relatedId) => availableResourceIds.has(relatedId)),
-        }),
-      )
-      const restoredResourcesById = new Map(
-        [...existingResources, ...normalizedResources].map((resource) => [resource.id, resource]),
-      )
-      normalizedResources = normalizedResources.map((resource) => {
-        if (resource.type !== RESOURCE_TYPE.USER_PERSONA) return resource
-        const defaultAvatarId =
-          typeof resource.metadata.defaultPersonaAvatarId === 'string'
-            ? resource.metadata.defaultPersonaAvatarId
-            : ''
-        const relatedAvatars = (resource.relatedResourceIds ?? [])
-          .map((resourceId) => restoredResourcesById.get(resourceId))
-          .filter((candidate): candidate is Resource =>
-            Boolean(candidate && isUserPersonaAvatarAttachment(candidate)),
-          )
-        const cover =
-          relatedAvatars.find((candidate) => candidate.metadata.avatarId === defaultAvatarId) ??
-          relatedAvatars[0]
-        return cover?.thumbnailBlob ? { ...resource, thumbnailBlob: cover.thumbnailBlob } : resource
-      })
-
-      const versionKeys = new Set(
-        existingResources.length ? await this.storage.listRestoreVersionKeys?.() : [],
-      )
-      const versionsToRestore: Resource[] = []
-      for (const archived of manifest.versions ?? []) {
-        const stagedFile = await this.staging.get(jobId, archived.archivePath)
-        if (!stagedFile) throw new Error(`备份缺少历史版本文件：${archived.fileName}`)
-        if (stagedFile.size !== archived.fileSize) {
-          throw new Error(`历史版本大小校验失败：${archived.fileName}`)
-        }
-        const archiveHash = archived.contentHash.toLocaleLowerCase()
-        if (stagedFile.sha256 !== archiveHash) {
-          throw new Error(`历史版本完整性校验失败：${archived.fileName}`)
-        }
-        const groupId = archived.versionGroupId
-          ? (resourceIdMap.get(archived.versionGroupId) ?? archived.versionGroupId)
-          : undefined
-        if (!groupId || !availableResourceIds.has(groupId)) continue
-        const key = restoreVersionKey(archived, groupId)
-        if (versionKeys.has(key)) continue
-        versionKeys.add(key)
-        const id = crypto.randomUUID()
-        existingIds.add(id)
-        const originalBlob = new Blob(deferFiles ? [] : [stagedFile.blob], {
-          type: archived.mimeType,
-        })
-        const thumbnailBlob =
-          !deferFiles &&
-          archived.type === RESOURCE_TYPE.CHARACTER_CARD &&
-          (archived.mimeType === 'image/png' || /\.png$/i.test(archived.fileName))
-            ? await createImageThumbnail(originalBlob)
-            : undefined
-        versionsToRestore.push(
-          normalizeResource({
-            ...archived,
-            id,
-            versionGroupId: groupId,
-            originalBlob,
-            thumbnailBlob,
-          }),
-        )
-      }
-
-      const mappedCommunitySourceData = communitySourceData
-        ? remapCommunitySourceBackupBindings(communitySourceData, resourceIdMap)
-        : undefined
-
-      const files = new Map(
-        [...manifest.resources, ...(manifest.versions ?? [])].map((resource) => [
-          resource.contentHash.toLowerCase(),
-          resource.archivePath,
-        ]),
-      )
-      return {
-        openFiles: deferFiles
-          ? () => this.openArchiveFiles(file, files, normalizedResources)
-          : undefined,
-        preview: {
-          fileName: file.name,
-          mode: manifest.mode,
-          createdAt: manifest.createdAt,
-          archiveResourceCount: manifest.resourceCount,
-          resourcesToAdd: resourcesToRestore.length,
-          duplicatesToSkip,
-          conflictsToPreserve,
-          categoriesToCreate: categoriesToCreate.length,
-          categoriesToReuse,
-          communitySourceCount: mappedCommunitySourceData?.sources.length,
-          communityMessageCount: mappedCommunitySourceData?.messages.length,
-          portableSections: [
-            manifest.portableData?.appearance ? '外观与 CSS 预设' : '',
-            manifest.portableData?.cloudBackup ? '云端备份配置' : '',
-            manifest.portableData?.characterDraw ? '抽了么记录' : '',
-            manifest.portableData?.chatReader ? '读了么阅读数据' : '',
-            manifest.portableData?.generalPreferences ? '常用偏好' : '',
-            mappedCommunitySourceData ? 'Discord 社区来源' : '',
-          ].filter(Boolean),
-        },
-        resources: normalizedResources,
-        versions: versionsToRestore,
-        categories: categoriesToCreate,
-        portableData: remapReaderPortableData(manifest.portableData, resourceIdMap),
-        communitySourceData: mappedCommunitySourceData,
-      }
+      retainedStaging = deferFiles
+      return prepared
     } finally {
-      await this.staging.deleteJob(jobId)
+      if (!retainedStaging) await this.staging.deleteJob(jobId)
     }
   }
 
+  private async prepareStaged(
+    fileName: string,
+    jobId: string,
+    manifest: ArchiveManifest,
+    communitySourceData: CommunitySourceBackupData | undefined,
+    existingResources: ResourceSummary[],
+    existingCategories: Category[],
+    deferFiles: boolean,
+    replacement = false,
+  ): Promise<PreparedRestore> {
+    const duplicates = new RestoreDuplicateIndex(existingResources, manifest.resources)
+    const existingIds = new Set(existingResources.map((resource) => resource.id))
+    const resourceIdMap = new Map<string, string>()
+    const existingCategoriesById = new Map(
+      existingCategories.map((category) => [category.id, category]),
+    )
+    const existingCategoriesByName = new Map(
+      existingCategories.map((category) => [category.name.toLocaleLowerCase(), category]),
+    )
+    const categoryIdMap = new Map<string, string>()
+    const categoriesToCreate: Category[] = []
+    let categoriesToReuse = 0
+
+    for (const category of manifest.categories) {
+      const sameId = existingCategoriesById.get(category.id)
+      const sameName = existingCategoriesByName.get(category.name.toLocaleLowerCase())
+      if (sameId && sameId.name === category.name && sameId.color === category.color) {
+        categoryIdMap.set(category.id, sameId.id)
+        categoriesToReuse += 1
+      } else if (sameName) {
+        categoryIdMap.set(category.id, sameName.id)
+        categoriesToReuse += 1
+      } else {
+        const restoredCategory = sameId ? { ...category, id: crypto.randomUUID() } : category
+        categoryIdMap.set(category.id, restoredCategory.id)
+        categoriesToCreate.push(restoredCategory)
+      }
+    }
+
+    const resourcesToRestore: Resource[] = []
+    let duplicatesToSkip = 0
+    let conflictsToPreserve = 0
+
+    for (const archived of manifest.resources) {
+      const stagedFile = await this.staging.getMetadata(jobId, archived.archivePath)
+      if (!stagedFile) throw new Error(`备份缺少原始文件：${archived.fileName}`)
+      if (stagedFile.size !== archived.fileSize) {
+        throw new Error(`文件大小校验失败：${archived.fileName}`)
+      }
+      const archiveHash = archived.contentHash.toLocaleLowerCase()
+      if (stagedFile.sha256 !== archiveHash) {
+        throw new Error(`文件完整性校验失败：${archived.fileName}`)
+      }
+      const isAvatarAttachment = isUserPersonaAvatarAttachment(archived)
+      const existingId = replacement ? undefined : duplicates.find(archived)
+      if (existingId) {
+        resourceIdMap.set(archived.id, existingId)
+        duplicatesToSkip += 1
+        continue
+      }
+
+      let id = archived.id
+      if (existingIds.has(id)) {
+        id = crypto.randomUUID()
+        conflictsToPreserve += 1
+      }
+      resourceIdMap.set(archived.id, id)
+      duplicates.add(archived, id)
+      existingIds.add(id)
+      const originalBlob = new Blob(
+        deferFiles ? [] : [(await this.staging.get(jobId, archived.archivePath))!.blob],
+        {
+          type: archived.mimeType,
+        },
+      )
+      const thumbnailBlob =
+        !deferFiles &&
+        (archived.type === RESOURCE_TYPE.CHARACTER_CARD || isAvatarAttachment) &&
+        (archived.mimeType === 'image/png' || /\.png$/i.test(archived.fileName))
+          ? ((await createImageThumbnail(originalBlob)) ??
+            (isAvatarAttachment ? originalBlob : undefined))
+          : undefined
+      const archivedCategoryIds = Array.isArray(archived.categoryIds)
+        ? archived.categoryIds
+        : archived.categoryId
+          ? [archived.categoryId]
+          : []
+      const categoryIds = Array.from(
+        new Set(
+          archivedCategoryIds.flatMap((categoryId) => {
+            const mappedId = categoryIdMap.get(categoryId)
+            return mappedId ? [mappedId] : []
+          }),
+        ),
+      )
+      resourcesToRestore.push({
+        id,
+        type: archived.type,
+        name: archived.name,
+        description: archived.description,
+        fileName: archived.fileName,
+        mimeType: archived.mimeType,
+        fileSize: archived.fileSize,
+        contentHash: archiveHash,
+        favorite: archived.favorite,
+        categoryId: categoryIds[0] ?? null,
+        categoryIds,
+        relatedResourceIds: Array.isArray(archived.relatedResourceIds)
+          ? archived.relatedResourceIds
+          : [],
+        sourceLinks: normalizeResourceLinks(archived.sourceLinks),
+        tags: archived.tags,
+        metadata: archived.metadata,
+        thumbnailBlob,
+        originalBlob,
+        createdAt: archived.createdAt,
+        updatedAt: archived.updatedAt,
+      })
+    }
+
+    const availableResourceIds = new Set([
+      ...existingResources.map((resource) => resource.id),
+      ...resourcesToRestore.map((resource) => resource.id),
+    ])
+    let normalizedResources = resourcesToRestore.map((resource) =>
+      normalizeResource({
+        ...resource,
+        metadata: remapManualBindings(resource.metadata, resourceIdMap),
+        relatedResourceIds: (resource.relatedResourceIds ?? [])
+          .map((relatedId) => resourceIdMap.get(relatedId) ?? relatedId)
+          .filter((relatedId) => availableResourceIds.has(relatedId)),
+      }),
+    )
+    const restoredResourcesById = new Map(
+      [...existingResources, ...normalizedResources].map((resource) => [resource.id, resource]),
+    )
+    normalizedResources = normalizedResources.map((resource) => {
+      if (resource.type !== RESOURCE_TYPE.USER_PERSONA) return resource
+      const defaultAvatarId =
+        typeof resource.metadata.defaultPersonaAvatarId === 'string'
+          ? resource.metadata.defaultPersonaAvatarId
+          : ''
+      const relatedAvatars = (resource.relatedResourceIds ?? [])
+        .map((resourceId) => restoredResourcesById.get(resourceId))
+        .filter((candidate): candidate is Resource =>
+          Boolean(candidate && isUserPersonaAvatarAttachment(candidate)),
+        )
+      const cover =
+        relatedAvatars.find((candidate) => candidate.metadata.avatarId === defaultAvatarId) ??
+        relatedAvatars[0]
+      return cover?.thumbnailBlob ? { ...resource, thumbnailBlob: cover.thumbnailBlob } : resource
+    })
+
+    const versionKeys = new Set(
+      existingResources.length ? await this.storage.listRestoreVersionKeys?.() : [],
+    )
+    const versionsToRestore: Resource[] = []
+    for (const archived of manifest.versions ?? []) {
+      const stagedFile = await this.staging.getMetadata(jobId, archived.archivePath)
+      if (!stagedFile) throw new Error(`备份缺少历史版本文件：${archived.fileName}`)
+      if (stagedFile.size !== archived.fileSize) {
+        throw new Error(`历史版本大小校验失败：${archived.fileName}`)
+      }
+      const archiveHash = archived.contentHash.toLocaleLowerCase()
+      if (stagedFile.sha256 !== archiveHash) {
+        throw new Error(`历史版本完整性校验失败：${archived.fileName}`)
+      }
+      const groupId = archived.versionGroupId
+        ? (resourceIdMap.get(archived.versionGroupId) ?? archived.versionGroupId)
+        : undefined
+      if (!groupId || !availableResourceIds.has(groupId)) continue
+      const key = restoreVersionKey(archived, groupId)
+      if (!replacement && versionKeys.has(key)) continue
+      versionKeys.add(key)
+      const id = crypto.randomUUID()
+      existingIds.add(id)
+      const originalBlob = new Blob(
+        deferFiles ? [] : [(await this.staging.get(jobId, archived.archivePath))!.blob],
+        {
+          type: archived.mimeType,
+        },
+      )
+      const thumbnailBlob =
+        !deferFiles &&
+        archived.type === RESOURCE_TYPE.CHARACTER_CARD &&
+        (archived.mimeType === 'image/png' || /\.png$/i.test(archived.fileName))
+          ? await createImageThumbnail(originalBlob)
+          : undefined
+      versionsToRestore.push(
+        normalizeResource({
+          ...archived,
+          id,
+          versionGroupId: groupId,
+          originalBlob,
+          thumbnailBlob,
+        }),
+      )
+    }
+
+    const mappedCommunitySourceData = communitySourceData
+      ? remapCommunitySourceBackupBindings(communitySourceData, resourceIdMap)
+      : undefined
+
+    const files = new Map(
+      [...manifest.resources, ...(manifest.versions ?? [])].map((resource) => [
+        resource.contentHash.toLowerCase(),
+        resource.archivePath,
+      ]),
+    )
+    const prepared: PreparedRestore = {
+      forReplacement:
+        deferFiles && manifest.mode === 'full' && !replacement
+          ? () =>
+              this.prepareStaged(fileName, jobId, manifest, communitySourceData, [], [], true, true)
+          : undefined,
+      openFiles: deferFiles
+        ? () => this.openArchiveFiles(jobId, files, normalizedResources)
+        : undefined,
+      dispose: deferFiles ? () => this.staging.deleteJob(jobId) : undefined,
+      preview: {
+        fileName,
+        mode: manifest.mode,
+        createdAt: manifest.createdAt,
+        archiveResourceCount: manifest.resourceCount,
+        resourcesToAdd: resourcesToRestore.length,
+        duplicatesToSkip,
+        conflictsToPreserve,
+        categoriesToCreate: categoriesToCreate.length,
+        categoriesToReuse,
+        communitySourceCount: mappedCommunitySourceData?.sources.length,
+        communityMessageCount: mappedCommunitySourceData?.messages.length,
+        portableSections: [
+          manifest.portableData?.appearance ? '外观与 CSS 预设' : '',
+          manifest.portableData?.cloudBackup ? '云端备份配置' : '',
+          manifest.portableData?.characterDraw ? '抽了么记录' : '',
+          manifest.portableData?.chatReader ? '读了么阅读数据' : '',
+          manifest.portableData?.generalPreferences ? '常用偏好' : '',
+          mappedCommunitySourceData ? 'Discord 社区来源' : '',
+        ].filter(Boolean),
+      },
+      resources: normalizedResources,
+      versions: versionsToRestore,
+      categories: categoriesToCreate,
+      portableData: remapReaderPortableData(manifest.portableData, resourceIdMap),
+      communitySourceData: mappedCommunitySourceData,
+    }
+    return prepared
+  }
+
   private async openArchiveFiles(
-    file: File,
+    jobId: string,
     paths: Map<string, string>,
     resources: Resource[],
   ): Promise<{ hydrate: (resource: Resource) => Promise<Resource>; dispose: () => Promise<void> }> {
-    const jobId = await stageArchive(file, this.staging)
     const materialize = async (resource: Resource): Promise<Resource> => {
       const path = paths.get(resource.contentHash.toLowerCase())
       const entry = path ? await this.staging.get(jobId, path) : undefined
@@ -837,9 +877,11 @@ export class RestoreService {
   async restore(
     prepared: PreparedRestore,
     hydrate?: (resource: Resource) => Promise<Resource>,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<RestoreReport> {
     const session = await prepared.openFiles?.()
     hydrate ??= session?.hydrate
+    let restored = false
     try {
       if (!hydrate) await this.validateSecrets([...prepared.resources, ...prepared.versions])
       await this.storage.restore(
@@ -853,9 +895,11 @@ export class RestoreService {
               return ready
             }
           : undefined,
+        onProgress,
       )
+      restored = true
     } finally {
-      await session?.dispose()
+      if (restored) await session?.dispose()
     }
     if (prepared.communitySourceData && this.communitySources) {
       await this.communitySources.restoreBackup(prepared.communitySourceData, 'merge')
@@ -923,8 +967,16 @@ export class RestoreService {
     }
   }
 
-  async replace(prepared: PreparedRestore): Promise<RestoreReport> {
+  async replace(
+    prepared: PreparedRestore,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
+  ): Promise<RestoreReport> {
+    prepared = (await prepared.forReplacement?.()) ?? prepared
+    if (prepared.preview.duplicatesToSkip || prepared.preview.categoriesToReuse) {
+      throw new Error('整库覆盖需要完整备份计划，请重新预检备份')
+    }
     const session = await prepared.openFiles?.()
+    let replaced = false
     try {
       if (!session) await this.validateSecrets([...prepared.resources, ...prepared.versions])
       await this.storage.replace(
@@ -938,9 +990,11 @@ export class RestoreService {
               return ready
             }
           : undefined,
+        onProgress,
       )
+      replaced = true
     } finally {
-      await session?.dispose()
+      if (replaced) await session?.dispose()
     }
     if (prepared.communitySourceData && this.communitySources) {
       await this.communitySources.restoreBackup(prepared.communitySourceData, 'replace')

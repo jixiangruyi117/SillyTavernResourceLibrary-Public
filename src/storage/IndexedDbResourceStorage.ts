@@ -1018,28 +1018,43 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     )
   }
 
-  async deleteMany(ids: string[]): Promise<void> {
-    await this.database.transaction(
-      'rw',
-      this.database.resources,
-      this.database.resourceSummaries,
-      this.database.resourceListSummaries,
-      this.database.resourceVersions,
-      this.database.resourceVersionSummaries,
-      async () => {
-        const versions = await this.database.resourceVersions
-          .where('versionGroupId')
-          .anyOf(ids)
-          .primaryKeys()
-        if (versions.length) {
-          await this.database.resourceVersions.bulkDelete(versions)
-          await this.database.resourceVersionSummaries.bulkDelete(versions)
-        }
-        await this.database.resources.bulkDelete(ids)
-        await this.database.resourceSummaries.bulkDelete(ids)
-        await this.database.resourceListSummaries.bulkDelete(ids)
-      },
-    )
+  async deleteMany(
+    ids: string[],
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void> {
+    const uniqueIds = Array.from(new Set(ids))
+    if (!uniqueIds.length) return
+    const versionsTable = this.database.resourceVersions
+    const versionCount = await versionsTable.where('versionGroupId').anyOf(uniqueIds).count()
+    const total = uniqueIds.length + versionCount
+    const batchSize = 64
+    let completed = 0
+    onProgress?.({ completed, total })
+    for (let offset = 0; offset < uniqueIds.length; offset += batchSize) {
+      const batch = uniqueIds.slice(offset, offset + batchSize)
+      let deletedVersions = 0
+      await this.database.transaction(
+        'rw',
+        this.database.resources,
+        this.database.resourceSummaries,
+        this.database.resourceListSummaries,
+        versionsTable,
+        this.database.resourceVersionSummaries,
+        async () => {
+          const versions = await versionsTable.where('versionGroupId').anyOf(batch).primaryKeys()
+          deletedVersions = versions.length
+          if (versions.length) {
+            await versionsTable.bulkDelete(versions)
+            await this.database.resourceVersionSummaries.bulkDelete(versions)
+          }
+          await this.database.resources.bulkDelete(batch)
+          await this.database.resourceSummaries.bulkDelete(batch)
+          await this.database.resourceListSummaries.bulkDelete(batch)
+        },
+      )
+      completed += batch.length + deletedVersions
+      onProgress?.({ completed, total })
+    }
   }
 
   private toStoredSummary(resource: StoredResource): StoredResourceSummary {

@@ -10,6 +10,7 @@ const mirror = vi.hoisted(() => ({
   stage: vi.fn(),
   clear: vi.fn(),
   remove: vi.fn(),
+  removeMany: vi.fn(),
   available: vi.fn(),
 }))
 
@@ -18,6 +19,7 @@ vi.mock('./NativeResourceFileMirror', () => ({
   isAndroidNativeResourceMirrorAvailable: mirror.available,
   clearNativeResourceFiles: mirror.clear,
   removeNativeResourceFile: mirror.remove,
+  removeNativeResourceFiles: mirror.removeMany,
 }))
 
 import { NativeMirroredResourceStorage } from './NativeMirroredResourceStorage'

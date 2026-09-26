@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import CharacterCardMigrationReview from './components/CharacterCardMigrationReview.vue'
 import ProjectNoticeDialog from './components/ProjectNoticeDialog.vue'
 import { createAsyncPanel } from './core/AsyncPanel'
 import { markStartupReady } from './core/SafeStartup'
@@ -41,5 +42,6 @@ onMounted(async () => {
 <template>
   <LibraryApp />
   <ConfirmDialog />
+  <CharacterCardMigrationReview />
   <ProjectNoticeDialog :open="isProjectNoticeOpen" @acknowledged="acknowledgeProjectNotice" />
 </template>

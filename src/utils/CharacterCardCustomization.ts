@@ -4,6 +4,10 @@ import { prepareUserPersonaAvatar } from './UserPersonaAvatar'
 import { hashBlob } from '../services/HashService'
 import { parseGreetingResource } from '../types/GreetingResource'
 import { mergeGreetingScripts, type GreetingScriptChoice } from './GreetingScriptMerge'
+import {
+  applyCharacterCardContentEdits,
+  readCharacterCardContentEdits,
+} from './CharacterCardContentEdits'
 
 export interface CharacterCardOverrides {
   regexEnabled?: Record<string, boolean>
@@ -298,9 +302,10 @@ export async function createModifiedCharacterResource(
 ): Promise<Resource> {
   if (resource.type !== RESOURCE_TYPE.CHARACTER_CARD) return resource
   const overrides = readCharacterCardOverrides(resource.metadata)
-  if (!hasCharacterCardOverrides(overrides)) return resource
   const sourceCard = isRecord(resource.metadata.card) ? resource.metadata.card : undefined
   if (!sourceCard) throw new Error(`“${resource.name}”缺少可修改的角色卡数据`)
+  const contentEdits = readCharacterCardContentEdits(resource.metadata.characterContentEdits)
+  if (!hasCharacterCardOverrides(overrides) && !contentEdits.length) return resource
 
   const replacementContent: CharacterReplacementContent = {}
   if (overrides.worldBookResourceId) {
@@ -319,7 +324,20 @@ export async function createModifiedCharacterResource(
     if (!replacementContent.greetings?.length) throw new Error(`“${source.name}”没有可用的开场白`)
   }
 
-  const modifiedCard = applyCharacterCardOverrides(sourceCard, overrides, replacementContent)
+  const applied = applyCharacterCardContentEdits(sourceCard, contentEdits)
+  if (applied.conflicts.length)
+    throw new Error(
+      `有 ${applied.conflicts.length} 项卡内修改无法应用，请在内容编辑中处理后再导出修改版：${applied.conflicts
+        .map((edit) => edit.label)
+        .slice(0, 5)
+        .join('、')}`,
+    )
+  const cardWithContentEdits = applied.card
+  const modifiedCard = applyCharacterCardOverrides(
+    cardWithContentEdits,
+    overrides,
+    replacementContent,
+  )
   const isPng = resource.mimeType === 'image/png' || /\.png$/i.test(resource.fileName)
   const modifiedPngBytes = isPng
     ? await replacePngCharacterChunk(
@@ -338,6 +356,7 @@ export async function createModifiedCharacterResource(
   const metadata = cloneJson(resource.metadata)
   metadata.card = modifiedCard
   delete metadata.characterOverrides
+  delete metadata.characterContentEdits
   return {
     ...resource,
     metadata,

@@ -1314,6 +1314,11 @@
         previousOffset: direction === 'previous' ? result.previousOffset : oldPage.previousOffset,
         nextOffset: direction === 'next' ? result.nextOffset : oldPage.nextOffset,
       }
+      // Evicted floors remain reachable when the reader reverses direction.
+      const removedBefore = merged.filter((entry) => entry.index < kept[0]?.index)
+      const removedAfter = merged.filter((entry) => entry.index > kept.at(-1)?.index)
+      if (removedBefore.length) pageData.previousOffset = removedBefore.at(-1).index
+      if (removedAfter.length) pageData.nextOffset = removedAfter[0].index
       shadow
         .querySelector('#reader-virtual-top')
         ?.style.setProperty('height', `${virtualTopHeight}px`, 'important')
@@ -2144,12 +2149,12 @@
         const viewport = $('#readingViewport')
         const distanceToBottom = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop
         if (
-          distanceToBottom < 240 &&
+          distanceToBottom - virtualBottomHeight < 240 &&
           viewport.scrollHeight > viewport.clientHeight + 1 &&
           pageData.nextOffset !== null
         )
           run(() => extendContinuous('next'))
-        else if (viewport.scrollTop < 240 && previousOffset() !== null)
+        else if (viewport.scrollTop - virtualTopHeight < 240 && previousOffset() !== null)
           run(() => extendContinuous('previous'))
       }
       clearTimeout(saveTimer)

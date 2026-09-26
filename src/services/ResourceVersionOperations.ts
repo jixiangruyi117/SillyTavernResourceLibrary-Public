@@ -4,6 +4,7 @@ import type { ParsedResource } from '../types/Import'
 import { RESOURCE_TYPE } from '../types/Resource'
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
 import type { Resource } from '../types/Resource'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import type { ResourceVersionView } from '../types/ResourceOperations'
 import {
   resourceLogicalVersionKey,
@@ -54,6 +55,7 @@ export type VersionImportRequest = [
   metadataPatch?: Record<string, unknown>,
   allowIndependentDuplicate?: boolean,
   preservePreviousVersion?: boolean,
+  characterContentEdits?: CharacterCardContentEdit[],
 ]
 
 export async function importAsVersion(
@@ -68,6 +70,7 @@ export async function importAsVersion(
     metadataPatch = {},
     allowIndependentDuplicate = false,
     preservePreviousVersion = true,
+    characterContentEdits,
   ]: VersionImportRequest
 ): Promise<Resource> {
   const current = await storage.get(resourceId)
@@ -126,6 +129,7 @@ export async function importAsVersion(
       ...version.metadata,
       authorNote: current.metadata.authorNote,
       manuallyBoundResourceIds: current.metadata.manuallyBoundResourceIds,
+      ...(characterContentEdits ? { characterContentEdits } : {}),
     },
     thumbnailBlob: version.thumbnailBlob,
     originalBlob: version.originalBlob,

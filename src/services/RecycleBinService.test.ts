@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppDatabase } from '../database/AppDatabase'
 import { ResourceParserRegistry } from '../parser/ResourceParser'
@@ -95,7 +95,12 @@ describe('RecycleBinService', () => {
     await resourceStorage.saveMany([atlas, companion, untouched])
     await resourceStorage.saveVersion(atlasVersion)
 
+    const eagerVersions = vi
+      .spyOn(resourceService, 'listVersions')
+      .mockRejectedValue(new Error('must not load all originals'))
     const entry = await recycleBin.moveToRecycleBin([atlas.id])
+    expect(eagerVersions).not.toHaveBeenCalled()
+    eagerVersions.mockRestore()
 
     expect(entry.resourceCount).toBe(1)
     expect(await resourceService.get(atlas.id)).toBeUndefined()

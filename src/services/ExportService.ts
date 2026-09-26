@@ -293,6 +293,7 @@ export class ExportService {
     categories: Category[],
     options: ArchiveOptions,
     versions: Resource[] = [],
+    transfer?: ArchiveTransferOptions,
   ): Promise<CreatedArchive> {
     const preparedOptions = await this.prepareOptions(options)
     return this.createSingleArchive(
@@ -305,6 +306,9 @@ export class ExportService {
       undefined,
       versions,
       resources,
+      undefined,
+      undefined,
+      transfer,
     )
   }
 

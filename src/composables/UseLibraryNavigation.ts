@@ -15,6 +15,7 @@ interface LibraryNavigationContext {
   activeFilter: Ref<FilterValue>
   activeCategoryId: Ref<string | null | undefined>
   activeTag: Ref<string, string>
+  activeResourceIds?: Ref<Set<string> | undefined>
   sortValue: Ref<SortValue>
   currentPage: Ref<number, number>
   selectedSplitResourceId: Ref<string | undefined>
@@ -33,7 +34,9 @@ interface LibraryNavigationContext {
   isDataProtectionOpen: Ref<boolean, boolean>
   isRecycleBinOpen: Ref<boolean, boolean>
   isDuplicateCleanerOpen: Ref<boolean, boolean>
+  isSimilarNameGroupsOpen: Ref<boolean, boolean>
   isExtractedCleanerOpen: Ref<boolean, boolean>
+  isParsedTagCleanerOpen: Ref<boolean, boolean>
   isVersionRecognitionOpen: Ref<boolean, boolean>
   isVaultPanelOpen: Ref<boolean, boolean>
   openImportChooser: () => void
@@ -70,6 +73,7 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
 
   function clearBrowsingState(): void {
     const context = getContext()
+    if (context.activeResourceIds) context.activeResourceIds.value = undefined
 
     context.searchQuery.value = ''
     context.activeFilter.value = 'all'
@@ -80,6 +84,7 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
 
   function selectMobileDestination(filter: 'all' | 'favorites'): void {
     const context = getContext()
+    if (context.activeResourceIds) context.activeResourceIds.value = undefined
 
     context.isFeatureHubOpen.value = false
     context.searchQuery.value = ''
@@ -123,7 +128,9 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
     context.isDataProtectionOpen.value = false
     context.isRecycleBinOpen.value = false
     context.isDuplicateCleanerOpen.value = false
+    context.isSimilarNameGroupsOpen.value = false
     context.isExtractedCleanerOpen.value = false
+    context.isParsedTagCleanerOpen.value = false
     context.isVersionRecognitionOpen.value = false
     context.isMobileFiltersOpen.value = false
     context.isVaultPanelOpen.value = false
@@ -175,7 +182,8 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
   function handleBrowseBack(): void {
     const context = getContext()
 
-    if (context.searchQuery.value) context.cancelSearchInput()
+    if (context.activeResourceIds?.value) context.activeResourceIds.value = undefined
+    else if (context.searchQuery.value) context.cancelSearchInput()
     else if (context.activeTag.value) context.activeTag.value = ''
     else if (context.activeCategoryId.value !== undefined)
       context.activeCategoryId.value = undefined

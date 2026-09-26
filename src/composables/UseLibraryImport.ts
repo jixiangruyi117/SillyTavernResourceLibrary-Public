@@ -1,18 +1,18 @@
 import type { ComputedRef, Ref, ShallowRef } from 'vue'
 import { computed, nextTick } from 'vue'
-import {
-  categoryService,
-  historyService,
-  resourceArchiveService,
-  resourceService,
-} from '../core/AppContainer'
+import { resourceArchiveService, resourceService } from '../core/AppContainer'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 import { confirmChatImports } from './UseChatImportConfirmation'
 import { confirmAction } from './UseConfirmDialog'
+import {
+  migrateCharacterCardContentWithReview,
+  selectCharacterCardMigrationEdits,
+} from '../services/CharacterCardMigrationReview'
 import type { ImportVersionCandidate } from '../types/Import'
 import {
   analyzeResourceLink,
   getResourceLinkRiskBadges,
+  RESOURCE_TYPE,
   RESOURCE_INSTALL_TARGET,
   RESOURCE_INSTALL_TARGET_LABELS,
   RESOURCE_LINK_PURPOSE,
@@ -21,11 +21,30 @@ import {
   type ResourceLink,
 } from '../types/Resource'
 import { summarizeFileNames, summarizeResourceTypes } from '../utils/LibraryFormatting'
-import { createResourceArchiveSource } from '../services/ExportService'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
+import { PngResourceParser } from '../parser/PngResourceParser'
+import { JsonResourceParser } from '../parser/JsonResourceParser'
+import { isRecord } from '../utils/UnknownValue'
+import { readCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
+import { taskCenter } from '../core/TaskCenter'
+import type { ArchiveStageProgress } from '../services/ArchiveExtraction'
+import {
+  isNativeImportKeepAliveAvailable,
+  startNativeImportKeepAlive,
+  stopNativeImportKeepAlive,
+  updateNativeImportKeepAlive,
+} from '../services/NativeImportKeepAlive'
+import { requestNativeNotifications } from '../core/NativeSecurity'
+import type { NoticeType } from '../core/NoticeCenter'
 
 interface LibraryImportContext {
   pendingBackupImport: Ref<File | undefined>
-  showNotice: (message: string, duration?: number, preserveRecycleUndo?: boolean) => void
+  showNotice: (
+    message: string,
+    duration?: number,
+    preserveRecycleUndo?: boolean,
+    type?: NoticeType,
+  ) => void
   activeVersionImport: ComputedRef<ImportVersionCandidate | undefined>
   isNativeApk: boolean
   isBusy: Ref<boolean, boolean>
@@ -35,6 +54,7 @@ interface LibraryImportContext {
   linkImportText: Ref<string, string>
   isLinkImportOpen: Ref<boolean, boolean>
   isImportChooserOpen: Ref<boolean, boolean>
+  isRestorePanelOpen: Ref<boolean, boolean>
   isFeatureHubOpen: Ref<boolean, boolean>
   fileImportInput: Readonly<ShallowRef<HTMLInputElement | null>>
   tavernBackupInput: Readonly<ShallowRef<HTMLInputElement | null>>
@@ -47,6 +67,7 @@ interface LibraryImportContext {
   hideCharacterAssets: Ref<boolean, boolean>
   refreshStorageHealth: () => Promise<void>
   isVersionImportBusy: Ref<boolean, boolean>
+  sharedAppImportFiles: Ref<File[], File[]>
 }
 
 interface ImportTotals {
@@ -58,6 +79,45 @@ interface ImportTotals {
 
 export function useLibraryImport(getContext: () => LibraryImportContext) {
   const linkImportUrls = computed(() => splitLinkImportText(getContext().linkImportText.value))
+  let handlingSharedImport = false
+  let foregroundImportTaskId = ''
+
+  async function startImportTask(taskId: string): Promise<void> {
+    const task = taskCenter.list().find((item) => item.operationId === taskId)
+    if (!task || !isNativeImportKeepAliveAvailable()) return
+    const notificationsGranted = await requestNativeNotifications().catch(() => false)
+    if (!notificationsGranted) {
+      getContext().showNotice('系统通知未开启；后台导入仍会尝试继续，但通知栏可能不显示进度。')
+    }
+    foregroundImportTaskId = taskId
+    const started = await startNativeImportKeepAlive(task.name, task.phase)
+    if (!started) {
+      foregroundImportTaskId = ''
+      getContext().showNotice('Android 后台导入通知未能启动；导入仍会继续，切换到后台后可能暂停。')
+    }
+  }
+
+  function updateImportTask(
+    taskId: string,
+    changes: Parameters<typeof taskCenter.update>[1],
+  ): void {
+    taskCenter.update(taskId, changes)
+    if (foregroundImportTaskId !== taskId) return
+    const task = taskCenter.list().find((item) => item.operationId === taskId)
+    if (task) updateNativeImportKeepAlive(task.name, task.phase, task.progress)
+  }
+
+  async function stopImportTask(taskId: string): Promise<void> {
+    if (foregroundImportTaskId !== taskId) return
+    const task = taskCenter.list().find((item) => item.operationId === taskId)
+    foregroundImportTaskId = ''
+    await stopNativeImportKeepAlive({
+      title: task?.status === 'completed' ? '导入已完成' : '导入未完成',
+      message: task?.error || task?.name || '导入任务已结束',
+      successful: task?.status === 'completed',
+      notify: document.visibilityState === 'hidden' && !getContext().isRestorePanelOpen.value,
+    })
+  }
 
   const linkImportPreview = computed(() => {
     const url = linkImportUrls.value[0]
@@ -124,32 +184,147 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       context.showNotice('酒馆备份必须是 ZIP 文件。普通资源请使用“导入本地资源 / 备份”。')
       return
     }
+    await importTavernBackupFile(file)
+  }
+
+  async function importTavernBackupFile(file: File): Promise<boolean> {
+    const context = getContext()
+    if (context.isBusy.value) return false
     context.isBusy.value = true
+    const operationId = taskCenter.start({ name: '导入酒馆备份', phase: '读取并校验 ZIP' })
+    let success = false
+    await startImportTask(operationId)
     try {
-      context.showNotice(`正在校验 SillyTavern 备份：${file.name}…`)
-      await resourceArchiveService.validateTavernBackup(file)
+      context.showNotice(`正在处理 SillyTavern 备份：${file.name}…`)
       let batch: File[] = []
       let count = 0
       const totals: ImportTotals = { imported: 0, duplicate: 0, failed: 0, firstFailure: '' }
-      for await (const resourceFile of resourceArchiveService.tavernFiles(file)) {
+      updateImportTask(operationId, { phase: '验证备份结构并解压资源' })
+      for await (const resourceFile of resourceArchiveService.tavernFiles(file, (progress) => {
+        reportArchiveProgress(operationId, progress)
+      })) {
         batch.push(resourceFile)
         count++
         if (batch.length === 10) {
-          await importResourceFiles(batch, totals)
+          updateImportTask(operationId, { phase: `正在导入已提取资源（已提取 ${count} 项）` })
+          await importResourceFiles(batch, totals, operationId)
           batch = []
         }
       }
-      if (batch.length) await importResourceFiles(batch, totals)
+      if (batch.length) {
+        updateImportTask(operationId, { phase: `正在导入最后 ${batch.length} 项资源` })
+        await importResourceFiles(batch, totals, operationId)
+      }
       context.showNotice(
         count
           ? `酒馆备份已提取 ${count} 个受支持资源文件：成功 ${totals.imported}，重复 ${totals.duplicate}，失败 ${totals.failed}${totals.firstFailure ? `（${totals.firstFailure}）` : ''}。${context.pendingVersionImports.value.length ? '有文件待确认历史版本。' : ''}聊天、缓存、账号密钥、系统提示词及不支持的配置未导入。`
           : '已确认是 SillyTavern 备份，但没有发现当前支持导入的资源。',
         9000,
+        false,
+        totals.failed ? 'error' : 'success',
       )
+      taskCenter.complete(operationId)
+      success = totals.failed === 0
     } catch (error) {
+      taskCenter.fail(operationId, error)
       context.showNotice(error instanceof Error ? error.message : '酒馆备份导入失败', 9000)
     } finally {
       context.isBusy.value = false
+      await stopImportTask(operationId)
+    }
+    return success
+  }
+
+  async function handleSharedImportChoice(
+    files: File[],
+    route: 'libraryBackup' | 'tavernBackup' | 'resource' | 'thirdPartyApp',
+  ): Promise<boolean> {
+    const context = getContext()
+    if (!files.length || context.isBusy.value || handlingSharedImport) return false
+    if (route === 'thirdPartyApp') {
+      context.sharedAppImportFiles.value = files
+      context.isFeatureHubOpen.value = true
+      return true
+    }
+    if (route === 'tavernBackup') {
+      if (files.length !== 1 || !/\.zip$/i.test(files[0]!.name)) {
+        context.showNotice('酒馆备份导入一次请选择一个 ZIP；资源库备份请选择“导入资源库备份”。')
+        return false
+      }
+      handlingSharedImport = true
+      try {
+        return await importTavernBackupFile(files[0]!)
+      } finally {
+        handlingSharedImport = false
+      }
+    }
+    const operationId = taskCenter.start({
+      name:
+        route === 'libraryBackup' ? '识别分享的资源库备份' : `识别分享的 ${files.length} 个资源`,
+      phase: '检查文件结构',
+    })
+    handlingSharedImport = true
+    await startImportTask(operationId)
+    try {
+      if (route === 'libraryBackup') {
+        if (files.length !== 1 || !/\.zip$/i.test(files[0]!.name)) {
+          context.showNotice('资源库备份导入一次请选择一个 ZIP；酒馆备份请选择“导入酒馆备份”。')
+          return false
+        }
+        const file = files[0]!
+        // The user's explicit route owns the parser. Do not run the generic ZIP
+        // classifier here: it also recognizes Tavern directory names and can
+        // mislabel an SRL archive before the restore service reads its manifest.
+        updateImportTask(operationId, { phase: '交由资源库恢复器预检' })
+        context.pendingBackupImport.value = file
+        context.openRestorePanel('import')
+        taskCenter.complete(operationId)
+        await context.handleRestoreInspect(file)
+        return true
+      }
+
+      const ordinaryFiles: File[] = []
+      const totals: ImportTotals = { imported: 0, duplicate: 0, failed: 0, firstFailure: '' }
+      const routeErrors: string[] = []
+      for (const file of files) {
+        if (!/\.zip$/i.test(file.name)) {
+          ordinaryFiles.push(file)
+          continue
+        }
+        const archive = await resourceArchiveService.readResourceArchive(file, (progress) =>
+          reportArchiveProgress(operationId, progress),
+        )
+        if (archive.kind === 'library') {
+          context.showNotice(`“${file.name}”是资源库备份，请改选“导入资源库备份”。`)
+          return false
+        }
+        if (archive.kind === 'personal') ordinaryFiles.push(file)
+        else if (archive.kind === 'resources') ordinaryFiles.push(...archive.files)
+        else routeErrors.push(`“${file.name}”是 SillyTavern 酒馆备份，请通过“导入酒馆备份”入口处理`)
+      }
+      if (ordinaryFiles.length) await importResourceFiles(ordinaryFiles, totals, operationId)
+      const failedCount = totals.failed + routeErrors.length
+      if (failedCount) {
+        const error = new Error(
+          `分享资源导入失败 ${failedCount} 项：${[totals.firstFailure, ...routeErrors].filter(Boolean).join('；') || '请查看任务详情'}`,
+        )
+        taskCenter.fail(operationId, error)
+        context.showNotice(error.message, 9000)
+        return false
+      }
+      taskCenter.complete(operationId)
+      context.showNotice(
+        `分享资源处理完成：成功 ${totals.imported}，重复 ${totals.duplicate}。`,
+        9000,
+      )
+      return true
+    } catch (error) {
+      taskCenter.fail(operationId, error)
+      context.showNotice(error instanceof Error ? error.message : '分享文件识别失败', 9000)
+      return false
+    } finally {
+      handlingSharedImport = false
+      await stopImportTask(operationId)
     }
   }
 
@@ -158,45 +333,80 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
 
     if (!selectedFiles.length || context.isBusy.value) return
     context.isBusy.value = true
+    const operationId = taskCenter.start({
+      name: selectedFiles.length > 1 ? `导入 ${selectedFiles.length} 个文件` : '导入资源',
+      phase: '读取所选文件',
+    })
+    await startImportTask(operationId)
     try {
       const ordinaryFiles = selectedFiles.filter((file) => !/\.zip$/i.test(file.name))
-      if (ordinaryFiles.length) await importResourceFiles(ordinaryFiles)
-      for (const file of selectedFiles.filter((item) => /\.zip$/i.test(item.name))) {
+      const totals: ImportTotals = { imported: 0, duplicate: 0, failed: 0, firstFailure: '' }
+      if (ordinaryFiles.length) await importResourceFiles(ordinaryFiles, totals, operationId)
+      const zipFiles = selectedFiles.filter((item) => /\.zip$/i.test(item.name))
+      const zipErrors: string[] = []
+      let handedToRestore = false
+      for (const [index, file] of zipFiles.entries()) {
         try {
-          context.isBusy.value = true
-          context.showNotice(`正在识别 ${file.name}…`)
-          const kind = await resourceArchiveService.inspect(file)
-          if (kind === 'library') {
+          updateImportTask(operationId, {
+            phase: `正在识别压缩包 ${index + 1}/${zipFiles.length}：${file.name}`,
+          })
+          const archive = await resourceArchiveService.readResourceArchive(file, (progress) =>
+            reportArchiveProgress(operationId, progress),
+          )
+          if (archive.kind === 'library') {
             context.pendingBackupImport.value = file
             if (!context.activeVersionImport.value) await openPendingBackupImport()
+            handedToRestore = true
             break
           }
-          if (kind === 'personal') {
-            await importResourceFiles([file])
+          if (archive.kind === 'personal') {
+            await importResourceFiles([file], totals, operationId)
             continue
           }
-          let batch: File[] = []
-          let count = 0
-          const totals: ImportTotals = { imported: 0, duplicate: 0, failed: 0, firstFailure: '' }
-          for await (const resourceFile of resourceArchiveService.tavernFiles(file)) {
-            batch.push(resourceFile)
-            count++
-            if (batch.length === 10) {
-              await importResourceFiles(batch, totals)
-              batch = []
-            }
+          if (archive.kind === 'resources') {
+            await importResourceFiles(archive.files, totals, operationId)
+            continue
           }
-          if (batch.length) await importResourceFiles(batch, totals)
-          context.showNotice(
-            `酒馆压缩包已处理 ${count} 个资源文件：成功 ${totals.imported}，重复 ${totals.duplicate}，失败 ${totals.failed}${totals.firstFailure ? `（${totals.firstFailure}）` : ''}。${context.pendingVersionImports.value.length ? '有文件待确认历史版本。' : ''}聊天、缓存及账号密钥未作为资源导入。`,
-            9000,
-          )
+          zipErrors.push(`“${file.name}”是 SillyTavern 酒馆备份，请通过“导入酒馆备份”入口处理`)
         } catch (error) {
-          context.showNotice(error instanceof Error ? error.message : '压缩包导入失败', 9000)
+          zipErrors.push(
+            `${file.name}：${error instanceof Error ? error.message : '压缩包导入失败'}`,
+          )
         }
       }
+      const failedCount = totals.failed + zipErrors.length
+      if (!handedToRestore)
+        context.showNotice(
+          `导入处理完成：成功 ${totals.imported}，重复 ${totals.duplicate}，失败 ${failedCount}${totals.firstFailure ? `（${totals.firstFailure}）` : ''}${zipErrors.length ? `；${zipErrors.slice(0, 3).join('；')}${zipErrors.length > 3 ? '；…' : ''}` : ''}`,
+          9000,
+          false,
+          failedCount ? 'error' : 'success',
+        )
+      if (failedCount)
+        taskCenter.fail(
+          operationId,
+          new Error(
+            `${failedCount} 项未能导入：${[totals.firstFailure, ...zipErrors].filter(Boolean).slice(0, 5).join('；')}${failedCount > 5 ? '；…' : ''}`,
+          ),
+        )
+      else taskCenter.complete(operationId)
+    } catch (error) {
+      taskCenter.fail(operationId, error)
+      context.showNotice(error instanceof Error ? error.message : '导入失败', 9000)
     } finally {
       context.isBusy.value = false
+      await stopImportTask(operationId)
+    }
+  }
+
+  function reportArchiveProgress(operationId: string, progress: ArchiveStageProgress): void {
+    taskCenter.updateTransfer(operationId, {
+      transferredBytes: progress.readBytes,
+      totalBytes: progress.totalBytes,
+    })
+    if (foregroundImportTaskId === operationId) {
+      const task = taskCenter.list().find((item) => item.operationId === operationId)
+      if (task) updateNativeImportKeepAlive(task.name, task.phase, task.progress)
     }
   }
 
@@ -312,17 +522,34 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     await context.handleRestoreInspect(file)
   }
 
-  async function importResourceFiles(files: File[], totals?: ImportTotals): Promise<boolean> {
+  async function importResourceFiles(
+    files: File[],
+    totals?: ImportTotals,
+    operationId?: string,
+  ): Promise<boolean> {
     const context = getContext()
 
     if (!files.length) return true
 
     const wasBusy = context.isBusy.value
     context.isBusy.value = true
+    const taskId =
+      operationId ??
+      taskCenter.start({
+        name:
+          files.length > 1 ? `导入 ${files.length} 项资源` : `导入资源：${files[0]?.name ?? ''}`,
+        phase: '准备导入',
+      })
+    const ownsTask = !operationId
     let resultsReceived = false
     try {
+      if (ownsTask) await startImportTask(taskId)
+      updateImportTask(taskId, { phase: `等待确认导入内容（${files.length} 项）` })
       const chatOptions = await confirmChatImports(files, resourceService)
-      if (!chatOptions) return false
+      if (!chatOptions) {
+        if (ownsTask) taskCenter.cancelled(taskId)
+        return false
+      }
       const { protectPersonalImport } = await import('../services/PersonalResourceImport')
       const { requestSecretPassword } = await import('./UseSecretPasswordPrompt')
       const protectedFiles = []
@@ -337,6 +564,13 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       const results = await resourceService.importFiles(protectedFiles, {
         ...chatOptions,
         extractCharacterAssets: context.extractCharacterAssets.value,
+        onProgress: ({ completed, total, fileName, phase }) => {
+          updateImportTask(taskId, {
+            phase: `${completed}/${total} 项 · ${phase}：${fileName}`,
+            progress: completed / Math.max(1, total),
+            itemProgress: { completed, total },
+          })
+        },
       })
       resultsReceived = true
       if (totals) {
@@ -407,7 +641,8 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           : '',
         isLargeImport ? '本次导入量较大，建议立即创建完整备份' : '',
       ].filter(Boolean)
-      context.showNotice(details.join('，'), 7000)
+      if (!totals) context.showNotice(details.join('，'), 7000)
+      if (ownsTask) taskCenter.complete(taskId)
       if (importedCount > 0) triggerNativeHaptic('success')
       await context.refreshStorageHealth()
       return true
@@ -416,12 +651,15 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         totals.failed += files.length
         totals.firstFailure ||= error instanceof Error ? error.message : '导入失败'
       }
-      context.showNotice(
-        error instanceof Error ? error.message : '本地数据库写入失败，请检查浏览器存储权限',
-      )
+      if (!totals)
+        context.showNotice(
+          error instanceof Error ? error.message : '本地数据库写入失败，请检查浏览器存储权限',
+        )
+      if (ownsTask) taskCenter.fail(taskId, error)
       return false
     } finally {
       context.isBusy.value = wasBusy
+      if (ownsTask) await stopImportTask(taskId)
     }
   }
 
@@ -443,7 +681,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       if (!decision.targetId) throw new Error('请选择要覆盖的已有资源')
       const confirmed = await confirmAction({
         title: isContainerVariant ? '覆盖当前封装' : '覆盖当前版本',
-        message: `将用“${pending.fileName}”替换「${selectedCandidate?.resource.name ?? '已有资源'}」的当前文件，旧版不会进入历史记录，只能通过本地快照恢复。确定继续吗？`,
+        message: `将用“${pending.fileName}”替换「${selectedCandidate?.resource.name ?? '已有资源'}」的当前文件。旧版会保存在该资源的历史版本中，不会为了单项修改创建整个资源库快照。确定继续吗？`,
         confirmLabel: isContainerVariant ? '覆盖当前封装' : '覆盖当前版本',
         danger: true,
         centered: true,
@@ -453,6 +691,40 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
 
     context.isVersionImportBusy.value = true
     try {
+      let importedCardEdits: CharacterCardContentEdit[] | undefined
+      if (
+        (decision.action === 'activate' || decision.action === 'replace') &&
+        selectedCandidate?.resource.type === RESOURCE_TYPE.CHARACTER_CARD
+      ) {
+        const current = await resourceService.get(selectedCandidate.resource.id)
+        if (!current) throw new Error('要迁移修改的角色卡已经不存在')
+        const tracked = readCharacterCardContentEdits(
+          current.metadata.characterContentEdits,
+        ).filter((edit) => edit.migrateToVersions)
+        const selectedEdits = await selectCharacterCardMigrationEdits(tracked, pending.fileName)
+        if (!selectedEdits) return
+        if (selectedEdits.length) {
+          const parsed = /\.png$/iu.test(pending.file.name)
+            ? await new PngResourceParser().parse(pending.file)
+            : await new JsonResourceParser().parse(pending.file)
+          const newCard = isRecord(parsed.metadata.card) ? parsed.metadata.card : undefined
+          if (parsed.type !== RESOURCE_TYPE.CHARACTER_CARD || !newCard)
+            throw new Error('所选新版本无法解析为角色卡，未迁移卡内修改')
+          const migration = await migrateCharacterCardContentWithReview(newCard, [], selectedEdits)
+          if (!migration) return
+          if (migration.conflicts.length) {
+            const scope = migration.conflicts.map((edit) => `• ${edit.label}`).join('\n')
+            const proceed = await confirmAction({
+              title: '有修改与新版本冲突',
+              message: `以下项目不会迁移：\n${scope}\n\n是否继续导入？冲突项将保留在旧版记录中，新版本原内容保持不变。`,
+              confirmLabel: '继续并跳过冲突',
+              cancelLabel: '取消导入',
+            })
+            if (!proceed) return
+          }
+          importedCardEdits = migration.edits
+        }
+      }
       if (decision.action === 'independent') {
         const [result] = await resourceService.importFiles([pending.file], {
           extractCharacterAssets: context.extractCharacterAssets.value,
@@ -468,13 +740,6 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         decision.action === 'replace'
       ) {
         if (!decision.targetId) throw new Error('请选择要归入的已有资源')
-        if (decision.action === 'replace') {
-          await historyService.capture(
-            await createResourceArchiveSource(resourceService),
-            await categoryService.list(),
-            '覆盖资源当前版本前自动快照',
-          )
-        }
         await resourceService.importAsVersion(
           pending.file,
           decision.targetId,
@@ -483,7 +748,8 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           isContainerVariant ? 'container' : undefined,
           {},
           false,
-          decision.action !== 'replace',
+          true,
+          importedCardEdits,
         )
         if (
           (decision.action === 'activate' || decision.action === 'replace') &&
@@ -491,17 +757,18 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         ) {
           await resourceService.extractCharacterAssetsMany([decision.targetId])
         }
+        const migratedCount = importedCardEdits?.length ?? 0
         context.showNotice(
           decision.action === 'replace'
             ? isContainerVariant
-              ? `“${pending.fileName}”已覆盖当前封装，旧封装未进入历史记录`
-              : `“${pending.fileName}”已覆盖当前版本，旧版未进入历史记录`
+              ? `“${pending.fileName}”已覆盖当前封装，旧封装仍保留在历史版本`
+              : `“${pending.fileName}”已覆盖当前版本，旧版已保存在该资源的历史版本${migratedCount ? `，迁移 ${migratedCount} 项修改` : ''}`
             : isContainerVariant
               ? decision.action === 'activate'
                 ? `“${pending.fileName}”已绑定到同一版本并设为当前封装，原文件仍完整保留`
                 : `“${pending.fileName}”已绑定为同一版本的另一份封装，当前展示未改变`
               : decision.action === 'activate'
-                ? `“${pending.fileName}”已设为当前版本，旧版已收入历史`
+                ? `“${pending.fileName}”已设为当前版本，旧版已收入历史${migratedCount ? `，迁移 ${migratedCount} 项修改` : ''}`
                 : `“${pending.fileName}”已加入历史，当前展示版本未改变`,
         )
       }
@@ -535,5 +802,6 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     openPendingBackupImport,
     importResourceFiles,
     handleVersionImportDecision,
+    handleSharedImportChoice,
   }
 }

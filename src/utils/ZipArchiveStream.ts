@@ -1,5 +1,13 @@
 /** Feed ZIP entries using central-directory boundaries, never signatures inside APK/ZIP payloads. */
-export async function* zipArchiveChunks(file: Blob): AsyncGenerator<Uint8Array> {
+// Reads stay large; inflate inputs stay bounded because 64 KiB of compressed
+// text can expand to tens of MiB before the staging writer gets backpressure.
+const DEFLATE_PUSH_CHUNK_BYTES = 8 * 1024
+const DEFLATE_READ_BATCH_BYTES = 512 * 1024
+
+export async function* zipArchiveChunks(
+  file: Blob,
+  onPlan?: (plan: { entries: number; uncompressedBytes: number }) => void,
+): AsyncGenerator<Uint8Array> {
   const read = async (offset: number, length: number) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > file.size)
       throw new Error('ZIP 边界无效')
@@ -119,6 +127,9 @@ export async function* zipArchiveChunks(file: Blob): AsyncGenerator<Uint8Array> 
     })
     cursor = recordEnd
   }
+  const uncompressedBytes = entries.reduce((total, entry) => total + entry.original, 0)
+  if (!Number.isSafeInteger(uncompressedBytes)) throw new Error('ZIP 解压后大小超出支持范围')
+  onPlan?.({ entries: entries.length, uncompressedBytes })
   for (const entry of entries.sort((a, b) => a.offset - b.offset)) {
     const fixed = view(await read(entry.offset, 30))
     if (
@@ -143,11 +154,23 @@ export async function* zipArchiveChunks(file: Blob): AsyncGenerator<Uint8Array> 
     previousEnd = entry.offset + headerSize + entry.compressed
     if (previousEnd > directoryOffset) throw new Error('ZIP 条目越界')
     yield header
-    // DEFLATE can expand an input block by roughly 1032x. Bound each decode turn,
-    // including highly compressible files, before staging applies backpressure.
-    const step = entry.method === 8 ? 4096 : 256 * 1024
-    for (let offset = entry.offset + headerSize; offset < previousEnd; offset += step)
-      yield await read(offset, Math.min(step, previousEnd - offset))
+    if (entry.method === 8) {
+      // Keep inflater turns bounded while avoiding a separate Blob read for every
+      // decoder input. Read in 512 KiB batches and expose 64 KiB views to the inflater.
+      for (
+        let offset = entry.offset + headerSize;
+        offset < previousEnd;
+        offset += DEFLATE_READ_BATCH_BYTES
+      ) {
+        const batch = await read(offset, Math.min(DEFLATE_READ_BATCH_BYTES, previousEnd - offset))
+        for (let index = 0; index < batch.length; index += DEFLATE_PUSH_CHUNK_BYTES)
+          yield batch.subarray(index, Math.min(index + DEFLATE_PUSH_CHUNK_BYTES, batch.length))
+      }
+    } else {
+      const step = 256 * 1024
+      for (let offset = entry.offset + headerSize; offset < previousEnd; offset += step)
+        yield await read(offset, Math.min(step, previousEnd - offset))
+    }
   }
   // A following directory record also lets fflate finish a trailing zero-byte entry.
   yield directory

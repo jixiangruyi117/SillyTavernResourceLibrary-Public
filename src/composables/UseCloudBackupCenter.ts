@@ -39,6 +39,7 @@ import {
 } from '../services/BackupScopeRegistry'
 import { downloadBlob } from '../utils/LibraryFormatting'
 import { taskCenter } from '../core/TaskCenter'
+import { requestNativeNotifications } from '../core/NativeSecurity'
 
 export type CloudBackupCenterProps = {
   resourceCount: number
@@ -70,6 +71,8 @@ export function useCloudBackupCenter(
   }
 
   const nativeTransport = Capacitor.isNativePlatform()
+  const androidNativeTransport =
+    Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
 
   const snapshot = ref(cloudBackupService.getSnapshot())
 
@@ -546,6 +549,13 @@ export function useCloudBackupCenter(
 
   async function createBackup(): Promise<void> {
     if (!(await saveConfig(true))) return
+    let notificationWarning = ''
+    if (androidNativeTransport) {
+      const granted = await requestNativeNotifications().catch(() => false)
+      if (!granted) {
+        notificationWarning = '系统通知未开启，后台完成提醒可能不会出现在通知栏。'
+      }
+    }
     busyAction.value = 'backup'
     message.value = '正在检查本机变化与远端对象，请不要关闭页面…'
     try {
@@ -556,11 +566,12 @@ export function useCloudBackupCenter(
           message.value = progress
         },
       )
-      message.value = item.unchanged
+      const resultMessage = item.unchanged
         ? `本机内容与上次成功备份完全一致，已核对远端清单，无需重新上传：${item.objectKey}`
         : item.maintenanceWarning
           ? `备份成功：${item.objectKey}\n${item.maintenanceWarning}`
           : `备份成功：${item.objectKey}`
+      message.value = [resultMessage, notificationWarning].filter(Boolean).join('\n')
       backups.value = [
         item,
         ...backups.value.filter((backup) => backup.objectKey !== item.objectKey),
@@ -569,7 +580,9 @@ export function useCloudBackupCenter(
         .slice(0, activeConfig.value.retention)
       refreshSnapshot()
     } catch (error) {
-      message.value = error instanceof Error ? error.message : '云端备份失败'
+      message.value = [error instanceof Error ? error.message : '云端备份失败', notificationWarning]
+        .filter(Boolean)
+        .join('\n')
     } finally {
       busyAction.value = ''
       refreshSnapshot()

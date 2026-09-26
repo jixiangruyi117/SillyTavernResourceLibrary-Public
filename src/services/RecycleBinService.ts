@@ -1,12 +1,19 @@
 import type { AppDatabase } from '../database/AppDatabase'
-import type { BackupRecord, Resource } from '../types/Resource'
+import type { BackupRecord } from '../types/Resource'
 import type { CategoryService } from './CategoryService'
-import type { ExportService } from './ExportService'
+import { createResourceArchiveSource, type ExportService } from './ExportService'
 import type { ResourceService } from './ResourceService'
 import type { RestoreService } from './RestoreService'
 import type { VaultService } from './VaultService'
 
 const RECYCLE_BIN_ADAPTER = 'local-recycle-bin'
+
+export interface RecycleBinMoveProgress {
+  phase: 'archive' | 'save' | 'delete'
+  writtenBytes?: number
+  completed?: number
+  total?: number
+}
 
 function recycleArchiveFileName(createdAt: Date): string {
   const timestamp = createdAt.toISOString().replace(/[:.]/g, '-').slice(0, 19)
@@ -45,35 +52,34 @@ export class RecycleBinService {
     return records.sort((left, right) => right.createdAt - left.createdAt)
   }
 
-  async moveToRecycleBin(ids: string[]): Promise<BackupRecord> {
+  async moveToRecycleBin(
+    ids: string[],
+    onProgress?: (progress: RecycleBinMoveProgress) => void,
+  ): Promise<BackupRecord> {
     const selectedIds = Array.from(new Set(ids.filter(Boolean)))
     if (!selectedIds.length) throw new Error('请选择要移入回收站的资源')
 
-    const resources = (
-      await Promise.all(selectedIds.map((id) => this.resourceService.get(id)))
-    ).flatMap((resource): Resource[] => (resource ? [resource] : []))
+    const source = await createResourceArchiveSource(this.resourceService)
+    const selected = new Set(selectedIds)
+    const resources = source.resources.filter((resource) => selected.has(resource.id))
     if (!resources.length) throw new Error('要删除的资源已经不存在')
 
-    const [categories, versionGroups] = await Promise.all([
-      this.categoryService.list(),
-      Promise.all(resources.map((resource) => this.resourceService.listVersions(resource.id))),
-    ])
+    const categories = await this.categoryService.list()
     const resourceIds = new Set(resources.map((resource) => resource.id))
-    const versions = Array.from(
-      new Map(
-        versionGroups
-          .flat()
-          .flatMap((version) => version.carriers ?? [version.resource])
-          .filter((version) => !resourceIds.has(version.id))
-          .map((version) => [version.id, version]),
-      ).values(),
+    const versions = source.versions.filter(
+      (version) => version.versionGroupId && resourceIds.has(version.versionGroupId),
     )
-    const archive = await this.exportService.createArchive(
-      resources,
+    onProgress?.({ phase: 'archive' })
+    const [archive] = await this.exportService.createArchivesFromSource(
+      { ...source, resources, versions },
       categories,
       { mode: 'partial', preserveExternalRelatedResourceIds: true },
-      versions,
+      undefined,
+      {
+        onProgress: ({ writtenBytes }) => onProgress?.({ phase: 'archive', writtenBytes }),
+      },
     )
+    if (!archive) throw new Error('未能创建回收站恢复记录')
     const createdAt = Date.now()
     let blob = archive.blob
     let encrypted = false
@@ -99,8 +105,13 @@ export class RecycleBinService {
       encrypted,
       encryptionIv,
     }
+    onProgress?.({ phase: 'save' })
     await this.database.backupRecords.put(record)
-    await this.resourceService.deleteMany(resources.map((resource) => resource.id))
+    onProgress?.({ phase: 'delete', completed: 0, total: resources.length + versions.length })
+    await this.resourceService.deleteMany(
+      resources.map((resource) => resource.id),
+      ({ completed, total }) => onProgress?.({ phase: 'delete', completed, total }),
+    )
     return record
   }
 
@@ -131,15 +142,31 @@ export class RecycleBinService {
     await this.database.backupRecords.delete(record.id)
   }
 
-  async purge(id: string): Promise<void> {
+  async purge(
+    id: string,
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void> {
     await this.getRecord(id)
+    onProgress?.({ completed: 0, total: 1 })
     await this.database.backupRecords.delete(id)
+    onProgress?.({ completed: 1, total: 1 })
   }
 
-  async empty(): Promise<void> {
+  async empty(
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void> {
     const records = await this.list()
-    if (records.length)
-      await this.database.backupRecords.bulkDelete(records.map((record) => record.id))
+    if (!records.length) return
+    const total = records.length
+    const batchSize = 16
+    let completed = 0
+    onProgress?.({ completed, total })
+    for (let offset = 0; offset < total; offset += batchSize) {
+      const batch = records.slice(offset, offset + batchSize)
+      await this.database.backupRecords.bulkDelete(batch.map((record) => record.id))
+      completed += batch.length
+      onProgress?.({ completed, total })
+    }
   }
 
   private async getRecord(id: string): Promise<BackupRecord> {

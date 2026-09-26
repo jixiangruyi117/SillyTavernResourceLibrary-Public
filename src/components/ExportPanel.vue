@@ -3,6 +3,7 @@ import { confirmAction } from '../composables/UseConfirmDialog'
 import { computed, ref } from 'vue'
 import type { ArchivePortableSelection } from '../types/Backup'
 import BackupScopeTree from './BackupScopeTree.vue'
+import ProjectActivityCenter from './ProjectActivityCenter.vue'
 import {
   createDefaultBackupSelection,
   toArchivePortableSelection,
@@ -138,6 +139,7 @@ function reviewPartialExport(): void {
             ×
           </button>
         </header>
+        <ProjectActivityCenter v-if="busy" :inline-task-names="['导出备份']" />
         <section class="export-full">
           <div>
             <strong>完整资源导出</strong>

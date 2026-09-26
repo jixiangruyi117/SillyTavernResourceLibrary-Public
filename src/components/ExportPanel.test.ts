@@ -5,6 +5,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import ExportPanel from './ExportPanel.vue'
+import { taskCenter } from '../core/TaskCenter'
+
+it('导出面板内显示实际任务进度，不再只有正在装箱', async () => {
+  const id = taskCenter.start({ name: '导出备份', phase: '写入第 2 项' })
+  taskCenter.update(id, { progress: 0.5 })
+  const wrapper = mount(ExportPanel, {
+    props: { resources: [], categories: [], busy: true },
+    global: { stubs: { teleport: true } },
+  })
+  try {
+    await nextTick()
+    expect(wrapper.text()).toContain('写入第 2 项')
+    expect(wrapper.get('progress').attributes('value')).toBe('0.5')
+    expect(wrapper.find('.activity-center__trigger').exists()).toBe(false)
+  } finally {
+    wrapper.unmount()
+    taskCenter.complete(id)
+    taskCenter.dismiss(id)
+  }
+})
 
 const resources = [
   {

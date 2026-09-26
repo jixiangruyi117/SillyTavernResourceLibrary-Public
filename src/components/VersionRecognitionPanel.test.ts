@@ -64,6 +64,7 @@ const resourceApi = {
 const categoryApi = { list: vi.fn(async () => []) }
 const historyApi = { capture: vi.fn(async () => undefined) }
 const confirmApi = vi.fn(async (_options: unknown) => true)
+const chooseApi = vi.fn(async (_options: unknown) => 'confirm')
 
 vi.mock('../core/AppContainer', () => ({
   get resourceService() {
@@ -78,6 +79,7 @@ vi.mock('../core/AppContainer', () => ({
 }))
 vi.mock('../composables/UseConfirmDialog', () => ({
   confirmAction: (options: unknown) => confirmApi(options),
+  chooseAction: (options: unknown) => chooseApi(options),
 }))
 
 import VersionRecognitionPanel from './VersionRecognitionPanel.vue'
@@ -88,6 +90,7 @@ describe('VersionRecognitionPanel', () => {
     resourceApi.listSummaries.mockResolvedValue([current])
     resourceApi.listVersionSummaries.mockResolvedValue([archived])
     confirmApi.mockResolvedValue(true)
+    chooseApi.mockResolvedValue('confirm')
   })
 
   it('直接从资源时间线读取已存历史项，不依赖跨资源合并候选', async () => {
@@ -108,7 +111,7 @@ describe('VersionRecognitionPanel', () => {
     expect((wrapper.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
   })
 
-  it('只删除用户勾选的时间线历史项，快照先于删除且当前版本保留', async () => {
+  it('删除历史项时只在用户选择后创建快照，当前版本保留', async () => {
     resourceApi.listVersionSummaries
       .mockResolvedValueOnce([archived, otherArchived])
       .mockResolvedValueOnce([otherArchived])

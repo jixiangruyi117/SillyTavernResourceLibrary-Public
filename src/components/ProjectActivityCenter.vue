@@ -4,6 +4,19 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { noticeCenter, type NoticeRecord } from '../core/NoticeCenter'
 import { taskCenter, type TaskRecord } from '../core/TaskCenter'
 
+const props = withDefaults(
+  defineProps<{
+    suppressFocused?: boolean
+    inlineTaskNames?: string[]
+    hiddenTaskNames?: string[]
+  }>(),
+  {
+    suppressFocused: false,
+    inlineTaskNames: () => [],
+    hiddenTaskNames: () => [],
+  },
+)
+
 const tasks = ref<TaskRecord[]>([])
 const notices = ref<NoticeRecord[]>([])
 const open = ref(false)
@@ -12,17 +25,48 @@ let clock: ReturnType<typeof setInterval> | undefined
 let unsubscribeTasks: (() => void) | undefined
 let unsubscribeNotices: (() => void) | undefined
 
-const activeTasks = computed(() => tasks.value.filter((task) => task.status === 'running'))
-const visibleTasks = computed(() =>
-  tasks.value.filter((task) => task.status === 'running' || task.status === 'failed').slice(0, 8),
+const inline = computed(() => props.inlineTaskNames.length > 0)
+const displayedTasks = computed(() =>
+  tasks.value.filter((task) => !props.hiddenTaskNames.includes(task.name)),
 )
-const visible = computed(() => visibleTasks.value.length > 0 || notices.value.length > 0)
+const activeTasks = computed(() =>
+  displayedTasks.value.filter(
+    (task) =>
+      task.status === 'running' && (!inline.value || props.inlineTaskNames.includes(task.name)),
+  ),
+)
+const centeredImportTask = computed(() =>
+  activeTasks.value.find(
+    (task) =>
+      task.name.startsWith('导入') ||
+      task.name.startsWith('识别分享') ||
+      task.name === '恢复备份' ||
+      task.name === '备份预检' ||
+      task.name === '导出备份' ||
+      task.name === '移入回收站' ||
+      task.name === '彻底删除回收站资源' ||
+      task.name === '清空回收站' ||
+      task.name === '恢复历史版本',
+  ),
+)
+const visibleTasks = computed(() =>
+  displayedTasks.value
+    .filter((task) => task.status === 'running' || task.status === 'failed')
+    .slice(0, 8),
+)
+const visible = computed(() =>
+  inline.value
+    ? activeTasks.value.length > 0
+    : visibleTasks.value.length > 0 || notices.value.length > 0,
+)
 const persistentNoticeCount = computed(
   () => notices.value.filter((notice) => notice.persistent).length,
 )
 const summary = computed(() => {
   const active = activeTasks.value[0]
   if (active) return `${active.name} · ${active.phase}`
+  const failed = visibleTasks.value.find((task) => task.status === 'failed')
+  if (failed) return `${failed.name} · 失败`
   return notices.value[0]?.message ?? '任务与通知'
 })
 
@@ -39,6 +83,16 @@ function bytes(value: number): string {
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`
   return `${Math.round(value)} B`
+}
+
+function elapsed(task: TaskRecord): string {
+  const seconds = Math.max(0, Math.floor((now.value - task.startedAt) / 1000))
+  if (seconds < 60) return `已运行 ${seconds} 秒`
+  return `已运行 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
+}
+
+function waitingForProgress(task: TaskRecord): boolean {
+  return task.status === 'running' && now.value - task.updatedAt >= 15_000
 }
 
 function stalled(task: TaskRecord): boolean {
@@ -62,7 +116,7 @@ function transferDescription(task: TaskRecord): string {
 }
 
 watch(
-  () => open.value && visible.value && activeTasks.value.some((task) => task.transfer),
+  () => visible.value && (open.value || centeredImportTask.value !== undefined),
   (enabled) => {
     if (clock !== undefined) clearInterval(clock)
     clock = undefined
@@ -90,8 +144,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <aside v-if="visible" class="activity-center" :class="{ 'is-open': open }" aria-live="polite">
+  <aside
+    v-if="visible"
+    class="activity-center"
+    :class="{ 'is-open': open, 'activity-center--inline': inline }"
+    aria-live="polite"
+  >
     <button
+      v-if="!inline"
       class="activity-center__trigger"
       type="button"
       :aria-expanded="open"
@@ -104,7 +164,7 @@ onUnmounted(() => {
       <strong v-else-if="persistentNoticeCount">{{ persistentNoticeCount }}</strong>
     </button>
 
-    <section v-if="open" id="srl-activity-panel" class="activity-center__panel">
+    <section v-if="open && !inline" id="srl-activity-panel" class="activity-center__panel">
       <header>
         <div><strong>任务与通知</strong></div>
         <button type="button" aria-label="收起任务与通知" @click="open = false">×</button>
@@ -117,6 +177,12 @@ onUnmounted(() => {
             <strong>{{ task.name }}</strong
             ><small>{{ task.phase }}</small>
           </div>
+          <small v-if="task.status === 'running'" class="activity-card__elapsed">{{
+            elapsed(task)
+          }}</small>
+          <small v-if="waitingForProgress(task)" class="activity-card__waiting">
+            当前步骤超过 15 秒没有新进度；大文件解析或写入可能较久，请等待结果或检查存储空间。
+          </small>
           <progress
             v-if="task.status === 'running' || task.progress !== undefined"
             :value="task.progress"
@@ -182,6 +248,39 @@ onUnmounted(() => {
           </footer>
         </article>
       </div>
+    </section>
+
+    <section
+      v-if="centeredImportTask && (inline || (!open && !suppressFocused))"
+      class="activity-center__focused-progress"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <header>
+        <span class="activity-center__signal is-running"></span>
+        <strong>{{ centeredImportTask.name }}</strong>
+        <span v-if="centeredImportTask.itemProgress">
+          {{ centeredImportTask.itemProgress.completed }} /
+          {{ centeredImportTask.itemProgress.total }} 项
+        </span>
+        <span v-else-if="centeredImportTask.progress !== undefined">
+          {{ Math.round(centeredImportTask.progress * 100) }}%
+        </span>
+      </header>
+      <progress
+        :value="centeredImportTask.progress"
+        :aria-label="`${centeredImportTask.name}：${centeredImportTask.phase}`"
+        max="1"
+      ></progress>
+      <p>{{ centeredImportTask.phase }}</p>
+      <small v-if="centeredImportTask.transfer">{{
+        transferDescription(centeredImportTask)
+      }}</small>
+      <small>{{ elapsed(centeredImportTask) }}</small>
+      <small v-if="waitingForProgress(centeredImportTask)" class="activity-center__focused-waiting">
+        当前步骤超过 15 秒没有新进度，仍在处理中
+      </small>
     </section>
   </aside>
 </template>

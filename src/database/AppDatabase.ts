@@ -27,7 +27,7 @@ import type {
 } from '../types/FrontendWorkshopSourceDocument'
 import type { FrontendWorkshopSourceComponent } from '../types/FrontendWorkshopSourceComponent'
 import type { GeneratedImageAlbumFile, GeneratedImageAlbumItem } from '../types/GeneratedImageAlbum'
-import type { RestoreStagingChunk, RestoreStagingMetadata } from '../types/RestoreStaging'
+import type { RestoreStagingMetadata, StoredRestoreStagingChunk } from '../types/RestoreStaging'
 import type { AssetFileRecord, AssetRecord } from '../types/Asset'
 import { BUILD_INFO } from '../core/BuildInfo'
 import {
@@ -155,7 +155,7 @@ export class AppDatabase extends Dexie {
   generatedImages!: EntityTable<GeneratedImageAlbumItem, 'id'>
   generatedImageFiles!: EntityTable<GeneratedImageAlbumFile, 'id'>
   restoreStaging!: Table<RestoreStagingMetadata, [string, string]>
-  restoreStagingChunks!: Table<RestoreStagingChunk, [string, string, number]>
+  restoreStagingChunks!: Table<StoredRestoreStagingChunk, [string, string, number]>
   assets!: EntityTable<AssetRecord, 'assetId'>
   assetFiles!: EntityTable<AssetFileRecord, 'assetId'>
   communitySources!: EntityTable<StoredCommunitySource, 'id'>

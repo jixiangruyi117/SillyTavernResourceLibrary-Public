@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ResourceVersionView } from '../services/ResourceService'
-import type { Resource, ResourceSummary } from '../types/Resource'
+import { RESOURCE_TYPE, type Resource, type ResourceSummary } from '../types/Resource'
 
 const resourceApi = {
   activateVersion: vi.fn(),
@@ -11,6 +11,7 @@ const resourceApi = {
   deleteVersion: vi.fn(),
   deleteVersions: vi.fn(),
   get: vi.fn(),
+  updateMetadata: vi.fn(),
   updateVersionNote: vi.fn(),
   mergeExistingResourceAsVersion: vi.fn(),
   replaceCharacterCardArtwork: vi.fn(),
@@ -19,9 +20,18 @@ const resourceApi = {
 vi.mock('../core/AppContainer', () => ({ resourceService: resourceApi }))
 
 const confirmMock = vi.fn(async () => true)
-vi.mock('./UseConfirmDialog', () => ({ confirmAction: confirmMock }))
+const chooseActionMock = vi.fn(async (..._args: unknown[]) => 'confirm' as const)
+vi.mock('./UseConfirmDialog', () => ({
+  confirmAction: confirmMock,
+  chooseAction: chooseActionMock,
+}))
 
 const { useResourceVersions } = await import('./UseResourceVersions')
+const selectionMock = vi.hoisted(() => vi.fn())
+vi.mock('../services/CharacterCardMigrationReview', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/CharacterCardMigrationReview')>()),
+  selectCharacterCardMigrationEdits: selectionMock,
+}))
 
 const current = { id: 'r1', name: '夜航船' } as Resource
 
@@ -56,12 +66,13 @@ describe('useResourceVersions', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resourceApi.listVersions.mockResolvedValue([])
+    selectionMock.mockImplementation(async (edits) => edits)
   })
 
   it('切换当前版本后刷新版本列表与资源索引', async () => {
     const next = { id: 'r1', name: '夜航船 v2' } as Resource
     resourceApi.activateVersion.mockResolvedValue(next)
-    const { api, organizingResource, loadResources, notices } = setup()
+    const { api, organizingResource, loadResources, notices } = setup([version('v2', false)])
 
     await api.handleActivateVersion('v2')
 
@@ -69,6 +80,63 @@ describe('useResourceVersions', () => {
     expect(organizingResource.value).toStrictEqual(next)
     expect(loadResources).toHaveBeenCalled()
     expect(notices[0]).toContain('已切换当前展示版本')
+  })
+
+  it('按统一清单选择迁移角色卡修改，再更新激活版本的补丁元数据', async () => {
+    const edit = {
+      id: 'greeting-edit',
+      section: 'greeting',
+      operation: 'add',
+      targetKey: 'alternate:added',
+      label: '新备用开场白',
+      after: '迁移后的备用开场白',
+      migrateToVersions: true,
+      updatedAt: 1,
+    }
+    const targetCard = {
+      spec: 'chara_card_v2',
+      data: { first_mes: '新版主开场白', alternate_greetings: [] },
+    }
+    const targetVersion = {
+      id: 'v2',
+      name: '夜航船新版',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: { card: targetCard, characterContentEdits: [] },
+    } as unknown as Resource
+    const next = {
+      id: 'r1',
+      name: '夜航船新版',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: { card: targetCard, characterContentEdits: [] },
+    } as unknown as Resource
+    resourceApi.activateVersion.mockResolvedValue(next)
+    resourceApi.updateMetadata.mockResolvedValue(next)
+    chooseActionMock.mockResolvedValueOnce('confirm')
+    const { api, organizingResource } = setup([
+      { active: false, resource: targetVersion } as ResourceVersionView,
+    ])
+    organizingResource.value = {
+      ...current,
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: {
+        card: { data: { first_mes: '原开场', alternate_greetings: [] } },
+        characterContentEdits: [edit],
+      },
+    } as Resource
+
+    await api.handleActivateVersion('v2')
+
+    expect(selectionMock).toHaveBeenCalledOnce()
+    expect(selectionMock.mock.calls[0]?.[0]).toEqual([edit])
+    expect(resourceApi.updateMetadata).toHaveBeenCalledWith('r1', {
+      characterContentEdits: [
+        expect.objectContaining({
+          label: '新备用开场白',
+          targetKey: 'alternate:added',
+          migrateToVersions: true,
+        }),
+      ],
+    })
   })
 
   it('正在进行其他版本操作时忽略并发调用', async () => {

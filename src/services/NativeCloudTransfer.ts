@@ -105,12 +105,7 @@ interface NativeCloudTransferPlugin {
   }): Promise<NativeRestoreMetadata>
 }
 
-interface NativeSecurityPlugin {
-  requestNotifications(): Promise<{ granted: boolean }>
-}
-
 const nativeTransfer = registerPlugin<NativeCloudTransferPlugin>('NativeCloudTransfer')
-const nativeSecurity = registerPlugin<NativeSecurityPlugin>('NativeSecurity')
 let activeJobId = ''
 
 /** 只有最终小型 manifest 可以 inline；所有资源对象都必须来自 NativeLibrary range/concat。 */
@@ -347,7 +342,6 @@ export async function uploadNativeStructuredSnapshot(options: {
   ) {
     throw new Error('原生云任务包含不能安全 handoff 的大型对象；禁止使用 Base64 Bridge。')
   }
-  void nativeSecurity.requestNotifications().catch(() => undefined)
   const protection = options.config.protection ?? {
     wifiOnly: false,
     chargingOnly: false,

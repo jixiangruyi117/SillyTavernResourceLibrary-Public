@@ -58,6 +58,9 @@ const {
   CharacterCardDetails,
   availableBoundResources,
   characterOverrides,
+  characterContentEdits,
+  characterEditorDirty,
+  characterWorkbenchOpen,
   StructuredResourceDetails,
   relatedDownloadCount,
   relatedDownloadIds,
@@ -96,14 +99,24 @@ const {
     >
       <section
         class="editor-sheet resource-detail-sheet"
-        :class="{ 'resource-detail-sheet--character': isCharacter }"
+        :class="{
+          'resource-detail-sheet--character': isCharacter,
+          'resource-detail-sheet--content-editor':
+            activeTab === 'content' && characterWorkbenchOpen,
+        }"
         role="dialog"
         aria-modal="true"
         aria-labelledby="resource-detail-title"
       >
         <header class="editor-sheet__header resource-detail__header">
           <div>
-            <h2 id="resource-detail-title">资源详情</h2>
+            <h2 id="resource-detail-title">
+              {{
+                activeTab === 'content' && characterWorkbenchOpen
+                  ? `${name || resource.name} · 卡内编辑`
+                  : '资源详情'
+              }}
+            </h2>
           </div>
           <button class="editor-sheet__close" type="button" aria-label="关闭" @click="requestClose">
             <span class="resource-detail__close-desktop">×</span>
@@ -112,7 +125,10 @@ const {
         </header>
 
         <div ref="detailSheet" class="resource-detail__layout">
-          <aside class="resource-detail__folio">
+          <aside
+            v-show="activeTab !== 'content' || !characterWorkbenchOpen"
+            class="resource-detail__folio"
+          >
             <button
               v-if="previewUrl"
               class="resource-detail__image-frame"
@@ -315,7 +331,8 @@ const {
                 <header
                   v-if="
                     !isPersonalResourceType(resource.type) &&
-                    resource.type !== RESOURCE_TYPE.GREETING
+                    resource.type !== RESOURCE_TYPE.GREETING &&
+                    !characterWorkbenchOpen
                   "
                   class="resource-detail__tab-heading"
                 >
@@ -330,10 +347,17 @@ const {
                 </header>
                 <CharacterCardDetails
                   v-if="isCharacter"
+                  :key="`${resource.id}:${resource.contentHash}`"
+                  ref="characterContent"
                   :metadata="resource.metadata"
                   :bound-resources="availableBoundResources"
                   :overrides="characterOverrides"
+                  :content-edits="characterContentEdits"
+                  :disabled="busy"
                   @update:overrides="characterOverrides = $event"
+                  @update:content-edits="characterContentEdits = $event"
+                  @draft-change="characterEditorDirty = $event"
+                  @workbench-open="characterWorkbenchOpen = $event"
                 />
                 <PersonalResourceEditor
                   v-else-if="isPersonalResourceType(resource.type)"
@@ -468,6 +492,7 @@ const {
                 <header class="resource-detail__tab-heading">
                   <h3>版本历史</h3>
                   <p>所有版本都保存在本机；当前版本决定资源库卡面、解析内容和下载文件。</p>
+                  <p v-if="isDirty">当前有未保存修改，请先保存，再切换版本。</p>
                 </header>
 
                 <section
@@ -693,7 +718,8 @@ const {
                         <button
                           v-if="!version.active"
                           type="button"
-                          :disabled="busy"
+                          :disabled="busy || isDirty"
+                          :title="isDirty ? '请先保存当前修改，再切换版本' : undefined"
                           @click="emit('activateVersion', version.resource.id)"
                         >
                           设为当前

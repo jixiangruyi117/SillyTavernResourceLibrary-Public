@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../core/AppContainer', () => ({
   aiTaggingService: { recognize: mocks.recognize },
   aiTaggingDraftService: {
+    loadRuleTemplates: () => [],
     loadDraft: mocks.loadDraft,
     saveDraft: mocks.saveDraft,
     clearDraft: mocks.clearDraft,
@@ -204,7 +205,9 @@ describe('AiTaggingPanel', () => {
     const wrapper = mount(AiTaggingPanel, {
       props: { resources, categories, initialSelectedIds: ['r1'] },
     })
-    const apiSource = wrapper.findAll('select')[4]
+    const apiSource = wrapper
+      .findAll('select')
+      .find((select) => select.element.querySelector('option[value="temporary"]'))
     await apiSource?.setValue('temporary')
     await wrapper.find('.ai-tagging__details-toggle').trigger('click')
     await wrapper.find('input[type="url"]').setValue('https://another.example/v1')

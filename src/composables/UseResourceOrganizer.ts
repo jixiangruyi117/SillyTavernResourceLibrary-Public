@@ -4,14 +4,15 @@ import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { useLoadedObjectUrl } from '../composables/UseLoadedObjectUrl'
 import { createAsyncPanel } from '../core/AsyncPanel'
 import { dirtyStateRegistry } from '../core/DirtyStateRegistry'
+import { hasResourceDetailDraftChanges } from '../services/ResourceDetailDirtyState'
 import { platform } from '../core/PlatformService'
 import { getResourceInspector } from '../core/ResourceInspectorRegistry'
 import type { ResourceVersionView } from '../services/ResourceService'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
   getRelatedResourceIds,
   getResourceCategoryIds,
   normalizeResourceLinks,
-  normalizeResourceLinkUrl,
   RESOURCE_TYPE,
   RESOURCE_TYPE_LABELS,
   type Category,
@@ -32,6 +33,7 @@ import {
 } from '../utils/ResourceRelationCandidates'
 import { isRecord } from '../utils/UnknownValue'
 import { readAuthorNote, readParsedAuthor } from '../utils/ResourceAuthors'
+import { readCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
 
 export type DetailTab = 'overview' | 'content' | 'relations' | 'versions' | 'file'
 
@@ -70,6 +72,7 @@ export type ResourceOrganizerEvents = {
       tags: string[]
       sourceLinks: ResourceLink[]
       characterOverrides?: CharacterCardOverrides
+      characterContentEdits?: CharacterCardContentEdit[]
     },
   ]
 }
@@ -129,6 +132,13 @@ export function useResourceOrganizer(
   const sourceLinks = ref<ResourceLink[]>([])
 
   const characterOverrides = ref<CharacterCardOverrides>({})
+
+  const characterContentEdits = ref<CharacterCardContentEdit[]>([])
+  const characterEditorDirty = ref(false)
+  const characterWorkbenchOpen = ref(false)
+  const characterContent = useTemplateRef<{ prepareSave: () => Promise<boolean> }>(
+    'characterContent',
+  )
 
   const versionNotes = ref<Record<string, string>>({})
 
@@ -390,33 +400,24 @@ export function useResourceOrganizer(
     ),
   )
 
-  const isSourceLinksDirty = computed(() => {
-    const hasInvalidUrl = sourceLinks.value.some(
-      (link) => link.url.trim() && !normalizeResourceLinkUrl(link.url),
-    )
-    if (hasInvalidUrl) return true
-    return (
-      JSON.stringify(normalizeResourceLinks(sourceLinks.value)) !==
-      JSON.stringify(normalizeResourceLinks(props.resource.sourceLinks))
-    )
-  })
-
-  function setsMatch(left: Set<string>, right: string[]): boolean {
-    return left.size === right.length && right.every((value) => left.has(value))
-  }
-
   const isDirty = computed(
     () =>
-      name.value.trim() !== props.resource.name ||
-      authorNote.value.trim() !== readAuthorNote(props.resource) ||
-      description.value.trim() !== props.resource.description ||
-      resourceType.value !== props.resource.type ||
-      !setsMatch(categoryIds.value, getResourceCategoryIds(props.resource)) ||
-      !setsMatch(relatedResourceIds.value, getRelatedResourceIds(props.resource)) ||
-      normalizedDraftTags.value.join('\n') !== props.resource.tags.join('\n') ||
-      isSourceLinksDirty.value ||
-      JSON.stringify(characterOverrides.value) !==
-        JSON.stringify(readCharacterCardOverrides(props.resource.metadata)),
+      characterEditorDirty.value ||
+      hasResourceDetailDraftChanges(
+        {
+          name: name.value,
+          authorNote: authorNote.value,
+          description: description.value,
+          type: resourceType.value,
+          categoryIds: categoryIds.value,
+          relatedResourceIds: relatedResourceIds.value,
+          tags: normalizedDraftTags.value,
+          sourceLinks: sourceLinks.value,
+          characterOverrides: characterOverrides.value,
+          characterContentEdits: characterContentEdits.value,
+        },
+        props.resource,
+      ),
   )
 
   watch(isDirty, () => dirtyStateRegistry.changed())
@@ -475,9 +476,16 @@ export function useResourceOrganizer(
         previous && readCharacterCardOverrides(previous.metadata),
         readCharacterCardOverrides(resource.metadata),
       )
+      characterContentEdits.value = retain(
+        characterContentEdits.value,
+        previous && readCharacterCardContentEdits(previous.metadata.characterContentEdits),
+        readCharacterCardContentEdits(resource.metadata.characterContentEdits),
+      )
       preservePersonalDraft = false
       isPreviewExpanded.value = false
       if (!previous || previous.id !== resource.id) {
+        characterEditorDirty.value = false
+        characterWorkbenchOpen.value = false
         activeTab.value = props.initialTab ?? 'overview'
         tabScrollPositions.clear()
       }
@@ -506,8 +514,13 @@ export function useResourceOrganizer(
     { immediate: true },
   )
 
-  function handleSubmit(): void {
-    if (!isDirty.value) return
+  async function handleSubmit(): Promise<void> {
+    if (!isDirty.value || props.busy) return
+    if (characterContent.value && !(await characterContent.value.prepareSave())) {
+      activeTab.value = 'content'
+      return
+    }
+    await nextTick()
     emit('save', {
       name: name.value,
       authorNote: authorNote.value,
@@ -518,6 +531,7 @@ export function useResourceOrganizer(
       sourceLinks: sourceLinks.value,
       tags: tagText.value.split(/[,，\n]/),
       characterOverrides: characterOverrides.value,
+      characterContentEdits: characterContentEdits.value,
     })
   }
 
@@ -533,7 +547,7 @@ export function useResourceOrganizer(
       alternativeLabel: '放弃修改',
       cancelLabel: '取消返回',
     })
-    if (decision === 'confirm') handleSubmit()
+    if (decision === 'confirm') await handleSubmit()
     else if (decision === 'alternative') emit('close')
   }
 
@@ -643,6 +657,9 @@ export function useResourceOrganizer(
     CharacterCardDetails,
     availableBoundResources,
     characterOverrides,
+    characterContentEdits,
+    characterEditorDirty,
+    characterWorkbenchOpen,
     StructuredResourceDetails,
     relatedDownloadCount,
     relatedDownloadIds,

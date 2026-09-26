@@ -526,6 +526,49 @@ public class NativeLibraryPlugin extends Plugin {
         });
     }
 
+    /** Remove a bounded batch, scanning remaining references once rather than once per file. */
+    @PluginMethod
+    public void removeMany(PluginCall call) {
+        runIo(call, () -> {
+            com.getcapacitor.JSArray records = call.getArray("records");
+            if (records == null || records.length() > 128) throw new IllegalArgumentException("删除批次数量无效");
+            ArrayList<File> entries = new ArrayList<>();
+            Set<String> hashes = new HashSet<>();
+            // Resolve and validate the whole batch before changing any entry.
+            for (int index = 0; index < records.length(); index++) {
+                org.json.JSONObject record = records.getJSONObject(index);
+                String id = record.optString("id", "");
+                if (id.isBlank() || id.length() > 200) throw new IllegalArgumentException("资源 ID 无效");
+                File entry = entryDirectory(scope(record.optString("scope", "")), id);
+                entries.add(entry);
+                JSObject metadata = readJson(new File(entry, "resource.json"));
+                String hash = metadata == null ? "" : metadata.optString("contentHash", "").toLowerCase(Locale.ROOT);
+                if (hash.matches("[a-f0-9]{64}")) hashes.add(hash);
+            }
+            for (File entry : entries) deleteRecursively(entry);
+            boolean referencesReadable = true;
+            for (String scope : new String[] { "current", "versions" }) {
+                File root = new File(libraryRoot(), scope);
+                File[] remaining = root.listFiles(File::isDirectory);
+                if (remaining == null) {
+                    if (root.exists()) referencesReadable = false;
+                    continue;
+                }
+                for (File entry : remaining) {
+                    JSObject metadata = readJson(new File(entry, "resource.json"));
+                    if (metadata == null) { referencesReadable = false; continue; }
+                    hashes.remove(metadata.optString("contentHash", "").toLowerCase(Locale.ROOT));
+                }
+            }
+            // Unreadable metadata cannot prove an original is no longer referenced.
+            if (referencesReadable) for (String hash : hashes) {
+                File object = objectFile(hash);
+                if (object.delete() && object.getParentFile() != null) object.getParentFile().delete();
+            }
+            call.resolve();
+        });
+    }
+
     @PluginMethod
     public void clear(PluginCall call) {
         runIo(call, () -> {

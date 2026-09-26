@@ -22,6 +22,7 @@ import org.json.JSONObject;
 /** 从系统分享来源持续复制大文件；完成后仍交由网页 Service 使用原有酒馆兼容导入管线解析。 */
 public class NativeShareImportService extends Service {
     static final String EXTRA_SOURCE = "source";
+    static final String EXTRA_ROUTE = "route";
     private static final String CHANNEL = "srl_import";
     private static final int NOTIFICATION_ID = 2111;
     private static final int MAX_BYTES = 256 * 1024 * 1024;
@@ -29,9 +30,10 @@ public class NativeShareImportService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, notification("正在准备系统导入…", 0, 0, true));
         Intent source = intent == null ? null : intent.getParcelableExtra(EXTRA_SOURCE);
+        String route = intent == null ? null : intent.getStringExtra(EXTRA_ROUTE);
         NativeExecutors.ioLimited().execute(() -> {
             try {
-                for (Uri uri : uris(source)) stage(uri);
+                for (Uri uri : uris(source)) stage(uri, route);
                 notifyFinished("SRL 文件已就绪", "打开 SRL 继续校验并导入资源");
                 ShareReceiverPlugin.notifyShareReady();
             } catch (Exception error) {
@@ -58,7 +60,7 @@ public class NativeShareImportService extends Service {
         return result;
     }
 
-    private void stage(Uri uri) throws Exception {
+    private void stage(Uri uri, String route) throws Exception {
         if (uri == null) return;
         ContentResolver resolver = getContentResolver();
         String name = fileName(resolver, uri);
@@ -90,6 +92,7 @@ public class NativeShareImportService extends Service {
         JSONObject metadata = new JSONObject();
         metadata.put("version", 1); metadata.put("name", name); metadata.put("type", resolver.getType(uri) == null ? "application/octet-stream" : resolver.getType(uri));
         metadata.put("cleanupToken", token); metadata.put("size", committed.length()); metadata.put("createdAt", System.currentTimeMillis());
+        if (route != null) metadata.put("route", route);
         try (FileOutputStream output = new FileOutputStream(new File(folder, token + ".json"))) { output.write(metadata.toString().getBytes(StandardCharsets.UTF_8)); }
     }
 

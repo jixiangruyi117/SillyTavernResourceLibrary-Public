@@ -16,11 +16,12 @@ import { type ResourceSummary } from '../types/Resource'
 import type { VaultStatus } from '../types/Vault'
 import type { ThemeValue } from '../utils/LibraryFormatting'
 import { clearShareTargetQuery, takeSharedFileBatch } from '../utils/ShareTargetIntake'
+import type { SharedFileBatch } from '../utils/ShareTargetIntake'
 import type { SearchScope } from './UseSearchIndex'
 
 interface LibraryLifecycleContext {
   showNotice: (message: string, duration?: number, preserveRecycleUndo?: boolean) => void
-  importResourceFiles: (files: File[]) => Promise<boolean>
+  receiveSharedFileBatch: (batch: SharedFileBatch) => void
   loadResources: () => Promise<void>
   refreshStorageHealth: () => Promise<void>
   vaultStatus: Ref<VaultStatus>
@@ -76,8 +77,7 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
       clearShareTargetQuery()
       const batch = await takeSharedFileBatch()
       if (batch.files.length) {
-        context.showNotice(`收到系统分享的 ${batch.files.length} 个文件，开始导入…`)
-        if (await context.importResourceFiles(batch.files)) await batch.acknowledge()
+        context.receiveSharedFileBatch(batch)
       } else if (arrivedViaShare) {
         context.showNotice('分享跳转已到达，但没有收到文件；请重新分享或使用“导入资源”。')
       }

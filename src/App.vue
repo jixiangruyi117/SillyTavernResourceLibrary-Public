@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import './Styles.css'
-import { onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount } from 'vue'
 import { secretResourceService } from './services/SecretResourceService'
 onBeforeUnmount(() => secretResourceService.lock())
 import { secretPasswordRequest } from './composables/UseSecretPasswordPrompt'
@@ -39,9 +39,17 @@ const DuplicateCleaner = createAsyncPanel(
   '重复清理',
   () => import('./components/DuplicateCleaner.vue'),
 )
+const SimilarNameGroups = createAsyncPanel(
+  '名称相似资源',
+  () => import('./components/SimilarNameGroups.vue'),
+)
 const ExtractedAssetCleaner = createAsyncPanel(
   '清理拆分副本',
   () => import('./components/ExtractedAssetCleaner.vue'),
+)
+const ParsedCharacterTagCleaner = createAsyncPanel(
+  '清理自动解析标签',
+  () => import('./components/ParsedCharacterTagCleaner.vue'),
 )
 const RecycleBinPanel = createAsyncPanel('回收站', () => import('./components/RecycleBinPanel.vue'))
 const VersionRecognitionPanel = createAsyncPanel(
@@ -81,6 +89,7 @@ const {
   handleSystemFileDragLeave,
   handleSystemFileDrop,
   isFeatureHubOpen,
+  isOverlayOpen,
   theme,
   applyTheme,
   activeFilter,
@@ -92,9 +101,14 @@ const {
   isExporting,
   isExportPanelOpen,
   isBusy,
+  formatBytes,
   openImportChooser,
   handleImport,
   handleTavernBackupImport,
+  pendingSharedFileBatch,
+  chooseSharedImportRoute,
+  sharedAppImportFiles,
+  handleSharedAppFilesConsumed,
   isImportChooserOpen,
   isLinkImportOpen,
   closeImportChooser,
@@ -108,7 +122,11 @@ const {
   storageProtectionStatus,
   recycleBinEntries,
   isDuplicateCleanerOpen,
+  isSimilarNameGroupsOpen,
+  activeResourceIds,
+  showSimilarResources,
   isExtractedCleanerOpen,
+  isParsedTagCleanerOpen,
   hasBrowsingState,
   handleBrowseBack,
   activeFilterLabel,
@@ -243,6 +261,7 @@ const {
   completedRestoreMode,
   handleRestoreInspect,
   handleRestoreConfirm,
+  closeRestorePanel,
   isVaultPanelOpen,
   isVaultBusy,
   handleVaultUnlock,
@@ -255,19 +274,45 @@ const {
   isVersionRecognitionOpen,
   refreshLibraryAndOpenVersions,
 } = controller
+
+const isBatchBarVisible = computed(
+  () =>
+    isBatchMode.value &&
+    !isFeatureHubOpen.value &&
+    !isFeatureAppActive.value &&
+    !organizingResource.value &&
+    !newPersonalKind.value &&
+    !isAiTaggingOpen.value &&
+    !isRecycleBinOpen.value &&
+    !isDuplicateCleanerOpen.value &&
+    !isSimilarNameGroupsOpen.value &&
+    !isExtractedCleanerOpen.value &&
+    !isParsedTagCleanerOpen.value &&
+    !isVersionRecognitionOpen.value &&
+    !isCategoryManagerOpen.value &&
+    !isSettingsOpen.value &&
+    !isExportPanelOpen.value &&
+    !isRestorePanelOpen.value &&
+    !isVaultPanelOpen.value &&
+    !isImportChooserOpen.value &&
+    !isLinkImportOpen.value &&
+    !activeVersionImport.value &&
+    !pendingNativeExport.value &&
+    !secretPasswordRequest.value,
+)
 </script>
 
 <template>
   <div
     class="app-shell"
     :style="{
-      '--batch-bar-reserved': `${batchBarHeight}px`,
+      '--batch-bar-reserved': `${isBatchBarVisible ? batchBarHeight : 0}px`,
       '--bottom-nav-reserved': isFeatureAppActive ? '0px' : undefined,
     }"
     :class="[
       `app-shell--layout-${layoutMode}`,
       {
-        'app-shell--batch': isBatchMode,
+        'app-shell--batch': isBatchBarVisible,
         'app-shell--vault-locked': vaultStatus.locked,
         'app-shell--system-file-drop': isSystemFileDropActive,
       },
@@ -408,7 +453,13 @@ const {
             <span class="import-choice-sheet__header-title">
               <small v-if="isLinkImportOpen">LINK IMPORT</small>
               <strong>
-                {{ isLinkImportOpen ? '导入脚本 / 外部扩展链接' : '资源 / 备份' }}
+                {{
+                  isLinkImportOpen
+                    ? '导入脚本 / 外部扩展链接'
+                    : pendingSharedFileBatch
+                      ? '选择分享文件用途'
+                      : '资源 / 备份'
+                }}
               </strong>
             </span>
             <button
@@ -421,7 +472,32 @@ const {
             </button>
           </header>
 
-          <template v-if="!isLinkImportOpen">
+          <section v-if="pendingSharedFileBatch" class="shared-import-routes">
+            <p>收到 {{ pendingSharedFileBatch.files.length }} 个分享文件，请选择导入用途：</p>
+            <ul>
+              <li v-for="file in pendingSharedFileBatch.files" :key="`${file.name}-${file.size}`">
+                {{ file.name }} · {{ formatBytes(file.size) }}
+              </li>
+            </ul>
+            <button type="button" @click="chooseSharedImportRoute('libraryBackup')">
+              <strong>导入资源库备份</strong>
+              <small>SRL 导出的完整或选择性备份 ZIP；进入资源库恢复预检</small>
+            </button>
+            <button type="button" @click="chooseSharedImportRoute('tavernBackup')">
+              <strong>导入酒馆备份</strong>
+              <small>SillyTavern 完整备份 ZIP；仅提取支持的资源文件</small>
+            </button>
+            <button type="button" @click="chooseSharedImportRoute('resource')">
+              <strong>导入资源</strong>
+              <small>角色卡、世界书、正则、预设等资源文件或酒馆资源 ZIP</small>
+            </button>
+            <button type="button" @click="chooseSharedImportRoute('thirdPartyApp')">
+              <strong>导入第三方 APP</strong>
+              <small>HTML、ZIP 或 .srlapp；先预览并检查权限，再由你确认安装</small>
+            </button>
+          </section>
+
+          <template v-else-if="!isLinkImportOpen">
             <div class="personal-create-actions">
               <button type="button" @click="createPersonal('extraStory')">添加番外指令</button>
               <button type="button" @click="createPersonal('pocketPhone')">收纳小手机</button>
@@ -458,7 +534,7 @@ const {
               <span class="import-choice-card__copy">
                 <small>FILE IMPORT</small>
                 <strong>{{ isBusy ? '正在导入资源' : '导入本地资源 / 备份' }}</strong>
-                <em>角色卡、世界书、正则、CSS、TXT、ZIP，可多选</em>
+                <em>资源文件、SRL 备份 ZIP、个人资源包；酒馆备份请用下方专用入口</em>
               </span>
             </button>
             <button
@@ -527,6 +603,9 @@ const {
           返回上一层
         </button>
         <div class="browsing-context__trail">
+          <button v-if="activeResourceIds" type="button" @click="activeResourceIds = undefined">
+            相似资源 · 所选 {{ activeResourceIds.size }} 项 <span>×</span>
+          </button>
           <button v-if="activeFilterLabel" type="button" @click="activeFilter = 'all'">
             类型 · {{ activeFilterLabel }} <span>×</span>
           </button>
@@ -685,6 +764,7 @@ const {
       :custom-css="customUiCss"
       :folder-busy="isFolderViewBusy"
       :cabinet-resource-ids="cabinetResourceIds"
+      :shared-app-files="sharedAppImportFiles"
       @feature-app-active="isFeatureAppActive = $event"
       @close="isFeatureHubOpen = false"
       @open-resource="openResourceDetail"
@@ -702,6 +782,7 @@ const {
       @save-css="saveCustomUiCss"
       @library-changed="handleLibraryChanged"
       @import-files="importResourceFiles"
+      @shared-app-files-consumed="handleSharedAppFilesConsumed"
     />
 
     <nav v-if="!isFeatureAppActive" class="mobile-bottom-nav" aria-label="移动端主要操作">
@@ -753,7 +834,14 @@ const {
       </button>
     </nav>
 
-    <ProjectActivityCenter v-show="!secretPasswordRequest" />
+    <ProjectActivityCenter
+      v-show="!secretPasswordRequest && !isOverlayOpen"
+      :suppress-focused="isOverlayOpen"
+      :hidden-task-names="[
+        ...(isRestorePanelOpen && isRestoring ? ['备份预检', '恢复备份'] : []),
+        ...(isExportPanelOpen && isExporting ? ['导出备份'] : []),
+      ]"
+    />
 
     <div v-if="notice && recycleUndoEntry" class="notice">
       <span role="status">{{ notice }}</span>
@@ -769,7 +857,7 @@ const {
     </div>
 
     <BatchBar
-      v-if="isBatchMode"
+      v-if="isBatchBarVisible"
       :count="selectedResourceIds.size"
       :visible-count="paginatedResources.length"
       :all-visible-selected="allVisibleSelected"
@@ -933,7 +1021,7 @@ const {
       :busy="isRestoring"
       :entry="restoreEntry"
       :completed-mode="completedRestoreMode"
-      @close="isRestorePanelOpen = false"
+      @close="closeRestorePanel"
       @inspect="handleRestoreInspect"
       @confirm="handleRestoreConfirm"
     />
@@ -966,11 +1054,35 @@ const {
           @back="isDuplicateCleanerOpen = false"
           @open-resource="
             (resource) => {
-              isDuplicateCleanerOpen = false
               void openResourceDetail(resource)
             }
           "
           @library-changed="handleLibraryChanged"
+        />
+      </div>
+    </div>
+
+    <div
+      v-if="isSimilarNameGroupsOpen"
+      class="editor-overlay duplicate-cleaner-overlay"
+      role="presentation"
+      @click.self="isSimilarNameGroupsOpen = false"
+    >
+      <div
+        class="duplicate-cleaner-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="名称相似资源"
+      >
+        <SimilarNameGroups
+          :resources="visibleLibraryResources"
+          @filter-resources="showSimilarResources"
+          @back="isSimilarNameGroupsOpen = false"
+          @open-resource="
+            (resource) => {
+              void openResourceDetail(resource)
+            }
+          "
         />
       </div>
     </div>
@@ -992,7 +1104,30 @@ const {
           @back="isExtractedCleanerOpen = false"
           @open-resource="
             (resource) => {
-              isExtractedCleanerOpen = false
+              void openResourceDetail(resource)
+            }
+          "
+          @library-changed="handleLibraryChanged"
+        />
+      </div>
+    </div>
+
+    <div
+      v-if="isParsedTagCleanerOpen"
+      class="editor-overlay duplicate-cleaner-overlay"
+      role="presentation"
+      @click.self="isParsedTagCleanerOpen = false"
+    >
+      <div
+        class="duplicate-cleaner-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="清理自动解析标签"
+      >
+        <ParsedCharacterTagCleaner
+          @back="isParsedTagCleanerOpen = false"
+          @open-resource="
+            (resource) => {
               void openResourceDetail(resource)
             }
           "

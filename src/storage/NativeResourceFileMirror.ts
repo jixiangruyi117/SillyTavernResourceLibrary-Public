@@ -32,6 +32,7 @@ interface NativeLibraryPlugin {
   commitWrite(options: { token: string }): Promise<void>
   abortWrite(options: { token: string }): Promise<void>
   remove(options: { scope: NativeResourceScope; id: string }): Promise<void>
+  removeMany(options: { records: Array<{ scope: NativeResourceScope; id: string }> }): Promise<void>
   clear(): Promise<void>
   clearTemporaryCaches(): Promise<{ clearedBytes: number }>
   getObjectPath(options: {
@@ -207,6 +208,24 @@ export async function removeNativeResourceFile(
 ): Promise<void> {
   if (!isAndroidNative()) return
   await nativeLibrary.remove({ scope, id })
+}
+
+export async function removeNativeResourceFiles(
+  records: Array<{ scope: NativeResourceScope; id: string }>,
+  onProgress?: (completed: number) => void,
+): Promise<void> {
+  if (!isAndroidNative()) return
+  for (let offset = 0; offset < records.length; offset += 128) {
+    const batch = records.slice(offset, offset + 128)
+    try {
+      await nativeLibrary.removeMany({ records: batch })
+    } catch (error) {
+      // Older installed APKs still expose the single-entry owner.
+      if ((error as { code?: string })?.code !== 'UNIMPLEMENTED') throw error
+      for (const record of batch) await nativeLibrary.remove(record)
+    }
+    onProgress?.(offset + batch.length)
+  }
 }
 
 export async function clearNativeResourceFiles(): Promise<void> {

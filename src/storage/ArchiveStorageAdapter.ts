@@ -1,6 +1,15 @@
 import type { Category, Resource } from '../types/Resource'
 import type { NativeBackedResourceRecord } from '../types/Vault'
 
+export interface ArchiveRestoreProgress {
+  phase: 'prepare' | 'commit'
+  completed: number
+  total: number
+  fileName?: string
+  transferredBytes?: number
+  totalBytes?: number
+}
+
 export interface ArchiveStorageAdapter {
   canRestoreNative?(): boolean
   listRestoreVersionKeys?(): Promise<string[]>
@@ -9,17 +18,20 @@ export interface ArchiveStorageAdapter {
     resources: Resource[],
     versions?: Resource[],
     hydrate?: (resource: Resource) => Promise<Resource>,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void>
   restoreNative?(
     categories: Category[],
     resources: NativeBackedResourceRecord[],
     versions?: NativeBackedResourceRecord[],
     hydrate?: (resource: NativeBackedResourceRecord) => Promise<NativeBackedResourceRecord>,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void>
   replace(
     categories: Category[],
     resources: Resource[],
     versions?: Resource[],
     hydrate?: (resource: Resource) => Promise<Resource>,
+    onProgress?: (progress: ArchiveRestoreProgress) => void,
   ): Promise<void>
 }

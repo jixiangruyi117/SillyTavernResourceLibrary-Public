@@ -419,7 +419,7 @@
   position: fixed;
   right: max(22px, var(--safe-right));
   bottom: max(22px, var(--safe-bottom));
-  z-index: 30;
+  z-index: 18;
   max-width: min(540px, calc(100vw - 44px));
   display: flex;
   align-items: center;

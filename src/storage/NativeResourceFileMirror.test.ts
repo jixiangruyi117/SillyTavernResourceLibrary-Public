@@ -9,6 +9,7 @@ const nativePlugin = vi.hoisted(() => ({
   commitWrite: vi.fn(),
   abortWrite: vi.fn(),
   remove: vi.fn(),
+  removeMany: vi.fn(),
   clear: vi.fn(),
   clearTemporaryCaches: vi.fn(),
   getObjectPath: vi.fn(),
@@ -31,6 +32,7 @@ import {
   linkNativeResourceObjects,
   readNativeResourceObject,
   stageNativeResourceFile,
+  removeNativeResourceFiles,
 } from './NativeResourceFileMirror'
 
 function resource(body = 'hello'): Resource {
@@ -54,6 +56,21 @@ function resource(body = 'hello'): Resource {
 }
 
 describe('NativeResourceFileMirror', () => {
+  it('deletes in bounded native batches and reports actual completion', async () => {
+    nativePlugin.removeMany.mockResolvedValue(undefined)
+    const records = Array.from({ length: 257 }, (_, i) => ({
+      id: `item-${i}`,
+      scope: 'current' as const,
+    }))
+    const progress = vi.fn()
+    await removeNativeResourceFiles(records, progress)
+    expect(nativePlugin.removeMany.mock.calls.map(([value]) => value.records.length)).toEqual([
+      128, 128, 1,
+    ])
+    expect(progress.mock.calls.flat()).toEqual([128, 256, 257])
+    expect(nativePlugin.remove).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     nativePlugin.beginWrite.mockResolvedValue({ alreadyPresent: false, token: 'token-1' })

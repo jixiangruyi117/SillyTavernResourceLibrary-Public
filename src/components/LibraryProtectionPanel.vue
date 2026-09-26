@@ -28,6 +28,7 @@ type PanelModel = Pick<
   | 'isDuplicateCleanerOpen'
   | 'extractedCleanupCount'
   | 'isExtractedCleanerOpen'
+  | 'isParsedTagCleanerOpen'
 >
 const input = defineProps<{ model: PanelModel }>()
 const isDataProtectionOpen = toRef(input.model, 'isDataProtectionOpen')
@@ -54,6 +55,7 @@ const duplicateGroupCounts = toRef(input.model, 'duplicateGroupCounts')
 const isDuplicateCleanerOpen = toRef(input.model, 'isDuplicateCleanerOpen')
 const extractedCleanupCount = toRef(input.model, 'extractedCleanupCount')
 const isExtractedCleanerOpen = toRef(input.model, 'isExtractedCleanerOpen')
+const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
 </script>
 <template>
   <section
@@ -191,6 +193,19 @@ const isExtractedCleanerOpen = toRef(input.model, 'isExtractedCleanerOpen')
           @click="isExtractedCleanerOpen = true"
         >
           打开拆分副本清理
+        </button>
+      </article>
+
+      <article class="protection-card protection-card--extracted">
+        <span class="protection-card__label">自动解析标签</span>
+        <strong>逐项查看后清理</strong>
+        <p>重新读取角色卡原件，只清理你勾选的解析标签；同一卡的其它标签与原件保留。</p>
+        <button
+          class="protection-card__action"
+          type="button"
+          @click="isParsedTagCleanerOpen = true"
+        >
+          查看解析标签
         </button>
       </article>
     </div>

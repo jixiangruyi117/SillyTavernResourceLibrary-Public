@@ -42,12 +42,6 @@ export async function clearNativeSafBackupDirectory(): Promise<void> {
   await plugin.clearDirectory()
 }
 
-async function appendBinary(token: string, chunk: Uint8Array): Promise<void> {
-  await transferNativeStream(new Blob([chunk.slice().buffer]), {
-    append: (data) => plugin.appendWrite({ token, data }),
-  })
-}
-
 /** ZIP 编码器直接写入 SAF OutputStream；不会先在 JS 中合成完整备份 Blob。 */
 export async function openNativeSafBackupWriter(
   fileName: string,
@@ -56,12 +50,24 @@ export async function openNativeSafBackupWriter(
   const status = await plugin.getStatus()
   if (!status.available) return null
   const { token } = await plugin.beginWrite({ fileName })
+  const stream = new TransformStream<Uint8Array>()
+  const writer = stream.writable.getWriter()
+  // Keep one bounded transfer open across ZIP entries so headers and small
+  // compressed chunks share 512 KiB native writes instead of one bridge call each.
+  const transfer = transferNativeStream(stream.readable, {
+    append: (data) => plugin.appendWrite({ token, data }),
+  })
+  void transfer.catch(() => undefined)
   return {
-    write: (chunk) => appendBinary(token, chunk),
+    write: (chunk) => writer.write(chunk),
     commit: async () => {
+      await writer.close()
+      await transfer
       await plugin.commitWrite({ token })
     },
     abort: async () => {
+      await writer.abort().catch(() => undefined)
+      await transfer.catch(() => undefined)
       await plugin.abortWrite({ token })
     },
   }

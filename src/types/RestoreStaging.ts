@@ -25,3 +25,14 @@ export interface RestoreStagingChunk {
   blob: Blob
   updatedAt: number
 }
+
+/** IndexedDB stores byte buffers instead of Blob handles for WebKit reliability. */
+export interface StoredRestoreStagingChunk {
+  jobId: string
+  path: string
+  chunkIndex: number
+  data?: ArrayBuffer
+  /** Legacy temporary records from interrupted imports before byte-buffer staging. */
+  blob?: Blob
+  updatedAt: number
+}

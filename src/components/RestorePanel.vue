@@ -3,6 +3,7 @@ import { computed, ref, toRefs, watch } from 'vue'
 
 import type { PreparedRestore, RestoreMode, RestoreReport } from '../types/Backup'
 import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
+import ProjectActivityCenter from './ProjectActivityCenter.vue'
 import {
   isUserPersonaAvatarAttachment,
   RESOURCE_TYPE_LABELS,
@@ -49,8 +50,7 @@ const selectedVersionCount = computed(() => {
 })
 const allResourcesSelected = computed(
   () =>
-    Boolean(prepared.value?.resources.length) &&
-    selectedResources.value.length === prepared.value?.resources.length,
+    Boolean(prepared.value) && selectedResources.value.length === prepared.value?.resources.length,
 )
 
 function toggleResource(resourceId: string): void {
@@ -118,7 +118,7 @@ function formatDate(value: string): string {
           <section class="restore-result">
             <span class="restore-result__seal">完成</span>
             <h3>备份已安全恢复</h3>
-            <p>所有写入已在一个本地事务中完成。</p>
+            <p>资源与历史版本已恢复。</p>
           </section>
 
           <dl class="restore-stats">
@@ -170,10 +170,7 @@ function formatDate(value: string): string {
             />
           </label>
 
-          <div v-if="busy" class="restore-scanning" role="status">
-            <span></span>
-            正在解包并校验文件完整性…
-          </div>
+          <ProjectActivityCenter v-if="busy" :inline-task-names="['备份预检', '恢复备份']" />
 
           <template v-if="prepared && !busy">
             <section class="restore-source">
@@ -293,7 +290,7 @@ function formatDate(value: string): string {
                   <strong>整库覆盖</strong>
                   <small v-if="prepared.preview.mode === 'full'">{{
                     allResourcesSelected
-                      ? '先保存安全快照，再用备份完整替换当前资源库。'
+                      ? '将用备份完整替换当前资源库；确认后可选择是否先创建完整快照。'
                       : '整库覆盖必须选择全部资源；部分选择请使用安全新增。'
                   }}</small>
                   <small v-else>分包/部分备份不能用于整库覆盖，避免误删未包含的资源。</small>
@@ -305,7 +302,7 @@ function formatDate(value: string): string {
               <span>
                 {{
                   restoreMode === 'replace'
-                    ? '当前资源库会被完整替换，操作前自动创建安全快照。'
+                    ? '当前资源库会被完整替换；下一步可选择创建快照或直接覆盖。'
                     : selectedResources.length
                       ? '现有资源会保留，只写入上方选中的备份内容。'
                       : portableOnly
@@ -316,7 +313,10 @@ function formatDate(value: string): string {
               <button
                 class="button button--primary"
                 type="button"
-                :disabled="busy || (selectedResources.length === 0 && !portableOnly)"
+                :disabled="
+                  busy ||
+                  (restoreMode === 'merge' && selectedResources.length === 0 && !portableOnly)
+                "
                 @click="emit('confirm', restoreMode, Array.from(selectedResourceIds))"
               >
                 {{ restoreMode === 'replace' ? '确认覆盖' : '确认新增' }}

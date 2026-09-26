@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { confirmAction } from '../composables/UseConfirmDialog'
 import { externalAppService } from '../core/AppContainer'
@@ -22,7 +22,10 @@ const emit = defineEmits<{
   back: []
   changed: []
   installed: [appId: string]
+  'shared-files-consumed': []
 }>()
+
+const props = defineProps<{ sharedFiles?: File[] }>()
 
 const apps = ref<InstalledExternalAppSummary[]>([])
 const installing = ref(false)
@@ -161,8 +164,8 @@ async function inspectPackage(event: Event): Promise<void> {
   await inspectFiles(files)
 }
 
-async function inspectFiles(files: File[]): Promise<void> {
-  if (!files.length || installing.value) return
+async function inspectFiles(files: File[]): Promise<boolean> {
+  if (!files.length || installing.value) return false
   installing.value = true
   notice.value = ''
   errorMessage.value = ''
@@ -176,12 +179,25 @@ async function inspectFiles(files: File[]): Promise<void> {
     previewIcon.value = preview.value.iconDataUrl ?? ''
     previewFiles.value = files
     notice.value = '网页已通过检查。预览不会保存 APP 数据，确认后才会安装到本机。'
+    return true
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法预览 APP 安装包'
+    return false
   } finally {
     installing.value = false
   }
 }
+
+watch(
+  () => props.sharedFiles,
+  (files) => {
+    if (!files?.length) return
+    void inspectFiles([...files]).then((valid) => {
+      if (valid) emit('shared-files-consumed')
+    })
+  },
+  { immediate: true },
+)
 
 async function confirmInstall(): Promise<void> {
   if (!previewFiles.value.length || !preview.value || installing.value) return

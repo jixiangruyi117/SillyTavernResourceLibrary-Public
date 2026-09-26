@@ -7,6 +7,7 @@ import type {
 export interface RestoreStagingStore {
   putChunk(chunk: RestoreStagingChunk): Promise<void>
   complete(entry: RestoreStagingMetadata): Promise<void>
+  getMetadata(jobId: string, path: string): Promise<RestoreStagingMetadata | undefined>
   get(jobId: string, path: string): Promise<RestoreStagingEntry | undefined>
   deleteJob(jobId: string): Promise<void>
 }
@@ -37,6 +38,10 @@ export class MemoryRestoreStagingStore implements RestoreStagingStore {
       .sort((left, right) => left.chunkIndex - right.chunkIndex)
       .map((chunk) => chunk.blob)
     return { ...entry, blob: new Blob(blobs) }
+  }
+
+  async getMetadata(jobId: string, path: string): Promise<RestoreStagingMetadata | undefined> {
+    return this.entries.get(this.key(jobId, path))
   }
 
   async deleteJob(jobId: string): Promise<void> {

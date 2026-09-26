@@ -8,6 +8,7 @@ import {
   resourceService,
 } from '../core/AppContainer'
 import type { AiTaggingDraft, AiTaggingUndoRecord } from '../services/AiTaggingDraftService'
+import type { AiTaggingRuleTemplate } from '../services/AiTaggingDraftService'
 import {
   AI_TAGGING_DEFAULT_BATCH_SIZE,
   AI_TAGGING_MAX_BATCH_SIZE,
@@ -69,6 +70,12 @@ export function useAiTaggingPanel(
   const batchSize = ref(AI_TAGGING_DEFAULT_BATCH_SIZE)
 
   const customPrompt = ref(DEFAULT_CUSTOM_PROMPT)
+
+  const ruleTemplates = ref<AiTaggingRuleTemplate[]>(aiTaggingDraftService.loadRuleTemplates())
+
+  const ruleTemplateName = ref('')
+
+  const selectedRuleTemplateId = ref('')
 
   const taxonomyTemplateId = ref('free')
 
@@ -211,6 +218,56 @@ export function useAiTaggingPanel(
   )
 
   const activeProfile = computed(() => profiles.find((profile) => profile.id === activeProfileId))
+
+  function applyRuleTemplate(id: string): void {
+    const template = ruleTemplates.value.find((item) => item.id === id)
+    if (!template) return
+    selectedRuleTemplateId.value = id
+    ruleTemplateName.value = template.name
+    customPrompt.value = template.prompt
+    taxonomyTemplateId.value = AI_TAGGING_TAXONOMY_TEMPLATES.some(
+      (item) => item.id === template.taxonomyTemplateId,
+    )
+      ? template.taxonomyTemplateId
+      : 'free'
+    mergeAliases.value = template.mergeAliases
+  }
+
+  function saveRuleTemplate(): void {
+    try {
+      ruleTemplates.value = aiTaggingDraftService.saveRuleTemplate(
+        ruleTemplateName.value,
+        customPrompt.value,
+        taxonomyTemplateId.value,
+        mergeAliases.value,
+      )
+      const saved = ruleTemplates.value.find((item) => item.name === ruleTemplateName.value.trim())
+      selectedRuleTemplateId.value = saved?.id ?? ''
+      message.value = `识别规则模板「${ruleTemplateName.value.trim()}」已保存在本机。`
+    } catch (error) {
+      message.value = error instanceof Error ? error.message : '模板保存失败'
+    }
+  }
+
+  async function deleteRuleTemplate(): Promise<void> {
+    const template = ruleTemplates.value.find((item) => item.id === selectedRuleTemplateId.value)
+    if (!template) return
+    const confirmed = await confirmAction({
+      title: '删除识别规则模板',
+      message: `确定从本机删除「${template.name}」吗？当前输入的识别规则不会改变。`,
+      confirmLabel: '删除模板',
+      danger: true,
+    })
+    if (!confirmed) return
+    try {
+      ruleTemplates.value = aiTaggingDraftService.deleteRuleTemplate(template.id)
+      selectedRuleTemplateId.value = ''
+      ruleTemplateName.value = ''
+      message.value = '识别规则模板已删除。'
+    } catch (error) {
+      message.value = error instanceof Error ? error.message : '模板删除失败'
+    }
+  }
 
   const progressPercent = computed(() =>
     progressTotal.value ? Math.round((progressCompleted.value / progressTotal.value) * 100) : 0,
@@ -709,6 +766,12 @@ export function useAiTaggingPanel(
     selectedIds,
     AI_TAGGING_MAX_SELECTION,
     customPrompt,
+    ruleTemplates,
+    ruleTemplateName,
+    selectedRuleTemplateId,
+    applyRuleTemplate,
+    saveRuleTemplate,
+    deleteRuleTemplate,
     batchSize,
     AI_TAGGING_MAX_BATCH_SIZE,
     taxonomyTemplateId,

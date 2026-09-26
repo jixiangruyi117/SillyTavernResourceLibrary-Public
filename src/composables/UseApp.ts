@@ -41,6 +41,7 @@ import { useLibraryQueryView } from './UseLibraryQueryView'
 import { useLibraryRefresh } from './UseLibraryRefresh'
 import { useLibraryResourceActions } from './UseLibraryResourceActions'
 import { useLibraryWorkspaceRecovery } from './UseLibraryWorkspaceRecovery'
+import type { SharedFileBatch } from '../utils/ShareTargetIntake'
 export type { FilterValue, SortValue } from '../types/AppView'
 
 export function useApp() {
@@ -116,6 +117,7 @@ export function useApp() {
     handleBrowserPopState,
     handleMobileFocus,
   } = useLibraryNavigation(() => ({
+    activeResourceIds,
     isNativeApk,
     WORKSPACE_RECOVERY_KEY,
     activeFilter,
@@ -125,6 +127,7 @@ export function useApp() {
     currentPage,
     selectedSplitResourceId,
     isFeatureHubOpen,
+    isOverlayOpen,
     isMobileFiltersOpen,
     searchQuery,
     isSearchHistoryOpen,
@@ -139,7 +142,9 @@ export function useApp() {
     isDataProtectionOpen,
     isRecycleBinOpen,
     isDuplicateCleanerOpen,
+    isSimilarNameGroupsOpen,
     isExtractedCleanerOpen,
+    isParsedTagCleanerOpen,
     isVersionRecognitionOpen,
     isVaultPanelOpen,
     openImportChooser,
@@ -214,6 +219,7 @@ export function useApp() {
     openTavernBackupPicker,
     importResourceFiles,
     handleVersionImportDecision,
+    handleSharedImportChoice,
   } = useLibraryImport(() => ({
     pendingBackupImport,
     showNotice,
@@ -226,6 +232,7 @@ export function useApp() {
     linkImportText,
     isLinkImportOpen,
     isImportChooserOpen,
+    isRestorePanelOpen,
     isFeatureHubOpen,
     fileImportInput,
     tavernBackupInput,
@@ -239,6 +246,7 @@ export function useApp() {
     showManuallyBoundResources,
     refreshStorageHealth,
     isVersionImportBusy,
+    sharedAppImportFiles,
   }))
 
   const {
@@ -283,33 +291,54 @@ export function useApp() {
     clearBrowsingState,
   }))
 
-  const { handleExport, openRestorePanel, handleRestoreInspect, handleRestoreConfirm } =
-    useLibraryArchive(() => ({
-      isExporting,
-      categories,
-      showNotice,
-      lastFullBackupAt,
-      backupRecommended,
-      isExportPanelOpen,
-      refreshStorageHealth,
-      historySnapshotLimit,
-      reloadAppearanceSettings,
-      searchHistory,
-      cabinetResourceIds,
-      syncCustomUiCss,
-      preparedRestore,
-      restoreSourceFile,
-      restoreReport,
-      restoreEntry,
-      completedRestoreMode,
-      isRestorePanelOpen,
-      storageHealth,
-      LARGE_ARCHIVE_BYTES,
-      isRestoring,
-      resources,
-      captureHistory,
-      loadLibrary,
-    }))
+  const pendingSharedFileBatch = shallowRef<SharedFileBatch>()
+  let pendingSharedBackupBatch: SharedFileBatch | undefined
+
+  async function acknowledgeSharedBackupAfterRestore(): Promise<void> {
+    const batch = pendingSharedBackupBatch
+    if (!batch) return
+    try {
+      await batch.acknowledge()
+      if (pendingSharedFileBatch.value === batch) pendingSharedFileBatch.value = undefined
+      pendingSharedBackupBatch = undefined
+    } catch {
+      showNotice('备份已恢复，但系统分享暂存文件未清理。')
+    }
+  }
+
+  const {
+    handleExport,
+    openRestorePanel,
+    handleRestoreInspect,
+    handleRestoreConfirm,
+    closeRestorePanel,
+  } = useLibraryArchive(() => ({
+    isExporting,
+    categories,
+    showNotice,
+    lastFullBackupAt,
+    backupRecommended,
+    isExportPanelOpen,
+    refreshStorageHealth,
+    historySnapshotLimit,
+    reloadAppearanceSettings,
+    searchHistory,
+    cabinetResourceIds,
+    syncCustomUiCss,
+    preparedRestore,
+    restoreSourceFile,
+    restoreReport,
+    restoreEntry,
+    completedRestoreMode,
+    isRestorePanelOpen,
+    storageHealth,
+    LARGE_ARCHIVE_BYTES,
+    isRestoring,
+    resources,
+    captureHistory,
+    loadLibrary,
+    onRestoreImportComplete: acknowledgeSharedBackupAfterRestore,
+  }))
 
   const resourceNameCollator = new Intl.Collator('zh-CN')
 
@@ -342,6 +371,10 @@ export function useApp() {
   const activeCategoryId = ref<string | null | undefined>(undefined)
 
   const activeTag = ref('')
+  const activeResourceIds = shallowRef<Set<string>>()
+  watch(activeResourceIds, () => {
+    currentPage.value = 1
+  })
 
   const sortValue = ref<SortValue>('newest')
 
@@ -368,6 +401,59 @@ export function useApp() {
   const pendingVersionImports = ref<ImportVersionCandidate[]>([])
 
   const pendingBackupImport = shallowRef<File>()
+
+  const sharedAppImportFiles = shallowRef<File[]>([])
+
+  function receiveSharedFileBatch(batch: SharedFileBatch): void {
+    pendingSharedFileBatch.value = batch
+    isLinkImportOpen.value = false
+    if (batch.route) {
+      void chooseSharedImportRoute(batch.route)
+      return
+    }
+    isImportChooserOpen.value = true
+  }
+
+  async function chooseSharedImportRoute(
+    route: 'libraryBackup' | 'tavernBackup' | 'resource' | 'thirdPartyApp',
+  ) {
+    const batch = pendingSharedFileBatch.value
+    if (!batch) return
+    // The selected route may open a restore/editor panel or a long-running task.
+    // Close the route sheet first so progress and confirmation UI cannot stack on it.
+    isImportChooserOpen.value = false
+    try {
+      if (!(await handleSharedImportChoice(batch.files, route))) return
+      if (route === 'thirdPartyApp') return
+      if (route === 'libraryBackup') {
+        // Keep the original shared ZIP until the restore is committed. If Android
+        // recreates the WebView while the user is choosing a restore mode, the
+        // staged share can be recognized and preflighted again.
+        pendingSharedBackupBatch = batch
+        return
+      }
+      await batch.acknowledge()
+    } catch (error) {
+      const reason = error instanceof Error ? `：${error.message}` : ''
+      showNotice(`分享文件处理失败${reason}；原分享文件仍保留，可重新选择用途。`, 9000)
+      return
+    }
+    pendingSharedFileBatch.value = undefined
+  }
+
+  async function handleSharedAppFilesConsumed(): Promise<void> {
+    sharedAppImportFiles.value = []
+    const batch = pendingSharedFileBatch.value
+    if (batch) {
+      try {
+        await batch.acknowledge()
+      } catch {
+        showNotice('APP 预览已打开，但系统分享暂存未清理。')
+      }
+      pendingSharedFileBatch.value = undefined
+    }
+    isImportChooserOpen.value = false
+  }
 
   const isVersionImportBusy = ref(false)
 
@@ -459,7 +545,11 @@ export function useApp() {
 
   const isDuplicateCleanerOpen = ref(false)
 
+  const isSimilarNameGroupsOpen = ref(false)
+
   const isExtractedCleanerOpen = ref(false)
+
+  const isParsedTagCleanerOpen = ref(false)
 
   const isVersionRecognitionOpen = ref(false)
 
@@ -551,12 +641,15 @@ export function useApp() {
     resetSearchState,
   } = useSearchIndex(resources, () => vaultStatus.value.enabled)
   const { isOverlayOpen, backStack, personalNavigation } = useLibraryOverlayNavigation({
+    closeRestorePanel,
     organizingResource,
     isOrganizing,
     isImportChooserOpen,
     isSettingsOpen,
     isDuplicateCleanerOpen,
+    isSimilarNameGroupsOpen,
     isExtractedCleanerOpen,
+    isParsedTagCleanerOpen,
     isVersionRecognitionOpen,
     isVaultPanelOpen,
     vaultStatus,
@@ -596,6 +689,18 @@ export function useApp() {
   const hiddenCharacterAssetCount = computed(
     () => resources.value.filter(isExtractedCharacterAsset).length,
   )
+
+  function openSimilarNameGroups(): void {
+    isSimilarNameGroupsOpen.value = true
+  }
+
+  function showSimilarResources(ids: string[]): void {
+    clearBrowsingState()
+    activeResourceIds.value = new Set(ids)
+    currentPage.value = 1
+    isSimilarNameGroupsOpen.value = false
+  }
+
   const {
     countFilter,
     countCategory,
@@ -619,6 +724,7 @@ export function useApp() {
     activeSecondaryFilterCount,
     activeScopeLabel,
   } = useLibraryQueryView({
+    activeResourceIds,
     categories,
     resources,
     hideCharacterAssets,
@@ -698,7 +804,6 @@ export function useApp() {
     isOrganizing,
     showNotice,
     loadLibrary,
-    captureHistory,
   })
   const {
     backupOverdue,
@@ -717,17 +822,24 @@ export function useApp() {
 
   const hasBrowsingState = computed(
     () =>
+      Boolean(activeResourceIds.value) ||
       Boolean(searchQuery.value) ||
       Boolean(activeTag.value) ||
       activeCategoryId.value !== undefined ||
       activeFilter.value !== 'all',
   )
 
-  function showNotice(message: string, duration = 4000, preserveRecycleUndo = false): void {
+  function showNotice(
+    message: string,
+    duration = 4000,
+    preserveRecycleUndo = false,
+    explicitType?: NoticeType,
+  ): void {
     if (!preserveRecycleUndo) recycleUndoEntry.value = undefined
     if (!preserveRecycleUndo) {
       notice.value = ''
-      const type: NoticeType = /失败|错误|损坏|无法|回滚/u.test(message) ? 'error' : 'info'
+      const type: NoticeType =
+        explicitType ?? (/失败|错误|损坏|无法|回滚/u.test(message) ? 'error' : 'info')
       noticeCenter.push({ id: 'app-main', type, message, durationMs: duration })
       return
     }
@@ -738,7 +850,7 @@ export function useApp() {
   }
   const { scheduleLibraryMaintenance } = useLibraryLifecycle({
     showNotice,
-    importResourceFiles,
+    receiveSharedFileBatch,
     loadResources,
     refreshStorageHealth,
     vaultStatus,
@@ -786,6 +898,7 @@ export function useApp() {
     handleSystemFileDragLeave,
     handleSystemFileDrop,
     isFeatureHubOpen,
+    isOverlayOpen,
     isMobileFiltersOpen,
     theme,
     applyTheme,
@@ -810,6 +923,10 @@ export function useApp() {
     openImportChooser,
     handleImport,
     handleTavernBackupImport,
+    pendingSharedFileBatch,
+    chooseSharedImportRoute,
+    sharedAppImportFiles,
+    handleSharedAppFilesConsumed,
     isImportChooserOpen,
     personalNavigation,
     closeImportChooser,
@@ -844,8 +961,13 @@ export function useApp() {
     lastFullBackupAt,
     duplicateGroupCounts,
     isDuplicateCleanerOpen,
+    isSimilarNameGroupsOpen,
+    openSimilarNameGroups,
+    activeResourceIds,
+    showSimilarResources,
     extractedCleanupCount,
     isExtractedCleanerOpen,
+    isParsedTagCleanerOpen,
     hasBrowsingState,
     handleBrowseBack,
     activeFilterLabel,
@@ -991,6 +1113,7 @@ export function useApp() {
     completedRestoreMode,
     handleRestoreInspect,
     handleRestoreConfirm,
+    closeRestorePanel,
     isVaultPanelOpen,
     isVaultBusy,
     handleVaultUnlock,

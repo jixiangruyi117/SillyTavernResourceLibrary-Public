@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Zip, ZipPassThrough, zipSync } from 'fflate'
+import { Unzip, UnzipInflate, Zip, ZipPassThrough, zipSync } from 'fflate'
 import { zipArchiveChunks } from './ZipArchiveStream'
 import { stageArchive } from '../services/ArchiveExtraction'
 import { MemoryRestoreStagingStore } from '../storage/RestoreStagingStore'
@@ -11,6 +11,25 @@ async function collect(file: Blob) {
 }
 
 describe('ZIP central-directory streaming', () => {
+  it('bounds a single inflate callback for highly compressed text', async () => {
+    const input = new Uint8Array(16 * 1024 * 1024).fill(65)
+    const file = new Blob([new Uint8Array(zipSync({ 'text.txt': input }))])
+    let total = 0
+    let peak = 0
+    const unzip = new Unzip((entry) => {
+      entry.ondata = (error, data) => {
+        if (error) throw error
+        total += data.length
+        peak = Math.max(peak, data.length)
+      }
+      entry.start()
+    })
+    unzip.register(UnzipInflate)
+    for await (const chunk of zipArchiveChunks(file)) unzip.push(chunk, false)
+    unzip.push(new Uint8Array(), true)
+    expect(total).toBe(input.length)
+    expect(peak).toBeLessThan(9 * 1024 * 1024)
+  })
   it('reads ZIP64 directory offsets without requiring full-file buffering', async () => {
     const bytes = zipSync({ 'file.txt': new TextEncoder().encode('value') })
     const endOffset = bytes.length - 22
@@ -61,6 +80,33 @@ describe('ZIP central-directory streaming', () => {
       new Uint8Array(await (await staging.get(job, 'nested.apk'))!.blob.arrayBuffer()),
     ).toEqual(nested)
     expect((await staging.get(job, 'empty.txt'))?.size).toBe(0)
+  })
+
+  it('reports decompressed bytes while entries are being staged', async () => {
+    const content = new Uint8Array(2 * 1024 * 1024)
+    for (let index = 0; index < content.length; index++) content[index] = index % 251
+    const bytes = zipSync({ 'large.bin': content })
+    const updates: Array<{ phase: string; stagedBytes?: number; totalStagedBytes?: number }> = []
+    const staging = new MemoryRestoreStagingStore()
+
+    await stageArchive(
+      new File([bytes], 'large.zip'),
+      staging,
+      () => true,
+      (progress) => {
+        updates.push(progress)
+      },
+    )
+
+    expect(
+      updates.some(
+        (progress) =>
+          progress.phase === 'staging' &&
+          (progress.stagedBytes ?? 0) > 0 &&
+          progress.totalStagedBytes === content.length,
+      ),
+    ).toBe(true)
+    expect(updates.at(-1)?.phase).toBe('complete')
   })
 
   it('rejects truncated or mismatched directory offsets before reading payloads', async () => {

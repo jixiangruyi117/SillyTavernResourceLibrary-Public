@@ -3,6 +3,7 @@ import { JSON_RESOURCE_PARSER_VERSION } from '../parser/JsonResourceParser'
 import type { ResourceParserRegistry } from '../parser/ResourceParser'
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
 import type { ImportResult, ParsedResource } from '../types/Import'
+import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
   getResourceLinkRiskBadges,
   getRelatedResourceIds,
@@ -80,6 +81,23 @@ export {
 
 export { resourceLogicalVersionKey, countResourceLogicalVersions } from './ResourceVersionIdentity'
 
+export interface ParsedCharacterTagCandidate {
+  resource: ResourceSummary
+  tags: string[]
+}
+
+export interface ParsedCharacterTagRemoval {
+  resourceId: string
+  tags: string[]
+}
+
+export interface ParsedTagProgress {
+  completed: number
+  total: number
+  resourceName: string
+  failed: number
+}
+
 async function createContentHash(file: File): Promise<string> {
   return hashFile(file)
 }
@@ -88,6 +106,8 @@ export class ResourceService {
   private readonly storage: ResourceStorageAdapter
   private readonly parserRegistry: ResourceParserRegistry
   private readonly linkInspector: GitHubResourceInspector
+  // Only names and hashes from the current scan; never retain original files here.
+  private readonly parsedTagCache = new Map<string, { hash: string; tags: string[] }>()
 
   constructor(
     storage: ResourceStorageAdapter,
@@ -846,15 +866,25 @@ export class ResourceService {
       ? []
       : await this.createVersionMatchIndex(knownResources, knownVersions)
 
-    for (const file of files) {
+    for (const [fileIndex, file] of files.entries()) {
+      const reportProgress = (phase: string, completed = fileIndex): void =>
+        options.onProgress?.({
+          completed,
+          total: files.length,
+          fileName: file.name,
+          phase,
+        })
       try {
+        reportProgress('正在准备文件')
         if (/\.srlchat$/i.test(file.name)) {
           const { importTavernChat } = await import('./TavernChatImport')
           results.push(await importTavernChat(file, this, this.parserRegistry, options))
           continue
         }
         const context = importPipeline.intake<ParsedResource>(file)
+        reportProgress('正在读取并计算校验值')
         const contentHash = await context.hash()
+        reportProgress('正在检查重复资源')
         const activeDuplicate = await this.storage.findByHash(contentHash)
         const versionDuplicate = activeDuplicate
           ? undefined
@@ -885,6 +915,7 @@ export class ResourceService {
           continue
         }
 
+        reportProgress('正在解析资源内容')
         const parsed = await context.parse((source) => this.parserRegistry.parse(source))
         await this.ensureParsedFingerprints(parsed)
         if (options.detectVersions !== false) {
@@ -919,6 +950,7 @@ export class ResourceService {
         }
         let resource = await this.createImportedResource(file, parsed, contentHash, context)
 
+        reportProgress('正在写入资源库')
         await this.storage.save(resource)
         context.mark('commit')
         const summary = toResourceSummary(resource)
@@ -944,6 +976,8 @@ export class ResourceService {
           fileName: file.name,
           message: error instanceof Error ? error.message : '导入失败',
         })
+      } finally {
+        reportProgress(`已处理 ${fileIndex + 1}/${files.length}`, fileIndex + 1)
       }
     }
 
@@ -982,6 +1016,125 @@ export class ResourceService {
     })
   }
 
+  clearParsedCharacterTagScan(): void {
+    this.parsedTagCache.clear()
+  }
+
+  private async originalCharacterTags(
+    summary: ResourceSummary,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const cached = this.parsedTagCache.get(summary.id)
+    if (cached && summary.contentHash && cached.hash === summary.contentHash) return cached.tags
+    const resource = await this.storage.get(summary.id)
+    if (!resource || resource.contentHash !== summary.contentHash)
+      throw new Error('资源已变化，请重新扫描')
+    const parsed = await this.parserRegistry.parse(
+      new File([resource.originalBlob], resource.fileName, { type: resource.mimeType }),
+    )
+    const tags = normalizeTags(parsed.tags ?? [])
+    if (!signal?.aborted) this.parsedTagCache.set(summary.id, { hash: summary.contentHash, tags })
+    return tags
+  }
+
+  /** Parse each unchanged original once; scans use lightweight current tags and hashes. */
+  async findParsedCharacterTags(
+    onProgress?: (progress: ParsedTagProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<ParsedCharacterTagCandidate[]> {
+    const summaries = (await this.listResourceListSummaries()).filter(
+      (item) => item.type === RESOURCE_TYPE.CHARACTER_CARD && item.tags.length,
+    )
+    const liveIds = new Set(summaries.map((item) => item.id))
+    for (const id of this.parsedTagCache.keys())
+      if (!liveIds.has(id)) this.parsedTagCache.delete(id)
+    const candidates: ParsedCharacterTagCandidate[] = []
+    let completed = 0
+    let failed = 0
+    onProgress?.({ completed, total: summaries.length, resourceName: '', failed })
+    for (const summary of summaries) {
+      signal?.throwIfAborted()
+      try {
+        const parsedTags = await this.originalCharacterTags(summary, signal)
+        const current = new Set(summary.tags.map((tag) => tag.toLocaleLowerCase()))
+        const tags = parsedTags.filter((tag) => current.has(tag.toLocaleLowerCase()))
+        if (tags.length) candidates.push({ resource: summary, tags })
+      } catch {
+        failed += 1
+      }
+      completed += 1
+      onProgress?.({ completed, total: summaries.length, resourceName: summary.name, failed })
+      if (completed % 32 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+    return candidates
+  }
+
+  /** Changed originals are parsed again; unchanged files never need another binary read/write. */
+  async removeParsedCharacterTags(
+    removals: ParsedCharacterTagRemoval[],
+    onProgress?: (progress: ParsedTagProgress) => void,
+  ): Promise<{
+    resourceCount: number
+    tagCount: number
+    entries: Array<{ resourceId: string; resourceName: string; tags: string[] }>
+    failed: number
+  }> {
+    const selected = new Map(
+      removals.map((item) => [
+        item.resourceId,
+        new Set(item.tags.map((tag) => tag.toLocaleLowerCase())),
+      ]),
+    )
+    const summaries = new Map(
+      (await this.listResourceListSummaries()).map((item) => [item.id, item]),
+    )
+    const entries: Array<{ resourceId: string; resourceName: string; tags: string[] }> = []
+    let completed = 0
+    let failed = 0
+    onProgress?.({ completed, total: selected.size, resourceName: '', failed })
+    for (const [id, selectedTags] of selected) {
+      const resource = summaries.get(id)
+      try {
+        if (!resource || resource.type !== RESOURCE_TYPE.CHARACTER_CARD) continue
+        const parsedTags = new Set(
+          (await this.originalCharacterTags(resource)).map((tag) => tag.toLocaleLowerCase()),
+        )
+        const removed = resource.tags.filter(
+          (tag) =>
+            parsedTags.has(tag.toLocaleLowerCase()) && selectedTags.has(tag.toLocaleLowerCase()),
+        )
+        if (!removed.length) continue
+        const removedKeys = new Set(removed.map((tag) => tag.toLocaleLowerCase()))
+        await this.storage.update(resource.id, {
+          tags: resource.tags.filter((tag) => !removedKeys.has(tag.toLocaleLowerCase())),
+          updatedAt: Date.now(),
+        })
+        entries.push({ resourceId: resource.id, resourceName: resource.name, tags: removed })
+      } catch {
+        failed += 1
+      } finally {
+        completed += 1
+        onProgress?.({
+          completed,
+          total: selected.size,
+          resourceName: resource?.name ?? id,
+          failed,
+        })
+      }
+    }
+    return {
+      failed,
+      resourceCount: entries.length,
+      tagCount: entries.reduce((count, entry) => count + entry.tags.length, 0),
+      entries,
+    }
+  }
+
+  restoreParsedCharacterTags(entries: ParsedCharacterTagRemoval[]): Promise<AiTagMutationResult> {
+    // Undo must preserve original long tags, unlike newly suggested AI tags.
+    return operationsResourceOrganizationOperations.addTagsPerResource(this.storage, entries, true)
+  }
+
   async updateExternalAppResource(update: ExternalAppResourceUpdate): Promise<Resource> {
     return operationsResourceOrganizationOperations.updateExternalAppResource(this.storage, update)
   }
@@ -1006,6 +1159,7 @@ export class ResourceService {
       tags: string[]
       sourceLinks?: ResourceLink[]
       characterOverrides?: CharacterCardOverrides
+      characterContentEdits?: CharacterCardContentEdit[]
     },
   ): Promise<void> {
     return operationsResourceOrganizationOperations.updateDetails(this.storage, resource, details)
@@ -1041,7 +1195,10 @@ export class ResourceService {
     return operationsResourceOrganizationOperations.deleteResource(this.storage, id)
   }
 
-  async deleteMany(ids: string[]): Promise<void> {
-    return operationsResourceOrganizationOperations.deleteMany(this.storage, ids)
+  async deleteMany(
+    ids: string[],
+    onProgress?: (progress: { completed: number; total: number }) => void,
+  ): Promise<void> {
+    return operationsResourceOrganizationOperations.deleteMany(this.storage, ids, onProgress)
   }
 }
