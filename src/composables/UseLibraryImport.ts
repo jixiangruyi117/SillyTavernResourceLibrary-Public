@@ -294,6 +294,8 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           reportArchiveProgress(operationId, progress),
         )
         if (kind === 'tavern') {
+          // Hand off ownership before starting the Tavern task. The outer finally
+          // will see an empty foreground task id and therefore cannot stop the new task.
           taskCenter.complete(operationId)
           await stopImportTask(operationId)
           handlingSharedImport = false
