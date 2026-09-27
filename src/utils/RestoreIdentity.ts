@@ -1,4 +1,5 @@
 import { isRecord } from './UnknownValue'
+import { isResourceGalleryImage, galleryOwnerId } from '../types/ResourceGallery'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { canonicalizeCardJson } from './CharacterCardFingerprint'
@@ -17,6 +18,10 @@ function avatarOwners(resources: ResourceSummary[]): Map<string, string[]> {
     owners.set(avatar, hashes)
   }
   for (const resource of resources) {
+    if (isResourceGalleryImage(resource)) {
+      const owner = byId.get(galleryOwnerId(resource))
+      if (owner) add(resource.id, owner)
+    }
     for (const id of resource.relatedResourceIds ?? []) {
       const related = byId.get(id)
       if (!related) continue
@@ -47,6 +52,14 @@ export class RestoreDuplicateIndex {
 
   private key(resource: ResourceSummary, owners: Map<string, string[]>): string {
     const hash = resource.contentHash.toLowerCase()
+    if (isResourceGalleryImage(resource)) {
+      return JSON.stringify([
+        'resource-gallery',
+        hash,
+        owners.get(resource.id) ?? galleryOwnerId(resource),
+        resource.metadata.galleryImageIdentity ?? resource.id,
+      ])
+    }
     if (resource.type === RESOURCE_TYPE.CHAT) {
       const companion = isRecord(resource.metadata.chatCharacter)
         ? resource.metadata.chatCharacter

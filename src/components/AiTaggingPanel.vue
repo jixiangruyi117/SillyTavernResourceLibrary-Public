@@ -30,10 +30,11 @@ const {
   allFilteredSelected,
   clearSelection,
   selectedIds,
-  AI_TAGGING_MAX_SELECTION,
   customPrompt,
   batchSize,
-  AI_TAGGING_MAX_BATCH_SIZE,
+  batchSizeError,
+  AI_TAGGING_RESOURCE_CHAR_BUDGET,
+  openReviewResource,
   ruleTemplates,
   ruleTemplateName,
   selectedRuleTemplateId,
@@ -76,6 +77,14 @@ const {
   acceptedItems,
   applyReviewedTags,
   acceptedTagCount,
+  systemPromptText,
+  isSystemPromptCustom,
+  systemPromptError,
+  resetSystemPrompt,
+  AI_TAGGING_MAX_SYSTEM_PROMPT,
+  progressResourceNames,
+  selectedApiSummary,
+  activeFilterCount,
 } = controller
 const profiles = toRef(controller, 'profiles')
 
@@ -88,6 +97,9 @@ function selectRuleTemplate(event: Event): void {
 <template>
   <section
     class="ai-tagging mobile-dialog-viewport"
+    :class="{ 'is-suspended': suspended }"
+    :inert="suspended"
+    :aria-hidden="suspended || undefined"
     role="dialog"
     aria-modal="true"
     aria-labelledby="ai-tagging-title"
@@ -95,7 +107,7 @@ function selectRuleTemplate(event: Event): void {
     <header class="ai-tagging__header">
       <div>
         <h2 id="ai-tagging-title">AI 标签实验台</h2>
-        <p>小批识别，逐项审核，确认后才写入本地资源。</p>
+        <p>选好范围与规则，审核后写入 · 支持撤销</p>
       </div>
       <button
         class="ai-tagging__close"
@@ -108,9 +120,21 @@ function selectRuleTemplate(event: Event): void {
     </header>
 
     <nav class="ai-tagging__steps" aria-label="AI 标签处理步骤">
-      <span :class="{ 'is-active': stage === 'select' }"><b>01</b> 选择与规则</span>
-      <span :class="{ 'is-active': stage === 'running' }"><b>02</b> 分批识别</span>
-      <span :class="{ 'is-active': stage === 'review' }"><b>03</b> 人工审核</span>
+      <span
+        :class="{ 'is-active': stage === 'select' }"
+        :aria-current="stage === 'select' ? 'step' : undefined"
+        ><b>1</b> 选择与规则</span
+      >
+      <span
+        :class="{ 'is-active': stage === 'running' }"
+        :aria-current="stage === 'running' ? 'step' : undefined"
+        ><b>2</b> 分批识别</span
+      >
+      <span
+        :class="{ 'is-active': stage === 'review' }"
+        :aria-current="stage === 'review' ? 'step' : undefined"
+        ><b>3</b> 人工审核</span
+      >
     </nav>
 
     <div
@@ -135,150 +159,188 @@ function selectRuleTemplate(event: Event): void {
       </aside>
     </div>
 
-    <main class="ai-tagging__body">
+    <main class="ai-tagging__body" :class="`ai-tagging__body--${stage}`">
       <template v-if="stage === 'select'">
         <aside class="ai-tagging__control-panel">
           <section class="ai-tagging__block">
             <div class="ai-tagging__block-heading">
               <div>
-                <small>SCOPE</small>
-                <h3>筛选范围</h3>
-              </div>
-              <strong>{{ filteredResources.length }} 项</strong>
-            </div>
-            <label class="ai-tagging__field ai-tagging__field--wide">
-              <span>搜索</span>
-              <input v-model="searchQuery" type="search" placeholder="名称、文件名、描述或标签" />
-            </label>
-            <div class="ai-tagging__filter-grid">
-              <label class="ai-tagging__field">
-                <span>资源分类</span>
-                <select v-model="typeFilter">
-                  <option value="all">全部分类</option>
-                  <option v-for="item in resourceTypes" :key="item.type" :value="item.type">
-                    {{ item.label }}
-                  </option>
-                </select>
-              </label>
-              <label class="ai-tagging__field">
-                <span>文件夹</span>
-                <select v-model="categoryFilter">
-                  <option value="all">全部文件夹</option>
-                  <option value="uncategorized">未放入文件夹</option>
-                  <option v-for="category in categories" :key="category.id" :value="category.id">
-                    {{ category.name }}
-                  </option>
-                </select>
-              </label>
-              <label class="ai-tagging__field">
-                <span>标签状态</span>
-                <select v-model="tagState">
-                  <option value="all">不限</option>
-                  <option value="untagged">尚无标签</option>
-                  <option value="tagged">已有标签</option>
-                </select>
-              </label>
-              <label class="ai-tagging__field">
-                <span>已有标签包含</span>
-                <input v-model="tagQuery" type="text" maxlength="40" placeholder="例如 古风" />
-              </label>
-            </div>
-            <div class="ai-tagging__scope-actions">
-              <button type="button" @click="toggleFilteredSelection">
-                {{
-                  allFilteredSelected ? '取消当前筛选' : `选择当前筛选 ${filteredResources.length}`
-                }}
-              </button>
-              <button type="button" @click="clearSelection">清空选择</button>
-              <span>已选 {{ selectedIds.size }} / {{ AI_TAGGING_MAX_SELECTION }}</span>
-            </div>
-          </section>
-
-          <section class="ai-tagging__block">
-            <div class="ai-tagging__block-heading">
-              <div>
-                <small>INSTRUCTION</small>
                 <h3>识别规则</h3>
               </div>
             </div>
             <label class="ai-tagging__field ai-tagging__field--wide">
               <span>自定义提示词</span>
-              <textarea v-model="customPrompt" maxlength="4000" rows="5"></textarea>
+              <textarea
+                v-model="customPrompt"
+                aria-label="自定义提示词"
+                maxlength="4000"
+                rows="3"
+              ></textarea>
               <small>{{ customPrompt.length }} / 4000</small>
             </label>
-            <div class="ai-tagging__rule-templates">
-              <label class="ai-tagging__field">
-                <span>已保存标签规范</span>
-                <select v-model="selectedRuleTemplateId" @change="selectRuleTemplate">
-                  <option value="">选择本机模板</option>
-                  <option v-for="template in ruleTemplates" :key="template.id" :value="template.id">
-                    {{ template.name }}
-                  </option>
-                </select>
-              </label>
-              <label class="ai-tagging__field">
-                <span>规范名称</span>
-                <input
-                  v-model="ruleTemplateName"
-                  type="text"
-                  maxlength="80"
-                  placeholder="如：古风剧情卡"
-                />
-              </label>
-              <div class="ai-tagging__template-actions">
-                <button type="button" @click="saveRuleTemplate">保存当前规范</button>
-                <button v-if="selectedRuleTemplateId" type="button" @click="deleteRuleTemplate">
-                  删除模板
-                </button>
-              </div>
-              <small>会保存上方识别规则及下方标签规范选项；只在本机保存，不包含 API 或密钥。</small>
-            </div>
-            <label class="ai-tagging__field ai-tagging__field--batch">
-              <span>每批资源数</span>
-              <input
-                v-model.number="batchSize"
-                type="number"
-                min="1"
-                :max="AI_TAGGING_MAX_BATCH_SIZE"
-              />
-              <small
-                >允许 1–{{ AI_TAGGING_MAX_BATCH_SIZE }}；建议 3–5，系统还会限制单批上下文。</small
-              >
-            </label>
-            <div class="ai-tagging__taxonomy">
-              <label class="ai-tagging__field ai-tagging__field--wide">
-                <span>标签规范模板</span>
-                <select v-model="taxonomyTemplateId">
-                  <option
-                    v-for="template in AI_TAGGING_TAXONOMY_TEMPLATES"
-                    :key="template.id"
-                    :value="template.id"
-                  >
-                    {{ template.name }}
-                  </option>
-                </select>
-                <small>{{ activeTaxonomyTemplate.description }}</small>
-              </label>
-              <label class="ai-tagging__alias-toggle">
-                <input
-                  v-model="mergeAliases"
-                  type="checkbox"
-                  :disabled="!Object.keys(activeTaxonomyTemplate.aliases).length"
-                />
-                <span
-                  ><strong>合并模板别名</strong
-                  ><small
-                    >把本次建议里的同义词统一成模板写法，例如“百合”→“GL”；不会改写已有标签。</small
-                  ></span
+            <details class="ai-tagging__disclosure">
+              <summary>
+                本机规则模板 <span>{{ ruleTemplates.length }} 个已保存</span>
+              </summary>
+              <div class="ai-tagging__rule-templates">
+                <label class="ai-tagging__field">
+                  <span>已保存标签规范</span>
+                  <select v-model="selectedRuleTemplateId" @change="selectRuleTemplate">
+                    <option value="">选择本机模板</option>
+                    <option
+                      v-for="template in ruleTemplates"
+                      :key="template.id"
+                      :value="template.id"
+                    >
+                      {{ template.name }}
+                    </option>
+                  </select>
+                </label>
+                <label class="ai-tagging__field">
+                  <span>规范名称</span>
+                  <input
+                    v-model="ruleTemplateName"
+                    type="text"
+                    maxlength="80"
+                    placeholder="如：古风剧情卡"
+                  />
+                </label>
+                <div class="ai-tagging__template-actions">
+                  <button type="button" @click="saveRuleTemplate">保存当前规范</button>
+                  <button v-if="selectedRuleTemplateId" type="button" @click="deleteRuleTemplate">
+                    删除模板
+                  </button>
+                </div>
+                <small
+                  >保存补充要求、系统提示词与标签规范选项；只在本机保存，不包含 API 或密钥。</small
                 >
+              </div>
+            </details>
+            <details class="ai-tagging__disclosure ai-tagging__advanced">
+              <summary>
+                高级：系统提示词 <span>{{ isSystemPromptCustom ? '已自定义' : '内置默认' }}</span>
+              </summary>
+              <div class="ai-tagging__advanced-content">
+                <p>
+                  这是实际发送给 AI
+                  的完整系统消息。修改会替换内置提示词；上方自定义提示词仍作为用户补充要求发送。
+                </p>
+                <label class="ai-tagging__field">
+                  <span>系统提示词</span>
+                  <textarea
+                    v-model="systemPromptText"
+                    aria-label="系统提示词"
+                    :maxlength="AI_TAGGING_MAX_SYSTEM_PROMPT"
+                    :aria-invalid="Boolean(systemPromptError)"
+                    aria-describedby="ai-tagging-system-hint"
+                    rows="12"
+                    spellcheck="false"
+                  ></textarea>
+                </label>
+                <div class="ai-tagging__prompt-actions">
+                  <small
+                    >{{ systemPromptText.length.toLocaleString() }} /
+                    {{ AI_TAGGING_MAX_SYSTEM_PROMPT.toLocaleString() }}</small
+                  >
+                  <button
+                    type="button"
+                    :disabled="!isSystemPromptCustom"
+                    @click="resetSystemPrompt"
+                  >
+                    恢复默认
+                  </button>
+                </div>
+                <p id="ai-tagging-system-hint">
+                  {{
+                    isSystemPromptCustom
+                      ? '自定义后切换标签规范不会改写这段文本；恢复默认会按当前规范重新生成。'
+                      : '默认提示词随下方标签规范更新。修改会随本机草稿保存，也可存入规则模板。'
+                  }}
+                </p>
+                <p v-if="systemPromptError" class="ai-tagging__validation" role="alert">
+                  {{ systemPromptError }}
+                </p>
+                <details class="ai-tagging__output-format">
+                  <summary>查看 AI 返回格式</summary>
+                  <p>
+                    每个资源返回原 resourceId；没有可靠建议时 tags 为 []。保留以下 JSON
+                    结构，才能进入审核：
+                  </p>
+                  <pre>
+{
+  "resources": [{
+    "resourceId": "原资源ID",
+    "tags": [{
+      "name": "古风",
+      "evidence": "故事发生在古代",
+      "level": "明确证据"
+    }]
+  }]
+}</pre>
+                  <p>
+                    证据等级使用“明确证据”或“合理推断”。本地最多保留每项 12 个 AI 建议，标签限 40
+                    字符；修改提示词不会改变这些限制。返回格式不符会提示失败，不会直接写入资源。
+                  </p>
+                </details>
+              </div>
+            </details>
+            <details class="ai-tagging__disclosure ai-tagging__rule-options">
+              <summary>
+                标签规范与批次
+                <span>{{ activeTaxonomyTemplate.name }} · {{ batchSize }} 项/批</span>
+              </summary>
+              <label class="ai-tagging__field ai-tagging__field--batch">
+                <span>每批资源数</span>
+                <input
+                  v-model.number="batchSize"
+                  type="number"
+                  min="1"
+                  step="1"
+                  aria-label="每批资源数"
+                  :aria-invalid="Boolean(batchSizeError)"
+                />
+                <small>建议 3–5 项，不设数量上限；按次计费可调大，实际最多取本次选中数量。</small>
+                <small
+                  >每项发送内容摘录，最多
+                  {{ AI_TAGGING_RESOURCE_CHAR_BUDGET.toLocaleString() }}
+                  字符，不是完整文件；增大批次不会缩减每项摘录。上下文与输出容量取决于所选模型，过大时可调小后重试。</small
+                >
+                <small v-if="batchSizeError" role="alert">{{ batchSizeError }}</small>
               </label>
-            </div>
+              <div class="ai-tagging__taxonomy">
+                <label class="ai-tagging__field ai-tagging__field--wide">
+                  <span>标签规范模板</span>
+                  <select v-model="taxonomyTemplateId">
+                    <option
+                      v-for="template in AI_TAGGING_TAXONOMY_TEMPLATES"
+                      :key="template.id"
+                      :value="template.id"
+                    >
+                      {{ template.name }}
+                    </option>
+                  </select>
+                  <small>{{ activeTaxonomyTemplate.description }}</small>
+                </label>
+                <label class="ai-tagging__alias-toggle">
+                  <input
+                    v-model="mergeAliases"
+                    type="checkbox"
+                    :disabled="!Object.keys(activeTaxonomyTemplate.aliases).length"
+                  />
+                  <span
+                    ><strong>合并模板别名</strong
+                    ><small
+                      >把本次建议里的同义词统一成模板写法，例如“百合”→“GL”；不会改写已有标签。</small
+                    ></span
+                  >
+                </label>
+              </div>
+            </details>
           </section>
 
           <section class="ai-tagging__block">
             <div class="ai-tagging__block-heading">
               <div>
-                <small>MODEL ROUTE</small>
                 <h3>API 来源</h3>
               </div>
             </div>
@@ -296,6 +358,7 @@ function selectRuleTemplate(event: Event): void {
                 <option value="temporary">临时独立 API（仅本次）</option>
               </select>
             </label>
+            <p class="ai-tagging__api-summary">{{ selectedApiSummary }}</p>
             <template v-if="apiSource === 'temporary'">
               <button
                 class="ai-tagging__details-toggle"
@@ -341,11 +404,70 @@ function selectRuleTemplate(event: Event): void {
         <section class="ai-tagging__candidate-panel" aria-label="候选资源">
           <header>
             <div>
-              <small>QUEUE</small>
               <h3>待识别资源</h3>
             </div>
             <span>{{ selectedIds.size }} 已选</span>
           </header>
+          <section class="ai-tagging__filters">
+            <div class="ai-tagging__block-heading">
+              <div>
+                <h3>筛选范围</h3>
+              </div>
+              <strong>{{ filteredResources.length }} 项</strong>
+            </div>
+            <label class="ai-tagging__field ai-tagging__field--wide">
+              <span>搜索</span>
+              <input v-model="searchQuery" type="search" placeholder="名称、文件名、描述或标签" />
+            </label>
+            <details class="ai-tagging__disclosure ai-tagging__filter-options">
+              <summary>
+                分类、文件夹与标签筛选
+                <span v-if="activeFilterCount">已设 {{ activeFilterCount }} 项</span>
+              </summary>
+              <div class="ai-tagging__filter-grid">
+                <label class="ai-tagging__field">
+                  <span>资源分类</span>
+                  <select v-model="typeFilter">
+                    <option value="all">全部分类</option>
+                    <option v-for="item in resourceTypes" :key="item.type" :value="item.type">
+                      {{ item.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="ai-tagging__field">
+                  <span>文件夹</span>
+                  <select v-model="categoryFilter">
+                    <option value="all">全部文件夹</option>
+                    <option value="uncategorized">未放入文件夹</option>
+                    <option v-for="category in categories" :key="category.id" :value="category.id">
+                      {{ category.name }}
+                    </option>
+                  </select>
+                </label>
+                <label class="ai-tagging__field">
+                  <span>标签状态</span>
+                  <select v-model="tagState" aria-label="标签状态">
+                    <option value="all">不限</option>
+                    <option value="untagged">尚无标签</option>
+                    <option value="tagged">已有标签</option>
+                  </select>
+                </label>
+                <label class="ai-tagging__field">
+                  <span>已有标签包含</span>
+                  <input v-model="tagQuery" type="text" maxlength="40" placeholder="例如 古风" />
+                </label>
+              </div>
+            </details>
+            <div class="ai-tagging__scope-actions">
+              <button type="button" @click="toggleFilteredSelection">
+                {{
+                  allFilteredSelected ? '取消当前筛选' : `选择当前筛选 ${filteredResources.length}`
+                }}
+              </button>
+              <button type="button" @click="clearSelection">清空选择</button>
+              <span>已选 {{ selectedIds.size }} 项</span>
+            </div>
+          </section>
           <div class="ai-tagging__candidate-list">
             <label
               v-for="resource in filteredResources"
@@ -356,9 +478,6 @@ function selectRuleTemplate(event: Event): void {
               <input
                 type="checkbox"
                 :checked="selectedIds.has(resource.id)"
-                :disabled="
-                  !selectedIds.has(resource.id) && selectedIds.size >= AI_TAGGING_MAX_SELECTION
-                "
                 @change="toggleResource(resource.id)"
               />
               <span class="ai-tagging__candidate-index">{{
@@ -383,25 +502,50 @@ function selectRuleTemplate(event: Event): void {
       </template>
 
       <section v-else-if="stage === 'running'" class="ai-tagging__running" aria-live="polite">
-        <div class="ai-tagging__radar" aria-hidden="true">
-          <span>{{ progressPercent }}%</span>
+        <div class="ai-tagging__run-card">
+          <header>
+            <div>
+              <span class="ai-tagging__status">{{ stopRequested ? '正在停止' : '识别中' }}</span>
+              <h3>{{ stopRequested ? '正在取消当前请求' : '正在读取内容线索' }}</h3>
+            </div>
+            <strong class="ai-tagging__percentage">{{ progressPercent }}<small>%</small></strong>
+          </header>
+          <p>{{ message }}</p>
+          <progress
+            class="ai-tagging__progress"
+            :value="progressCompleted"
+            :max="progressTotal || 1"
+            aria-label="资源识别进度"
+          ></progress>
+          <div class="ai-tagging__run-counts">
+            <span>第 {{ progressBatch || 1 }} / {{ progressBatchCount }} 批</span
+            ><strong>{{ progressCompleted }} / {{ progressTotal }} 项已处理</strong>
+          </div>
+          <div class="ai-tagging__run-resources">
+            <h4>当前批次</h4>
+            <ul v-if="progressResourceNames.length">
+              <li v-for="(name, index) in progressResourceNames" :key="index">
+                <span>{{ index + 1 }}</span
+                >{{ name }}
+              </li>
+            </ul>
+            <p v-else>正在准备资源内容…</p>
+          </div>
+          <p class="ai-tagging__api-summary">{{ selectedApiSummary }}</p>
+          <div class="ai-tagging__run-bottom">
+            <small>停止后可审核已完成结果，标签尚未写入。</small
+            ><button type="button" :disabled="stopRequested" @click="requestStop">
+              {{ stopRequested ? '正在停止…' : '停止识别' }}
+            </button>
+          </div>
         </div>
-        <small>BATCH {{ progressBatch || 1 }} / {{ progressBatchCount }}</small>
-        <h3>正在分批辨认内容线索</h3>
-        <p>{{ message }}</p>
-        <div class="ai-tagging__progress"><i :style="{ width: `${progressPercent}%` }"></i></div>
-        <strong>{{ progressCompleted }} / {{ progressTotal }} 项完成</strong>
-        <button type="button" :disabled="stopRequested" @click="requestStop">
-          {{ stopRequested ? '正在取消当前请求' : '停止识别' }}
-        </button>
       </section>
 
       <section v-else class="ai-tagging__review">
         <header class="ai-tagging__review-header">
           <div>
-            <small>HUMAN CHECKPOINT</small>
             <h3>审核 AI 建议</h3>
-            <p>删除不准确标签，也可以手动补充；只有勾选项会写入。</p>
+            <p>{{ reviewItems.length }} 项结果 · 删除不准确标签或手动补充，只有勾选项会写入。</p>
           </div>
           <div class="ai-tagging__review-actions">
             <button type="button" @click="setAllAccepted(true)">全选</button
@@ -410,17 +554,38 @@ function selectRuleTemplate(event: Event): void {
         </header>
         <div class="ai-tagging__review-list">
           <article
-            v-for="item in reviewItems"
+            v-for="(item, index) in reviewItems"
             :key="item.resourceId"
             class="ai-tagging__review-card"
             :class="{ 'is-rejected': !item.accepted }"
           >
             <header>
-              <label><input v-model="item.accepted" type="checkbox" /><span>接受此项</span></label>
+              <label
+                ><input
+                  v-model="item.accepted"
+                  type="checkbox"
+                  :aria-label="`接受 ${item.resource.name} 的标签`"
+                /><span>{{ String(index + 1).padStart(2, '0') }}</span></label
+              >
               <div>
                 <strong>{{ item.resource.name }}</strong
                 ><small>{{ RESOURCE_TYPE_LABELS[item.resource.type] }}</small>
+                <button
+                  class="ai-tagging__detail-link"
+                  type="button"
+                  :aria-label="`查看资源详情：${item.resource.name}`"
+                  @click="openReviewResource(item, $event)"
+                >
+                  查看资源详情 <span aria-hidden="true">↗</span>
+                </button>
               </div>
+              <span class="ai-tagging__review-state">{{
+                !item.accepted
+                  ? '已跳过'
+                  : item.tags.length
+                    ? `${item.tags.length} 个待写入`
+                    : '无建议'
+              }}</span>
             </header>
             <div v-if="item.resource.tags.length" class="ai-tagging__existing-tags">
               <small>已有</small><span v-for="tag in item.resource.tags" :key="tag">{{ tag }}</span>
@@ -469,8 +634,9 @@ function selectRuleTemplate(event: Event): void {
           <small>成功结果和审核修改均已保留</small>
         </div>
         <button
-          v-if="retryableResourceIds.length && stage === 'review'"
+          v-if="retryableResourceIds.length && stage !== 'running'"
           type="button"
+          :disabled="Boolean(batchSizeError || systemPromptError)"
           @click="retryFailures"
         >
           仅重试失败项 {{ retryableResourceIds.length }}
@@ -487,9 +653,11 @@ function selectRuleTemplate(event: Event): void {
       </article>
     </aside>
 
-    <footer class="ai-tagging__footer">
+    <footer v-if="stage !== 'running'" class="ai-tagging__footer">
       <p>
-        <strong>{{ message || '资源内容只会发送到你选择的 API。' }}</strong
+        <strong>{{
+          systemPromptError || batchSizeError || message || '资源内容只会发送到你选择的 API。'
+        }}</strong
         ><small v-if="usageText">{{ usageText }}</small>
       </p>
       <div v-if="stage === 'select'">
@@ -497,7 +665,7 @@ function selectRuleTemplate(event: Event): void {
         ><button
           class="is-primary"
           type="button"
-          :disabled="!selectedIds.size"
+          :disabled="!selectedIds.size || Boolean(systemPromptError || batchSizeError)"
           @click="startRecognition"
         >
           开始识别 {{ selectedIds.size || '' }}

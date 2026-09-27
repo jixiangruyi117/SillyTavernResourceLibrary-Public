@@ -44,8 +44,9 @@
   position: sticky;
   z-index: 6;
   top: -1px;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: thin;
   border-top: 1px solid var(--color-line);
   border-bottom: 1px solid var(--color-line-strong);
   background: var(--color-surface-raised);
@@ -54,7 +55,9 @@
 .resource-detail__tabs button {
   position: relative;
   display: inline-flex;
-  min-width: 0;
+  flex: 1 0 3.5rem;
+  white-space: nowrap;
+  min-width: 3.5rem;
   min-height: var(--size-touch);
   align-items: center;
   justify-content: center;

@@ -9,6 +9,7 @@ import type { ResourceService } from './ResourceService'
 import type { RestoreService } from './RestoreService'
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
 import type { GitHubBackupConfig, WebDavBackupConfig } from '../types/CloudBackup'
+import type { ArchivePortableData, PreparedRestore } from '../types/Backup'
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>()
@@ -699,6 +700,64 @@ describe('CloudBackupService V3', () => {
     )
     expect(restore.prepare).not.toHaveBeenCalled()
   })
+
+  it.each([true, false])(
+    'honors gallery selection through the cloud ZIP importer (%s)',
+    async (includeGallery) => {
+      const owner = cloudResource('a'.repeat(64))
+      const image = {
+        ...cloudResource('b'.repeat(64), 'gallery'),
+        metadata: {
+          assetKind: 'resource-gallery-image',
+          galleryOwnerId: owner.id,
+          galleryVisible: true,
+        },
+      }
+      const catalog = { other: ['预览图', '空分类'] }
+      const prepared = {
+        resources: [owner, image],
+        versions: [],
+        categories: [],
+        preview: { mode: 'full', createdAt: new Date().toISOString() },
+        portableData: {
+          version: 1,
+          resourceGalleryCategories: catalog,
+          appearance: { theme: 'dark' },
+        },
+      } as unknown as PreparedRestore
+      const restore = {
+        prepare: vi.fn(async () => prepared),
+        restore: vi.fn(async (plan: PreparedRestore) => ({
+          restoredResources: plan.resources.length,
+        })),
+      }
+      const imported = vi.fn(async (_data: ArchivePortableData) => {})
+      const service = new CloudBackupService(
+        { listResourceListSummaries: vi.fn(async () => []) } as unknown as ResourceService,
+        { list: vi.fn(async () => []) } as unknown as CategoryService,
+        {} as ExportService,
+        restore as unknown as RestoreService,
+        undefined,
+        imported,
+      )
+      vi.spyOn(service, 'downloadBackup').mockResolvedValue(new Blob(['archive']))
+      await service.restoreBackup(
+        { id: 'zip', objectKey: 'backup.zip', size: 7, createdAt: 1 },
+        undefined,
+        [owner.id],
+        includeGallery,
+      )
+      expect(restore.restore.mock.calls[0]![0].resources.map((r) => r.id)).toEqual(
+        includeGallery ? [owner.id, image.id] : [owner.id],
+      )
+      expect(imported).toHaveBeenCalledOnce()
+      expect(imported.mock.calls[0]![0].resourceGalleryCategories).toEqual(
+        includeGallery ? catalog : undefined,
+      )
+      expect(imported.mock.calls[0]![0].appearance).toEqual({ theme: 'dark' })
+      expect(prepared.portableData?.resourceGalleryCategories).toEqual(catalog)
+    },
+  )
 
   it('lists every V3 resource and filters cloud restore by unique resource ID', async () => {
     const first = 'a'.repeat(64)

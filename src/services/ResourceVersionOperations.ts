@@ -1,4 +1,5 @@
 import { hashFile } from './HashService'
+import { moveResourceGallery } from './ResourceGalleryService'
 import { isPersonalResourceType } from '../types/PersonalResource'
 import type { ParsedResource } from '../types/Import'
 import { RESOURCE_TYPE } from '../types/Resource'
@@ -129,6 +130,7 @@ export async function importAsVersion(
       ...version.metadata,
       authorNote: current.metadata.authorNote,
       manuallyBoundResourceIds: current.metadata.manuallyBoundResourceIds,
+      resourceCoverId: current.metadata.resourceCoverId,
       ...(characterContentEdits ? { characterContentEdits } : {}),
     },
     thumbnailBlob: version.thumbnailBlob,
@@ -174,6 +176,7 @@ export async function activateVersion(
       ...selected.metadata,
       authorNote: current.metadata.authorNote,
       manuallyBoundResourceIds: current.metadata.manuallyBoundResourceIds,
+      resourceCoverId: current.metadata.resourceCoverId,
     },
     thumbnailBlob: selected.thumbnailBlob,
     originalBlob: selected.originalBlob,
@@ -276,6 +279,7 @@ export async function mergeExistingResourceAsVersion(
     })
   }
   await storage.update(current.id, { versionCount, updatedAt: now })
+  await moveResourceGallery(storage, sourceResourceId, resourceId)
   await deleteResource(sourceResourceId)
   const updated = await storage.get(current.id)
   if (!updated) throw new Error('手动版本合并失败')

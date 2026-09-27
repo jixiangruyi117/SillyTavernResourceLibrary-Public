@@ -1,6 +1,12 @@
 import { onMounted, onScopeDispose, shallowRef, watch, type Ref } from 'vue'
 
-import { assetStore } from '../core/AppContainer'
+import { assetStore, resourceGalleryService } from '../core/AppContainer'
+import {
+  galleryImageUrl,
+  galleryOwnerId,
+  isResourceGalleryImage,
+  resourceCoverId,
+} from '../types/ResourceGallery'
 import type { ResourceReference } from '../types/Resource'
 
 const nearViewport = new Map<Element, () => void>()
@@ -21,6 +27,7 @@ function drainReads(): void {
 export function useResourceThumbnail(
   source: () => ResourceReference | undefined,
   host?: Readonly<Ref<Element | null>>,
+  remoteCoverUrl?: Ref<string>,
 ): Ref<Blob | undefined> {
   const thumbnail = shallowRef<Blob>()
   const ready = shallowRef(!host || typeof IntersectionObserver !== 'function')
@@ -72,18 +79,36 @@ export function useResourceThumbnail(
         assetId: resource?.thumbnailAssetId,
         contentHash: resource?.contentHash,
         ready: ready.value,
+        coverId: resource ? resourceCoverId(resource) : '',
       }
     },
-    ({ resource, blob, assetId, ready }) => {
+    ({ resource, blob, assetId, ready, coverId }) => {
       cancelQueued()
       const currentGeneration = generation
       if (!ready) return
+      if (remoteCoverUrl) remoteCoverUrl.value = ''
       thumbnail.value = blob
-      if (!resource || blob instanceof Blob || !assetId) return
+      if (
+        !resource ||
+        (!coverId && (blob instanceof Blob || (!assetId && !isResourceGalleryImage(resource))))
+      )
+        return
       queued = async () => {
         if (currentGeneration !== generation) return
         try {
-          const loaded = await assetStore.getBlob(assetId)
+          if (coverId) {
+            const cover = await resourceGalleryService.getImage(resource.id, coverId)
+            if (currentGeneration !== generation) return
+            if (remoteCoverUrl) remoteCoverUrl.value = galleryImageUrl(cover)
+            thumbnail.value =
+              cover.thumbnailBlob ??
+              (cover.mimeType.startsWith('image/') ? cover.originalBlob : undefined)
+            return
+          }
+          const loaded = assetId
+            ? await assetStore.getBlob(assetId)
+            : (await resourceGalleryService.getImage(galleryOwnerId(resource), resource.id))
+                .thumbnailBlob
           if (currentGeneration === generation) thumbnail.value = loaded
         } catch {
           // A missing cover must not prevent browsing or surface as an unhandled app error.

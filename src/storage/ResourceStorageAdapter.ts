@@ -13,6 +13,8 @@ export interface ResourceStorageAdapter {
   listResourceListSummaries?(): Promise<ResourceListSummary[]>
   repairThumbnailAssets?(): Promise<number>
   get(id: string): Promise<Resource | undefined>
+  getSummary?(id: string): Promise<ResourceSummary | undefined>
+  findGalleryImage?(ownerId: string, contentHash: string): Promise<ResourceSummary | undefined>
   updateMetadata?(
     id: string,
     changes: ResourceMetadataPatch,

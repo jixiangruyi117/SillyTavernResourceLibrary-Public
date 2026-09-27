@@ -4,6 +4,26 @@ import { describe, expect, it } from 'vitest'
 import ActionSheet from './ActionSheet.vue'
 
 describe('ActionSheet', () => {
+  it('identifies the current selection without marking ordinary actions as toggles', () => {
+    const wrapper = mount(ActionSheet, {
+      props: {
+        open: true,
+        title: '图片分类',
+        actions: [
+          { id: 'all', label: '全部分类', selected: true },
+          { id: 'art', label: '同人图', selected: false },
+          { id: 'manage', label: '管理分类' },
+        ],
+      },
+      global: { stubs: { Teleport: true, Transition: false } },
+    })
+    const buttons = wrapper.findAll('.action-sheet__actions button')
+    expect(buttons[0]!.attributes('aria-pressed')).toBe('true')
+    expect(buttons[0]!.text()).toContain('✓')
+    expect(buttons[1]!.attributes('aria-pressed')).toBe('false')
+    expect(buttons[2]!.attributes('aria-pressed')).toBeUndefined()
+    wrapper.unmount()
+  })
   it('emits the selected action and closes', async () => {
     const wrapper = mount(ActionSheet, {
       props: {

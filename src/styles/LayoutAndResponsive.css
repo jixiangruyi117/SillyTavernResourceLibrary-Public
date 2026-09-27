@@ -2414,22 +2414,6 @@
     width: 100%;
   }
 
-  .restore-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .restore-stats div + div {
-    border-left: 0;
-  }
-
-  .restore-stats div:nth-child(even) {
-    border-left: 1px solid var(--color-line);
-  }
-
-  .restore-stats div:nth-child(n + 3) {
-    border-top: 1px solid var(--color-line);
-  }
-
   .restore-footer {
     align-items: stretch;
     flex-direction: column;

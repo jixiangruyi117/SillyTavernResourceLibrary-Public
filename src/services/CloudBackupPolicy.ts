@@ -46,6 +46,7 @@ export function normalizeContentSelection(
 ): CloudBackupContentSelection {
   return {
     credentials: selection?.credentials === true,
+    resourceGallery: selection?.resourceGallery === true,
     appearance: selection?.appearance !== false,
     cloudBackup: selection?.cloudBackup !== false,
     characterDraw: selection?.characterDraw !== false,
@@ -60,6 +61,7 @@ export function normalizeContentSelection(
         )
       : undefined,
     personalResources: {
+      resourceGallery: selection?.resourceGallery === true,
       extraStory: selection?.personalResources?.extraStory !== false,
       pocketPhone: selection?.personalResources?.pocketPhone !== false,
       secret: selection?.personalResources?.secret === true,

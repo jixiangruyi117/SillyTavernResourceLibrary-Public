@@ -50,6 +50,23 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
     return this.delegate.get(id)
   }
 
+  getSummary(id: string): Promise<ResourceSummary | undefined> {
+    return this.delegate.getSummary?.(id) ?? this.delegate.get(id)
+  }
+
+  async findGalleryImage(
+    ownerId: string,
+    contentHash: string,
+  ): Promise<ResourceSummary | undefined> {
+    if (this.delegate.findGalleryImage) return this.delegate.findGalleryImage(ownerId, contentHash)
+    return (await this.listResourceListSummaries()).find(
+      (r) =>
+        r.metadata.assetKind === 'resource-gallery-image' &&
+        r.metadata.galleryOwnerId === ownerId &&
+        r.contentHash === contentHash,
+    )
+  }
+
   getVersion(id: string): Promise<Resource | undefined> {
     return this.delegate.getVersion
       ? this.delegate.getVersion(id)

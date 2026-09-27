@@ -4,6 +4,8 @@ import {
   type ResourceSummary,
 } from '../types/Resource'
 
+import { isResourceGalleryImage } from '../types/ResourceGallery'
+
 export interface ResourceRelationCandidateOptions {
   currentResourceId: string
   selectedResourceIds: ReadonlySet<string>
@@ -24,6 +26,7 @@ export function filterResourceRelationCandidates(
 ): ResourceSummary[] {
   const query = options.query.trim().toLocaleLowerCase()
   return resources
+    .filter((resource) => !isResourceGalleryImage(resource))
     .filter((resource) => resource.id !== options.currentResourceId)
     .filter(
       (resource) =>

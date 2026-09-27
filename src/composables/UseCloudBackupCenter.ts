@@ -1,3 +1,4 @@
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
 import {
   readPlainSecretExportGrant,
@@ -25,14 +26,10 @@ import type {
   WebDavBackupConfig,
 } from '../types/CloudBackup'
 import type { GitHubRepositoryInspection } from '../services/CloudBackupService'
-import {
-  isUserPersonaAvatarAttachment,
-  RESOURCE_TYPE_LABELS,
-  type Category,
-  type ResourceSummary,
-} from '../types/Resource'
+import { type Category, type ResourceSummary } from '../types/Resource'
 import {
   createDefaultBackupSelection,
+  resourceRestoreScopeIds,
   toCloudContentSelection,
   type BackupScopeId,
   type BackupSelectionTreeState,
@@ -169,6 +166,23 @@ export function useCloudBackupCenter(
 
   const restorePicker = ref<{ item: CloudBackupItem; resources: ResourceSummary[] }>()
   const selectedRestoreKeys = ref(new Set<string>())
+  const selectedRestoreScopes = ref<BackupScopeId[]>([])
+  const restoreResourceCount = computed(
+    () => restorePicker.value?.resources.filter((r) => !isResourceGalleryImage(r)).length ?? 0,
+  )
+  const restoreScopeIds = computed(() =>
+    resourceRestoreScopeIds(restorePicker.value?.resources ?? [], true),
+  )
+  const restoreScopeModel = computed({
+    get: () => ({
+      resourceIds: [...selectedRestoreKeys.value],
+      scopeIds: selectedRestoreScopes.value,
+    }),
+    set: (value: { resourceIds: string[]; scopeIds: BackupScopeId[] }) => {
+      selectedRestoreKeys.value = new Set(value.resourceIds)
+      selectedRestoreScopes.value = value.scopeIds
+    },
+  })
 
   const busyAction = ref('')
 
@@ -247,6 +261,7 @@ export function useCloudBackupCenter(
     setScope('extra.aiTaggingState', configured.aiTaggingState, false)
     setScope('extra.externalApps', configured.externalApps, false)
     setScope('extra.chatReader', configured.chatReader, true)
+    setScope('extra.resourceGallery', configured.resourceGallery, false)
     setScope('extra.stitchWork', configured.stitchWork, false)
     setScope('extra.communitySources', configured.communitySources, false)
     setScope('extra.appearance', configured.appearance, true)
@@ -301,6 +316,7 @@ export function useCloudBackupCenter(
     if (activeContentSelection.value.stitchWork) labels.push('预设缝合草稿')
     if (activeContentSelection.value.externalApps) labels.push('第三方 APP 数据')
     if (activeContentSelection.value.chatReader) labels.push('读了么阅读数据')
+    if (activeContentSelection.value.resourceGallery) labels.push('资源图库')
     if (activeContentSelection.value.communitySources) labels.push('Discord 社区内容')
     if (activeContentSelection.value.appearance) labels.push('外观与 CSS')
     if (activeContentSelection.value.generalPreferences) labels.push('常用偏好')
@@ -666,7 +682,10 @@ export function useCloudBackupCenter(
       try {
         const resources = await cloudBackupService.listBackupResources(item)
         restorePicker.value = { item, resources }
-        selectedRestoreKeys.value = new Set(resources.map((resource) => resource.id))
+        selectedRestoreKeys.value = new Set(
+          resources.filter((r) => !isResourceGalleryImage(r)).map((resource) => resource.id),
+        )
+        selectedRestoreScopes.value = resourceRestoreScopeIds(resources, true)
         message.value = resources.length
           ? '请选择要导入的资源；历史版本会随所属资源一起导入。'
           : '这个备份没有可导入的资源'
@@ -698,6 +717,7 @@ export function useCloudBackupCenter(
         item,
         confirmPortableCredentialImport,
         selectedKeys,
+        selectedRestoreScopes.value.includes('extra.resourceGallery'),
       )
       message.value = count ? `已从云端加入 ${count} 项新资源` : '导入完成，没有发现新的资源'
       emit('library-changed')
@@ -708,30 +728,6 @@ export function useCloudBackupCenter(
     } finally {
       busyAction.value = ''
     }
-  }
-
-  function toggleRestoreResource(resource: ResourceSummary): void {
-    const key = resource.id
-    const next = new Set(selectedRestoreKeys.value)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    selectedRestoreKeys.value = next
-  }
-
-  function selectAllRestoreResources(): void {
-    selectedRestoreKeys.value = new Set(
-      restorePicker.value?.resources.map((resource) => resource.id) ?? [],
-    )
-  }
-
-  function clearRestoreResources(): void {
-    selectedRestoreKeys.value = new Set()
-  }
-
-  function restoreResourceType(resource: ResourceSummary): string {
-    return isUserPersonaAvatarAttachment(resource)
-      ? '用户人设头像附件'
-      : RESOURCE_TYPE_LABELS[resource.type]
   }
 
   async function confirmPortableCredentialImport(
@@ -926,10 +922,9 @@ export function useCloudBackupCenter(
     backups,
     restorePicker,
     selectedRestoreKeys,
-    toggleRestoreResource,
-    selectAllRestoreResources,
-    clearRestoreResources,
-    restoreResourceType,
+    restoreScopeIds,
+    restoreScopeModel,
+    restoreResourceCount,
     formatBytes,
     download,
     restore,

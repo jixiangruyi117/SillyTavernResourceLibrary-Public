@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import ResourceSourceLinks from './ResourceSourceLinks.vue'
-import { useTemplateRef } from 'vue'
+import { ref, useTemplateRef, watch } from 'vue'
+import ResourceCoverEditor from './ResourceCoverEditor.vue'
+import { resourceCoverId } from '../types/ResourceGallery'
 import { createAsyncPanel } from '../core/AsyncPanel'
 import { isPersonalResourceType } from '../types/PersonalResource'
 const PersonalResourceEditor = createAsyncPanel(
@@ -12,14 +14,44 @@ import {
   type ResourceOrganizerProps,
   type ResourceOrganizerEvents,
 } from '../composables/UseResourceOrganizer'
+const ResourceGalleryPanel = createAsyncPanel(
+  '资源图库',
+  () => import('./ResourceGalleryPanel.vue'),
+)
+const galleryCount = ref(0)
 const props = defineProps<ResourceOrganizerProps>()
 const emit = defineEmits<ResourceOrganizerEvents>()
 const controller = useResourceOrganizer(props, emit)
+const galleryContent = useTemplateRef<{ busy: boolean; editing: boolean; requestBack: () => void }>(
+  'galleryContent',
+)
+const coverContent = useTemplateRef<{
+  busy: boolean
+  editing: boolean
+  requestBack: () => void
+  restoreDefault: () => Promise<void>
+}>('coverContent')
+const galleryVisited = ref(props.initialTab === 'gallery')
+watch(
+  () => props.resource.id,
+  () => {
+    galleryCount.value = 0
+  },
+)
+watch(
+  () => controller.activeTab.value,
+  (tab) => {
+    if (tab === 'gallery') galleryVisited.value = true
+  },
+)
 const personalContent = useTemplateRef<{ editing: boolean; requestBack: () => void }>(
   'personalContent',
 )
 function requestClose() {
-  if (personalContent.value?.editing) personalContent.value.requestBack()
+  if (galleryContent.value?.busy || coverContent.value?.busy) return
+  if (coverContent.value?.editing) coverContent.value.requestBack()
+  else if (galleryContent.value?.editing) galleryContent.value.requestBack()
+  else if (personalContent.value?.editing) personalContent.value.requestBack()
   else void controller.requestClose()
 }
 defineExpose({ requestClose })
@@ -28,11 +60,6 @@ const {
   parsedAuthor,
   handlePersonalSaved,
   isCharacter,
-  previewUrl,
-  isPreviewExpanded,
-  confirmPreviewLoaded,
-  retryPreview,
-  isJsonCharacter,
   fileExtension,
   name,
   characterIdentity,
@@ -101,6 +128,7 @@ const {
         class="editor-sheet resource-detail-sheet"
         :class="{
           'resource-detail-sheet--character': isCharacter,
+          'resource-detail-sheet--gallery': activeTab === 'gallery',
           'resource-detail-sheet--content-editor':
             activeTab === 'content' && characterWorkbenchOpen,
         }"
@@ -114,7 +142,9 @@ const {
               {{
                 activeTab === 'content' && characterWorkbenchOpen
                   ? `${name || resource.name} · 卡内编辑`
-                  : '资源详情'
+                  : activeTab === 'gallery'
+                    ? name || resource.name
+                    : '资源详情'
               }}
             </h2>
           </div>
@@ -126,35 +156,14 @@ const {
 
         <div ref="detailSheet" class="resource-detail__layout">
           <aside
-            v-show="activeTab !== 'content' || !characterWorkbenchOpen"
+            v-show="activeTab !== 'gallery' && (activeTab !== 'content' || !characterWorkbenchOpen)"
             class="resource-detail__folio"
           >
-            <button
-              v-if="previewUrl"
-              class="resource-detail__image-frame"
-              :class="{ 'resource-detail__image-frame--expanded': isPreviewExpanded }"
-              type="button"
-              :aria-pressed="isPreviewExpanded"
-              :aria-label="isPreviewExpanded ? '收起角色卡完整原图' : '查看角色卡完整原图'"
-              @click="isPreviewExpanded = !isPreviewExpanded"
-            >
-              <img
-                :src="previewUrl"
-                :alt="`${resource.name} 高清原图`"
-                @load="confirmPreviewLoaded"
-                @error="retryPreview"
-              />
-              <span>{{ isPreviewExpanded ? '收起完整原图' : '轻触查看完整原图' }}</span>
-            </button>
-            <div v-else-if="isJsonCharacter" class="resource-detail__name-cover">
-              <span>JSON CHARACTER</span>
-              <strong>{{ resource.name }}</strong>
-              <small>无图片角色卡</small>
-            </div>
-            <div v-else class="resource-detail__document" aria-hidden="true">
-              <span>{{ fileExtension }}</span>
-              <i></i><i></i><i></i><i></i>
-            </div>
+            <ResourceCoverEditor
+              ref="coverContent"
+              :resource="resource"
+              @saved="handlePersonalSaved"
+            />
 
             <div class="resource-detail__identity">
               <h3>{{ name || resource.name }}</h3>
@@ -169,16 +178,16 @@ const {
             </div>
 
             <div class="resource-detail__summary-actions">
-              <button
-                v-if="previewUrl"
-                class="button button--quiet"
-                type="button"
-                @click="isPreviewExpanded = !isPreviewExpanded"
-              >
-                {{ isPreviewExpanded ? '收起原图' : '查看原图' }}
-              </button>
               <button class="button" type="button" @click="emit('download', resource, 'original')">
                 下载原版
+              </button>
+              <button
+                class="button button--quiet"
+                type="button"
+                :disabled="!resourceCoverId(resource) || coverContent?.busy"
+                @click="coverContent?.restoreDefault()"
+              >
+                恢复默认封面
               </button>
               <button
                 v-if="isCharacter && hasCharacterModifications"
@@ -220,8 +229,26 @@ const {
                   <span>{{ tab.label }}</span>
                   <small v-if="tab.value === 'relations'">{{ relatedResourceIds.size }}</small>
                   <small v-else-if="tab.value === 'versions'">{{ versions.length }}</small>
+                  <small v-else-if="tab.value === 'gallery' && galleryCount">{{
+                    galleryCount
+                  }}</small>
                 </button>
               </nav>
+              <section
+                v-if="galleryVisited"
+                v-show="activeTab === 'gallery'"
+                id="resource-panel-gallery"
+                class="resource-detail__tab-panel"
+                role="tabpanel"
+                aria-labelledby="resource-tab-gallery"
+              >
+                <ResourceGalleryPanel
+                  ref="galleryContent"
+                  :resource="resource"
+                  @saved="handlePersonalSaved"
+                  @count="galleryCount = $event"
+                />
+              </section>
 
               <section
                 v-show="activeTab === 'overview'"
@@ -796,7 +823,10 @@ const {
             </form>
           </div>
         </div>
-        <div class="editor-form__actions resource-detail__actions">
+        <div
+          v-if="activeTab !== 'gallery' || isDirty"
+          class="editor-form__actions resource-detail__actions"
+        >
           <span :class="{ 'resource-detail__save-state--dirty': isDirty }">
             {{ busy ? '正在保存' : isDirty ? '有未保存修改' : '当前内容已保存' }}
           </span>

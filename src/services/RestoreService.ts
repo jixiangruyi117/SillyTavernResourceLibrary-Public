@@ -1,4 +1,9 @@
 import { RestoreDuplicateIndex, restoreVersionKey } from '../utils/RestoreIdentity'
+import {
+  remapGalleryMetadata,
+  isResourceGalleryImage,
+  galleryOwnerId,
+} from '../types/ResourceGallery'
 import { remapReaderPortableData } from './ChatReaderPortableData'
 import { strFromU8 } from 'fflate'
 import { stageArchive, type ArchiveStageProgress } from './ArchiveExtraction'
@@ -237,7 +242,7 @@ function remapManualBindings(
   ids: Map<string, string>,
 ): Record<string, unknown> {
   return {
-    ...metadata,
+    ...remapGalleryMetadata(metadata, ids),
     ...(typeof metadata.chatDisplayRegexId === 'string'
       ? { chatDisplayRegexId: ids.get(metadata.chatDisplayRegexId) ?? metadata.chatDisplayRegexId }
       : {}),
@@ -249,6 +254,21 @@ function remapManualBindings(
         }
       : {}),
   }
+}
+
+function existingGalleryOwners(
+  incoming: ResourceSummary[],
+  restored: Resource[],
+  ids: Map<string, string>,
+): ResourceSummary[] {
+  const restoredIds = new Set(restored.map((r) => r.id))
+  const owners = new Set(restored.filter(isResourceGalleryImage).map(galleryOwnerId))
+  return incoming.flatMap((resource) => {
+    const id = ids.get(resource.id)
+    return id && owners.has(id) && !restoredIds.has(id) && !isResourceGalleryImage(resource)
+      ? [{ ...resource, id, metadata: remapGalleryMetadata(resource.metadata, ids) }]
+      : []
+  })
 }
 
 export class RestoreService {
@@ -537,10 +557,12 @@ export class RestoreService {
           manifest.portableData?.characterDraw ? '抽了么记录' : '',
           manifest.portableData?.chatReader ? '读了么阅读数据' : '',
           manifest.portableData?.generalPreferences ? '常用偏好' : '',
+          manifest.portableData?.resourceGalleryCategories ? '图库分类' : '',
           mappedCommunitySourceData ? 'Discord 社区来源' : '',
         ].filter(Boolean),
       },
       resources: normalizedResources,
+      galleryOwners: existingGalleryOwners(manifest.resources, normalizedResources, resourceIdMap),
       versions: versionsToRestore,
       categories: categoriesToCreate,
       portableData: remapReaderPortableData(manifest.portableData, resourceIdMap),
@@ -753,9 +775,11 @@ export class RestoreService {
           portableData.characterDraw ? '抽了么记录' : '',
           portableData.chatReader ? '读了么阅读数据' : '',
           portableData.generalPreferences ? '常用偏好' : '',
+          portableData.resourceGalleryCategories ? '图库分类' : '',
         ].filter(Boolean),
       },
       resources: normalizedResources,
+      galleryOwners: existingGalleryOwners(resources, normalizedResources, resourceIdMap),
       versions: versionsToRestore,
       categories: categoriesToCreate,
       portableData: remapReaderPortableData(portableData, resourceIdMap),

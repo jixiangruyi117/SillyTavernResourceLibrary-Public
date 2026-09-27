@@ -1,5 +1,5 @@
 import type { PersonalResourceSelection, PlainSecretCopy } from '../services/PersonalResourceBackup'
-import type { Category, Resource } from './Resource'
+import type { Category, Resource, ResourceSummary } from './Resource'
 import type {
   CommunitySourceAttachmentArchiveEntry,
   CommunitySourceBackupData,
@@ -24,6 +24,7 @@ export type ArchiveMode = 'full' | 'partial'
 export type RestoreMode = 'merge' | 'replace'
 
 export interface ArchivePortableSelection {
+  resourceGallery?: boolean
   personalResources?: PersonalResourceSelection
   plaintextSecretCopy?: boolean
   appearance?: boolean
@@ -40,6 +41,7 @@ export interface ArchivePortableSelection {
 }
 
 export interface ArchivePortableData {
+  resourceGalleryCategories?: import('./ResourceGallery').GalleryCategoryCatalog
   chatReader?: ExternalAppDataRecord[]
   /** Explicit opt-in readable companion; encrypted originals remain in the resource archive. */
   plaintextSecretCopies?: PlainSecretCopy[]
@@ -180,6 +182,8 @@ export interface PreparedRestore {
   dispose?: () => Promise<void>
 
   preview: RestorePreview
+  /** Existing duplicate owners remain selectable for their newly restored gallery attachments. */
+  galleryOwners?: ResourceSummary[]
   resources: Resource[]
   versions: Resource[]
   categories: Category[]

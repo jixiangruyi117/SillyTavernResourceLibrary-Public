@@ -48,6 +48,34 @@ const resources = [
 ] as ResourceSummary[]
 
 describe('BackupScopeTree', () => {
+  it('counts selected gallery bytes and keeps cover bytes when the gallery is unchecked', async () => {
+    const owner = { ...resources[0]!, fileSize: 1024, metadata: { resourceCoverId: 'cover' } }
+    const attachment = (id: string, fileSize: number) => ({
+      ...owner,
+      id,
+      type: RESOURCE_TYPE.OTHER,
+      fileSize,
+      metadata: {
+        assetKind: 'resource-gallery-image',
+        galleryOwnerId: owner.id,
+        galleryVisible: true,
+      },
+    })
+    const wrapper = mount(BackupScopeTree, {
+      props: {
+        resources: [owner, attachment('cover', 2048), attachment('gallery', 4096)],
+        mode: 'local',
+        modelValue: { resourceIds: [owner.id], scopeIds: ['extra.resourceGallery'] },
+      },
+    })
+    try {
+      expect(wrapper.get('.backup-scope-tree__summary').text()).toContain('1 项资源 · 7.0 KB')
+      await wrapper.setProps({ modelValue: { resourceIds: [owner.id], scopeIds: [] } })
+      expect(wrapper.get('.backup-scope-tree__summary').text()).toContain('1 项资源 · 3.0 KB')
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('在酒馆资源分组内保留文件夹查看入口', async () => {
     const initial = createDefaultBackupSelection(resources, 'local')
     const wrapper = mount(BackupScopeTree, {

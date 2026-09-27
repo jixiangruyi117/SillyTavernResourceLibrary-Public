@@ -1,6 +1,7 @@
 import { createResourceArchiveSource } from '../services/ExportService'
 import { selectPreparedRestore } from '../services/RestoreService'
 import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { includePersonalResource, plaintextSecretCopies } from '../services/PersonalResourceBackup'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
 import { onScopeDispose, type Ref } from 'vue'
@@ -16,6 +17,7 @@ import {
   historyService,
   importPortableCredentialBundle,
   mainApiService,
+  resourceGalleryService,
   resourceService,
   restoreService,
 } from '../core/AppContainer'
@@ -179,6 +181,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         portableData.mainApiProfiles = mainApiService.getProfilesState()
         portableData.credentials = await exportPortableCredentialBundle()
       }
+      if (details.portableSelection.resourceGallery)
+        portableData.resourceGalleryCategories = await resourceGalleryService.exportCategories()
       if (details.portableSelection.aiTaggingState) {
         portableData.aiTaggingState = {
           draft: aiTaggingDraftService.loadDraft(),
@@ -363,6 +367,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     if (data.credentials && importCredentials) {
       await importPortableCredentialBundle(data.credentials)
     }
+    if (data.resourceGalleryCategories)
+      await resourceGalleryService.importCategories(data.resourceGalleryCategories)
     if (data.aiTaggingState?.draft) aiTaggingDraftService.saveDraft(data.aiTaggingState.draft)
     if (data.aiTaggingState?.undo) aiTaggingDraftService.saveUndo(data.aiTaggingState.undo)
     if (data.externalApps) await externalAppService.importPortableState(data.externalApps)
@@ -490,7 +496,11 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     }
   }
 
-  async function handleRestoreConfirm(mode: RestoreMode, resourceIds: string[]): Promise<void> {
+  async function handleRestoreConfirm(
+    mode: RestoreMode,
+    resourceIds: string[],
+    includeGallery = true,
+  ): Promise<void> {
     const context = getContext()
 
     const prepared = context.preparedRestore.value
@@ -500,7 +510,11 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice('请至少选择一项资源后继续')
       return
     }
-    if (mode === 'replace' && selectedIds.size !== prepared.resources.length) {
+    if (
+      mode === 'replace' &&
+      ((!includeGallery && prepared.resources.some(isResourceGalleryImage)) ||
+        !prepared.resources.every((resource) => selectedIds.has(resource.id)))
+    ) {
       context.showNotice('整库覆盖必须选择全部资源；部分选择请使用安全新增')
       return
     }
@@ -527,9 +541,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     }
 
     const selected =
-      mode === 'replace' || selectedIds.size === prepared.resources.length
-        ? prepared
-        : selectPreparedRestore(prepared, selectedIds)
+      mode === 'replace' ? prepared : selectPreparedRestore(prepared, selectedIds, includeGallery)
     return mutationGuard.run(`archive:restore:${mode}`, () =>
       performRestoreConfirm(selected, mode, createSafetySnapshot),
     )

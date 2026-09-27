@@ -1,3 +1,4 @@
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
 import { transferNativeStream } from '../core/NativeStreamTransfer'
@@ -161,7 +162,8 @@ export async function stageNativeResourceFile(
     fileName: resource.fileName,
     mimeType: resource.mimeType,
     resourceType: resource.type,
-    hiddenFromDocuments: isUserPersonaAvatarAttachment(resource),
+    hiddenFromDocuments:
+      isUserPersonaAvatarAttachment(resource) || isResourceGalleryImage(resource),
     contentHash: resource.contentHash,
     size: resource.originalBlob.size,
     updatedAt: resource.updatedAt,

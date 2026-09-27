@@ -1,6 +1,7 @@
 import { RESOURCE_TYPE, type Resource, type ResourceType } from '../types/Resource'
 
-export type ResourceInspectorSection = 'overview' | 'content' | 'relations' | 'versions' | 'file'
+export type ResourceInspectorSection =
+  'overview' | 'content' | 'gallery' | 'relations' | 'versions' | 'file'
 export type ResourceInspectorAction =
   'download' | 'edit' | 'preview' | 'replaceArtwork' | 'compareVersions'
 export type ResourcePreviewKind = 'character' | 'structured' | 'text' | 'archive'
@@ -18,6 +19,7 @@ export interface ResourceInspectorDescriptor {
 const BASE_SECTIONS: readonly ResourceInspectorSection[] = [
   'overview',
   'content',
+  'gallery',
   'relations',
   'versions',
   'file',

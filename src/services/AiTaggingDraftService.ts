@@ -4,6 +4,7 @@ import type {
   AiTaggingSuggestedTag,
 } from './AiTaggingService'
 import type { MainApiConfig } from './MainApiService'
+import { AI_TAGGING_MAX_SYSTEM_PROMPT, normalizeAiTaggingBatchSize } from './AiTaggingService'
 
 export interface AiTaggingDraftReviewItem {
   resourceId: string
@@ -24,6 +25,7 @@ export interface AiTaggingDraft {
   selectedIds: string[]
   batchSize: number
   customPrompt: string
+  systemPrompt?: string
   taxonomyTemplateId: string
   mergeAliases: boolean
   api: {
@@ -57,6 +59,7 @@ export interface AiTaggingRuleTemplate {
   id: string
   name: string
   prompt: string
+  systemPrompt?: string
   taxonomyTemplateId: string
   mergeAliases: boolean
 }
@@ -96,11 +99,11 @@ function suggestedTags(value: unknown): AiTaggingSuggestedTag[] {
 
 function failures(value: unknown): AiTaggingFailure[] {
   if (!Array.isArray(value)) return []
-  return value.slice(0, 50).flatMap((item) => {
+  return value.flatMap((item) => {
     if (!item || typeof item !== 'object') return []
     const failure = item as Partial<AiTaggingFailure>
     const resourceIds = Array.isArray(failure.resourceIds)
-      ? failure.resourceIds.filter((id): id is string => typeof id === 'string').slice(0, 200)
+      ? failure.resourceIds.filter((id): id is string => typeof id === 'string')
       : []
     if (!resourceIds.length) return []
     return [
@@ -119,10 +122,10 @@ function parseDraft(value: unknown): AiTaggingDraft | undefined {
   const draft = value as Partial<AiTaggingDraft>
   if (draft.version !== 1 || !draft.api || typeof draft.api !== 'object') return undefined
   const selectedIds = Array.isArray(draft.selectedIds)
-    ? draft.selectedIds.filter((id): id is string => typeof id === 'string').slice(0, 200)
+    ? draft.selectedIds.filter((id): id is string => typeof id === 'string')
     : []
   const reviewItems = Array.isArray(draft.reviewItems)
-    ? draft.reviewItems.slice(0, 200).flatMap((item) => {
+    ? draft.reviewItems.flatMap((item) => {
         if (!item || typeof item !== 'object') return []
         const review = item as Partial<AiTaggingDraftReviewItem>
         const resourceId = text(review.resourceId, 160).trim()
@@ -151,8 +154,11 @@ function parseDraft(value: unknown): AiTaggingDraft | undefined {
     tagState: draft.tagState === 'tagged' || draft.tagState === 'untagged' ? draft.tagState : 'all',
     tagQuery: text(draft.tagQuery, 40),
     selectedIds,
-    batchSize: Math.min(8, Math.max(1, Math.round(Number(draft.batchSize) || 4))),
+    batchSize: normalizeAiTaggingBatchSize(draft.batchSize),
     customPrompt: text(draft.customPrompt, 4_000),
+    ...(typeof draft.systemPrompt === 'string'
+      ? { systemPrompt: text(draft.systemPrompt, AI_TAGGING_MAX_SYSTEM_PROMPT) }
+      : {}),
     taxonomyTemplateId: text(draft.taxonomyTemplateId, 80) || 'free',
     mergeAliases: draft.mergeAliases === true,
     api: {
@@ -174,7 +180,7 @@ function parseUndo(value: unknown): AiTaggingUndoRecord | undefined {
   if (!value || typeof value !== 'object') return undefined
   const record = value as Partial<AiTaggingUndoRecord>
   if (record.version !== 1 || !Array.isArray(record.additions)) return undefined
-  const additions = record.additions.slice(0, 200).flatMap((item) => {
+  const additions = record.additions.flatMap((item) => {
     if (!item || typeof item !== 'object') return []
     const addition = item as Partial<AiTaggingUndoAddition>
     const resourceId = text(addition.resourceId, 160).trim()
@@ -209,6 +215,9 @@ export class AiTaggingDraftService {
                 id,
                 name,
                 prompt,
+                ...(typeof template.systemPrompt === 'string'
+                  ? { systemPrompt: text(template.systemPrompt, AI_TAGGING_MAX_SYSTEM_PROMPT) }
+                  : {}),
                 taxonomyTemplateId: text(template.taxonomyTemplateId, 80) || 'free',
                 mergeAliases: template.mergeAliases === true,
               },
@@ -225,16 +234,27 @@ export class AiTaggingDraftService {
     prompt: string,
     taxonomyTemplateId: string,
     mergeAliases: boolean,
+    systemPrompt?: string,
   ): AiTaggingRuleTemplate[] {
     const normalizedName = name.trim().slice(0, 80)
     const normalizedPrompt = prompt.trim().slice(0, 4_000)
+    const system =
+      typeof systemPrompt === 'string'
+        ? systemPrompt.slice(0, AI_TAGGING_MAX_SYSTEM_PROMPT)
+        : undefined
     if (!normalizedName || !normalizedPrompt) throw new Error('请填写模板名称和识别规则')
     const templates = this.loadRuleTemplates()
     const existing = templates.find((item) => item.name === normalizedName)
     const next = existing
       ? templates.map((item) =>
           item.id === existing.id
-            ? { ...item, prompt: normalizedPrompt, taxonomyTemplateId, mergeAliases }
+            ? {
+                ...item,
+                prompt: normalizedPrompt,
+                taxonomyTemplateId,
+                mergeAliases,
+                systemPrompt: system,
+              }
             : item,
         )
       : [
@@ -243,6 +263,7 @@ export class AiTaggingDraftService {
             id: crypto.randomUUID(),
             name: normalizedName,
             prompt: normalizedPrompt,
+            systemPrompt: system,
             taxonomyTemplateId,
             mergeAliases,
           },

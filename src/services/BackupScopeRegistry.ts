@@ -1,5 +1,6 @@
 import type { ArchivePortableSelection } from '../types/Backup'
 import type { CloudBackupContentSelection } from '../types/CloudBackup'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import {
   RESOURCE_TYPE,
   RESOURCE_TYPE_LABELS,
@@ -11,6 +12,7 @@ export const BACKUP_SCOPE_REGISTRY_VERSION = 1
 
 export type BackupScopeGroupId = 'tavernResources' | 'manualResources' | 'extraContent'
 export type BackupScopeId =
+  | 'extra.resourceGallery'
   | 'resource.characterCard'
   | 'resource.greeting'
   | 'resource.chat'
@@ -76,6 +78,16 @@ const resourceScope = (
 })
 
 export const BACKUP_SCOPE_REGISTRY: ReadonlyArray<BackupScopeDefinition> = [
+  {
+    id: 'extra.resourceGallery',
+    group: 'extraContent',
+    label: '资源图库',
+    description:
+      '所选资源的图片、直链、备注与按资源类型保存的分类（含空分类）；可能包含聊天截图。封面始终随资源保存。',
+    privacyWarning: true,
+    defaultLocal: true,
+    defaultCloud: false,
+  },
   resourceScope('resource.characterCard', RESOURCE_TYPE.CHARACTER_CARD, 'tavernResources'),
   resourceScope('resource.chat', RESOURCE_TYPE.CHAT, 'tavernResources'),
   resourceScope('resource.greeting', RESOURCE_TYPE.GREETING, 'tavernResources'),
@@ -207,7 +219,10 @@ export function createDefaultBackupSelection(
   return {
     resourceIds: new Set(
       resources
-        .filter((resource) => selectedResourceTypes.has(resource.type))
+        .filter(
+          (resource) =>
+            !isResourceGalleryImage(resource) && selectedResourceTypes.has(resource.type),
+        )
         .map((resource) => resource.id),
     ),
     scopes: new Set(
@@ -228,6 +243,7 @@ export function toArchivePortableSelection(
   state: BackupSelectionTreeState,
 ): ArchivePortableSelection {
   return {
+    resourceGallery: state.scopes.has('extra.resourceGallery'),
     personalResources: {
       extraStory: state.scopes.has('resource.extraStory'),
       pocketPhone: state.scopes.has('resource.pocketPhone'),
@@ -251,6 +267,7 @@ export function toCloudContentSelection(
   state: BackupSelectionTreeState,
 ): CloudBackupContentSelection {
   return {
+    resourceGallery: state.scopes.has('extra.resourceGallery'),
     personalResources: {
       extraStory: state.scopes.has('resource.extraStory'),
       pocketPhone: state.scopes.has('resource.pocketPhone'),
@@ -273,4 +290,17 @@ export function toCloudContentSelection(
 
 export function registeredBackupScopeIds(): Set<string> {
   return new Set(BACKUP_SCOPE_REGISTRY.map((scope) => scope.id))
+}
+
+export function resourceRestoreScopeIds(
+  resources: readonly ResourceSummary[],
+  includeEmptyGallery = false,
+): BackupScopeId[] {
+  const types = new Set(resources.filter((r) => !isResourceGalleryImage(r)).map((r) => r.type))
+  return BACKUP_SCOPE_REGISTRY.filter((scope) =>
+    scope.resourceType
+      ? types.has(scope.resourceType)
+      : scope.id === 'extra.resourceGallery' &&
+        (includeEmptyGallery || resources.some(isResourceGalleryImage)),
+  ).map((scope) => scope.id)
 }

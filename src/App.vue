@@ -885,6 +885,8 @@ const isBatchBarVisible = computed(
       :resources="managedResources"
       :categories="categories"
       :initial-selected-ids="Array.from(selectedResourceIds)"
+      :suspended="Boolean(organizingResource)"
+      @open-resource="openResourceDetail"
       @applied="handleAiTagsApplied"
       @close="isAiTaggingOpen = false"
     />

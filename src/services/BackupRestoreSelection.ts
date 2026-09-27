@@ -1,4 +1,5 @@
 import { collectCommunitySourceLocalAssetIds } from './CommunitySourceAttachmentArchive'
+import { includeResourceGalleryIds } from '../types/ResourceGallery'
 import type { PreparedRestore } from '../types/Backup'
 import type { CloudBackupItem } from '../types/CloudBackup'
 import {
@@ -35,10 +36,16 @@ export function canRestoreOnlyPortableData(prepared: PreparedRestore | undefined
 export function selectPreparedRestore(
   prepared: PreparedRestore,
   selectors: ReadonlySet<string>,
+  includeGallery = true,
 ): PreparedRestore {
   const selectedIds = new Set<string>()
   const withCompanions = new Set(selectors)
   includeChatCompanionIds(prepared.resources, withCompanions)
+  includeResourceGalleryIds(
+    [...prepared.resources, ...(prepared.galleryOwners ?? [])],
+    withCompanions,
+    includeGallery,
+  )
   const selectedResources: Resource[] = []
   for (const resource of prepared.resources) {
     if (!withCompanions.has(resource.id)) continue
@@ -98,6 +105,14 @@ export function selectPreparedRestore(
 
   return {
     ...prepared,
+    portableData: prepared.portableData
+      ? {
+          ...prepared.portableData,
+          resourceGalleryCategories: includeGallery
+            ? prepared.portableData.resourceGalleryCategories
+            : undefined,
+        }
+      : undefined,
     forReplacement: undefined,
     resources: selectedResources,
     versions,
@@ -119,10 +134,12 @@ export function selectPreparedRestore(
 export function selectStructuredSnapshot(
   snapshot: StructuredSnapshot,
   selectors: ReadonlySet<string>,
+  includeGallery = true,
 ): StructuredSnapshot {
   const selectedIds = new Set<string>()
   const withCompanions = new Set(selectors)
   includeChatCompanionIds(snapshot.resources, withCompanions)
+  includeResourceGalleryIds(snapshot.resources, withCompanions, includeGallery)
   const resources = snapshot.resources.filter((resource) => {
     if (!withCompanions.has(resource.id)) return false
     selectedIds.add(resource.id)
@@ -148,6 +165,12 @@ export function selectStructuredSnapshot(
   )
   return {
     ...snapshot,
+    portableData: {
+      ...snapshot.portableData,
+      resourceGalleryCategories: includeGallery
+        ? snapshot.portableData.resourceGalleryCategories
+        : undefined,
+    },
     resources,
     versions,
     categories: snapshot.categories.filter((category) => categoryIds.has(category.id)),
@@ -209,7 +232,9 @@ export async function listArchiveBackupResources(
     true,
   )
   try {
-    return prepared.resources.map((resource) => toResourceListSummary(resource))
+    return [...prepared.resources, ...(prepared.galleryOwners ?? [])].map((resource) =>
+      toResourceListSummary(resource),
+    )
   } finally {
     await prepared.dispose?.()
   }

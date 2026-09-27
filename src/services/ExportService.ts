@@ -1,5 +1,10 @@
 import { includePersonalResource } from './PersonalResourceBackup'
 import {
+  includeResourceGalleryIds,
+  isResourceGalleryImage,
+  galleryOwnerId,
+} from '../types/ResourceGallery'
+import {
   encodeArchive,
   streamArchive,
   throwIfArchiveAborted,
@@ -107,9 +112,17 @@ function splitResources(resources: Resource[], splitSizeBytes?: number): Resourc
   if (!splitSizeBytes || splitSizeBytes <= 0) return [resources]
   const resourcesById = new Map(resources.map((resource) => [resource.id, resource]))
   const consumedAttachmentIds = new Set<string>()
+  const galleryByOwner = new Map<string, Resource[]>()
+  for (const image of resources) {
+    if (!isResourceGalleryImage(image)) continue
+    const ownerId = galleryOwnerId(image)
+    const images = galleryByOwner.get(ownerId) ?? []
+    images.push(image)
+    galleryByOwner.set(ownerId, images)
+  }
   const units: Resource[][] = []
   for (const resource of resources) {
-    if (isUserPersonaAvatarAttachment(resource)) continue
+    if (isUserPersonaAvatarAttachment(resource) || isResourceGalleryImage(resource)) continue
     const attachments =
       resource.type === RESOURCE_TYPE.USER_PERSONA
         ? getRelatedResourceIds(resource).flatMap((resourceId) => {
@@ -119,7 +132,7 @@ function splitResources(resources: Resource[], splitSizeBytes?: number): Resourc
             return [related]
           })
         : []
-    units.push([resource, ...attachments])
+    units.push([resource, ...attachments, ...(galleryByOwner.get(resource.id) ?? [])])
   }
   for (const resource of resources) {
     if (isUserPersonaAvatarAttachment(resource) && !consumedAttachmentIds.has(resource.id)) {
@@ -149,8 +162,11 @@ function selectResourcesForArchive(resources: Resource[], options: ArchiveOption
     resources = resources.filter((resource) =>
       includePersonalResource(resource, options.personalResources),
     )
-  if (options.mode === 'full' || !options.resourceIds) return resources
-  const selectedIds = new Set(options.resourceIds)
+  const selectedIds = new Set(
+    options.mode === 'full' || !options.resourceIds
+      ? resources.map((r) => r.id)
+      : options.resourceIds,
+  )
   includeChatCompanionIds(resources, selectedIds)
   for (const resource of resources) {
     if (resource.type !== RESOURCE_TYPE.USER_PERSONA || !selectedIds.has(resource.id)) continue
@@ -159,6 +175,11 @@ function selectResourcesForArchive(resources: Resource[], options: ArchiveOption
       if (related && isUserPersonaAvatarAttachment(related)) selectedIds.add(related.id)
     }
   }
+  includeResourceGalleryIds(
+    resources,
+    selectedIds,
+    options.portableSelection?.resourceGallery !== false,
+  )
   return resources.filter((resource) => selectedIds.has(resource.id))
 }
 
@@ -494,6 +515,10 @@ export class ExportService {
       portableData: options.portableData
         ? {
             ...options.portableData,
+            resourceGalleryCategories:
+              options.portableSelection?.resourceGallery === false
+                ? undefined
+                : options.portableData.resourceGalleryCategories,
             ...(options.portableData.plaintextSecretCopies
               ? {
                   plaintextSecretCopies: options.portableData.plaintextSecretCopies.filter((copy) =>

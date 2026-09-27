@@ -1,3 +1,4 @@
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { restoreVersionKey } from '../utils/RestoreIdentity'
 import Dexie from 'dexie'
 import type { AppDatabase } from '../database/AppDatabase'
@@ -354,7 +355,8 @@ function nativeLinkRecord(resource: NativeBackedResourceRecord, scope: 'current'
     fileName: resource.fileName,
     mimeType: resource.mimeType,
     resourceType: resource.type,
-    hiddenFromDocuments: isUserPersonaAvatarAttachment(resource),
+    hiddenFromDocuments:
+      isUserPersonaAvatarAttachment(resource) || isResourceGalleryImage(resource),
     contentHash: resource.nativeOriginal.contentHash,
     size: resource.nativeOriginal.size,
     updatedAt: resource.updatedAt,

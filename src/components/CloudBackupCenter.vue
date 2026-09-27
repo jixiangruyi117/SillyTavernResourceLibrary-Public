@@ -33,10 +33,9 @@ const {
   backups,
   restorePicker,
   selectedRestoreKeys,
-  toggleRestoreResource,
-  selectAllRestoreResources,
-  clearRestoreResources,
-  restoreResourceType,
+  restoreResourceCount,
+  restoreScopeIds,
+  restoreScopeModel,
   formatBytes,
   download,
   restore,
@@ -271,39 +270,17 @@ const {
         >
           <header>
             <div>
-              <small>SELECTIVE RESTORE</small>
               <strong id="cloud-restore-selection-title">选择要导入的资源</strong>
               <span>{{ restorePicker.item.objectKey }}</span>
             </div>
-            <span>{{ selectedRestoreKeys.size }} / {{ restorePicker.resources.length }} 项</span>
+            <span>{{ selectedRestoreKeys.size }} / {{ restoreResourceCount }} 项</span>
           </header>
-          <div class="cloud-restore-selection__tools">
-            <button type="button" @click="selectAllRestoreResources">全选</button>
-            <button type="button" @click="clearRestoreResources">清空</button>
-          </div>
-          <div class="cloud-restore-resource-list">
-            <label
-              v-for="resource in restorePicker.resources"
-              :key="resource.id"
-              class="cloud-restore-resource"
-            >
-              <input
-                type="checkbox"
-                :checked="selectedRestoreKeys.has(resource.id)"
-                @change="toggleRestoreResource(resource)"
-              />
-              <span>
-                <strong>{{ resource.name }}</strong>
-                <small
-                  >{{ restoreResourceType(resource) }} · {{ resource.fileName
-                  }}<template v-if="resource.versionCount">
-                    · 历史 {{ resource.versionCount }} 项</template
-                  ></small
-                >
-              </span>
-            </label>
-          </div>
-          <p>用户人设头像和历史版本会随所属资源自动处理；云端凭据仍按高级迁移设置单独确认。</p>
+          <BackupScopeTree
+            v-model="restoreScopeModel"
+            :resources="restorePicker.resources"
+            :available-scope-ids="restoreScopeIds"
+            mode="restore"
+          />
         </section>
       </section>
 

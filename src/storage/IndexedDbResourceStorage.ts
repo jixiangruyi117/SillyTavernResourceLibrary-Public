@@ -1,3 +1,4 @@
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import Dexie from 'dexie'
 import type { AppDatabase } from '../database/AppDatabase'
 import type { VaultService } from '../services/VaultService'
@@ -599,10 +600,35 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     return this.decodeStoredResource(stored)
   }
 
+  async getSummary(id: string): Promise<ResourceSummary | undefined> {
+    const record = await this.database.resources.get(id)
+    if (!record) return undefined
+    const summary = this.toStoredSummary(record)
+    return this.vault ? this.vault.decodeResourceSummary(summary) : (summary as ResourceSummary)
+  }
+
+  async findGalleryImage(
+    ownerId: string,
+    contentHash: string,
+  ): Promise<ResourceSummary | undefined> {
+    const ids = await this.database.resources.where('contentHash').equals(contentHash).primaryKeys()
+    for (const id of ids) {
+      const summary = await this.getSummary(id)
+      if (summary && isResourceGalleryImage(summary) && summary.metadata.galleryOwnerId === ownerId)
+        return summary
+    }
+    return undefined
+  }
+
   async findByHash(contentHash: string): Promise<Resource | undefined> {
-    const stored = await this.database.resources.where('contentHash').equals(contentHash).first()
-    if (!stored) return undefined
-    return this.decodeStoredResource(stored)
+    const ids = await this.database.resources.where('contentHash').equals(contentHash).primaryKeys()
+    for (const id of ids) {
+      const stored = await this.database.resources.get(id)
+      if (!stored) continue
+      const resource = await this.decodeStoredResource(stored)
+      if (!isResourceGalleryImage(resource)) return resource
+    }
+    return undefined
   }
 
   async findVersionByHash(contentHash: string): Promise<Resource | undefined> {

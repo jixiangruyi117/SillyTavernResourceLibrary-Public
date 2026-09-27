@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { isResourceGalleryImage, includeResourceGalleryIds } from '../types/ResourceGallery'
 
 import {
   BACKUP_SCOPE_GROUPS,
@@ -17,8 +18,14 @@ const props = withDefaults(
     mode: 'local' | 'cloud' | 'restore'
     disabledScopeIds?: BackupScopeId[]
     disabledScopeReasons?: Partial<Record<BackupScopeId, string>>
+    availableScopeIds?: readonly BackupScopeId[]
   }>(),
-  { categories: () => [], disabledScopeIds: () => [], disabledScopeReasons: () => ({}) },
+  {
+    categories: () => [],
+    disabledScopeIds: () => [],
+    disabledScopeReasons: () => ({}),
+    availableScopeIds: undefined,
+  },
 )
 const emit = defineEmits<{
   'update:modelValue': [value: { resourceIds: string[]; scopeIds: BackupScopeId[] }]
@@ -31,10 +38,24 @@ const activeCategoryId = ref<string | null | 'all'>('all')
 const disabled = computed(() => new Set(props.disabledScopeIds))
 const scopeById = (id: BackupScopeId) => BACKUP_SCOPE_REGISTRY.find((scope) => scope.id === id)
 const scopesForGroup = (group: BackupScopeGroupId) =>
-  BACKUP_SCOPE_REGISTRY.filter((scope) => scope.group === group)
+  BACKUP_SCOPE_REGISTRY.filter(
+    (scope) =>
+      scope.group === group &&
+      (!props.availableScopeIds || props.availableScopeIds.includes(scope.id)),
+  )
+const visibleGroups = computed(() =>
+  BACKUP_SCOPE_GROUPS.filter((group) => scopesForGroup(group.id).length),
+)
+const visibleResourceCount = computed(
+  () => props.resources.filter((r) => !isResourceGalleryImage(r)).length,
+)
 const resourcesForScope = (id: BackupScopeId) => {
   const type = scopeById(id)?.resourceType
-  return type ? props.resources.filter((resource) => resource.type === type) : []
+  return type
+    ? props.resources.filter(
+        (resource) => !isResourceGalleryImage(resource) && resource.type === type,
+      )
+    : []
 }
 const visibleResourcesForScope = (id: BackupScopeId) => {
   const resources = resourcesForScope(id)
@@ -49,6 +70,7 @@ const visibleResourcesForScope = (id: BackupScopeId) => {
 }
 const categoryCount = (categoryId: string | null) =>
   props.resources.filter((resource) => {
+    if (isResourceGalleryImage(resource)) return false
     const categoryIds = getResourceCategoryIds(resource)
     return categoryId === null ? categoryIds.length === 0 : categoryIds.includes(categoryId)
   }).length
@@ -148,9 +170,15 @@ function scopeBadge(id: BackupScopeId): string {
 }
 
 const selectedResourceCount = computed(() => selectedIds.value.size)
+const selectedWithGallery = computed(() => {
+  const ids = new Set(selectedIds.value)
+  includeResourceGalleryIds(props.resources, ids, selectedScopes.value.has('extra.resourceGallery'))
+  return ids
+})
 const selectedResourceSize = computed(() =>
   props.resources.reduce(
-    (total, resource) => (selectedIds.value.has(resource.id) ? total + resource.fileSize : total),
+    (total, resource) =>
+      selectedWithGallery.value.has(resource.id) ? total + resource.fileSize : total,
     0,
   ),
 )
@@ -164,10 +192,13 @@ function formatBytes(bytes: number): string {
 <template>
   <section class="backup-scope-tree" aria-label="备份范围选择">
     <header class="backup-scope-tree__summary">
-      <div><strong>备份范围</strong><small>云备份与本地导入导出使用同一套选择逻辑</small></div>
+      <div>
+        <strong>{{ mode === 'restore' ? '恢复范围' : '备份范围' }}</strong
+        ><small v-if="mode !== 'restore'">云备份与本地导入导出使用同一套选择逻辑</small>
+      </div>
       <span>{{ selectedResourceCount }} 项资源 · {{ formatBytes(selectedResourceSize) }}</span>
     </header>
-    <section v-for="group in BACKUP_SCOPE_GROUPS" :key="group.id" class="backup-scope-tree__group">
+    <section v-for="group in visibleGroups" :key="group.id" class="backup-scope-tree__group">
       <header :class="{ 'is-complete': groupState(group.id) === 'all' }">
         <button
           type="button"
@@ -193,7 +224,7 @@ function formatBytes(bytes: number): string {
             :class="{ 'is-active': activeCategoryId === 'all' }"
             @click="activeCategoryId = 'all'"
           >
-            全部 {{ props.resources.length }}
+            全部 {{ visibleResourceCount }}
           </button>
           <button
             type="button"
@@ -342,6 +373,8 @@ function formatBytes(bytes: number): string {
   background: color-mix(in srgb, var(--color-accent-soft) 35%, var(--glass-panel-strong));
 }
 .backup-scope-tree__group-toggle {
+  min-width: 0;
+  flex: 1;
   display: grid;
   grid-template-columns: 0.8rem minmax(0, auto);
   align-items: center;
@@ -363,6 +396,8 @@ function formatBytes(bytes: number): string {
 }
 .backup-scope-tree__select,
 .backup-scope-tree__expand {
+  flex-shrink: 0;
+  white-space: nowrap;
   border: 0;
   background: transparent;
   color: var(--color-accent);

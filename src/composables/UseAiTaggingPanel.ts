@@ -11,9 +11,10 @@ import type { AiTaggingDraft, AiTaggingUndoRecord } from '../services/AiTaggingD
 import type { AiTaggingRuleTemplate } from '../services/AiTaggingDraftService'
 import {
   AI_TAGGING_DEFAULT_BATCH_SIZE,
-  AI_TAGGING_MAX_BATCH_SIZE,
-  AI_TAGGING_MAX_SELECTION,
+  AI_TAGGING_RESOURCE_CHAR_BUDGET,
+  AI_TAGGING_MAX_SYSTEM_PROMPT,
   AI_TAGGING_TAXONOMY_TEMPLATES,
+  getAiTaggingSystemPrompt,
   type AiTaggingFailure,
   type AiTaggingSuggestedTag,
   type AiTaggingSuggestion,
@@ -41,10 +42,12 @@ export type AiTaggingPanelProps = {
   resources: ResourceSummary[]
   categories: Category[]
   initialSelectedIds?: string[]
+  suspended?: boolean
 }
 
 export type AiTaggingPanelEvents = {
   close: []
+  openResource: [resource: ResourceSummary]
   applied: [details: { resourceCount: number; tagCount: number; action: 'apply' | 'undo' }]
 }
 
@@ -68,8 +71,31 @@ export function useAiTaggingPanel(
   const tagQuery = ref('')
 
   const batchSize = ref(AI_TAGGING_DEFAULT_BATCH_SIZE)
+  const batchSizeError = computed(() =>
+    Number.isSafeInteger(batchSize.value) && batchSize.value > 0
+      ? ''
+      : '每批资源数请填写有效的正整数。',
+  )
 
   const customPrompt = ref(DEFAULT_CUSTOM_PROMPT)
+  const systemPrompt = ref<string>()
+  const systemPromptText = computed({
+    get: () => systemPrompt.value ?? getAiTaggingSystemPrompt(taxonomyTemplateId.value),
+    set: (value: string) => {
+      systemPrompt.value = value
+    },
+  })
+  const isSystemPromptCustom = computed(() => systemPrompt.value !== undefined)
+  const systemPromptError = computed(() =>
+    !systemPromptText.value.trim()
+      ? '系统提示词不能为空，请填写内容或恢复默认。'
+      : systemPromptText.value.length > AI_TAGGING_MAX_SYSTEM_PROMPT
+        ? `系统提示词最多 ${AI_TAGGING_MAX_SYSTEM_PROMPT} 字符。`
+        : '',
+  )
+  function resetSystemPrompt(): void {
+    systemPrompt.value = undefined
+  }
 
   const ruleTemplates = ref<AiTaggingRuleTemplate[]>(aiTaggingDraftService.loadRuleTemplates())
 
@@ -83,9 +109,9 @@ export function useAiTaggingPanel(
 
   const selectedIds = shallowRef(
     new Set(
-      (props.initialSelectedIds ?? [])
-        .filter((id) => props.resources.some((resource) => resource.id === id))
-        .slice(0, AI_TAGGING_MAX_SELECTION),
+      (props.initialSelectedIds ?? []).filter((id) =>
+        props.resources.some((resource) => resource.id === id),
+      ),
     ),
   )
 
@@ -102,6 +128,7 @@ export function useAiTaggingPanel(
   const progressBatch = ref(0)
 
   const progressBatchCount = ref(0)
+  const progressResourceNames = ref<string[]>([])
 
   const usageText = ref('')
 
@@ -188,6 +215,15 @@ export function useAiTaggingPanel(
       filteredResources.value.length > 0 &&
       filteredResources.value.every((resource) => selectedIds.value.has(resource.id)),
   )
+  const activeFilterCount = computed(
+    () =>
+      [
+        typeFilter.value !== 'all',
+        categoryFilter.value !== 'all',
+        tagState.value !== 'all',
+        Boolean(tagQuery.value.trim()),
+      ].filter(Boolean).length,
+  )
 
   const acceptedItems = computed(() =>
     reviewItems.value.filter((item) => item.accepted && item.tags.length),
@@ -218,6 +254,24 @@ export function useAiTaggingPanel(
   )
 
   const activeProfile = computed(() => profiles.find((profile) => profile.id === activeProfileId))
+  const selectedApiSummary = computed(() => {
+    const profile = apiSource.value.startsWith('profile:')
+      ? profiles.find((item) => `profile:${item.id}` === apiSource.value)
+      : activeProfile.value
+    const url =
+      apiSource.value === 'temporary' ? temporaryUrl.value.trim() || profile?.url : profile?.url
+    let host = '未配置地址'
+    try {
+      host = new URL(url || '').host
+    } catch {
+      /* 未配置时只显示状态，不暴露地址中的凭据。 */
+    }
+    const model =
+      apiSource.value === 'temporary'
+        ? temporaryModel.value.trim() || profile?.model
+        : profile?.model
+    return `${model || '未配置模型'} · ${host}`
+  })
 
   function applyRuleTemplate(id: string): void {
     const template = ruleTemplates.value.find((item) => item.id === id)
@@ -225,6 +279,7 @@ export function useAiTaggingPanel(
     selectedRuleTemplateId.value = id
     ruleTemplateName.value = template.name
     customPrompt.value = template.prompt
+    systemPrompt.value = template.systemPrompt
     taxonomyTemplateId.value = AI_TAGGING_TAXONOMY_TEMPLATES.some(
       (item) => item.id === template.taxonomyTemplateId,
     )
@@ -240,6 +295,7 @@ export function useAiTaggingPanel(
         customPrompt.value,
         taxonomyTemplateId.value,
         mergeAliases.value,
+        systemPrompt.value,
       )
       const saved = ruleTemplates.value.find((item) => item.name === ruleTemplateName.value.trim())
       selectedRuleTemplateId.value = saved?.id ?? ''
@@ -288,8 +344,7 @@ export function useAiTaggingPanel(
   function toggleResource(resourceId: string): void {
     const next = new Set(selectedIds.value)
     if (next.has(resourceId)) next.delete(resourceId)
-    else if (next.size < AI_TAGGING_MAX_SELECTION) next.add(resourceId)
-    else message.value = `单次最多选择 ${AI_TAGGING_MAX_SELECTION} 项，请分轮处理。`
+    else next.add(resourceId)
     replaceSelection(next)
   }
 
@@ -299,11 +354,8 @@ export function useAiTaggingPanel(
       filteredResources.value.forEach((resource) => next.delete(resource.id))
     else {
       for (const resource of filteredResources.value) {
-        if (next.size >= AI_TAGGING_MAX_SELECTION) break
         next.add(resource.id)
       }
-      if (filteredResources.value.some((resource) => !next.has(resource.id)))
-        message.value = `已选前 ${AI_TAGGING_MAX_SELECTION} 项，其余请分轮处理。`
     }
     replaceSelection(next)
   }
@@ -355,6 +407,10 @@ export function useAiTaggingPanel(
   }
 
   async function runRecognition(resourceIds: string[], preserveSuccesses: boolean): Promise<void> {
+    if (systemPromptError.value || batchSizeError.value) {
+      message.value = systemPromptError.value || batchSizeError.value
+      return
+    }
     if (!resourceIds.length) {
       message.value = '请先选择要识别的资源。'
       return
@@ -369,6 +425,7 @@ export function useAiTaggingPanel(
     progressTotal.value = resourceIds.length
     progressBatch.value = 0
     progressBatchCount.value = Math.ceil(resourceIds.length / batchSize.value)
+    progressResourceNames.value = []
     stopRequested.value = false
     recognitionController = new AbortController()
     stage.value = 'running'
@@ -377,6 +434,7 @@ export function useAiTaggingPanel(
         resourceIds,
         batchSize: batchSize.value,
         customPrompt: customPrompt.value,
+        systemPrompt: systemPrompt.value,
         taxonomyTemplateId: taxonomyTemplateId.value,
         mergeAliases: mergeAliases.value,
         apiOverride: configOverride(),
@@ -387,7 +445,11 @@ export function useAiTaggingPanel(
           progressTotal.value = progress.total
           progressBatch.value = progress.batch
           progressBatchCount.value = progress.batchCount
-          message.value = `已完成第 ${progress.batch}/${progress.batchCount} 批，正在整理审核草稿。`
+          if (progress.resourceNames) progressResourceNames.value = progress.resourceNames
+          message.value =
+            progress.phase === 'request'
+              ? `正在识别第 ${progress.batch}/${progress.batchCount} 批，等待 API 返回。`
+              : `已处理第 ${progress.batch}/${progress.batchCount} 批，正在整理结果。`
         },
       })
       const targetIds = new Set(resourceIds)
@@ -514,6 +576,7 @@ export function useAiTaggingPanel(
       selectedIds: Array.from(selectedIds.value),
       batchSize: batchSize.value,
       customPrompt: customPrompt.value,
+      ...(systemPrompt.value !== undefined ? { systemPrompt: systemPrompt.value } : {}),
       taxonomyTemplateId: taxonomyTemplateId.value,
       mergeAliases: mergeAliases.value,
       api: {
@@ -545,6 +608,7 @@ export function useAiTaggingPanel(
       tagQuery.value.length > 0 ||
       batchSize.value !== AI_TAGGING_DEFAULT_BATCH_SIZE ||
       customPrompt.value !== DEFAULT_CUSTOM_PROMPT ||
+      systemPrompt.value !== undefined ||
       taxonomyTemplateId.value !== 'free' ||
       mergeAliases.value ||
       apiSource.value !== 'active' ||
@@ -577,6 +641,7 @@ export function useAiTaggingPanel(
     selectedIds.value = new Set(draft.selectedIds.filter((id) => resourceById.has(id)))
     batchSize.value = draft.batchSize
     customPrompt.value = draft.customPrompt
+    systemPrompt.value = draft.systemPrompt
     taxonomyTemplateId.value = AI_TAGGING_TAXONOMY_TEMPLATES.some(
       (template) => template.id === draft.taxonomyTemplateId,
     )
@@ -629,6 +694,7 @@ export function useAiTaggingPanel(
     selectedIds.value = new Set(props.initialSelectedIds ?? [])
     batchSize.value = AI_TAGGING_DEFAULT_BATCH_SIZE
     customPrompt.value = DEFAULT_CUSTOM_PROMPT
+    systemPrompt.value = undefined
     taxonomyTemplateId.value = 'free'
     mergeAliases.value = false
     apiSource.value = 'active'
@@ -694,7 +760,15 @@ export function useAiTaggingPanel(
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return
+    if (props.suspended || event.key !== 'Escape') return
+    // Another overlay may close and Vue may resume this panel between key listeners.
+    // Keep that same Escape with its original overlay; the global back stack blocks
+    // AI closing so Escape from inside this panel still needs its own draft guard.
+    if (
+      event.defaultPrevented &&
+      !(event.target instanceof Element && event.target.closest('.ai-tagging'))
+    )
+      return
     event.preventDefault()
     void requestClose()
   }
@@ -726,6 +800,7 @@ export function useAiTaggingPanel(
       selectedIds,
       batchSize,
       customPrompt,
+      systemPrompt,
       taxonomyTemplateId,
       mergeAliases,
       apiSource,
@@ -743,7 +818,43 @@ export function useAiTaggingPanel(
   watch(taxonomyTemplateId, () => {
     if (!Object.keys(activeTaxonomyTemplate.value.aliases).length) mergeAliases.value = false
   })
+  let detailTrigger: HTMLElement | undefined
+  function openReviewResource(item: ReviewItem, event: Event): void {
+    detailTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined
+    emit('openResource', item.resource)
+  }
+  watch(
+    () => props.suspended,
+    async (suspended, previous) => {
+      if (!suspended && !previous) return
+      await nextTick()
+      if (suspended)
+        document
+          .querySelector<HTMLElement>('.resource-detail__header .editor-sheet__close')
+          ?.focus({ preventScroll: true })
+      else detailTrigger?.focus({ preventScroll: true })
+    },
+  )
+  watch(
+    () => props.resources,
+    (resources) => {
+      const byId = new Map(resources.map((resource) => [resource.id, resource]))
+      for (const item of reviewItems.value)
+        item.resource = byId.get(item.resourceId) ?? item.resource
+    },
+  )
   return {
+    openReviewResource,
+    batchSizeError,
+    AI_TAGGING_RESOURCE_CHAR_BUDGET,
+    systemPromptText,
+    isSystemPromptCustom,
+    systemPromptError,
+    resetSystemPrompt,
+    AI_TAGGING_MAX_SYSTEM_PROMPT,
+    progressResourceNames,
+    selectedApiSummary,
+    activeFilterCount,
     requestClose,
     stage,
     restoredAt,
@@ -764,7 +875,6 @@ export function useAiTaggingPanel(
     allFilteredSelected,
     clearSelection,
     selectedIds,
-    AI_TAGGING_MAX_SELECTION,
     customPrompt,
     ruleTemplates,
     ruleTemplateName,
@@ -773,7 +883,6 @@ export function useAiTaggingPanel(
     saveRuleTemplate,
     deleteRuleTemplate,
     batchSize,
-    AI_TAGGING_MAX_BATCH_SIZE,
     taxonomyTemplateId,
     AI_TAGGING_TAXONOMY_TEMPLATES,
     activeTaxonomyTemplate,

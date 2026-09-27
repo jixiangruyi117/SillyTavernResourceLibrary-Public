@@ -1,9 +1,11 @@
 import type { Resource, ResourceSummary } from '../types/Resource'
 import { includeChatCompanionIds } from '../types/Resource'
+import { includeResourceGalleryIds } from '../types/ResourceGallery'
 import type { CloudBackupConfig } from '../types/CloudBackup'
 import { parsePersonalResource, type PersonalResourceDocument } from '../types/PersonalResource'
 
 export interface PersonalResourceSelection {
+  resourceGallery?: boolean
   extraStory?: boolean
   pocketPhone?: boolean
   secret?: boolean
@@ -96,8 +98,16 @@ export function selectCloudResources(
   resources: ResourceSummary[],
   selection?: PersonalResourceSelection,
 ): ResourceSummary[] {
-  const selectedIds = selection?.resourceIds ? new Set(selection.resourceIds) : undefined
-  if (selectedIds) includeChatCompanionIds(resources, selectedIds)
+  const selectedIds = new Set(selection?.resourceIds ?? resources.map((r) => r.id))
+  includeChatCompanionIds(resources, selectedIds)
+  for (const resource of resources) {
+    if (
+      resource.metadata.cloudBackupExcluded === true ||
+      !includePersonalResource(resource, selection)
+    )
+      selectedIds.delete(resource.id)
+  }
+  includeResourceGalleryIds(resources, selectedIds, selection?.resourceGallery === true)
   return resources.filter(
     (resource) =>
       resource.metadata.cloudBackupExcluded !== true &&

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import AiTaggingPanel from './AiTaggingPanel.vue'
+import { getAiTaggingSystemPrompt } from '../services/AiTaggingService'
 
 const mocks = vi.hoisted(() => ({
   recognize: vi.fn(),
@@ -16,12 +17,15 @@ const mocks = vi.hoisted(() => ({
   saveUndo: vi.fn(() => true),
   clearUndo: vi.fn(),
   confirmAction: vi.fn(async () => true),
+  loadRuleTemplates: vi.fn(() => []),
+  saveRuleTemplate: vi.fn(() => []),
 }))
 
 vi.mock('../core/AppContainer', () => ({
   aiTaggingService: { recognize: mocks.recognize },
   aiTaggingDraftService: {
-    loadRuleTemplates: () => [],
+    loadRuleTemplates: mocks.loadRuleTemplates,
+    saveRuleTemplate: mocks.saveRuleTemplate,
     loadDraft: mocks.loadDraft,
     saveDraft: mocks.saveDraft,
     clearDraft: mocks.clearDraft,
@@ -125,14 +129,161 @@ afterEach(() => {
   mocks.clearUndo.mockClear()
   mocks.confirmAction.mockClear()
   mocks.confirmAction.mockResolvedValue(true)
+  mocks.loadRuleTemplates.mockReset().mockReturnValue([])
+  mocks.saveRuleTemplate.mockReset().mockReturnValue([])
   document.body.style.overflow = ''
 })
 
 describe('AiTaggingPanel', () => {
+  it('打开详情并返回保留审核编辑和焦点，详情期间 Esc 不关闭审核', async () => {
+    mocks.recognize.mockResolvedValue({
+      suggestions: [
+        { resourceId: 'r1', tags: [{ name: '古风', evidence: '服饰明确', level: 'explicit' }] },
+      ],
+      failures: [],
+      errors: [],
+      stopped: false,
+      usage: { totalTokens: 0, source: 'estimated' },
+    })
+    const wrapper = mount(AiTaggingPanel, {
+      attachTo: document.body,
+      props: { resources, categories, initialSelectedIds: ['r1'] },
+    })
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('开始识别'))!
+      .trigger('click')
+    await flushPromises()
+    await wrapper.get('button[aria-label="删除建议标签 古风"]').trigger('click')
+    await wrapper.get('input[placeholder="手动补充标签"]').setValue('保留的手写标签')
+    await wrapper.get('input[type="checkbox"]').setValue(false)
+    const detail = wrapper.get('.ai-tagging__detail-link')
+    await detail.trigger('click')
+    expect(wrapper.emitted('openResource')?.[0]).toEqual([resources[0]])
+    await wrapper.setProps({ suspended: true })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(mocks.confirmAction).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.attributes('aria-hidden')).toBe('true')
+    await wrapper.setProps({ suspended: false })
+    await flushPromises()
+    expect(document.activeElement).toBe(detail.element)
+    const handledEscape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    handledEscape.preventDefault()
+    window.dispatchEvent(handledEscape)
+    await flushPromises()
+    expect(mocks.confirmAction).not.toHaveBeenCalled()
+    expect(wrapper.find('.ai-tagging__tag-evidence').exists()).toBe(false)
+    expect((wrapper.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
+    expect(
+      (wrapper.get('input[placeholder="手动补充标签"]').element as HTMLInputElement).value,
+    ).toBe('保留的手写标签')
+    wrapper.unmount()
+  })
+
+  it('大批次和超过 200 项选择完整传入识别，非法数量禁用开始', async () => {
+    mocks.recognize.mockResolvedValue({
+      suggestions: [],
+      failures: [],
+      errors: [],
+      stopped: false,
+      usage: { totalTokens: 0, source: 'estimated' },
+    })
+    const many = Array.from({ length: 205 }, (_, i) => ({ ...resources[0]!, id: `r${i}` }))
+    const wrapper = mount(AiTaggingPanel, {
+      props: { resources: many, categories, initialSelectedIds: many.map((item) => item.id) },
+    })
+    const batch = wrapper.get('input[aria-label="每批资源数"]')
+    expect(batch.attributes('max')).toBeUndefined()
+    const start = wrapper.findAll('button').find((button) => button.text().includes('开始识别'))!
+    for (const value of ['', '0', '-1', '1.5']) {
+      await batch.setValue(value)
+      expect(start.attributes('disabled')).toBeDefined()
+    }
+    await batch.setValue('1000')
+    await start.trigger('click')
+    await flushPromises()
+    expect(mocks.recognize).toHaveBeenCalledWith(
+      expect.objectContaining({ batchSize: 1000, resourceIds: many.map((item) => item.id) }),
+    )
+    wrapper.unmount()
+  })
+  it('高级提示词可编辑、保存到草稿和模板，并传入识别请求', async () => {
+    mocks.recognize.mockResolvedValue({
+      suggestions: [],
+      failures: [],
+      errors: [],
+      stopped: false,
+      usage: { totalTokens: 0, source: 'estimated' },
+    })
+    const wrapper = mount(AiTaggingPanel, {
+      props: { resources, categories, initialSelectedIds: ['r1'] },
+    })
+    const prompt = '自定义完整系统消息，保留 resources JSON 格式。'
+    expect(
+      (wrapper.get('textarea[aria-label="系统提示词"]').element as HTMLTextAreaElement).value,
+    ).toBe(getAiTaggingSystemPrompt())
+    await wrapper.get('textarea[aria-label="系统提示词"]').setValue(prompt)
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ systemPrompt: prompt }),
+    )
+    await wrapper.get('input[placeholder="如：古风剧情卡"]').setValue('测试规范')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '保存当前规范')!
+      .trigger('click')
+    expect(mocks.saveRuleTemplate).toHaveBeenCalledWith(
+      '测试规范',
+      expect.any(String),
+      'free',
+      false,
+      prompt,
+    )
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('开始识别'))!
+      .trigger('click')
+    await flushPromises()
+    expect(mocks.recognize).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: prompt }))
+    wrapper.unmount()
+  })
+
+  it('自定义系统提示词不被规范切换覆盖，清空会阻止开始，恢复默认解除', async () => {
+    const wrapper = mount(AiTaggingPanel, {
+      props: { resources, categories, initialSelectedIds: ['r1'] },
+    })
+    const editor = wrapper.get('textarea[aria-label="系统提示词"]')
+    const taxonomy = wrapper
+      .findAll('select')
+      .find((select) => select.element.querySelector('option[value="story-resource"]'))!
+    await editor.setValue('我的系统提示词')
+    await taxonomy.setValue('story-resource')
+    expect((editor.element as HTMLTextAreaElement).value).toBe('我的系统提示词')
+    await editor.setValue('')
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes('开始识别'))!
+        .attributes('disabled'),
+    ).toBeDefined()
+    expect(wrapper.get('[role="alert"]').text()).toContain('系统提示词不能为空')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '恢复默认')!
+      .trigger('click')
+    expect((editor.element as HTMLTextAreaElement).value).toBe(
+      getAiTaggingSystemPrompt('story-resource'),
+    )
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ systemPrompt: expect.any(String) }),
+    )
+    wrapper.unmount()
+  })
+
   it('可按标签状态筛选候选资源', async () => {
     const wrapper = mount(AiTaggingPanel, { props: { resources, categories } })
-    const selects = wrapper.findAll('select')
-    await selects[2]?.setValue('untagged')
+    await wrapper.get('select[aria-label="标签状态"]').setValue('untagged')
 
     const queue = wrapper.find('.ai-tagging__candidate-list').text()
     expect(queue).toContain('林间少女')
@@ -269,12 +420,17 @@ describe('AiTaggingPanel', () => {
     expect(wrapper.text()).toContain('古风')
     await wrapper
       .findAll('button')
+      .find((button) => button.text() === '返回调整')!
+      .trigger('click')
+    await wrapper.get('input[aria-label="每批资源数"]').setValue('1')
+    await wrapper
+      .findAll('button')
       .find((button) => button.text().includes('仅重试失败项 1'))
       ?.trigger('click')
     await flushPromises()
 
     expect(mocks.recognize).toHaveBeenLastCalledWith(
-      expect.objectContaining({ resourceIds: ['r2'] }),
+      expect.objectContaining({ resourceIds: ['r2'], batchSize: 1 }),
     )
     expect(wrapper.text()).toContain('古风')
     expect(wrapper.text()).toContain('都市')
@@ -295,6 +451,7 @@ describe('AiTaggingPanel', () => {
       selectedIds: ['r1'],
       batchSize: 4,
       customPrompt: '草稿提示词',
+      systemPrompt: '恢复的完整系统提示词',
       taxonomyTemplateId: 'story-resource',
       mergeAliases: true,
       api: {
@@ -326,6 +483,9 @@ describe('AiTaggingPanel', () => {
       expect.objectContaining({ confirmLabel: '保存并退出' }),
     )
     expect(wrapper.emitted('close')).toHaveLength(1)
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ systemPrompt: '恢复的完整系统提示词' }),
+    )
     expect(mocks.saveDraft.mock.calls.flat().join(' ')).not.toContain('secret')
     wrapper.unmount()
   })

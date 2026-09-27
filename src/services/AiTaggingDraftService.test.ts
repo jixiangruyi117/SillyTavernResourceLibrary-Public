@@ -20,6 +20,7 @@ describe('AiTaggingDraftService', () => {
       selectedIds: ['r1'],
       batchSize: 4,
       customPrompt: '只依据正文',
+      systemPrompt: '完整自定义系统提示词',
       taxonomyTemplateId: 'story-resource',
       mergeAliases: true,
       api: {
@@ -63,5 +64,85 @@ describe('AiTaggingDraftService', () => {
     expect(service.loadUndo()).toEqual(record)
     service.clearUndo()
     expect(service.loadUndo()).toBeUndefined()
+  })
+
+  it('大批次草稿、失败资源和撤销记录不会在旧 200 项阈值截断', () => {
+    const service = new AiTaggingDraftService()
+    const ids = Array.from({ length: 205 }, (_, i) => `r${i}`)
+    localStorage.setItem(
+      'srl.aiTagging.draft.v1',
+      JSON.stringify({
+        version: 1,
+        stage: 'review',
+        api: { source: 'active' },
+        batchSize: 1000,
+        selectedIds: ids,
+        reviewItems: ids.map((resourceId) => ({
+          resourceId,
+          tags: [],
+          accepted: true,
+          draftTag: '',
+        })),
+        failures: Array.from({ length: 55 }, (_, batch) => ({
+          batch,
+          resourceIds: ids,
+          message: '失败',
+          retryable: true,
+        })),
+      }),
+    )
+    const draft = service.loadDraft()!
+    expect(draft.batchSize).toBe(1000)
+    expect(draft.selectedIds).toEqual(ids)
+    expect(draft.reviewItems).toHaveLength(205)
+    expect(draft.failures).toHaveLength(55)
+    expect(draft.failures[54]!.resourceIds).toEqual(ids)
+    expect(service.saveDraft(draft)).toBe(true)
+    expect(service.loadDraft()).toEqual(draft)
+    service.saveUndo({
+      version: 1,
+      appliedAt: 1,
+      additions: ids.map((resourceId) => ({
+        resourceId,
+        resourceName: resourceId,
+        tags: ['新增'],
+      })),
+    })
+    expect(service.loadUndo()!.additions).toHaveLength(205)
+  })
+
+  it('本机模板保存和恢复系统提示词，同名恢复默认会移除旧覆盖', () => {
+    const service = new AiTaggingDraftService()
+    service.saveRuleTemplate('题材', '只标注题材', 'free', false, '自定义系统消息')
+    expect(service.loadRuleTemplates()[0]).toMatchObject({
+      name: '题材',
+      systemPrompt: '自定义系统消息',
+    })
+    service.saveRuleTemplate('题材', '只标注题材', 'story-resource', true)
+    expect(service.loadRuleTemplates()).toHaveLength(1)
+    expect(service.loadRuleTemplates()[0]).not.toHaveProperty('systemPrompt')
+  })
+
+  it('旧版草稿和模板缺少系统提示词时继续使用内置默认', () => {
+    const service = new AiTaggingDraftService()
+    localStorage.setItem(
+      'srl.aiTagging.ruleTemplates.v1',
+      JSON.stringify([
+        {
+          id: 'old',
+          name: '旧模板',
+          prompt: '旧要求',
+          taxonomyTemplateId: 'free',
+          mergeAliases: false,
+        },
+      ]),
+    )
+    localStorage.setItem(
+      'srl.aiTagging.draft.v1',
+      JSON.stringify({ version: 1, api: { source: 'active' } }),
+    )
+    expect(service.loadRuleTemplates()[0]).not.toHaveProperty('systemPrompt')
+    expect(service.loadDraft()).toBeDefined()
+    expect(service.loadDraft()).not.toHaveProperty('systemPrompt')
   })
 })

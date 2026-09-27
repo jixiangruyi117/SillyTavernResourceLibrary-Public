@@ -43,6 +43,8 @@ interface LibraryQueryViewContext {
   selectedSplitResourceId: Ref<string | undefined>
 }
 
+import { isResourceGalleryImage } from '../types/ResourceGallery'
+
 export function useLibraryQueryView(context: LibraryQueryViewContext) {
   const hiddenCategoryIds = computed(() => getHiddenCategoryIds(context.categories.value))
 
@@ -51,7 +53,9 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
   )
 
   const managedResources = computed(() =>
-    context.resources.value.filter((resource) => !isUserPersonaAvatarAttachment(resource)),
+    context.resources.value.filter(
+      (resource) => !isUserPersonaAvatarAttachment(resource) && !isResourceGalleryImage(resource),
+    ),
   )
 
   const duplicateGroupCounts = computed(() => ({

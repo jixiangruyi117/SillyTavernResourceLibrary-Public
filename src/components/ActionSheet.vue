@@ -8,6 +8,7 @@ export interface ActionSheetAction {
   description?: string
   danger?: boolean
   disabled?: boolean
+  selected?: boolean
 }
 
 const props = withDefaults(
@@ -91,11 +92,17 @@ onBeforeUnmount(() => {
               v-for="action in actions"
               :key="action.id"
               type="button"
-              :class="{ 'action-sheet__action--danger': action.danger }"
+              :class="{
+                'action-sheet__action--danger': action.danger,
+                'action-sheet__action--selected': action.selected,
+              }"
               :disabled="action.disabled"
+              :aria-pressed="action.selected"
               @click="select(action)"
             >
-              <strong>{{ action.label }}</strong>
+              <strong
+                >{{ action.label }}<span v-if="action.selected" aria-hidden="true">✓</span></strong
+              >
               <small v-if="action.description">{{ action.description }}</small>
             </button>
           </div>
@@ -176,6 +183,18 @@ onBeforeUnmount(() => {
 .action-sheet__actions small {
   margin-top: 0.15rem;
   color: var(--color-ink-soft);
+}
+
+.action-sheet__actions strong {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.action-sheet__actions > .action-sheet__action--selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft, var(--color-surface-raised));
 }
 
 .action-sheet__action--danger {

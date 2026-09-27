@@ -1,4 +1,6 @@
+import { IndexedDbResourceGalleryCategoryStorage } from '../storage/ResourceGalleryCategoryStorage'
 import { ChatResourceParser } from '../parser/ChatResourceParser'
+import { ResourceGalleryService } from '../services/ResourceGalleryService'
 import { PersonalResourceParser } from '../parser/PersonalResourceParser'
 import { ResourceArchiveService } from '../services/ResourceArchiveService'
 import { appDatabase as database } from './AppDatabaseInstance'
@@ -84,6 +86,10 @@ export const nativeResourceRecoveryService = new NativeResourceRecoveryService(
   () => vaultService.isEnabled(),
 )
 export const resourceService = new ResourceService(storage, parserRegistry)
+export const resourceGalleryService = new ResourceGalleryService(
+  storage,
+  new IndexedDbResourceGalleryCategoryStorage(database),
+)
 export const greetingResourceService = new GreetingResourceService(resourceService)
 export const communitySourceStorage = communitySourceStorageOwner
 export const communitySourceService = new CommunitySourceService(
@@ -149,6 +155,9 @@ export const cloudBackupService = new CloudBackupService(
           },
         }
       : {}),
+    ...(selection.resourceGallery
+      ? { resourceGalleryCategories: await resourceGalleryService.exportCategories() }
+      : {}),
     ...(selection.aiTaggingState
       ? {
           aiTaggingState: {
@@ -185,6 +194,8 @@ export const cloudBackupService = new CloudBackupService(
       await mainApiService.awaitCredentialWrites()
     }
     if (data.credentials) await importPortableCredentialBundle(data.credentials)
+    if (data.resourceGalleryCategories)
+      await resourceGalleryService.importCategories(data.resourceGalleryCategories)
     if (data.aiTaggingState?.draft) aiTaggingDraftService.saveDraft(data.aiTaggingState.draft)
     if (data.aiTaggingState?.undo) aiTaggingDraftService.saveUndo(data.aiTaggingState.undo)
     if (data.externalApps) await externalAppService.importPortableState(data.externalApps)

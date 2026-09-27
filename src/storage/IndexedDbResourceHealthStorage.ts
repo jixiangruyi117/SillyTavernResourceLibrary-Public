@@ -1,3 +1,4 @@
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import type { ParsedResource } from '../types/Import'
 import { chatLines } from '../parser/ChatResourceParser'
 import type { NativeResourceLinkRecord } from './NativeResourceFileMirror'
@@ -279,7 +280,8 @@ export class IndexedDbResourceHealthStorage {
           fileName: existing.fileName,
           mimeType: existing.mimeType,
           resourceType: existing.type,
-          hiddenFromDocuments: isUserPersonaAvatarAttachment(existing),
+          hiddenFromDocuments:
+            isUserPersonaAvatarAttachment(existing) || isResourceGalleryImage(existing),
           contentHash,
           size: candidate.size,
           updatedAt: existing.updatedAt,
@@ -516,7 +518,8 @@ export class IndexedDbResourceHealthStorage {
           fileName: record.fileName,
           mimeType: record.mimeType,
           resourceType: record.type,
-          hiddenFromDocuments: isUserPersonaAvatarAttachment(record),
+          hiddenFromDocuments:
+            isUserPersonaAvatarAttachment(record) || isResourceGalleryImage(record),
           contentHash,
           size: candidate.size,
           updatedAt: record.updatedAt,

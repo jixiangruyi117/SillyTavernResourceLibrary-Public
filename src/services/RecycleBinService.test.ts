@@ -14,6 +14,7 @@ import { ResourceService } from './ResourceService'
 import { RestoreService } from './RestoreService'
 import { VaultService } from './VaultService'
 import { RecycleBinService } from './RecycleBinService'
+import { ResourceGalleryService } from './ResourceGalleryService'
 
 const databases: AppDatabase[] = []
 
@@ -79,6 +80,20 @@ async function createServices() {
 }
 
 describe('RecycleBinService', () => {
+  it('restores gallery categories and custom cover together with the deleted resource', async () => {
+    const { recycleBin, resourceStorage, resourceService } = await createServices()
+    const owner = await createResource('gallery-owner', '图库资源', '{}')
+    await resourceStorage.save(owner)
+    const gallery = new ResourceGalleryService(resourceStorage)
+    const image = await gallery.addUrl(owner.id, 'https://example.com/preview.png', false, ['预览'])
+    await gallery.setCover(owner.id, image.id)
+    const entry = await recycleBin.moveToRecycleBin([owner.id])
+    expect(await resourceStorage.get(image.id)).toBeUndefined()
+    await recycleBin.restore(entry.id)
+    const restoredOwner = (await resourceService.get(owner.id))!
+    expect(restoredOwner.metadata.resourceCoverId).toBe(image.id)
+    expect((await gallery.list(owner.id)).items[0]?.tags).toEqual(['预览'])
+  })
   it('stores only selected resources and their versions, then restores links', async () => {
     const { database, recycleBin, resourceService, resourceStorage } = await createServices()
     const atlas = await createResource('atlas', 'Atlas', '{"name":"Atlas"}', ['companion'])

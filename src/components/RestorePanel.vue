@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, toRefs, watch } from 'vue'
 
+import BackupScopeTree from './BackupScopeTree.vue'
+import { resourceRestoreScopeIds, type BackupScopeId } from '../services/BackupScopeRegistry'
+import { isResourceGalleryImage, includeResourceGalleryIds } from '../types/ResourceGallery'
 import type { PreparedRestore, RestoreMode, RestoreReport } from '../types/Backup'
 import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import ProjectActivityCenter from './ProjectActivityCenter.vue'
-import {
-  isUserPersonaAvatarAttachment,
-  RESOURCE_TYPE_LABELS,
-  type Resource,
-} from '../types/Resource'
 
 const props = defineProps<{
   prepared?: PreparedRestore
@@ -21,25 +19,66 @@ const { prepared, report, busy, entry, completedMode } = toRefs(props)
 const emit = defineEmits<{
   close: []
   inspect: [file: File]
-  confirm: [mode: RestoreMode, resourceIds: string[]]
+  confirm: [mode: RestoreMode, resourceIds: string[], includeGallery: boolean]
 }>()
 
 const restoreMode = ref<RestoreMode>('merge')
-const portableOnly = computed(() => canRestoreOnlyPortableData(prepared.value))
 const selectedResourceIds = ref(new Set<string>())
+const selectedScopeIds = ref<BackupScopeId[]>([])
+const portableOnly = computed(() => {
+  const value = prepared.value
+  if (!value?.portableData) return false
+  return canRestoreOnlyPortableData({
+    ...value,
+    portableData: {
+      ...value.portableData,
+      resourceGalleryCategories: selectedScopeIds.value.includes('extra.resourceGallery')
+        ? value.portableData.resourceGalleryCategories
+        : undefined,
+    },
+  })
+})
+const restoreResources = computed(() => [
+  ...(prepared.value?.resources ?? []),
+  ...(prepared.value?.galleryOwners ?? []),
+])
+const scopeIds = computed(() => [
+  ...new Set<BackupScopeId>([
+    ...resourceRestoreScopeIds(restoreResources.value),
+    ...(prepared.value?.portableData?.resourceGalleryCategories
+      ? ['extra.resourceGallery' as const]
+      : []),
+  ]),
+])
+const scopeModel = computed({
+  get: () => ({ resourceIds: [...selectedResourceIds.value], scopeIds: selectedScopeIds.value }),
+  set: (value: { resourceIds: string[]; scopeIds: BackupScopeId[] }) => {
+    selectedResourceIds.value = new Set(value.resourceIds)
+    selectedScopeIds.value = value.scopeIds
+  },
+})
+function confirmSelection() {
+  const ids = new Set(selectedResourceIds.value)
+  const includeGallery = selectedScopeIds.value.includes('extra.resourceGallery')
+  includeResourceGalleryIds(restoreResources.value, ids, includeGallery)
+  emit('confirm', restoreMode.value, [...ids], includeGallery)
+}
 
 watch(
   prepared,
-  (value) => {
+  () => {
     restoreMode.value = 'merge'
-    selectedResourceIds.value = new Set(value?.resources.map((resource) => resource.id) ?? [])
+    selectedResourceIds.value = new Set(
+      restoreResources.value.filter((r) => !isResourceGalleryImage(r)).map((r) => r.id),
+    )
+    selectedScopeIds.value = [...scopeIds.value]
   },
   { immediate: true },
 )
 
 const selectedResources = computed(() =>
-  (prepared.value?.resources ?? []).filter((resource) =>
-    selectedResourceIds.value.has(resource.id),
+  restoreResources.value.filter(
+    (resource) => !isResourceGalleryImage(resource) && selectedResourceIds.value.has(resource.id),
   ),
 )
 const selectedVersionCount = computed(() => {
@@ -50,31 +89,16 @@ const selectedVersionCount = computed(() => {
 })
 const allResourcesSelected = computed(
   () =>
-    Boolean(prepared.value) && selectedResources.value.length === prepared.value?.resources.length,
+    Boolean(prepared.value) &&
+    restoreResources.value
+      .filter((r) => !isResourceGalleryImage(r))
+      .every((r) => selectedResourceIds.value.has(r.id)) &&
+    (!(
+      restoreResources.value.some(isResourceGalleryImage) ||
+      prepared.value?.portableData?.resourceGalleryCategories
+    ) ||
+      selectedScopeIds.value.includes('extra.resourceGallery')),
 )
-
-function toggleResource(resourceId: string): void {
-  const next = new Set(selectedResourceIds.value)
-  if (next.has(resourceId)) next.delete(resourceId)
-  else next.add(resourceId)
-  selectedResourceIds.value = next
-}
-
-function selectAllResources(): void {
-  selectedResourceIds.value = new Set(
-    prepared.value?.resources.map((resource) => resource.id) ?? [],
-  )
-}
-
-function clearResources(): void {
-  selectedResourceIds.value = new Set()
-}
-
-function resourceType(resource: Resource): string {
-  return isUserPersonaAvatarAttachment(resource)
-    ? '用户人设头像附件'
-    : RESOURCE_TYPE_LABELS[resource.type]
-}
 
 function handleFile(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -191,30 +215,13 @@ function formatDate(value: string): string {
                   >已选 {{ selectedResources.length }} 项 · 历史 {{ selectedVersionCount }} 项</span
                 >
               </div>
-              <div class="restore-selection__tools">
-                <button type="button" @click="selectAllResources">全选</button>
-                <button type="button" @click="clearResources">清空</button>
-              </div>
-              <div class="restore-resource-list">
-                <label
-                  v-for="resource in prepared.resources"
-                  :key="resource.id"
-                  class="restore-resource"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="selectedResourceIds.has(resource.id)"
-                    @change="toggleResource(resource.id)"
-                  />
-                  <span>
-                    <strong>{{ resource.name }}</strong>
-                    <small>{{ resourceType(resource) }} · {{ resource.fileName }}</small>
-                  </span>
-                </label>
-              </div>
-              <p class="restore-selection__hint">
-                选择用户人设时会自动保留关联头像；历史版本随所属资源一起恢复。
-              </p>
+              <BackupScopeTree
+                v-model="scopeModel"
+                :resources="restoreResources"
+                :categories="prepared.categories"
+                :available-scope-ids="scopeIds"
+                mode="restore"
+              />
             </section>
 
             <div
@@ -317,7 +324,7 @@ function formatDate(value: string): string {
                   busy ||
                   (restoreMode === 'merge' && selectedResources.length === 0 && !portableOnly)
                 "
-                @click="emit('confirm', restoreMode, Array.from(selectedResourceIds))"
+                @click="confirmSelection"
               >
                 {{ restoreMode === 'replace' ? '确认覆盖' : '确认新增' }}
               </button>

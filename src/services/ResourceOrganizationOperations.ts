@@ -1,4 +1,6 @@
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
+import { galleryOwnerId, isResourceGalleryImage } from '../types/ResourceGallery'
+import { moveResourceGallery } from './ResourceGalleryService'
 import { RestoreDuplicateIndex } from '../utils/RestoreIdentity'
 import {
   getRelatedResourceIds,
@@ -362,17 +364,7 @@ export async function undoAddedTags(
 }
 
 export async function deleteResource(storage: ResourceStorageAdapter, id: string): Promise<void> {
-  const summaries = storage.listResourceListSummaries
-    ? await storage.listResourceListSummaries()
-    : await storage.listSummaries()
-  const affected = summaries.filter((resource) => getRelatedResourceIds(resource).includes(id))
-  const now = Date.now()
-  for (const resource of affected)
-    await storage.update(resource.id, {
-      relatedResourceIds: getRelatedResourceIds(resource).filter((relatedId) => relatedId !== id),
-      updatedAt: now,
-    })
-  await storage.delete(id)
+  await deleteMany(storage, [id])
 }
 
 export async function deleteMany(
@@ -388,6 +380,10 @@ export async function deleteMany(
   const summaries = storage.listResourceListSummaries
     ? await storage.listResourceListSummaries()
     : await storage.listSummaries()
+  for (const image of summaries) {
+    if (isResourceGalleryImage(image) && deletedIds.has(galleryOwnerId(image)))
+      deletedIds.add(image.id)
+  }
   const now = Date.now()
   for (const resource of summaries) {
     if (deletedIds.has(resource.id)) continue
@@ -396,7 +392,14 @@ export async function deleteMany(
     if (relatedResourceIds.length !== currentRelatedIds.length)
       await storage.update(resource.id, { relatedResourceIds, updatedAt: now })
   }
-  await storage.deleteMany(ids, onProgress)
+  await storage.deleteMany([...deletedIds], onProgress)
+  // An image may finish saving after the initial summary read but before its owner is
+  // deleted. After deletion no new import can validate this owner; sweep that narrow gap.
+  const afterDelete = await (storage.listResourceListSummaries?.() ?? storage.listSummaries())
+  const lateImages = afterDelete.filter(
+    (image) => isResourceGalleryImage(image) && deletedIds.has(galleryOwnerId(image)),
+  )
+  if (lateImages.length) await storage.deleteMany(lateImages.map((image) => image.id))
 }
 
 /** 同内容副本的组织信息归并；成功写入保留项后沿用 Service 删除入口清理反向关联。 */
@@ -447,6 +450,7 @@ export async function mergeDuplicates(
     updatedAt: Date.now(),
   })
   // Move incoming references before deleting copies; deleting alone would detach their owners.
+  for (const target of targets) await moveResourceGallery(storage, target.id, keeper.id)
   const removedIds = new Set(targets.map((target) => target.id))
   for (const summary of summaries) {
     if (summary.id === keeper.id || removedIds.has(summary.id)) continue

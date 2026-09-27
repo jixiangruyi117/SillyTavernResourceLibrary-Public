@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { AiTaggingService } from './AiTaggingService'
+import {
+  AiTaggingService,
+  getAiTaggingSystemPrompt,
+  AI_TAGGING_MAX_SYSTEM_PROMPT,
+} from './AiTaggingService'
 import type { MainApiCompletionResult, MainApiMessage } from './MainApiService'
+import { estimateMainApiTokens } from './MainApiService'
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
 
 function resource(id: string, overrides: Partial<Resource> = {}): Resource {
@@ -36,6 +41,106 @@ function result(text: string): MainApiCompletionResult {
 }
 
 describe('AiTaggingService', () => {
+  it('超过旧数量和上下文阈值的大批次仍完整发送一次，不缩减每项摘录', async () => {
+    const items = Array.from({ length: 205 }, (_, index) =>
+      resource(`large-${index}`, {
+        description: '证据'.repeat(2500),
+      }),
+    )
+    const completeWithUsage = vi.fn(async (_messages: MainApiMessage[]) =>
+      result(
+        JSON.stringify({
+          resources: items.map((item) => ({ resourceId: item.id, tags: [] })),
+        }),
+      ),
+    )
+    const service = new AiTaggingService(
+      { completeWithUsage },
+      {
+        get: async (id) => items.find((item) => item.id === id),
+      },
+    )
+    const output = await service.recognize({
+      resourceIds: items.map((item) => item.id),
+      batchSize: 1000,
+    })
+    expect(completeWithUsage).toHaveBeenCalledTimes(1)
+    const messages = completeWithUsage.mock.calls[0]![0]
+    expect(estimateMainApiTokens(messages)).toBeGreaterThan(32000)
+    expect(messages[1]!.content).toContain('large-204')
+    expect(messages[1]!.content).toContain('证据'.repeat(2500))
+    expect(output.suggestions).toHaveLength(205)
+    expect(output.failures).toEqual([])
+  })
+
+  it('无效批次数量不会读取资源或调用 API', async () => {
+    const get = vi.fn()
+    const completeWithUsage = vi.fn()
+    const validService = new AiTaggingService({ completeWithUsage }, { get })
+    for (const batchSize of [0, -1, 1.5, NaN, Infinity]) {
+      await expect(validService.recognize({ resourceIds: ['r1'], batchSize })).rejects.toThrow(
+        '正整数',
+      )
+    }
+    expect(get).not.toHaveBeenCalled()
+    expect(completeWithUsage).not.toHaveBeenCalled()
+  })
+  it('自定义系统提示词原样替换默认消息，并仍然发送用户要求与资源内容', async () => {
+    const item = resource('r1')
+    const completeWithUsage = vi.fn(async (_messages: MainApiMessage[]) =>
+      result('{"resources":[{"resourceId":"r1","tags":[]}]}'),
+    )
+    const service = new AiTaggingService({ completeWithUsage }, { get: async () => item })
+    const prompt = '仅标注作品体裁。输出 resources JSON，包含 resourceId 和 tags。'
+    await service.recognize({
+      resourceIds: ['r1'],
+      systemPrompt: prompt,
+      customPrompt: '只用中文',
+      taxonomyTemplateId: 'story-resource',
+    })
+    const messages = completeWithUsage.mock.calls[0]![0]
+    expect(messages[0]).toEqual({ role: 'system', content: prompt })
+    expect(messages[1]?.content).toContain('只用中文')
+    expect(messages[1]?.content).toContain('现代校园')
+  })
+
+  it('未自定义时，发送与界面预览相同的当前规范默认提示词', async () => {
+    const completeWithUsage = vi.fn(async () =>
+      result('{"resources":[{"resourceId":"r1","tags":[]}]}'),
+    )
+    const service = new AiTaggingService({ completeWithUsage }, { get: async () => resource('r1') })
+    await service.recognize({ resourceIds: ['r1'], taxonomyTemplateId: 'story-resource' })
+    expect(completeWithUsage).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { role: 'system', content: getAiTaggingSystemPrompt('story-resource') },
+      ]),
+      expect.anything(),
+      expect.anything(),
+    )
+    expect(getAiTaggingSystemPrompt()).not.toEqual(getAiTaggingSystemPrompt('story-resource'))
+  })
+
+  it('空白或超长系统提示词在读取资源和调用 API 前被拒绝', async () => {
+    const get = vi.fn()
+    const completeWithUsage = vi.fn()
+    const service = new AiTaggingService({ completeWithUsage }, { get })
+    for (const systemPrompt of ['  ', '字'.repeat(AI_TAGGING_MAX_SYSTEM_PROMPT + 1)]) {
+      await expect(service.recognize({ resourceIds: ['r1'], systemPrompt })).rejects.toThrow(
+        '系统提示词',
+      )
+    }
+    expect(get).not.toHaveBeenCalled()
+    expect(completeWithUsage).not.toHaveBeenCalled()
+  })
+
+  it('修改系统提示词后返回非 JSON，仍保留为失败批次而非可写入建议', async () => {
+    const completeWithUsage = vi.fn(async () => result('我建议添加古风。'))
+    const service = new AiTaggingService({ completeWithUsage }, { get: async () => resource('r1') })
+    const output = await service.recognize({ resourceIds: ['r1'], systemPrompt: '用自然语言回答' })
+    expect(output.suggestions).toEqual([])
+    expect(output.failures[0]).toMatchObject({ resourceIds: ['r1'], retryable: true })
+  })
+
   it('按安全批次串行识别并汇总供应商 Token', async () => {
     const items = Array.from({ length: 5 }, (_, index) => resource(`r${index + 1}`))
     const completeWithUsage = vi
@@ -64,7 +169,21 @@ describe('AiTaggingService', () => {
     expect(completeWithUsage).toHaveBeenCalledTimes(3)
     expect(output.suggestions).toHaveLength(5)
     expect(output.usage).toMatchObject({ totalTokens: 360, source: 'provider' })
-    expect(progress).toHaveBeenLastCalledWith({ completed: 5, total: 5, batch: 3, batchCount: 3 })
+    expect(progress).toHaveBeenNthCalledWith(1, {
+      completed: 0,
+      total: 5,
+      batch: 1,
+      batchCount: 3,
+      resourceNames: ['资源 r1', '资源 r2'],
+      phase: 'request',
+    })
+    expect(progress).toHaveBeenLastCalledWith({
+      completed: 5,
+      total: 5,
+      batch: 3,
+      batchCount: 3,
+      phase: 'completed',
+    })
   })
 
   it('接受 JSON 围栏，过滤已有标签、重复标签和未知资源', async () => {

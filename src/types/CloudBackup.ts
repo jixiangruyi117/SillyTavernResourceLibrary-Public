@@ -13,6 +13,7 @@ export interface CloudBackupProtection {
 }
 
 export interface CloudBackupContentSelection {
+  resourceGallery?: boolean
   personalResources?: PersonalResourceSelection
   /** 未定义表示所有可备份资源；定义后仅备份这些资源 ID。 */
   resourceIds?: string[]

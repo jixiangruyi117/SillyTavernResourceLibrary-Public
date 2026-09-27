@@ -905,116 +905,37 @@
   font-size: 12px;
 }
 
-.restore-selection__heading span,
-.restore-selection__hint {
+.restore-selection__heading span {
   color: var(--color-ink-soft);
   font-size: 10px;
 }
 
-.restore-selection__tools {
-  display: flex;
-  gap: 0.5rem;
-  margin: 0.5rem 0;
-}
-
-.restore-selection__tools button {
-  min-height: var(--size-touch);
-  padding: 0 0.625rem;
-  border: 0;
-  color: var(--color-accent);
-  background: transparent;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.restore-resource-list {
-  display: grid;
-  max-height: min(30vh, 16rem);
-  border: 1px solid var(--color-line);
-  border-radius: 3px;
-  overflow-y: auto;
-}
-
-.restore-resource {
-  display: grid;
-  grid-template-columns: var(--size-touch) minmax(0, 1fr);
-  align-items: center;
-  min-height: calc(var(--size-touch) + 0.5rem);
-  padding: 0.25rem 0.75rem 0.25rem 0.25rem;
-  cursor: pointer;
-}
-
-.restore-resource + .restore-resource {
-  border-top: 1px solid var(--color-line);
-}
-
-.restore-resource:hover {
-  background: var(--color-accent-soft);
-}
-
-.restore-resource input {
-  width: 1.125rem;
-  height: 1.125rem;
-  margin: auto;
-  accent-color: var(--color-accent);
-}
-
-.restore-resource span,
-.restore-resource strong,
-.restore-resource small {
-  display: block;
-  min-width: 0;
-}
-
-.restore-resource strong,
-.restore-resource small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.restore-resource strong {
-  font-size: 11px;
-}
-
-.restore-resource small {
-  margin-top: 0.1875rem;
-  color: var(--color-ink-soft);
-  font-size: 9px;
-}
-
-.restore-selection__hint {
-  margin: 0.5rem 0 0;
-  line-height: 1.5;
-}
-
 .restore-stats {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin: 1rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0.75rem 0 0;
+  padding: 0.65rem 0;
   border-top: 1px solid var(--color-line);
   border-bottom: 1px solid var(--color-line);
 }
 
 .restore-stats div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   min-width: 0;
-  padding: 0.875rem 0.5rem;
-  text-align: center;
-}
-
-.restore-stats div + div {
-  border-left: 1px solid var(--color-line);
 }
 
 .restore-stats dt {
   color: var(--color-ink-soft);
-  font-size: 9px;
+  font-size: 0.75rem;
 }
 
 .restore-stats dd {
-  margin: 0.25rem 0 0;
+  margin: 0;
   font-family: var(--font-display);
-  font-size: 1.5rem;
+  font-size: 1rem;
 }
 
 .restore-stats__primary dd {

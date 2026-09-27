@@ -1,7 +1,7 @@
 import type { EmitFn } from 'vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
-import { useLoadedObjectUrl } from '../composables/UseLoadedObjectUrl'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { createAsyncPanel } from '../core/AsyncPanel'
 import { dirtyStateRegistry } from '../core/DirtyStateRegistry'
 import { hasResourceDetailDraftChanges } from '../services/ResourceDetailDirtyState'
@@ -35,7 +35,7 @@ import { isRecord } from '../utils/UnknownValue'
 import { readAuthorNote, readParsedAuthor } from '../utils/ResourceAuthors'
 import { readCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
 
-export type DetailTab = 'overview' | 'content' | 'relations' | 'versions' | 'file'
+export type DetailTab = 'overview' | 'content' | 'gallery' | 'relations' | 'versions' | 'file'
 
 export type ResourceOrganizerProps = {
   settingsOpen?: boolean
@@ -99,6 +99,7 @@ export function useResourceOrganizer(
   const DETAIL_TABS: Array<{ value: DetailTab; label: string }> = [
     { value: 'overview', label: '概览' },
     { value: 'content', label: '内容' },
+    { value: 'gallery', label: '图库' },
     { value: 'relations', label: '关联' },
     { value: 'versions', label: '版本' },
     { value: 'file', label: '文件' },
@@ -150,14 +151,6 @@ export function useResourceOrganizer(
 
   const artworkInput = useTemplateRef<HTMLInputElement>('artworkInput')
 
-  const { previewUrl, replacePreview, confirmPreviewLoaded } = useLoadedObjectUrl()
-
-  const previewRetried = ref(false)
-
-  let previewIdentity = ''
-
-  const isPreviewExpanded = ref(false)
-
   const activeTab = ref<DetailTab>(props.initialTab ?? 'overview')
 
   const detailSheet = useTemplateRef<HTMLElement>('detailSheet')
@@ -200,10 +193,6 @@ export function useResourceOrganizer(
   }))
 
   const metadataJson = computed(() => JSON.stringify(props.resource.metadata, null, 2))
-
-  const isJsonCharacter = computed(
-    () => props.resource.type === RESOURCE_TYPE.CHARACTER_CARD && !previewUrl.value,
-  )
 
   const isCharacter = computed(() => props.resource.type === RESOURCE_TYPE.CHARACTER_CARD)
 
@@ -380,6 +369,7 @@ export function useResourceOrganizer(
     const versionIds = new Set(props.versions.map((version) => version.resource.id))
     return props.resources
       .filter((resource) => resource.id !== props.resource.id)
+      .filter((resource) => !isResourceGalleryImage(resource))
       .filter((resource) => resource.type === props.resource.type)
       .filter((resource) => !versionIds.has(resource.id))
       .sort(
@@ -421,16 +411,6 @@ export function useResourceOrganizer(
   )
 
   watch(isDirty, () => dirtyStateRegistry.changed())
-
-  function retryPreview(): void {
-    if (previewRetried.value || !props.resource.originalBlob) return
-    previewRetried.value = true
-    // iOS Safari 异步解码较慢，立即重建地址无效，跨帧后再试
-    window.setTimeout(() => {
-      if (!props.resource.originalBlob) return
-      replacePreview(URL.createObjectURL(props.resource.originalBlob))
-    }, 120)
-  }
 
   watch(
     () => props.resource,
@@ -482,23 +462,11 @@ export function useResourceOrganizer(
         readCharacterCardContentEdits(resource.metadata.characterContentEdits),
       )
       preservePersonalDraft = false
-      isPreviewExpanded.value = false
       if (!previous || previous.id !== resource.id) {
         characterEditorDirty.value = false
         characterWorkbenchOpen.value = false
         activeTab.value = props.initialTab ?? 'overview'
         tabScrollPositions.clear()
-      }
-      const isImage =
-        resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
-        (resource.mimeType.startsWith('image/') || /\.png$/i.test(resource.fileName))
-      const nextIdentity = isImage
-        ? `${resource.id}:${resource.contentHash}:${resource.originalBlob.size}:${resource.originalBlob.type}`
-        : ''
-      if (nextIdentity !== previewIdentity || Boolean(previewUrl.value) !== Boolean(nextIdentity)) {
-        previewRetried.value = false
-        previewIdentity = nextIdentity
-        replacePreview(isImage ? URL.createObjectURL(resource.originalBlob) : '')
       }
     },
     { immediate: true },
@@ -627,11 +595,6 @@ export function useResourceOrganizer(
     handlePersonalSaved,
     requestClose,
     isCharacter,
-    previewUrl,
-    isPreviewExpanded,
-    confirmPreviewLoaded,
-    retryPreview,
-    isJsonCharacter,
     fileExtension,
     name,
     characterIdentity,

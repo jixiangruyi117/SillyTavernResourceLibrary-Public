@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { useLoadedObjectUrl } from '../composables/UseLoadedObjectUrl'
 import { useResourceThumbnail } from '../composables/UseResourceThumbnail'
+import { resourceCoverId } from '../types/ResourceGallery'
 
 import {
   getRelatedResourceIds,
@@ -38,16 +39,18 @@ function safePreviewColor(value: unknown, fallback: string): string {
 // blurThumbnails 为 false 时，缩略图默认清晰（isRevealed = true）。
 const isRevealed = ref(props.blurThumbnails === false)
 const cardElement = ref<Element | null>(null)
-const thumbnailBlob = useResourceThumbnail(() => props.resource, cardElement)
+const remoteCoverUrl = ref('')
+const thumbnailBlob = useResourceThumbnail(() => props.resource, cardElement, remoteCoverUrl)
 const { previewUrl, replacePreview, confirmPreviewLoaded } = useLoadedObjectUrl()
 const previewRetried = ref(false)
 let previewIdentity = ''
 const hasThumbnailCover = computed(
   () =>
-    Boolean(props.resource.thumbnailAssetId || props.resource.thumbnailBlob) &&
-    (props.resource.type === RESOURCE_TYPE.USER_PERSONA ||
-      (props.resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
-        (props.resource.mimeType === 'image/png' || /\.png$/i.test(props.resource.fileName)))),
+    Boolean(resourceCoverId(props.resource)) ||
+    (Boolean(props.resource.thumbnailAssetId || props.resource.thumbnailBlob) &&
+      (props.resource.type === RESOURCE_TYPE.USER_PERSONA ||
+        (props.resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
+          (props.resource.mimeType === 'image/png' || /\.png$/i.test(props.resource.fileName))))),
 )
 const isJsonCharacterCover = computed(
   () =>
@@ -100,9 +103,17 @@ watch(
     mimeType: props.resource.mimeType,
     fileName: props.resource.fileName,
     phoneIconUrl: props.resource.metadata.phoneIconUrl,
+    customCoverId: resourceCoverId(props.resource),
+    remoteCover: remoteCoverUrl.value,
   }),
-  ({ blob, type, mimeType, fileName, phoneIconUrl }) => {
+  ({ blob, type, mimeType, fileName, phoneIconUrl, customCoverId, remoteCover }) => {
+    if (remoteCover) {
+      previewIdentity = remoteCover
+      replacePreview(remoteCover)
+      return
+    }
     if (
+      !customCoverId &&
       type === RESOURCE_TYPE.POCKET_PHONE &&
       typeof phoneIconUrl === 'string' &&
       /^https:\/\//.test(phoneIconUrl)
@@ -115,12 +126,13 @@ watch(
     const isPng = mimeType === 'image/png' || /\.png$/i.test(fileName)
     const hasVisualCover =
       Boolean(blob) &&
-      ((type === RESOURCE_TYPE.CHARACTER_CARD && isPng) ||
+      (Boolean(customCoverId) ||
+        (type === RESOURCE_TYPE.CHARACTER_CARD && isPng) ||
         ([RESOURCE_TYPE.USER_PERSONA, RESOURCE_TYPE.POCKET_PHONE].some((item) => item === type) &&
           Boolean(blob?.type.startsWith('image/'))))
     const nextIdentity =
       blob && hasVisualCover
-        ? `${props.resource.id}:${props.resource.contentHash}:${blob.size}:${blob.type}`
+        ? `${props.resource.id}:${props.resource.contentHash}:${customCoverId}:${blob.size}:${blob.type}`
         : ''
     if (nextIdentity === previewIdentity && Boolean(previewUrl.value) === Boolean(nextIdentity)) {
       return

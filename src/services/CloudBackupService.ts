@@ -561,6 +561,7 @@ export class CloudBackupService extends CloudBackupTransport {
     item: CloudBackupItem,
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
+    includeGallery = true,
   ): Promise<number> {
     if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
       const resolved = this.getActiveConfig()
@@ -572,6 +573,7 @@ export class CloudBackupService extends CloudBackupTransport {
           credential,
           filterPortableData,
           resourceKeys,
+          includeGallery,
         )
       } catch (error) {
         await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
@@ -590,11 +592,15 @@ export class CloudBackupService extends CloudBackupTransport {
       categories,
       true,
     )
-    const selected = resourceKeys
-      ? selectPreparedRestore(prepared, new Set(resourceKeys))
-      : prepared
+    const selected = selectPreparedRestore(
+      prepared,
+      new Set(
+        resourceKeys ?? [...prepared.resources, ...(prepared.galleryOwners ?? [])].map((r) => r.id),
+      ),
+      includeGallery,
+    )
     const report = await this.restoreService.restore(selected)
-    await this.importPreparedPortableData(prepared.portableData, filterPortableData)
+    await this.importPreparedPortableData(selected.portableData, filterPortableData)
     return report.restoredResources
   }
 
@@ -604,14 +610,17 @@ export class CloudBackupService extends CloudBackupTransport {
     secret: string,
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
+    includeGallery = true,
   ): Promise<number> {
     const loadedSnapshot =
       config.provider === 'github'
         ? await this.readGitHubStructuredSnapshot(config, secret, item)
         : await this.readWebDavStructuredSnapshot(config, secret, item.objectKey)
-    const snapshot = resourceKeys
-      ? selectStructuredSnapshot(loadedSnapshot, new Set(resourceKeys))
-      : loadedSnapshot
+    const snapshot = selectStructuredSnapshot(
+      loadedSnapshot,
+      new Set(resourceKeys ?? loadedSnapshot.resources.map((r) => r.id)),
+      includeGallery,
+    )
     const nativeRestore = isNativeCloudTransferAvailable() && snapshot.version === 3
     const [existingResources, existingCategories] = await Promise.all([
       this.resourceService.listResourceListSummaries(),
