@@ -2,6 +2,7 @@ import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
 import { transferNativeStream } from '../core/NativeStreamTransfer'
+import { nativeFileSource, rememberNativeFile } from '../core/NativeFileSource'
 import { isUserPersonaAvatarAttachment, type Resource } from '../types/Resource'
 
 type NativeResourceScope = 'current' | 'versions'
@@ -30,6 +31,7 @@ interface NativeLibraryPlugin {
     updatedAt: number
   }): Promise<{ alreadyPresent: boolean; token: string }>
   appendWrite(options: { token: string; data: string }): Promise<void>
+  appendFile(options: { token: string; uri: string }): Promise<void>
   commitWrite(options: { token: string }): Promise<void>
   abortWrite(options: { token: string }): Promise<void>
   remove(options: { scope: NativeResourceScope; id: string }): Promise<void>
@@ -173,9 +175,20 @@ export async function stageNativeResourceFile(
   }
 
   try {
-    await transferNativeStream(resource.originalBlob, {
-      append: (data) => nativeLibrary.appendWrite({ token: started.token, data }),
-    })
+    const uri = nativeFileSource(resource.originalBlob)
+    let copied = false
+    if (uri) {
+      try {
+        await nativeLibrary.appendFile({ token: started.token, uri })
+        copied = true
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'UNIMPLEMENTED') throw error
+      }
+    }
+    if (!copied)
+      await transferNativeStream(resource.originalBlob, {
+        append: (data) => nativeLibrary.appendWrite({ token: started.token, data }),
+      })
   } catch (error) {
     await nativeLibrary.abortWrite({ token: started.token }).catch(() => undefined)
     throw error
@@ -271,7 +284,10 @@ export async function readNativeResourceObject(
   if (!response.ok) throw new Error(`Android 原生资源读取失败（${response.status}）`)
   const blob = await response.blob()
   if (blob.size !== size) throw new Error('Android 原生资源读取不完整')
-  return blob.type === mimeType ? blob : new Blob([blob], { type: mimeType })
+  return rememberNativeFile(
+    blob.type === mimeType ? blob : new Blob([blob], { type: mimeType }),
+    result.path,
+  )
 }
 
 export async function linkNativeResourceObjects(

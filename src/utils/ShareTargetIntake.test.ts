@@ -1,7 +1,20 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearShareTargetQuery, takeSharedFiles } from './ShareTargetIntake'
+import { clearShareTargetQuery, takeSharedFileBatch, takeSharedFiles } from './ShareTargetIntake'
+
+const native = vi.hoisted(() => ({
+  enabled: false,
+  getPendingShare: vi.fn(),
+  cleanupPendingShare: vi.fn(),
+}))
+vi.mock('@capacitor/core', () => ({
+  Capacitor: {
+    isNativePlatform: () => native.enabled,
+    convertFileSrc: (uri: string) => uri,
+  },
+  registerPlugin: () => native,
+}))
 
 type StoredEntry = Response
 
@@ -27,6 +40,65 @@ function createFakeCaches(initial: Record<string, Record<string, StoredEntry>>) 
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  native.enabled = false
+  vi.clearAllMocks()
+})
+
+describe('native pending intake', () => {
+  it('回前台和重复 ready 不重复投递；确认导入前仍保留原件', async () => {
+    native.enabled = true
+    vi.stubGlobal('caches', undefined)
+    const shared = {
+      name: 'backup.zip',
+      type: 'application/zip',
+      uri: 'file:///backup.zip',
+      cleanupToken: 'resume-test',
+      route: 'libraryBackup',
+    }
+    native.getPendingShare.mockResolvedValue({ files: [shared] })
+    const fetchFile = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['zip']) })
+    vi.stubGlobal('fetch', fetchFile)
+    const batch = await takeSharedFileBatch()
+    expect(batch.files).toHaveLength(1)
+    expect(batch.route).toBe('libraryBackup')
+    expect((await takeSharedFileBatch()).files).toEqual([])
+    expect((await takeSharedFileBatch()).files).toEqual([])
+    expect(fetchFile).toHaveBeenCalledTimes(1)
+    expect(native.cleanupPendingShare).not.toHaveBeenCalled()
+    // 文件同名不能作为身份：新分享有自己的 token，仍须接收。
+    native.getPendingShare.mockResolvedValue({
+      files: [shared, { ...shared, cleanupToken: 'new-test' }],
+    })
+    const next = await takeSharedFileBatch()
+    expect(next.files).toHaveLength(1)
+    await batch.acknowledge()
+    await next.acknowledge()
+    expect(native.cleanupPendingShare).toHaveBeenCalledWith({ tokens: ['resume-test'] })
+    expect(native.cleanupPendingShare).toHaveBeenCalledWith({ tokens: ['new-test'] })
+  })
+
+  it('读取失败不吞掉下一次投递', async () => {
+    native.enabled = true
+    native.getPendingShare.mockResolvedValue({
+      files: [
+        {
+          name: 'retry.zip',
+          type: 'application/zip',
+          uri: 'file:///retry.zip',
+          cleanupToken: 'retry-test',
+        },
+      ],
+    })
+    const fetchFile = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('read failed'))
+      .mockResolvedValue({ ok: true, blob: async () => new Blob(['zip']) })
+    vi.stubGlobal('fetch', fetchFile)
+    await expect(takeSharedFileBatch()).rejects.toThrow('read failed')
+    const batch = await takeSharedFileBatch()
+    expect(batch.files).toHaveLength(1)
+    await batch.acknowledge()
+  })
 })
 
 describe('takeSharedFiles', () => {

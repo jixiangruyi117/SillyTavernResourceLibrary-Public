@@ -865,8 +865,13 @@
   display: block;
 }
 
+.restore-source > div {
+  flex: 1;
+  min-width: 0;
+}
+
 .restore-source strong {
-  max-width: 28rem;
+  max-width: 100%;
   overflow: hidden;
   font-size: 12px;
   text-overflow: ellipsis;

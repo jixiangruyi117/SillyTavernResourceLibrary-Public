@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue'
 import { resourceGalleryService as gallery, resourceService } from '../core/AppContainer'
 import { platform } from '../core/PlatformService'
+import { nativeFileSource } from '../core/NativeFileSource'
 import { RESOURCE_TYPE_LABELS, type Resource, type ResourceSummary } from '../types/Resource'
 import {
   galleryImageUrl,
@@ -165,6 +166,7 @@ function selectFilter(action: ActionSheetAction) {
 }
 const viewerId = ref('')
 const viewerName = ref('')
+const viewerNativeSource = ref<string>()
 const viewerNavigating = ref(false)
 const { previewUrl, replacePreview, releasePreview, confirmPreviewLoaded } = useLoadedObjectUrl()
 const viewerIndex = computed(() => page.value.items.findIndex((r) => r.id === viewerId.value))
@@ -304,6 +306,9 @@ async function view(image: ResourceSummary) {
     const full = await gallery.getImage(owner, image.id)
     if (token !== viewRevision) return
     replacePreview(galleryImageUrl(full) || URL.createObjectURL(full.originalBlob))
+    viewerNativeSource.value = galleryImageUrl(full)
+      ? undefined
+      : nativeFileSource(full.originalBlob)
     viewerName.value = full.name
     viewerId.value = full.id
   } catch (cause) {
@@ -861,6 +866,7 @@ defineExpose({
     <ResourceImageViewer
       v-if="viewerId && previewUrl"
       :src="previewUrl"
+      :native-source="viewerNativeSource"
       :name="viewerName"
       :position="`${viewerPosition} / ${page.total}`"
       :loading="viewerNavigating"

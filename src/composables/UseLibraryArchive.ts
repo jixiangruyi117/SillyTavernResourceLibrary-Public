@@ -4,13 +4,22 @@ import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { includePersonalResource, plaintextSecretCopies } from '../services/PersonalResourceBackup'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
-import { onScopeDispose, type Ref } from 'vue'
+import { onMounted, onScopeDispose, type Ref } from 'vue'
+import type { RestoreRecoveryTask, ExportRecoveryTask } from '../services/ArchiveRecoveryService'
+import { openCheckpointArchiveWriter, discardCheckpointArchive } from '../core/NativeArchiveExport'
+import type { ArchiveTransferOptions } from '../services/ArchiveZipWriter'
+import { hashBlob } from '../services/HashService'
+import { noticeCenter } from '../core/NoticeCenter'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import {
   aiTaggingDraftService,
+  archiveRecoveryService,
+  initializeVaultOnce,
+  vaultService,
   browserStorageService,
   characterDrawService,
   cloudBackupService,
+  communitySourceService,
   exportPortableCredentialBundle,
   exportService,
   externalAppService,
@@ -40,6 +49,7 @@ import { taskCenter } from '../core/TaskCenter'
 import type { StorageHealth } from '../services/BrowserStorageService'
 import type {
   ArchivePortableData,
+  ArchiveOptions,
   ArchivePortableSelection,
   PreparedRestore,
   RestoreMode,
@@ -77,6 +87,188 @@ interface LibraryArchiveContext {
 }
 
 export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
+  let restoreRecovery: RestoreRecoveryTask | undefined
+  const recovering = new Set<string>()
+
+  function offerExportRecovery(task: ExportRecoveryTask): void {
+    noticeCenter.push({
+      id: `archive:${task.id}`,
+      type: 'info',
+      persistent: true,
+      message: `导出任务待继续：${task.name}`,
+      details: '已压缩文件会校验后复用；尚未压缩的资源若已变化，会停止并提示重新导出。',
+      actions: [
+        {
+          label: '继续导出',
+          run: async () => {
+            if (recovering.has(task.id) || getContext().isExporting.value) return
+            recovering.add(task.id)
+            try {
+              await initializeVaultOnce()
+              if (vaultService.getStatus().locked) throw new Error('请先解锁资源库，再继续导出')
+              const saved = (await archiveRecoveryService.store.read(task.id)) as
+                ExportRecoveryTask | undefined
+              if (!saved) return
+              if (saved.phase === '完成') {
+                await discardCheckpointArchive(saved.id)
+                await archiveRecoveryService.store.remove(saved.id)
+                noticeCenter.dismiss(`archive:${saved.id}`)
+                return
+              }
+              if (saved.payload.vaultEnabled !== vaultService.isEnabled())
+                throw new Error('加密状态已变化，请放弃旧任务后重新导出')
+              noticeCenter.dismiss(`archive:${saved.id}`)
+              await mutationGuard.run('archive:export', () =>
+                performExport(
+                  {
+                    ...saved.payload.options,
+                    resourceContent: saved.payload.options.resourceContent ?? 'original',
+                    portableSelection: saved.payload.options.portableSelection ?? {},
+                  },
+                  saved,
+                ),
+              )
+            } catch (error) {
+              getContext().showNotice(error instanceof Error ? error.message : '无法继续导出')
+            } finally {
+              recovering.delete(task.id)
+            }
+          },
+        },
+        {
+          label: '放弃任务',
+          run: async () => {
+            if (recovering.has(task.id) || getContext().isExporting.value) return
+            if (
+              !(await confirmAction({
+                title: '放弃导出任务',
+                message: '清理压缩检查点和未完成的目标文件，已经保存成功的备份会保留。',
+                confirmLabel: '放弃任务',
+              }))
+            )
+              return
+            await discardCheckpointArchive(task.id)
+            await archiveRecoveryService.store.remove(task.id)
+            noticeCenter.dismiss(`archive:${task.id}`)
+          },
+        },
+      ],
+    })
+  }
+
+  function offerRestoreRecovery(task: RestoreRecoveryTask): void {
+    noticeCenter.push({
+      id: `archive:${task.id}`,
+      type: 'info',
+      persistent: true,
+      message: `恢复任务待继续：${task.name}`,
+      details: `已保存进度：${task.phase}。继续前会核对文件及资源库状态。`,
+      actions: [
+        { label: '继续恢复', run: () => resumeRestoreTask(task.id) },
+        {
+          label: '放弃任务',
+          run: async () => {
+            if (recovering.has(task.id) || getContext().isRestoring.value) return
+            if (
+              !(await confirmAction({
+                title: '放弃恢复任务',
+                message: '删除此任务的临时文件和检查点，已写入的资源和原始备份不会删除。',
+                confirmLabel: '放弃任务',
+              }))
+            )
+              return
+            if (task.payload.prepared)
+              await restoreService.revivePrepared(task.payload.prepared).dispose?.()
+            await restoreService.clearRestoreCheckpoint(task.id)
+            await archiveRecoveryService.store.remove(task.id)
+            if (restoreRecovery?.id === task.id) restoreRecovery = undefined
+            noticeCenter.dismiss(`archive:${task.id}`)
+          },
+        },
+      ],
+    })
+  }
+
+  async function resumeRestoreTask(id: string): Promise<void> {
+    if (recovering.has(id) || getContext().isRestoring.value) return
+    recovering.add(id)
+    try {
+      await initializeVaultOnce()
+      const task = (await archiveRecoveryService.store.read(id)) as RestoreRecoveryTask | undefined
+      if (!task || task.kind !== 'restore') return
+      if (vaultService.getStatus().locked) throw new Error('请先解锁资源库，再继续恢复任务')
+      if (task.payload.vaultEnabled !== vaultService.isEnabled())
+        throw new Error('资源库加密状态已变化，请放弃旧任务并重新预检')
+      const context = getContext()
+      if (task.phase === '完成') {
+        if (task.payload.prepared)
+          await restoreService.revivePrepared(task.payload.prepared).dispose?.()
+        await restoreService.clearRestoreCheckpoint(task.id)
+        await archiveRecoveryService.store.remove(task.id)
+        noticeCenter.dismiss(`archive:${id}`)
+        return
+      }
+      restoreRecovery = task
+      context.isRestorePanelOpen.value = true
+      context.restoreReport.value = undefined
+      if (!task.payload.prepared || !task.payload.mode) {
+        // Before confirmation, rebuild conflict/replacement plans against the current library.
+        // Verified extraction entries are reused, but serialized closures cannot be revived.
+        await context.loadLibrary()
+        await handleRestoreInspect(await archiveRecoveryService.readSource(task), task)
+        return
+      }
+      const prepared = await restoreService.resumePrepared(task.payload.prepared)
+      context.preparedRestore.value = prepared
+      await context.loadLibrary()
+      if (
+        !(await restoreService.isRestoreCommitted(task.id)) &&
+        task.payload.baseline !==
+          (await archiveRecoveryService.baseline(context.resources.value, context.categories.value))
+      ) {
+        throw new Error('资源库在中断后发生变化；为避免覆盖新修改，请放弃此任务并重新预检备份')
+      }
+      if (
+        !(await confirmAction({
+          title: '继续恢复备份',
+          message: `继续“${task.name}”的${task.payload.mode === 'replace' ? '整库覆盖' : '安全新增'}任务。已提交的资源不会重复写入，未完成的设置将继续恢复。`,
+          confirmLabel: '继续恢复',
+          danger: task.payload.mode === 'replace',
+        }))
+      )
+        return
+      noticeCenter.dismiss(`archive:${id}`)
+      await mutationGuard.run(`archive:restore:${task.payload.mode}`, () =>
+        performRestoreConfirm(prepared, task.payload.mode!, task.payload.snapshot, task),
+      )
+    } catch (error) {
+      getContext().showNotice(error instanceof Error ? error.message : '恢复任务无法继续')
+    } finally {
+      recovering.delete(id)
+    }
+  }
+
+  onMounted(() => {
+    void archiveRecoveryService.store
+      .list()
+      .then(async (tasks) => {
+        for (const summary of tasks) {
+          if (summary.kind === 'export') {
+            const task = (await archiveRecoveryService.store.read(summary.id)) as
+              ExportRecoveryTask | undefined
+            if (task) offerExportRecovery(task)
+            continue
+          }
+          if (summary.kind !== 'restore') continue
+          const task = (await archiveRecoveryService.store.read(summary.id)) as
+            RestoreRecoveryTask | undefined
+          if (task) offerRestoreRecovery(task)
+        }
+      })
+      .catch((error) =>
+        getContext().showNotice(error instanceof Error ? error.message : '无法读取未完成任务'),
+      )
+  })
   let waitingForRestoreChoiceInBackground = false
   let requestingRestoreChoiceReminder = false
 
@@ -123,14 +315,17 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     return mutationGuard.run('archive:export', () => performExport(details))
   }
 
-  async function performExport(details: {
-    mode: 'full' | 'partial'
-    resourceIds?: string[]
-    includeAllCategories?: boolean
-    splitSizeBytes?: number
-    resourceContent: 'original' | 'modified'
-    portableSelection: ArchivePortableSelection
-  }): Promise<void> {
+  async function performExport(
+    details: {
+      mode: 'full' | 'partial'
+      resourceIds?: string[]
+      includeAllCategories?: boolean
+      splitSizeBytes?: number
+      resourceContent: 'original' | 'modified'
+      portableSelection: ArchivePortableSelection
+    },
+    resumed?: ExportRecoveryTask,
+  ): Promise<void> {
     const context = getContext()
 
     context.isExporting.value = true
@@ -145,7 +340,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       cancel: () => controller.abort(new DOMException('导出已取消', 'AbortError')),
     })
     let archiveName = ''
-    const transfer = {
+    const transfer: ArchiveTransferOptions = {
       signal: controller.signal,
       onProgress: ({ writtenBytes, fileName }: { writtenBytes: number; fileName?: string }) => {
         if (fileName !== archiveName) {
@@ -157,52 +352,61 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       },
     }
     let keepAliveStarted = false
+    let exportRecovery = resumed
     try {
-      const portableData: ArchivePortableData = { version: 1 }
-      if (details.portableSelection.appearance) {
-        portableData.appearance = browserStorageService.exportAppearanceSettings()
+      const portableData: ArchivePortableData = resumed?.payload.options.portableData ?? {
+        version: 1,
       }
-      if (details.portableSelection.cloudBackup) {
-        portableData.cloudBackup = cloudBackupService.exportPortableSettings()
-      }
-      if (details.portableSelection.characterDraw) {
-        portableData.characterDraw = {
-          state: await characterDrawService.load(),
-          showNames: browserStorageService.getDrawShowNames(),
+      if (!resumed) {
+        if (details.portableSelection.appearance) {
+          portableData.appearance = browserStorageService.exportAppearanceSettings()
         }
-      }
-      if (details.portableSelection.generalPreferences) {
-        portableData.generalPreferences = {
-          ...browserStorageService.exportGeneralPreferences(),
-          historySnapshotLimit: await historyService.getSnapshotLimit(),
+        if (details.portableSelection.cloudBackup) {
+          portableData.cloudBackup = cloudBackupService.exportPortableSettings()
         }
-      }
-      if (details.portableSelection.mainApiProfiles) {
-        portableData.mainApiProfiles = mainApiService.getProfilesState()
-        portableData.credentials = await exportPortableCredentialBundle()
-      }
-      if (details.portableSelection.resourceGallery)
-        portableData.resourceGalleryCategories = await resourceGalleryService.exportCategories()
-      if (details.portableSelection.aiTaggingState) {
-        portableData.aiTaggingState = {
-          draft: aiTaggingDraftService.loadDraft(),
-          undo: aiTaggingDraftService.loadUndo(),
+        if (details.portableSelection.characterDraw) {
+          portableData.characterDraw = {
+            state: await characterDrawService.load(),
+            showNames: browserStorageService.getDrawShowNames(),
+          }
         }
-      }
-      if (details.portableSelection.externalApps) {
-        portableData.externalApps = await externalAppService.exportPortableState()
-      }
-      if (details.portableSelection.chatReader)
-        portableData.chatReader = await externalAppService.exportReaderData()
-      if (details.portableSelection.stitchWork) {
-        portableData.stitchWork = browserStorageService.exportStitchWork()
+        if (details.portableSelection.generalPreferences) {
+          portableData.generalPreferences = {
+            ...browserStorageService.exportGeneralPreferences(),
+            historySnapshotLimit: await historyService.getSnapshotLimit(),
+          }
+        }
+        if (details.portableSelection.mainApiProfiles) {
+          portableData.mainApiProfiles = mainApiService.getProfilesState()
+          portableData.credentials = await exportPortableCredentialBundle()
+        }
+        if (details.portableSelection.resourceGallery)
+          portableData.resourceGalleryCategories = await resourceGalleryService.exportCategories()
+        if (details.portableSelection.aiTaggingState) {
+          portableData.aiTaggingState = {
+            draft: aiTaggingDraftService.loadDraft(),
+            undo: aiTaggingDraftService.loadUndo(),
+          }
+        }
+        if (details.portableSelection.externalApps) {
+          portableData.externalApps = await externalAppService.exportPortableState()
+        }
+        if (details.portableSelection.chatReader)
+          portableData.chatReader = await externalAppService.exportReaderData()
+        if (details.portableSelection.stitchWork) {
+          portableData.stitchWork = browserStorageService.exportStitchWork()
+        }
       }
       checkCancelled()
       taskCenter.update(operationId, { phase: '读取资源与版本摘要' })
       const source = await createResourceArchiveSource(resourceService)
+      if (resumed) {
+        source.resources = resumed.payload.resources
+        source.versions = resumed.payload.versions
+      }
       checkCancelled()
       const allResources = source.resources
-      if (details.portableSelection.plaintextSecretCopy) {
+      if (!resumed && details.portableSelection.plaintextSecretCopy) {
         const confirmed = await confirmAction({
           title: '明文密钥副本',
           message:
@@ -234,31 +438,51 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           )
         }
       }
-      const archiveOptions = {
+      let archiveOptions: ArchiveOptions = resumed?.payload.options ?? {
         ...details,
         personalResources: details.portableSelection.personalResources,
         portableData,
       }
       const nativeSafStatus = await getNativeSafBackupStatus().catch(() => null)
+      if (resumed) {
+        archiveOptions = { ...archiveOptions, communitySourceAttachments: [] }
+        for (const entry of resumed.payload.attachments) {
+          const blob = await communitySourceService.getAttachmentBlob(entry.assetId)
+          if (!blob || blob.size !== entry.size || (await hashBlob(blob)) !== entry.hash)
+            throw new Error('导出附件已变化，请重新导出')
+          archiveOptions.communitySourceAttachments!.push({ assetId: entry.assetId, blob })
+        }
+      } else if (nativeSafStatus?.available) {
+        archiveOptions = await exportService.prepareOptions(archiveOptions)
+        exportRecovery = await archiveRecoveryService.createExport(
+          source,
+          context.categories.value,
+          archiveOptions,
+          vaultService.isEnabled(),
+        )
+      }
+      transfer.createdAt = exportRecovery?.payload.createdAt
       checkCancelled()
       if (isNativeImportKeepAliveAvailable()) {
         await requestNativeNotifications().catch(() => false)
         keepAliveStarted = await startNativeImportKeepAlive('导出备份', '流式压缩并写入目标')
       }
       taskCenter.update(operationId, { phase: '流式压缩并写入目标' })
-      const streamedArchives = nativeSafStatus?.available
-        ? await exportService.createArchivesFromSource(
-            source,
-            context.categories.value,
-            archiveOptions,
-            async (fileName) => {
-              const writer = await openNativeSafBackupWriter(fileName)
-              if (!writer) throw new Error('系统备份文件夹授权已失效')
-              return writer
-            },
-            transfer,
-          )
-        : undefined
+      const streamedArchives =
+        exportRecovery || nativeSafStatus?.available
+          ? await exportService.createArchivesFromSource(
+              source,
+              exportRecovery?.payload.categories ?? context.categories.value,
+              archiveOptions,
+              async (fileName) => {
+                if (exportRecovery) return openCheckpointArchiveWriter(exportRecovery.id, fileName)
+                const writer = await openNativeSafBackupWriter(fileName)
+                if (!writer) throw new Error('系统备份文件夹授权已失效')
+                return writer
+              },
+              transfer,
+            )
+          : undefined
       const archives = streamedArchives
         ? []
         : await exportService.createArchivesFromSource(
@@ -297,6 +521,13 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         context.lastFullBackupAt.value = browserStorageService.getLastFullBackupAt()
         context.backupRecommended.value = false
       }
+      if (exportRecovery) {
+        exportRecovery.phase = '完成'
+        await archiveRecoveryService.store.save(exportRecovery)
+        await discardCheckpointArchive(exportRecovery.id)
+        await archiveRecoveryService.store.remove(exportRecovery.id)
+        noticeCenter.dismiss(`archive:${exportRecovery.id}`)
+      }
       context.isExportPanelOpen.value = false
       taskCenter.complete(operationId)
       context.showNotice(
@@ -310,6 +541,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError'))
         taskCenter.cancelled(operationId)
       else taskCenter.fail(operationId, error)
+      if (exportRecovery) offerExportRecovery(exportRecovery)
       context.showNotice(error instanceof Error ? error.message : '导出失败')
     } finally {
       context.isExporting.value = false
@@ -325,10 +557,17 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     }
   }
 
-  async function restorePortableData(data?: ArchivePortableData): Promise<void> {
+  async function restorePortableData(
+    data?: ArchivePortableData,
+    recovery?: RestoreRecoveryTask,
+  ): Promise<void> {
     const context = getContext()
 
     if (!data) return
+    const apply = async (key: string, action: () => void | Promise<void>): Promise<void> => {
+      if (recovery) await archiveRecoveryService.step(recovery, `设置：${key}`, action)
+      else await action()
+    }
     const credentialLabels = [
       data.mainApiProfiles?.profiles.some((profile) => profile.apiKey) ? '主 API 密钥' : '',
       data.credentials?.imageGeneration?.length ? '生图 API 密钥' : '',
@@ -340,43 +579,67 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         : '',
     ].filter(Boolean)
     const importCredentials =
-      !credentialLabels.length ||
-      (await confirmAction({
-        title: '导入本机凭据',
-        message: `这个备份包含：${credentialLabels.join('、')}。导入后会写入当前设备的受保护存储，确认继续吗？`,
-        confirmLabel: '导入凭据',
-      }))
-    if (data.appearance) browserStorageService.importAppearanceSettings(data.appearance)
-    if (data.cloudBackup) cloudBackupService.importPortableSettings(data.cloudBackup)
+      recovery?.payload.credentials ??
+      (!credentialLabels.length ||
+        (await confirmAction({
+          title: '导入本机凭据',
+          message: `这个备份包含：${credentialLabels.join('、')}。导入后会写入当前设备的受保护存储，确认继续吗？`,
+          confirmLabel: '导入凭据',
+        })))
+    if (recovery && recovery.payload.credentials === undefined) {
+      recovery.payload.credentials = importCredentials
+      await archiveRecoveryService.store.save(recovery)
+    }
+    if (data.appearance)
+      await apply('外观', () => browserStorageService.importAppearanceSettings(data.appearance!))
+    if (data.cloudBackup)
+      await apply('云备份', () => cloudBackupService.importPortableSettings(data.cloudBackup!))
     if (data.characterDraw) {
-      await characterDrawService.importState(data.characterDraw.state)
-      browserStorageService.setDrawShowNames(data.characterDraw.showNames)
+      await apply('抽了么', async () => {
+        await characterDrawService.importState(data.characterDraw!.state)
+        browserStorageService.setDrawShowNames(data.characterDraw!.showNames)
+      })
     }
     if (data.generalPreferences) {
-      browserStorageService.importGeneralPreferences(data.generalPreferences)
-      if (typeof data.generalPreferences.historySnapshotLimit === 'number') {
-        context.historySnapshotLimit.value = await historyService.setSnapshotLimit(
-          data.generalPreferences.historySnapshotLimit,
-        )
-      }
+      await apply('常用偏好', async () => {
+        browserStorageService.importGeneralPreferences(data.generalPreferences!)
+        if (typeof data.generalPreferences!.historySnapshotLimit === 'number') {
+          context.historySnapshotLimit.value = await historyService.setSnapshotLimit(
+            data.generalPreferences!.historySnapshotLimit,
+          )
+        }
+      })
     }
     if (data.mainApiProfiles && importCredentials) {
-      mainApiService.importProfilesState(data.mainApiProfiles)
-      await mainApiService.awaitCredentialWrites()
+      await apply('主 API', async () => {
+        mainApiService.importProfilesState(data.mainApiProfiles!)
+        await mainApiService.awaitCredentialWrites()
+      })
     }
     if (data.credentials && importCredentials) {
-      await importPortableCredentialBundle(data.credentials)
+      await apply('凭据', () => importPortableCredentialBundle(data.credentials!))
     }
     if (data.resourceGalleryCategories)
-      await resourceGalleryService.importCategories(data.resourceGalleryCategories)
-    if (data.aiTaggingState?.draft) aiTaggingDraftService.saveDraft(data.aiTaggingState.draft)
-    if (data.aiTaggingState?.undo) aiTaggingDraftService.saveUndo(data.aiTaggingState.undo)
-    if (data.externalApps) await externalAppService.importPortableState(data.externalApps)
-    if (data.chatReader) await externalAppService.importReaderData(data.chatReader)
-    if (data.stitchWork) browserStorageService.importStitchWork(data.stitchWork)
+      await apply('图库分类', () =>
+        resourceGalleryService.importCategories(data.resourceGalleryCategories!),
+      )
+    if (data.aiTaggingState?.draft)
+      await apply('AI 草稿', () => {
+        aiTaggingDraftService.saveDraft(data.aiTaggingState!.draft!)
+      })
+    if (data.aiTaggingState?.undo)
+      await apply('AI 撤销', () => {
+        aiTaggingDraftService.saveUndo(data.aiTaggingState!.undo!)
+      })
+    if (data.externalApps)
+      await apply('应用数据', () => externalAppService.importPortableState(data.externalApps!))
+    if (data.chatReader)
+      await apply('阅读数据', () => externalAppService.importReaderData(data.chatReader!))
+    if (data.stitchWork)
+      await apply('缝了么', () => browserStorageService.importStitchWork(data.stitchWork!))
     if (data.plaintextSecretCopies?.length) {
       const { restorePlainSecretCopies } = await import('../core/PersonalResourceContainer')
-      await restorePlainSecretCopies(data.plaintextSecretCopies)
+      await apply('密钥副本', () => restorePlainSecretCopies(data.plaintextSecretCopies!))
     }
     context.reloadAppearanceSettings()
     context.searchHistory.value = browserStorageService.getSearchHistory()
@@ -386,7 +649,9 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
 
   function openRestorePanel(entry: 'import' | 'export' = 'export'): void {
     const context = getContext()
-
+    if (context.isRestoring.value) return
+    if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
+    restoreRecovery = undefined
     context.isExportPanelOpen.value = false
     context.preparedRestore.value = undefined
     context.restoreSourceFile.value = undefined
@@ -397,8 +662,27 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     context.isRestorePanelOpen.value = true
   }
 
-  async function handleRestoreInspect(file: File): Promise<void> {
+  async function handleRestoreInspect(file: File, recovery?: RestoreRecoveryTask): Promise<void> {
     const context = getContext()
+    if (context.isRestoring.value) {
+      context.showNotice('当前恢复任务仍在进行，请完成后再选择备份')
+      return
+    }
+    if (!recovery) {
+      let fileHash: string | undefined
+      for (const summary of await archiveRecoveryService.store.list()) {
+        if (summary.kind !== 'restore') continue
+        const pending = (await archiveRecoveryService.store.read(summary.id)) as
+          RestoreRecoveryTask | undefined
+        if (pending?.payload.source?.size === file.size) fileHash ??= await hashBlob(file)
+        if (pending && pending.payload.source?.hash === fileHash && fileHash) {
+          offerRestoreRecovery(pending)
+          await archiveRecoveryService.reselectSource(pending, file)
+          await resumeRestoreTask(pending.id)
+          return
+        }
+      }
+    }
 
     const remainingBytes = Math.max(
       0,
@@ -417,7 +701,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     ) {
       return
     }
-    await context.preparedRestore.value?.dispose?.()
+    if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
+    else await context.preparedRestore.value?.dispose?.()
     context.preparedRestore.value = undefined
     waitingForRestoreChoiceInBackground = false
     context.isRestoring.value = true
@@ -435,6 +720,9 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         taskCenter.update(operationId, { phase: '读取 ZIP 并校验（后台任务通知未能启动）' })
     }
     try {
+      restoreRecovery =
+        recovery ?? (await archiveRecoveryService.createRestore(file, vaultService.isEnabled()))
+      if (restoreRecovery) await archiveRecoveryService.ensureSource(restoreRecovery, file)
       context.preparedRestore.value = await restoreService.prepare(
         file,
         context.resources.value,
@@ -472,6 +760,10 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           )
         },
       )
+      if (restoreRecovery) {
+        restoreRecovery.phase = '等待选择恢复方式'
+        await archiveRecoveryService.savePrepared(restoreRecovery, context.preparedRestore.value)
+      }
       taskCenter.complete(operationId)
       if (keepAliveStarted && document.visibilityState === 'hidden') {
         waitingForRestoreChoiceInBackground = true
@@ -482,6 +774,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       }
     } catch (error) {
       taskCenter.fail(operationId, error)
+      if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
       context.showNotice(error instanceof Error ? error.message : '备份预检失败')
     } finally {
       context.isRestoring.value = false
@@ -502,6 +795,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     includeGallery = true,
   ): Promise<void> {
     const context = getContext()
+    if (restoreRecovery?.payload.mode) return resumeRestoreTask(restoreRecovery.id)
 
     const prepared = context.preparedRestore.value
     if (!prepared) return
@@ -551,6 +845,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     prepared: PreparedRestore,
     mode: RestoreMode,
     createSafetySnapshot = false,
+    resumed?: RestoreRecoveryTask,
   ): Promise<void> {
     const context = getContext()
 
@@ -567,8 +862,24 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         )
       : false
     try {
-      if (createSafetySnapshot) await context.captureHistory('整库覆盖前用户选择的安全快照')
-      if (mode === 'replace') prepared = (await prepared.forReplacement?.()) ?? prepared
+      const recovery = resumed ?? restoreRecovery
+      if (!resumed && mode === 'replace') prepared = (await prepared.forReplacement?.()) ?? prepared
+      if (recovery) {
+        if (!resumed) {
+          recovery.payload.mode = mode
+          recovery.payload.snapshot = createSafetySnapshot
+          recovery.payload.baseline = await archiveRecoveryService.baseline(
+            context.resources.value,
+            context.categories.value,
+          )
+          prepared = { ...prepared, checkpointId: recovery.id, forReplacement: undefined }
+          await archiveRecoveryService.savePrepared(recovery, prepared)
+        }
+        if (createSafetySnapshot)
+          await archiveRecoveryService.step(recovery, '安全快照', () =>
+            context.captureHistory('整库覆盖前用户选择的安全快照'),
+          )
+      } else if (createSafetySnapshot) await context.captureHistory('整库覆盖前用户选择的安全快照')
       taskCenter.update(operationId, {
         phase: mode === 'replace' ? '覆盖写入资源库' : '合并写入资源库',
         progress: undefined,
@@ -598,26 +909,33 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         })
         updateNativeImportKeepAlive('恢复备份', phase, ratio)
       }
+      let report: RestoreReport
       if (mode === 'replace') {
-        context.restoreReport.value = await restoreService.replace(prepared, reportWriteProgress)
-        await restorePortableData(prepared.portableData)
+        report = await restoreService.replace(prepared, reportWriteProgress)
+        await restorePortableData(prepared.portableData, recovery)
       } else {
-        context.restoreReport.value = await restoreService.restore(
-          prepared,
-          undefined,
-          reportWriteProgress,
-        )
-        await restorePortableData(prepared.portableData)
+        report = await restoreService.restore(prepared, undefined, reportWriteProgress)
+        await restorePortableData(prepared.portableData, recovery)
       }
       context.completedRestoreMode.value = mode
       taskCenter.update(operationId, { phase: '刷新资源与索引', progress: 0.97 })
       await context.loadLibrary()
       await context.onRestoreImportComplete()
-      await prepared.dispose?.()
+      if (recovery) {
+        recovery.phase = '完成'
+        await archiveRecoveryService.store.save(recovery)
+        await prepared.dispose?.()
+        await restoreService.clearRestoreCheckpoint(recovery.id)
+        await archiveRecoveryService.store.remove(recovery.id)
+        noticeCenter.dismiss(`archive:${recovery.id}`)
+        restoreRecovery = undefined
+      } else await prepared.dispose?.()
       context.preparedRestore.value = undefined
+      context.restoreReport.value = report
       taskCenter.complete(operationId)
     } catch (error) {
       taskCenter.fail(operationId, error)
+      if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
       const reason = error instanceof Error ? `：${error.message}` : ''
       context.showNotice(`恢复未全部完成，请核对资源列表与设置后重试${reason}`)
     } finally {
@@ -637,7 +955,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
   async function closeRestorePanel(): Promise<void> {
     const context = getContext()
     if (context.isRestoring.value) return
-    await context.preparedRestore.value?.dispose?.()
+    if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
+    else await context.preparedRestore.value?.dispose?.()
     context.preparedRestore.value = undefined
     context.restoreSourceFile.value = undefined
     context.isRestorePanelOpen.value = false

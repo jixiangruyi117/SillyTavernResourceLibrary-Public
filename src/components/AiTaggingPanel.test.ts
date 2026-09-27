@@ -135,6 +135,45 @@ afterEach(() => {
 })
 
 describe('AiTaggingPanel', () => {
+  it('大库只渲染一页，跨页选择和筛选全选仍保留完整范围', async () => {
+    const many = Array.from({ length: 1000 }, (_, i) => ({
+      ...resources[0]!,
+      id: `item-${i}`,
+      name: `资源 ${i}`,
+    }))
+    const wrapper = mount(AiTaggingPanel, { props: { resources: many, categories } })
+    expect(wrapper.findAll('.ai-tagging__candidate')).toHaveLength(40)
+    await wrapper.get('.ai-tagging__candidate input').setValue(true)
+    const pagination = () => wrapper.get('nav[aria-label="待识别资源分页"]')
+    await pagination().findAll('button')[1]!.trigger('click')
+    expect(pagination().text()).toContain('2 / 25 页')
+    expect(wrapper.get('.ai-tagging__candidate strong').text()).toBe('资源 40')
+    await wrapper.get('.ai-tagging__candidate input').setValue(true)
+    await pagination().findAll('button')[0]!.trigger('click')
+    expect((wrapper.get('.ai-tagging__candidate input').element as HTMLInputElement).checked).toBe(
+      true,
+    )
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '选择当前筛选 1000')!
+      .trigger('click')
+    expect(wrapper.text()).toContain('已选 1000 项')
+    await pagination().findAll('button')[1]!.trigger('click')
+    expect(
+      wrapper
+        .findAll('.ai-tagging__candidate input')
+        .every((input) => (input.element as HTMLInputElement).checked),
+    ).toBe(true)
+    await wrapper.get('input[type="search"]').setValue('资源 999')
+    expect(wrapper.findAll('.ai-tagging__candidate')).toHaveLength(1)
+    expect(wrapper.get('.ai-tagging__candidate strong').text()).toBe('资源 999')
+    expect(wrapper.find('nav[aria-label="待识别资源分页"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已选 1000 项')
+    await wrapper.get('input[type="search"]').setValue('')
+    expect(pagination().text()).toContain('1 / 25 页')
+    wrapper.unmount()
+  })
+
   it('打开详情并返回保留审核编辑和焦点，详情期间 Esc 不关闭审核', async () => {
     mocks.recognize.mockResolvedValue({
       suggestions: [

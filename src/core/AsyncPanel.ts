@@ -1,4 +1,4 @@
-import { defineAsyncComponent, h, type Component } from 'vue'
+import { defineAsyncComponent, defineComponent, h, Teleport, type Component } from 'vue'
 
 import AsyncPanelError from '../components/AsyncPanelError.vue'
 import AsyncPanelLoading from '../components/AsyncPanelLoading.vue'
@@ -18,18 +18,52 @@ const LOAD_TIMEOUT_MS = 20_000
 export function createAsyncPanel<T extends Component>(
   label: string,
   loader: () => Promise<{ default: T }>,
+  options: { modal?: boolean } = {},
 ): T {
+  const boundary = (component: Component) =>
+    defineComponent({
+      inheritAttrs: false,
+      emits: ['close'],
+      setup:
+        (_props, { emit }) =>
+        () => {
+          const content = h(component, {
+            label,
+            class:
+              options.modal && component === AsyncPanelLoading
+                ? 'async-panel-loading--embedded'
+                : undefined,
+          })
+          if (!options.modal) return content
+          // 弹窗模块尚未下载时也占据同一顶层，避免菜单消失后只剩首页。
+          return h(Teleport, { to: 'body' }, [
+            h('div', { class: 'editor-overlay', role: 'presentation' }, [
+              h(
+                'section',
+                {
+                  class: 'editor-sheet',
+                  role: 'dialog',
+                  'aria-modal': 'true',
+                  'aria-label': label,
+                },
+                [
+                  content,
+                  h(
+                    'button',
+                    { type: 'button', class: 'button button--quiet', onClick: () => emit('close') },
+                    '取消打开',
+                  ),
+                ],
+              ),
+            ]),
+          ])
+        },
+    })
   return defineAsyncComponent({
     loader: async () => (await loader()).default,
     delay: 0,
-    loadingComponent: {
-      name: 'AsyncPanelLoadingBoundary',
-      setup: () => () => h(AsyncPanelLoading, { label }),
-    },
+    loadingComponent: boundary(AsyncPanelLoading),
     timeout: LOAD_TIMEOUT_MS,
-    errorComponent: {
-      name: 'AsyncPanelErrorBoundary',
-      setup: () => () => h(AsyncPanelError, { label }),
-    },
+    errorComponent: boundary(AsyncPanelError),
   }) as T
 }

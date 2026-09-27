@@ -39,6 +39,10 @@ defineProps<{ label: string }>()
   letter-spacing: 0.08em;
   animation: async-panel-pulse 1.3s ease-in-out infinite;
 }
+.async-panel-loading--embedded {
+  width: 100%;
+  margin: 0 0 1rem;
+}
 .async-panel-loading div {
   display: grid;
   gap: 0.3rem;

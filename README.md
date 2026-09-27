@@ -127,6 +127,16 @@ pnpm preview
 pnpm check
 ```
 
+`pnpm check` 检查格式、lint、测试和生产构建。公开更新还必须单独执行增量隐私检查：
+
+```bash
+pnpm secret:scan --base <上次已审计的完整提交SHA>
+```
+
+它检查基线之后的每个新提交、暂存区、未暂存改动和新增文件，并核对新提交的 GitHub noreply 邮箱。可用 `--private-values-file <仓库外JSON文件>` 加入自己的私人邮箱、域名及地址字符串列表；不要提交此文件。输出的 `addressReview`、`binaryReview` 是人工复核清单，自动检查通过不代表这些项目已经通过隐私审核。`pnpm secret:scan` 的全树模式与 `secret:scan:history` 只用于明确授权的首次审计，不属于日常重复门禁。CI 使用本次推送/PR 的基线；它不替代推送前的审计。
+
+维护共享功能时与主项目同步，但保留 Public 的品牌、独立应用 ID、无登录入口和自部署配置。发行者应保存上次已审计 SHA、独立签名和部署配置；自部署凭据、私人地址与安装包不得加入源码仓库。
+
 ## 部署到 Cloudflare Workers
 
 Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。每位部署者使用自己的 Cloudflare 账号和 Worker；配置中没有作者的域名、账号、数据库或 Discord 参数。
@@ -138,21 +148,22 @@ Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。�
    pnpm build
    ```
 
-2. 安装 Wrangler 并登录自己的 Cloudflare 账号：
+2. 使用项目已锁定的 Wrangler 并登录自己的 Cloudflare 账号：
 
    ```bash
-   pnpm add --global wrangler@4
-   wrangler login
+   pnpm exec wrangler login
    ```
 
-3. 将根目录 `wrangler.example.jsonc` 复制为 `wrangler.jsonc`。按需修改 Worker 名称；模板使用 `workers.dev`，不绑定自定义域名。
+3. 将根目录 `wrangler.example.jsonc` 复制为 `wrangler.jsonc`。按需修改 Worker 名称；模板使用 `workers.dev`，不绑定自定义域名。多账号环境先用 `pnpm exec wrangler whoami --json` 确认身份，在忽略的配置中明确填写自己的 `account_id`；若已配置登录 profile，部署时显式加 `--profile <自己的profile>`，避免发到另一套服务。
 4. 部署：
 
    ```bash
-   wrangler deploy --config wrangler.jsonc
+   pnpm exec wrangler deploy --config wrangler.jsonc
    ```
 
 部署配置与命令可参考 [Cloudflare Workers 静态资源文档](https://developers.cloudflare.com/workers/static-assets/) 和 [Wrangler 配置文档](https://developers.cloudflare.com/workers/wrangler/configuration/)。
+
+保存命令返回的 HTTPS 站点来源，验证首页、`/api/version`、`/manifest.webmanifest` 和图标。主 Worker 不需要登录数据库；只有另外部署 Discord 消息桥等功能时才需要对应 D1。升级前更新 `package.json` / `build-info.json` 的版本、独立 buildId 与递增的 Android versionCode，已发行 APK 对应的 `official-apps/<buildId>/` 原包应保留在自己的发行存储，不能用新构建替换旧包。下次构建部署前，从自己的发行存储恢复仍支持版本的原始 catalog 与 `.srlapp` 到本地 `public/official-apps/<buildId>/`，部署后逐包回读核对大小与 SHA-256；默认只保留最近三个发行版本。私人发行归档不加入公共源码提交。
 
 不需要设备互传或 Koofr 云备份时，可直接把 `dist/` 部署为 Cloudflare Pages 静态站点，构建命令为 `pnpm build`、输出目录为 `dist`，并设置 `NODE_VERSION=22`。Pages Git 构建说明见 [Cloudflare Pages 文档](https://developers.cloudflare.com/pages/configuration/build-configuration/)。
 
@@ -213,14 +224,44 @@ Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。�
 
 ## Android 源码构建
 
-需要 Android Studio、Android SDK、JDK 21、Node.js 22 和 pnpm 11。构建网页资源并同步到 Android 工程：
+需要 Android Studio、Android SDK、JDK 21、Node.js 22 和 pnpm 11。当前默认应用名为 `SRL_Pubilc`，应用 ID 为 `app.srl.publicedition`，与官版独立，可同时安装。两个版本的本地资料相互隔离，可通过备份迁移。
 
-```bash
+### 打包网页功能的离线 APK（推荐）
+
+先按上文部署同一版本的 Worker。以下 PowerShell 示例中的地址和路径均替换为自己的配置，不写入源码：
+
+```powershell
 pnpm install --frozen-lockfile
+$env:JAVA_HOME = 'X:\Android\jbr'
+$env:ANDROID_HOME = 'X:\Android\Sdk'
+$env:SRL_PUBLIC_ORIGIN = 'https://你的-worker.workers.dev'
 pnpm android:sync
 ```
 
-之后在 Android Studio 中打开 `android/`，由你自己的环境构建 APK，并使用自己的签名密钥签署。公开源码构建不会连接作者官方更新服务器；公开仓库也不提供通用自建 APK 更新服务器。更新源码时请通过 Git 拉取新版本并重新构建；若要向用户分发更新，由下游维护者自行管理签名密钥和发行流程。Android 覆盖安装更新需要沿用该应用原有的签名密钥。
+`SRL_PUBLIC_ORIGIN` 只设置 APK 本地 WebView 的来源，首页仍来自 APK 内置文件，不是在线网页套壳；可选功能包从自己的站点下载。不配置时使用本机 `localhost` 来源，仅能保证核心本地资源库，可选功能包没有有效下载站点。首次发行后保持应用 ID、此来源和签名不变，以保证覆盖升级继续读取原数据库。不要使用 `CAPACITOR_SERVER_URL` / Remote 模式制作离线发行包。
+
+在 Android Studio 打开 `android/` 后可以自行构建签名；也可首次在仓库外生成专用密钥（不要与其他发行版本共用）：
+
+```powershell
+& "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -keystore 'X:\private\public-release.jks' -alias release -keyalg RSA -keysize 3072 -validity 10000 -dname 'CN=SRL Public'
+```
+
+安全保存该密钥、别名和密码。每次 Release 构建只在当前进程加载自己的签名材料：
+
+```powershell
+$env:SRL_ANDROID_RELEASE_STORE_FILE = 'X:\private\public-release.jks'
+$env:SRL_ANDROID_RELEASE_KEY_ALIAS = 'release'
+$secret = Read-Host '签名库密码' -AsSecureString
+$env:SRL_ANDROID_RELEASE_STORE_PASSWORD = [Net.NetworkCredential]::new('', $secret).Password
+$env:SRL_ANDROID_RELEASE_KEY_PASSWORD = $env:SRL_ANDROID_RELEASE_STORE_PASSWORD
+pnpm android:apk -Mode Packaged -Variant Release
+```
+
+如果 key 密码不同，单独输入 `SRL_ANDROID_RELEASE_KEY_PASSWORD`。产物为 `android/app/build/outputs/apk/release/app-release.apk`；构建脚本执行签名验证。在工作目录 `android/` 运行 `./gradlew :app:lintRelease`（Windows PowerShell 使用 `.\gradlew.bat :app:lintRelease`），并用 SDK 的 `apksigner verify --verbose --print-certs` 核对后续版本证书与首次发行一致。APK 包名/图标、首次断网打开和已安装功能的离线访问需要安装验证。
+
+关闭构建终端或移除这四个签名环境变量。`.jks`、密码、Wrangler 本地配置、真实私人部署地址和签名 APK 不加入公开仓库；通过发行者自己的私有或单独分发渠道交付。公开源码不会连接作者官方更新服务器，也不提供通用自建 APK 更新服务；后续更新自行拉取源码、用同一密钥重新构建并覆盖安装。
+
+### 独立 Kotlin 原生版
 
 原生 Android 酒馆互传功能需要连接你部署的主 Worker。构建前可在 `android/` 目录执行：
 
@@ -229,6 +270,15 @@ pnpm android:sync
 ```
 
 不需要酒馆互传时，可以直接在 Android Studio 里构建；未设置地址时，该功能会提示先配置自己的 Worker。
+
+该模块与上面的 Capacitor 版使用相同 Public 应用 ID，属于替代安装，数据格式与能力范围不同；不要把它当作网页功能完整的 APK。
+
+## 离线使用边界
+
+- Public 不调用官方登录/会话服务，进入本地库不需要先登录。
+- 网页/PWA 首次访问需要联网；页面提示“资源库已可离线使用”后可断网重新打开。首次未缓存的网站无法凭空离线加载。清理站点数据可能同时删除缓存和本地库。
+- Packaged APK 的核心入口已随包携带，首次启动也不需要在线登录；可选 APP 需先从自己的站点安装，之后使用已保存的本地文件。
+- AI 请求、云备份、Discord、图床、互传及远程图片等网络功能仍需联网。本地保险库若启用，离线时仍需自己的解锁密码；它与官方账号登录无关。
 
 ## 许可
 

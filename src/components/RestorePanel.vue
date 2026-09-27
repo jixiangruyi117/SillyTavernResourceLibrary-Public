@@ -199,7 +199,7 @@ function formatDate(value: string): string {
           <template v-if="prepared && !busy">
             <section class="restore-source">
               <div>
-                <strong>{{ prepared.preview.fileName }}</strong>
+                <strong :title="prepared.preview.fileName">{{ prepared.preview.fileName }}</strong>
                 <span>
                   {{ prepared.preview.mode === 'full' ? '完整备份' : '分包备份' }} ·
                   {{ formatDate(prepared.preview.createdAt) }}

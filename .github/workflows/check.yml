@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      privacy_base:
+        description: Last audited commit SHA
+        required: true
+        type: string
 
 jobs:
   check:
@@ -20,7 +25,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check && pnpm lint && pnpm test && pnpm build && pnpm secret:scan && pnpm secret:scan:history
+      - run: pnpm check
+      - name: Incremental privacy candidates
+        env:
+          AUDIT_BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.privacy_base }}
+        run: pnpm secret:scan --base "$AUDIT_BASE"
 
   android:
     runs-on: ubuntu-latest

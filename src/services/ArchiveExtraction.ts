@@ -30,9 +30,13 @@ function isSafeArchivePath(path: string): boolean {
 export async function stageArchive(
   file: File,
   staging: RestoreStagingStore,
-  selectEntry: (path: string) => boolean = () => true,
+  selectEntry?: (path: string) => boolean,
   onProgress?: (progress: ArchiveStageProgress) => void,
 ): Promise<string> {
+  if (!selectEntry && staging.stageNativeArchive) {
+    const nativeJob = await staging.stageNativeArchive(file, onProgress)
+    if (nativeJob) return nativeJob
+  }
   const jobId = crypto.randomUUID()
   const entries: Promise<void>[] = []
   const pendingWrites = new Set<Promise<void>>()
@@ -51,7 +55,7 @@ export async function stageArchive(
     }
     paths.add(entry.name)
     if (paths.size > 100_000) throw new Error('备份文件数量超过限制')
-    if (!selectEntry(entry.name)) return
+    if (selectEntry && !selectEntry(entry.name)) return
     selectedEntries++
     const completion = new Promise<void>((resolve, reject) => {
       let totalLength = 0

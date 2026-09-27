@@ -390,14 +390,22 @@
   margin-bottom: 0.625rem;
 }
 .ai-tagging__scope-actions,
+.ai-tagging__pagination,
 .ai-tagging__review-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
 }
-.ai-tagging__scope-actions {
+.ai-tagging__scope-actions,
+.ai-tagging__pagination {
   margin-top: 0.75rem;
+}
+.ai-tagging__pagination > span {
+  flex: 1;
+  text-align: center;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
 }
 .ai-tagging__scope-actions span {
   margin-left: auto;

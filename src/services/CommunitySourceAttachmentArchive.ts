@@ -11,6 +11,8 @@ import {
 } from '../types/CommunitySource'
 import type { CommunitySourceService } from './CommunitySourceService'
 import { hashBlob } from './HashService'
+import type { RestoreStagingStore } from '../storage/RestoreStagingStore'
+import { nativeFileSource, rememberNativeFile } from '../core/NativeFileSource'
 
 const ARCHIVED_ASSET_ID_PATTERN = /^asset-([0-9a-f]{64})$/iu
 const MAX_ARCHIVED_ATTACHMENT_BYTES = 64 * 1024 * 1024
@@ -188,6 +190,39 @@ export async function readCommunitySourceLocalAttachmentsFromArchive(
     }
   }
   return entries.sort((left, right) => left.assetId.localeCompare(right.assetId))
+}
+
+/** Reuse verified archive entries, including after a process restart; never decompress twice. */
+export async function readCommunitySourceStagedAttachments(
+  staging: RestoreStagingStore,
+  jobId: string,
+  data: CommunitySourceBackupData,
+): Promise<CommunitySourceAttachmentArchiveEntry[]> {
+  const result: CommunitySourceAttachmentArchiveEntry[] = []
+  const mimeTypes = collectAttachmentMimeTypes(data)
+  for (const assetId of collectCommunitySourceLocalAssetIds(data)) {
+    const match = ARCHIVED_ASSET_ID_PATTERN.exec(assetId)
+    if (!match) throw new Error('Discord 附件标识无效')
+    const entry = await staging.get(
+      jobId,
+      `${COMMUNITY_SOURCE_ATTACHMENT_ARCHIVE_PREFIX}${assetId}`,
+    )
+    if (!entry) continue // Legacy archives may only contain remote references.
+    if (
+      entry.size > MAX_ARCHIVED_ATTACHMENT_BYTES ||
+      entry.sha256 !== match[1]!.toLowerCase() ||
+      (await hashBlob(entry.blob)) !== entry.sha256
+    )
+      throw new Error(`Discord 本地附件完整性校验失败：${assetId}`)
+    const blob = entry.blob.slice(
+      0,
+      entry.size,
+      mimeTypes.get(assetId) || 'application/octet-stream',
+    )
+    const uri = nativeFileSource(entry.blob)
+    result.push({ assetId, blob: uri ? rememberNativeFile(blob, uri) : blob })
+  }
+  return result
 }
 
 export async function restoreCommunitySourceLocalAttachments(

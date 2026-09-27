@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { rememberNativeFile } from '../core/NativeFileSource'
 
 const nativePlugin = vi.hoisted(() => ({
   getStorageInfo: vi.fn(),
   beginWrite: vi.fn(),
   appendWrite: vi.fn(),
+  appendFile: vi.fn(),
   commitWrite: vi.fn(),
   abortWrite: vi.fn(),
   remove: vi.fn(),
@@ -56,6 +58,19 @@ function resource(body = 'hello'): Resource {
 }
 
 describe('NativeResourceFileMirror', () => {
+  it('原件已有原生路径时直接流式复制，不再把正文通过 Base64 送回原生', async () => {
+    const item = resource()
+    rememberNativeFile(item.originalBlob, 'file:///shared/original.json')
+    const handle = await stageNativeResourceFile(item, 'current')
+    expect(nativePlugin.appendFile).toHaveBeenCalledWith({
+      token: 'token-1',
+      uri: 'file:///shared/original.json',
+    })
+    expect(nativePlugin.appendWrite).not.toHaveBeenCalled()
+    expect(nativePlugin.commitWrite).not.toHaveBeenCalled()
+    await handle.commit()
+    expect(nativePlugin.commitWrite).toHaveBeenCalledOnce()
+  })
   it('deletes in bounded native batches and reports actual completion', async () => {
     nativePlugin.removeMany.mockResolvedValue(undefined)
     const records = Array.from({ length: 257 }, (_, i) => ({

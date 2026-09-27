@@ -3,8 +3,10 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
 import '../styles/ResourceGallery.css'
 import { useGalleryImageGestures } from '../composables/UseGalleryImageGestures'
+import NativeImageTiles from './NativeImageTiles.vue'
 const props = defineProps<{
   src: string
+  nativeSource?: string
   name: string
   position?: string
   hasPrevious?: boolean
@@ -67,6 +69,7 @@ function imageLoaded(event: Event) {
   emit('loaded')
 }
 const failed = ref(false)
+const nativeUnavailable = ref(false)
 const panel = ref<HTMLElement>()
 function imageFailed() {
   failed.value = true
@@ -77,6 +80,7 @@ watch(
   () => props.src,
   () => {
     failed.value = false
+    nativeUnavailable.value = false
   },
 )
 function key(event: KeyboardEvent) {
@@ -175,6 +179,14 @@ onBeforeUnmount(() => {
           @contextmenu.prevent
         >
           <p v-if="failed" role="status">图片暂时无法加载</p>
+          <NativeImageTiles
+            v-else-if="nativeSource && !nativeUnavailable"
+            :source="nativeSource"
+            :geometry="gestures.geometry.value"
+            @dimensions="gestures.dimensions"
+            @loaded="emit('loaded')"
+            @unavailable="nativeUnavailable = true"
+          />
           <img
             v-else
             :src="src"

@@ -22,6 +22,7 @@ import { CommunitySourceRestoreService } from '../services/CommunitySourceRestor
 import { CommunitySourceService } from '../services/CommunitySourceService'
 import { ExportService } from '../services/ExportService'
 import { HistoryService } from '../services/HistoryService'
+import { ArchiveRecoveryService } from '../services/ArchiveRecoveryService'
 import { MainApiService } from '../services/MainApiService'
 import { NativeResourceRecoveryService } from '../services/NativeResourceRecoveryService'
 import { ResourceService } from '../services/ResourceService'
@@ -35,7 +36,7 @@ import { IndexedDbCommunitySourceStorage } from '../storage/IndexedDbCommunitySo
 import { IndexedDbExternalAppStorage } from '../storage/IndexedDbExternalAppStorage'
 import { IndexedDbResourceStorage } from '../storage/IndexedDbResourceStorage'
 import { IndexedDbResourceHealthStorage } from '../storage/IndexedDbResourceHealthStorage'
-import { IndexedDbRestoreStagingStore } from '../storage/IndexedDbRestoreStagingStore'
+import { NativeRestoreStagingStore } from '../storage/NativeRestoreStagingStore'
 import { NativeMirroredResourceStorage } from '../storage/NativeMirroredResourceStorage'
 import {
   getNativeResourceStorageInfo,
@@ -55,6 +56,7 @@ import {
 import type { ArchivePortableData } from '../types/Backup'
 
 export const vaultService = new VaultService(database)
+export const archiveRecoveryService = new ArchiveRecoveryService()
 let vaultInitializationPromise: ReturnType<VaultService['initialize']> | undefined
 export function initializeVaultOnce(): ReturnType<VaultService['initialize']> {
   vaultInitializationPromise ??= vaultService.initialize()
@@ -67,7 +69,7 @@ export const resourceHealthStorage = new IndexedDbResourceHealthStorage(database
 const storage = new NativeMirroredResourceStorage(indexedDbStorage, vaultService)
 const categoryStorage = new IndexedDbCategoryStorage(database, vaultService)
 const archiveStorage = new IndexedDbArchiveStorage(database, vaultService, assetStore)
-const restoreStagingStore = new IndexedDbRestoreStagingStore(database)
+const restoreStagingStore = new NativeRestoreStagingStore(database)
 export const resourceArchiveService = new ResourceArchiveService(restoreStagingStore)
 const communitySourceStorageOwner = new IndexedDbCommunitySourceStorage(database, vaultService)
 const externalAppStorage = new IndexedDbExternalAppStorage(database)

@@ -162,7 +162,13 @@ public class ShareReceiverPlugin extends Plugin {
         File[] files = folder.listFiles();
         if (files == null) return;
         long cutoff = System.currentTimeMillis() - STALE_FILE_AGE_MS;
+        java.util.Set<String> retained;
+        try { retained = NativeArchiveTasks.retainedSourcePaths(getContext()); }
+        catch (Exception error) { return; } // A journal read failure must not remove a recovery source.
         for (File file : files) {
+            String path;
+            try { path = file.getCanonicalPath(); } catch (Exception error) { continue; }
+            if (retained.contains(path) || (path.endsWith(".json") && retained.contains(path.substring(0,path.length()-5)))) continue;
             if (file.isFile() && file.lastModified() < cutoff) file.delete();
         }
     }

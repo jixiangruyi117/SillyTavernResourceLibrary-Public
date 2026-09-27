@@ -233,6 +233,7 @@ function selectCommunityAttachmentsForArchive(
 }
 
 export interface ArchiveStreamWriter {
+  encode?(encoding: ArchiveEncoding): Promise<number>
   write(chunk: Uint8Array): Promise<void>
   commit(): Promise<void>
   abort(): Promise<void>
@@ -293,7 +294,7 @@ export class ExportService {
     this.communitySourceAttachmentExportProvider = communitySourceAttachmentExportProvider
   }
 
-  private async prepareOptions(options: ArchiveOptions): Promise<ArchiveOptions> {
+  async prepareOptions(options: ArchiveOptions): Promise<ArchiveOptions> {
     if (!options.portableSelection?.communitySources) return options
     const communitySourceData =
       options.communitySourceData ?? (await this.communitySourceExportProvider?.())
@@ -499,7 +500,7 @@ export class ExportService {
     )
     const communitySourceData = selectedCommunity.data
     const communitySourceAttachments = selectedCommunity.attachments
-    const createdAt = new Date()
+    const createdAt = new Date(transfer?.createdAt ?? Date.now())
     const manifest: ArchiveManifest = {
       format: ARCHIVE_FORMAT,
       version: ARCHIVE_VERSION,
@@ -569,7 +570,15 @@ export class ExportService {
               overrides.greetingResourceId,
             ])) {
               const summary = source.resources.find((candidate) => candidate.id === id)
-              if (summary) related.push(await source.read(summary, false))
+              if (summary) {
+                const value = await source.read(summary, false)
+                if (
+                  value.contentHash !== summary.contentHash ||
+                  value.updatedAt !== summary.updatedAt
+                )
+                  throw new Error(`导出关联资源已变化：${summary.fileName}`)
+                related.push(value)
+              }
             }
           }
           resource = await createModifiedCharacterResource(resource, related)
@@ -595,7 +604,9 @@ export class ExportService {
     if (writerFactory) {
       const writer = await writerFactory(fileName, manifest)
       try {
-        const streamedBytes = await encodeArchive(encoding, writer.write)
+        const streamedBytes = writer.encode
+          ? await writer.encode(encoding)
+          : await encodeArchive(encoding, writer.write)
         throwIfArchiveAborted(transfer?.signal)
         await writer.commit()
         return {

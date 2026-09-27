@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
+import { rememberNativeFile } from '../core/NativeFileSource'
 
 /**
  * 取回系统分享暂存的文件。
@@ -32,6 +33,10 @@ interface ShareReceiverPlugin {
 
 const shareReceiver = registerPlugin<ShareReceiverPlugin>('ShareReceiver')
 
+// 原件保留到导入提交成功，但同一 WebView 会话只投递一次。
+// Android 的 ready / 回前台事件不是新分享；进程重建后集合自然清空。
+const deliveredNativeTokens = new Set<string>()
+
 export interface SharedFileBatch {
   files: File[]
   route?: SharedImportRoute
@@ -52,29 +57,38 @@ function base64File(shared: NativeSharedFile & { data: string }): File {
 async function takeNativeSharedFiles(): Promise<SharedFileBatch> {
   if (!Capacitor.isNativePlatform()) return { files: [], acknowledge: async () => undefined }
   const result = await shareReceiver.getPendingShare()
-  const files: File[] = []
-  const cleanupTokens = (result.files ?? []).flatMap((shared) =>
-    shared.cleanupToken ? [shared.cleanupToken] : [],
+  const pending = (result.files ?? []).filter(
+    (shared) => !shared.cleanupToken || !deliveredNativeTokens.has(shared.cleanupToken),
   )
-  for (const shared of result.files ?? []) {
+  const files: File[] = []
+  const cleanupTokens: string[] = []
+  for (const shared of pending) {
     if (shared.uri) {
       const response = await fetch(Capacitor.convertFileSrc(shared.uri), { cache: 'no-store' })
       if (!response.ok) throw new Error(`读取系统分享暂存文件失败（HTTP ${response.status}）`)
       const blob = await response.blob()
       files.push(
-        new File([blob], shared.name || 'shared-file', {
-          type: shared.type || blob.type || 'application/octet-stream',
-        }),
+        rememberNativeFile(
+          new File([blob], shared.name || 'shared-file', {
+            type: shared.type || blob.type || 'application/octet-stream',
+          }),
+          shared.uri,
+        ),
       )
     } else if (typeof shared.data === 'string') {
       files.push(base64File(shared as NativeSharedFile & { data: string }))
-    }
+    } else continue
+    if (shared.cleanupToken) cleanupTokens.push(shared.cleanupToken)
   }
+  for (const token of cleanupTokens) deliveredNativeTokens.add(token)
   return {
     files,
-    route: result.files?.find((shared) => shared.route)?.route,
+    route: pending.find((shared) => shared.route)?.route,
     acknowledge: async () => {
-      if (cleanupTokens.length) await shareReceiver.cleanupPendingShare({ tokens: cleanupTokens })
+      if (cleanupTokens.length) {
+        await shareReceiver.cleanupPendingShare({ tokens: cleanupTokens })
+        for (const token of cleanupTokens) deliveredNativeTokens.delete(token)
+      }
     },
   }
 }

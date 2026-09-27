@@ -30,8 +30,8 @@ android {
     compileSdk = rootProject.ext.compileSdkVersion
 
     defaultConfig {
-        // 保持正式包名，才能由原 0.0.4 覆盖安装；原生代码不加载任何 Vue/WebView 页面。
-        applicationId 'buzz.jixiangruyi1207.srl'
+        // Public 与官版使用独立应用 ID；原生版与本仓库的 WebView 版为替代安装。
+        applicationId 'app.srl.publicedition'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode buildInfo.androidVersionCode as int

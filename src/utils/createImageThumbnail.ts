@@ -1,3 +1,5 @@
+import { thumbnailNativeFile } from '../core/NativeFileSource'
+
 const THUMBNAIL_MAX_EDGE = 640
 
 export async function createImageThumbnail(
@@ -8,6 +10,10 @@ export async function createImageThumbnail(
   let image: HTMLImageElement | undefined
   let objectUrl: string | undefined
   try {
+    const maxEdge = Math.max(32, Math.min(768, options.maxEdge ?? THUMBNAIL_MAX_EDGE))
+    const quality = Math.max(0.5, Math.min(0.95, options.quality ?? 0.82))
+    const nativeThumbnail = await thumbnailNativeFile(source, maxEdge, quality)
+    if (nativeThumbnail) return nativeThumbnail
     if (typeof createImageBitmap === 'function') {
       try {
         bitmap = await createImageBitmap(source)
@@ -29,8 +35,6 @@ export async function createImageThumbnail(
     const sourceWidth = bitmap?.width ?? image?.naturalWidth ?? 0
     const sourceHeight = bitmap?.height ?? image?.naturalHeight ?? 0
     if (!decoded || !sourceWidth || !sourceHeight) return undefined
-    const maxEdge = Math.max(32, Math.min(768, options.maxEdge ?? THUMBNAIL_MAX_EDGE))
-    const quality = Math.max(0.5, Math.min(0.95, options.quality ?? 0.82))
     const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight))
     const width = Math.max(1, Math.round(sourceWidth * scale))
     const height = Math.max(1, Math.round(sourceHeight * scale))

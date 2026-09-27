@@ -11,6 +11,8 @@ export interface ArchiveRestoreProgress {
 }
 
 export interface ArchiveStorageAdapter {
+  isRestoreCommitted?(checkpointId: string): Promise<boolean>
+  clearRestoreCheckpoint?(checkpointId: string): Promise<void>
   canRestoreNative?(): boolean
   listRestoreVersionKeys?(): Promise<string[]>
   restore(
@@ -19,6 +21,7 @@ export interface ArchiveStorageAdapter {
     versions?: Resource[],
     hydrate?: (resource: Resource) => Promise<Resource>,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void>
   restoreNative?(
     categories: Category[],
@@ -33,5 +36,6 @@ export interface ArchiveStorageAdapter {
     versions?: Resource[],
     hydrate?: (resource: Resource) => Promise<Resource>,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void>
 }

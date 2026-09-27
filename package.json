@@ -1,7 +1,7 @@
 {
   "name": "sillytavern-resource-library",
   "private": true,
-  "version": "0.0.122",
+  "version": "0.0.126",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "packageManager": "pnpm@11.5.0",
@@ -13,6 +13,7 @@
     "dev:lan": "vite --host 0.0.0.0",
     "build": "vue-tsc -b && vite build && node scripts/Check-OfficialAppPackages.mjs",
     "android:sync": "pnpm build && cap sync android",
+    "capacitor:copy:after": "node scripts/RunAndroidOptionalAppTrim.mjs",
     "android:open": "cap open android",
     "android:apk": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/Build-AndroidApk.ps1",
     "preview": "vite preview",
@@ -21,7 +22,7 @@
     "secret:scan:history": "node scripts/SecretScan.mjs --history",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build && pnpm secret:scan && pnpm secret:scan:history",
+    "check": "pnpm format:check && pnpm lint && pnpm test && pnpm build",
     "package:chat-reader": "node scripts/Build-ChatReader.mjs"
   },
   "dependencies": {

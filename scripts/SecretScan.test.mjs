@@ -1,9 +1,20 @@
 import { TextEncoder } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { zipSync } from 'fflate'
-import { scanBuffer, scanText } from './SecretScan.mjs'
+import { addedDiffText, scanBuffer, scanText } from './SecretScan.mjs'
 
 describe('SecretScan', () => {
+  it('scans only added lines, preserving real lines beginning with plus', () => {
+    const diff = [
+      '--- a/config',
+      '+++ b/config',
+      '@@ -1 +1 @@',
+      '-old-value',
+      '+new-value',
+      '++operator',
+    ].join('\n')
+    expect(addedDiffText(diff)).toBe('new-value\n+operator')
+  })
   it('detects high-confidence credential formats', () => {
     const discordToken = `${'MTIzNDU2Nzg5MDEyMzQ1Njc4'}.${'a'.repeat(6)}.${'b'.repeat(28)}`
     const githubToken = `ghp_${'Ab3dEf6hJk9mNp2qRs5uVw8xYz1aBc4d'}`

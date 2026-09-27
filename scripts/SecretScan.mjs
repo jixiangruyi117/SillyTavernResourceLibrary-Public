@@ -203,9 +203,109 @@ function report(label, findings) {
   if (findings.length) throw new Error(`${label} 发现疑似凭据：\n- ${findings.join('\n- ')}`)
 }
 
+export function addedDiffText(diff) {
+  const added = []
+  let inHunk = false
+  for (const line of diff.split(/\r?\n/u)) {
+    if (line.startsWith('diff --git ')) inHunk = false
+    else if (line.startsWith('@@ ')) inHunk = true
+    else if (inHunk && line.startsWith('+')) added.push(line.slice(1))
+  }
+  return added.join('\n')
+}
+
+export function scanGitIncremental(base, privateValues = [], directory = root) {
+  const git = (args) => execFileSync('git', args, { cwd: directory, maxBuffer: 64 * 1024 * 1024 })
+  if (!/^[a-f0-9]{40}$/u.test(base)) throw new Error('请提供上次已审计的完整 SHA')
+  git(['merge-base', '--is-ancestor', base, 'HEAD'])
+  const commits = git(['rev-list', '--reverse', `${base}..HEAD`])
+    .toString()
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+  const findings = []
+  const binaryReview = new Set()
+  const addressReview = new Set()
+  const paths = new Set()
+  const inspect = (path, bytes, text) => {
+    paths.add(path)
+    if (bytes.includes(0) || isArchive(bytes, path)) binaryReview.add(path)
+    findings.push(...scanBuffer(Buffer.from(text), path))
+    for (const value of privateValues) {
+      if (value && text.toLowerCase().includes(value.toLowerCase()))
+        findings.push(`${path}: private value`)
+    }
+    if (/https?:\/\/|[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu.test(text)) addressReview.add(path)
+  }
+  const scanDiff = (args, read) => {
+    const entries = git(['diff', '--name-status', '--no-renames', '-z', ...args])
+      .toString()
+      .split('\0')
+    for (let i = 0; i + 1 < entries.length; i += 2) {
+      const [status, path] = entries.slice(i, i + 2)
+      if (status === 'D') continue
+      const bytes = read(path)
+      const text =
+        status === 'A'
+          ? bytes.toString('utf8')
+          : addedDiffText(
+              git([
+                'diff',
+                '--no-ext-diff',
+                '--no-renames',
+                '--unified=0',
+                ...args,
+                '--',
+                path,
+              ]).toString(),
+            )
+      if (isArchive(bytes, path)) findings.push(...scanBuffer(bytes, path))
+      inspect(path, bytes, text)
+    }
+  }
+  for (const commit of commits) {
+    const emails = git(['show', '-s', '--format=%ae%n%ce', commit]).toString().trim().split('\n')
+    if (emails.some((email) => !/^[^@]+@users\.noreply\.github\.com$/u.test(email))) {
+      findings.push(`${commit}: author/committer must use GitHub noreply`)
+    }
+    // Inspect every new commit, including content added then removed before HEAD.
+    scanDiff([`${commit}^`, commit], (path) => git(['show', `${commit}:${path}`]))
+  }
+  // Keep the index and working tree separate: unstaging a secret must not hide a staged one.
+  scanDiff(['--cached', 'HEAD'], (path) => git(['show', `:${path}`]))
+  scanDiff([], (path) => readFileSync(resolve(directory, path)))
+  for (const path of git(['ls-files', '--others', '--exclude-standard', '-z'])
+    .toString()
+    .split('\0')
+    .filter(Boolean)) {
+    const bytes = readFileSync(resolve(directory, path))
+    inspect(path, bytes, bytes.toString('utf8'))
+    if (isArchive(bytes, path)) findings.push(...scanBuffer(bytes, path))
+  }
+  return {
+    base,
+    head: git(['rev-parse', 'HEAD']).toString().trim(),
+    commitCount: commits.length,
+    pathCount: paths.size,
+    findings: [...new Set(findings)],
+    binaryReview: [...binaryReview],
+    addressReview: [...addressReview],
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
   const mode = process.argv[2]
-  if (mode === '--history') {
+  if (mode === '--base') {
+    const privateIndex = process.argv.indexOf('--private-values-file')
+    const privateValues =
+      privateIndex < 0 ? [] : JSON.parse(readFileSync(process.argv[privateIndex + 1], 'utf8'))
+    const result = scanGitIncremental(process.argv[3], privateValues)
+    report('增量 Secret scan', result.findings)
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+    process.stdout.write(
+      '凭据检查通过；addressReview 与 binaryReview 仍须人工核对，不能据此单独宣称隐私审计通过。\n',
+    )
+  } else if (mode === '--history') {
     const { commitCount, blobCount, findings } = scanGitHistory()
     report('Git 历史 Secret scan', findings)
     process.stdout.write(

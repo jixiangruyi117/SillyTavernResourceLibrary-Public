@@ -28,6 +28,50 @@ public class NativeSafBackupPlugin extends Plugin {
     private static final int MAX_CHUNK_BYTES = 1024 * 1024;
     private final ConcurrentHashMap<String, PendingWrite> pendingWrites = new ConcurrentHashMap<>();
 
+    @PluginMethod public void beginArchive(PluginCall call) {
+        archiveIo(call, () -> NativeArchiveExport.begin(getContext(),call.getString("taskId"),safeName(call.getString("fileName","SRL.zip")),prefs().getString(TREE_URI,null)));
+    }
+    @PluginMethod public void getArchiveEntry(PluginCall call) {
+        archiveIo(call, () -> { JSObject value=new JSObject(); value.put("entry",NativeArchiveExport.entry(getContext(),call.getString("id"),call.getString("path"))); return value; });
+    }
+    @PluginMethod public void resetArchiveInput(PluginCall call) {
+        archiveIo(call, () -> { NativeArchiveExport.resetInput(getContext(),call.getString("id"),call.getString("path")); return new JSObject(); });
+    }
+    @PluginMethod public void appendArchiveInput(PluginCall call) {
+        archiveIo(call, () -> {
+            String data=call.getString("data","");
+            if(data.length()>1400000) throw new IllegalArgumentException("导出分块过大");
+            NativeArchiveExport.appendInput(getContext(),call.getString("id"),call.getString("path"),call.getLong("offset",-1L),Base64.decode(data,Base64.NO_WRAP));
+            return new JSObject();
+        });
+    }
+    @PluginMethod public void compressArchiveEntry(PluginCall call) {
+        archiveIo(call, () -> NativeArchiveExport.compress(getContext(),call.getString("id"),call.getString("path"),call.getString("uri"),call.getLong("size",-1L),call.getBoolean("compress",true),call.getLong("mtime",315532800000L),call.getObject("descriptor")));
+    }
+    @PluginMethod public void assembleArchive(PluginCall call) {
+        archiveIo(call, () -> {
+            java.util.List<String> paths=new java.util.ArrayList<>();
+            org.json.JSONArray input=call.getArray("paths");
+            if(input==null) throw new IllegalArgumentException("缺少条目清单");
+            for(int i=0;i<input.length();i++) paths.add(input.getString(i));
+            return NativeArchiveExport.assemble(getContext(),call.getString("id"),paths);
+        });
+    }
+    @PluginMethod public void publishArchive(PluginCall call) {
+        archiveIo(call, () -> {
+            JSObject result=NativeArchiveExport.publish(getContext(),call.getString("id"));
+            prefs().edit().putLong(LAST_BACKUP_AT,System.currentTimeMillis()).apply();
+            return result;
+        });
+    }
+    @PluginMethod public void discardArchiveTask(PluginCall call) {
+        archiveIo(call, () -> { NativeArchiveExport.removeTask(getContext(),call.getString("taskId")); return new JSObject(); });
+    }
+    private interface ArchiveAction { JSObject run() throws Exception; }
+    private void archiveIo(PluginCall call, ArchiveAction action) {
+        NativeExecutors.ioSerial().execute(() -> { try { call.resolve(action.run()); } catch(Exception error) { call.reject(error.getMessage(),error); } });
+    }
+
     @PluginMethod
     public void chooseDirectory(PluginCall call) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)

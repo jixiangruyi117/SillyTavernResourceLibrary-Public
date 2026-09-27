@@ -37,6 +37,39 @@ public class NativeLibraryPlugin extends Plugin {
     private final ConcurrentHashMap<String, PendingWrite> pendingWrites = new ConcurrentHashMap<>();
 
     @PluginMethod
+    public void hashFile(PluginCall call) {
+        runIo(call, () -> {
+            File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
+            if (file.length() != call.getLong("size", -1L)) throw new IllegalStateException("原生文件大小已变化");
+            JSObject result = new JSObject();
+            result.put("hash", NativeFileAccess.hash(file));
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod
+    public void appendFile(PluginCall call) {
+        runIo(call, () -> {
+            PendingWrite write = pending(call.getString("token"));
+            File source = NativeFileAccess.resolve(getContext(), call.getString("uri"));
+            synchronized (write) {
+                if (write.written != 0 || source.length() != write.expectedSize) throw new IllegalStateException("原生文件大小或写入位置不一致");
+                byte[] buffer = new byte[256 * 1024];
+                try (FileInputStream input = new FileInputStream(source)) {
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        if (write.written + count > write.expectedSize) throw new IllegalStateException("原生文件大小已变化");
+                        write.output.write(buffer, 0, count);
+                        write.digest.update(buffer, 0, count);
+                        write.written += count;
+                    }
+                }
+            }
+            call.resolve();
+        });
+    }
+
+    @PluginMethod
     public void getStorageInfo(PluginCall call) {
         runIo(call, () -> {
             File root = libraryRoot();
@@ -74,8 +107,11 @@ public class NativeLibraryPlugin extends Plugin {
             result.put("appCacheBytes", appCacheBytes);
             result.put("codeCacheBytes", codeCacheBytes);
             result.put("libraryBytes", directoryBytes(root));
-            result.put("restoreTemporaryBytes", directoryBytes(new File(root, ".restore-pending")));
-            result.put("writeTemporaryBytes", directoryBytes(new File(root, ".pending")));
+            result.put("restoreTemporaryBytes", directoryBytes(new File(root, ".restore-pending"))
+                + directoryBytes(new File(getContext().getFilesDir(), "srl-archive-jobs")));
+            result.put("writeTemporaryBytes", directoryBytes(new File(root, ".pending"))
+                + directoryBytes(new File(getContext().getFilesDir(), "srl-export-jobs"))
+                + directoryBytes(new File(getContext().getFilesDir(), "srl-archive-tasks")));
             result.put("availableBytes", availableBytes(appData, externalData));
             call.resolve(result);
         });

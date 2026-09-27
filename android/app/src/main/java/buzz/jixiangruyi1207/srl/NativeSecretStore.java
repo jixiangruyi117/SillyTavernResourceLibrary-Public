@@ -50,7 +50,7 @@ final class NativeSecretStore {
         return preferences.getBoolean(invalidKey, false);
     }
 
-    private String encrypt(String secret) throws Exception {
+    synchronized String encrypt(String secret) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key());
         byte[] encrypted = cipher.doFinal(secret.getBytes(StandardCharsets.UTF_8));
@@ -61,6 +61,10 @@ final class NativeSecretStore {
     synchronized String read(String key) throws Exception {
         String stored = preferences.getString(key, null);
         if (stored == null) return null;
+        return decrypt(stored);
+    }
+
+    synchronized String decrypt(String stored) throws Exception {
         String[] parts = stored.split(":", 2);
         if (parts.length != 2) return null;
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");

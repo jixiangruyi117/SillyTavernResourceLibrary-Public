@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import './Styles.css'
-import { computed, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 import { secretResourceService } from './services/SecretResourceService'
 onBeforeUnmount(() => secretResourceService.lock())
 import { secretPasswordRequest } from './composables/UseSecretPasswordPrompt'
@@ -12,10 +12,8 @@ import LibraryLinkImportPanel from './components/LibraryLinkImportPanel.vue'
 import CategoryManager from './components/CategoryManager.vue'
 import DataVaultPanel from './components/DataVaultPanel.vue'
 import { createAsyncPanel } from './core/AsyncPanel'
-const AiTaggingPanel = createAsyncPanel(
-  'AI 标签实验台',
-  () => import('./components/AiTaggingPanel.vue'),
-)
+const loadAiTaggingPanel = () => import('./components/AiTaggingPanel.vue')
+const AiTaggingPanel = createAsyncPanel('AI 标签实验台', loadAiTaggingPanel, { modal: true })
 const ExportPanel = createAsyncPanel('导出', () => import('./components/ExportPanel.vue'))
 const FeatureHub = createAsyncPanel('功能桌面', () => import('./components/FeatureHub.vue'))
 const NativeExportDialog = createAsyncPanel(
@@ -72,6 +70,10 @@ import ResourceInspector from './components/ResourceInspector.vue'
 import ResourceListRow from './components/ResourceListRow.vue'
 import { useApp } from './composables/UseApp'
 const controller = useApp()
+watch(controller.isBatchMode, (active) => {
+  // 进入多选时提前加载下一步界面；失败仍由打开面板时的原错误边界展示。
+  if (active) void loadAiTaggingPanel().catch(() => undefined)
+})
 const panelModel = proxyRefs(controller)
 const personalEditor = useTemplateRef<{ requestBack: () => void }>('personalEditor')
 const personalOrganizer = useTemplateRef<{ requestClose: () => void }>('personalOrganizer')

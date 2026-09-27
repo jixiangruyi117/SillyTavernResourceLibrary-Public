@@ -10,6 +10,75 @@ import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
 import type { NativeBackedResourceRecord } from '../types/Vault'
 
 describe('IndexedDbArchiveStorage', () => {
+  it('resumes completed staging and commits its marker atomically, without replaying replacement', async () => {
+    const name = `checkpoint-${crypto.randomUUID()}`
+    let database = new AppDatabase(name)
+    let storage = new IndexedDbArchiveStorage(database)
+    const records: Resource[] = [0, 1].map((index) => ({
+      id: `resume-${index}`,
+      type: RESOURCE_TYPE.OTHER,
+      name: `resume-${index}`,
+      description: '',
+      fileName: `${index}.txt`,
+      mimeType: 'text/plain',
+      fileSize: 1,
+      contentHash: String(index).padStart(64, '0'),
+      favorite: false,
+      categoryId: null,
+      tags: [],
+      metadata: {},
+      createdAt: 1,
+      updatedAt: 1,
+      originalBlob: new Blob(['x']),
+    }))
+    const checkpoint = crypto.randomUUID()
+    try {
+      await expect(
+        storage.replace(
+          [],
+          records,
+          [],
+          async (r) => {
+            if (r.id === 'resume-1') throw new Error('interrupted')
+            return r
+          },
+          undefined,
+          checkpoint,
+        ),
+      ).rejects.toThrow('interrupted')
+      expect(await database.resources.count()).toBe(0)
+      expect(await database.restoreStaging.count()).toBe(1)
+      database.close()
+      database = new AppDatabase(name)
+      storage = new IndexedDbArchiveStorage(database)
+      const read = vi.fn(async (r: Resource) => r)
+      const failCommit = vi
+        .spyOn(database.resourceListSummaries, 'put')
+        .mockRejectedValueOnce(new Error('commit interrupted'))
+      await expect(storage.replace([], records, [], read, undefined, checkpoint)).rejects.toThrow(
+        'commit interrupted',
+      )
+      expect(await storage.isRestoreCommitted(checkpoint)).toBe(false)
+      expect(await database.resources.count()).toBe(0)
+      failCommit.mockRestore()
+      await storage.replace([], records, [], read, undefined, checkpoint)
+      expect(read).toHaveBeenCalledTimes(1)
+      expect(read.mock.calls[0]![0].id).toBe('resume-1')
+      expect(await storage.isRestoreCommitted(checkpoint)).toBe(true)
+      await database.resources.put({ ...records[0]!, id: 'created-after-commit' })
+      database.close()
+      database = new AppDatabase(name)
+      storage = new IndexedDbArchiveStorage(database)
+      await storage.replace([], records, [], read, undefined, checkpoint)
+      expect(await database.resources.count()).toBe(3)
+      expect(read).toHaveBeenCalledTimes(1)
+      await storage.clearRestoreCheckpoint(checkpoint)
+      expect(await storage.isRestoreCommitted(checkpoint)).toBe(false)
+    } finally {
+      await database.delete()
+    }
+  })
+
   it('stages Web restore bodies serially and rolls back when storage runs out', async () => {
     const database = new AppDatabase(`web-staged-${crypto.randomUUID()}`)
     const storage = new IndexedDbArchiveStorage(database)

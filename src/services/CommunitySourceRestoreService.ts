@@ -4,6 +4,7 @@ import type { PreparedRestore, RestoreReport } from '../types/Backup'
 import type { CommunitySourceAttachmentArchiveEntry } from '../types/CommunitySource'
 import {
   readCommunitySourceLocalAttachmentsFromArchive,
+  readCommunitySourceStagedAttachments,
   sanitizeCommunitySourceAttachmentRefs,
 } from './CommunitySourceAttachmentArchive'
 import type { CommunitySourceService } from './CommunitySourceService'
@@ -39,10 +40,13 @@ export class CommunitySourceRestoreService extends RestoreService {
     const prepared = await super.prepare(...args)
     if (!prepared.communitySourceData) return prepared
 
-    const attachments = await readCommunitySourceLocalAttachmentsFromArchive(
-      args[0],
-      prepared.communitySourceData,
-    )
+    const attachments = prepared.staging
+      ? await readCommunitySourceStagedAttachments(
+          this.staging,
+          prepared.staging.jobId,
+          prepared.communitySourceData,
+        )
+      : await readCommunitySourceLocalAttachmentsFromArchive(args[0], prepared.communitySourceData)
     const availableAssetIds = new Set(attachments.map((entry) => entry.assetId))
     const communitySourceData = sanitizeCommunitySourceAttachmentRefs(
       prepared.communitySourceData,
@@ -85,6 +89,18 @@ export class CommunitySourceRestoreService extends RestoreService {
       ...report,
       restoredCommunityAttachments: prepared.communitySourceAttachments?.length,
     }
+  }
+
+  override async resumePrepared(prepared: PreparedRestore): Promise<PreparedRestore> {
+    const revived = await super.resumePrepared(prepared)
+    if (revived.communitySourceData && revived.staging) {
+      revived.communitySourceAttachments = await readCommunitySourceStagedAttachments(
+        this.staging,
+        revived.staging.jobId,
+        revived.communitySourceData,
+      )
+    }
+    return revived
   }
 
   override async replace(

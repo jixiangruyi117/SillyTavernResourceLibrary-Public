@@ -210,6 +210,22 @@ export function useAiTaggingPanel(
     })
   })
 
+  // 只限制当前页的 DOM 数量；选择范围和 AI 批次仍包含跨页资源。
+  const candidatePage = ref(1)
+  const candidatePageSize = 40
+  const candidatePageCount = computed(() =>
+    Math.max(1, Math.ceil(filteredResources.value.length / candidatePageSize)),
+  )
+  const pageCandidates = computed(() =>
+    filteredResources.value.slice(
+      (candidatePage.value - 1) * candidatePageSize,
+      candidatePage.value * candidatePageSize,
+    ),
+  )
+  watch(filteredResources, () => {
+    candidatePage.value = 1
+  })
+
   const allFilteredSelected = computed(
     () =>
       filteredResources.value.length > 0 &&
@@ -865,6 +881,9 @@ export function useAiTaggingPanel(
     undoing,
     undoLastApplication,
     filteredResources,
+    candidatePage,
+    candidatePageCount,
+    pageCandidates,
     searchQuery,
     typeFilter,
     resourceTypes,

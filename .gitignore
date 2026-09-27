@@ -41,6 +41,7 @@ artifacts/
 
 # Generated Android outputs, test evidence, and Codex-only working files.
 android/.gradle/
+android/.kotlin/
 android/**/build/
 *.apk
 *.aab

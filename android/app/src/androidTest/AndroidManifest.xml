@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver android:name="buzz.jixiangruyi1207.srl.ArchiveTestGrantReceiver" android:exported="true" />
+        <provider
+            android:name="buzz.jixiangruyi1207.srl.ArchiveTestDocumentsProvider"
+            android:authorities="srl.archive.checkpoint.tests"
+            android:exported="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

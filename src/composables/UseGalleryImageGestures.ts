@@ -141,6 +141,9 @@ export function useGalleryImageGestures(
     const image = event.target as HTMLImageElement
     natural.value = { width: image.naturalWidth, height: image.naturalHeight }
   }
+  function dimensions(width: number, height: number) {
+    natural.value = { width, height }
+  }
   function fitWidth() {
     zoom(size.value.width / (base.value.width || 1))
     y.value = Math.max(0, (base.value.height * scale.value - size.value.height) / 2)
@@ -175,6 +178,15 @@ export function useGalleryImageGestures(
     reset,
     zoom,
     loaded,
+    dimensions,
+    geometry: computed(() => ({
+      viewportWidth: size.value.width,
+      viewportHeight: size.value.height,
+      width: base.value.width * scale.value,
+      height: base.value.height * scale.value,
+      x: x.value,
+      y: y.value,
+    })),
     fitWidth,
     down,
     move,

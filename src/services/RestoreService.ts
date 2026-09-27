@@ -41,14 +41,12 @@ import {
 } from '../types/Resource'
 export { selectPreparedRestore } from './BackupRestoreSelection'
 import { createImageThumbnail } from '../utils/createImageThumbnail'
+import { openArchiveFiles, readCommunitySourceSidecar } from './RestoreFileSession'
 import { isValidFolderCoverDataUrl } from '../utils/FolderCover'
 import { isRecord } from '../utils/UnknownValue'
 import type { NativeBackedResourceRecord } from '../types/Vault'
 import { readNativeRestoredCardMetadata, type NativeRestoreMetadata } from './NativeCloudTransfer'
-import {
-  parseCommunitySourceBackupData,
-  remapCommunitySourceBackupBindings,
-} from './CommunitySourceBackupService'
+import { remapCommunitySourceBackupBindings } from './CommunitySourceBackupService'
 import type { CommunitySourceService } from './CommunitySourceService'
 import type { CommunitySourceBackupData } from '../types/CommunitySource'
 
@@ -211,32 +209,6 @@ function parseManifest(manifestBytes: Uint8Array): ArchiveManifest {
   return parsed as unknown as ArchiveManifest
 }
 
-async function readCommunitySourceSidecar(
-  jobId: string,
-  manifest: ArchiveManifest,
-  staging: RestoreStagingStore,
-): Promise<CommunitySourceBackupData | undefined> {
-  const descriptor = manifest.communitySources
-  if (!descriptor) return undefined
-  const entry = await staging.get(jobId, COMMUNITY_SOURCE_ARCHIVE_PATH)
-  if (!entry) throw new Error('备份声明包含 Discord 正文，但缺少 community-sources.json')
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(await entry.blob.text())
-  } catch {
-    throw new Error('Discord 社区来源备份不是有效 JSON')
-  }
-  const data = parseCommunitySourceBackupData(parsed)
-  if (
-    data.sources.length !== descriptor.sourceCount ||
-    data.messages.length !== descriptor.messageCount ||
-    data.bindings.length !== descriptor.bindingCount
-  ) {
-    throw new Error('Discord 社区来源备份数量与清单不一致')
-  }
-  return data
-}
-
 function remapManualBindings(
   metadata: Record<string, unknown>,
   ids: Map<string, string>,
@@ -273,7 +245,7 @@ function existingGalleryOwners(
 
 export class RestoreService {
   private readonly storage: ArchiveStorageAdapter
-  private readonly staging: RestoreStagingStore
+  protected readonly staging: RestoreStagingStore
   private readonly communitySources?: Pick<CommunitySourceService, 'restoreBackup'>
 
   constructor(
@@ -290,6 +262,30 @@ export class RestoreService {
     return this.storage.canRestoreNative?.() === true && Boolean(this.storage.restoreNative)
   }
 
+  isRestoreCommitted(checkpointId: string): Promise<boolean> {
+    return this.storage.isRestoreCommitted?.(checkpointId) ?? Promise.resolve(false)
+  }
+
+  clearRestoreCheckpoint(checkpointId: string): Promise<void> {
+    return this.storage.clearRestoreCheckpoint?.(checkpointId) ?? Promise.resolve()
+  }
+
+  revivePrepared(prepared: PreparedRestore): PreparedRestore {
+    if (!prepared.staging) throw new Error('恢复任务缺少已校验文件引用')
+    const { jobId, paths } = prepared.staging
+    return {
+      ...prepared,
+      resources: prepared.resources.map((resource) => ({ ...resource, originalBlob: new Blob() })),
+      versions: prepared.versions.map((resource) => ({ ...resource, originalBlob: new Blob() })),
+      openFiles: () => openArchiveFiles(this.staging, jobId, new Map(paths), prepared.resources),
+      dispose: () => this.staging.deleteJob(jobId),
+    }
+  }
+
+  async resumePrepared(prepared: PreparedRestore): Promise<PreparedRestore> {
+    return this.revivePrepared(prepared)
+  }
+
   async prepare(
     file: File,
     existingResources: ResourceSummary[],
@@ -297,7 +293,7 @@ export class RestoreService {
     deferFiles = false,
     onProgress?: (progress: ArchiveStageProgress) => void,
   ): Promise<PreparedRestore> {
-    const jobId = await stageArchive(file, this.staging, () => true, onProgress)
+    const jobId = await stageArchive(file, this.staging, undefined, onProgress)
     let retainedStaging = false
     try {
       const manifestEntry = await this.staging.get(jobId, 'manifest.json')
@@ -530,13 +526,14 @@ export class RestoreService {
       ]),
     )
     const prepared: PreparedRestore = {
+      staging: deferFiles ? { jobId, paths: [...files] } : undefined,
       forReplacement:
         deferFiles && manifest.mode === 'full' && !replacement
           ? () =>
               this.prepareStaged(fileName, jobId, manifest, communitySourceData, [], [], true, true)
           : undefined,
       openFiles: deferFiles
-        ? () => this.openArchiveFiles(jobId, files, normalizedResources)
+        ? () => openArchiveFiles(this.staging, jobId, files, normalizedResources)
         : undefined,
       dispose: deferFiles ? () => this.staging.deleteJob(jobId) : undefined,
       preview: {
@@ -569,50 +566,6 @@ export class RestoreService {
       communitySourceData: mappedCommunitySourceData,
     }
     return prepared
-  }
-
-  private async openArchiveFiles(
-    jobId: string,
-    paths: Map<string, string>,
-    resources: Resource[],
-  ): Promise<{ hydrate: (resource: Resource) => Promise<Resource>; dispose: () => Promise<void> }> {
-    const materialize = async (resource: Resource): Promise<Resource> => {
-      const path = paths.get(resource.contentHash.toLowerCase())
-      const entry = path ? await this.staging.get(jobId, path) : undefined
-      if (
-        !entry ||
-        entry.size !== resource.fileSize ||
-        entry.sha256 !== resource.contentHash.toLowerCase()
-      )
-        throw new Error(`备份原文件校验失败：${resource.fileName}`)
-      const originalBlob = entry.blob.slice(0, entry.blob.size, resource.mimeType)
-      const avatar = isUserPersonaAvatarAttachment(resource)
-      const thumbnailBlob =
-        (resource.type === RESOURCE_TYPE.CHARACTER_CARD || avatar) &&
-        (resource.mimeType === 'image/png' || /\.png$/iu.test(resource.fileName))
-          ? ((await createImageThumbnail(originalBlob)) ?? (avatar ? originalBlob : undefined))
-          : undefined
-      return { ...resource, originalBlob, thumbnailBlob }
-    }
-    return {
-      dispose: () => this.staging.deleteJob(jobId),
-      hydrate: async (resource) => {
-        const ready = await materialize(resource)
-        if (resource.type === RESOURCE_TYPE.USER_PERSONA) {
-          const avatars = resources.filter(
-            (candidate) =>
-              resource.relatedResourceIds?.includes(candidate.id) &&
-              isUserPersonaAvatarAttachment(candidate),
-          )
-          const cover =
-            avatars.find(
-              (avatar) => avatar.metadata.avatarId === resource.metadata.defaultPersonaAvatarId,
-            ) ?? avatars[0]
-          if (cover) ready.thumbnailBlob = (await materialize(cover)).thumbnailBlob
-        }
-        return ready
-      },
-    }
   }
 
   async prepareStructured(
@@ -920,10 +873,11 @@ export class RestoreService {
             }
           : undefined,
         onProgress,
+        prepared.checkpointId,
       )
       restored = true
     } finally {
-      if (restored) await session?.dispose()
+      if (restored && !prepared.checkpointId) await session?.dispose()
     }
     if (prepared.communitySourceData && this.communitySources) {
       await this.communitySources.restoreBackup(prepared.communitySourceData, 'merge')
@@ -1015,10 +969,11 @@ export class RestoreService {
             }
           : undefined,
         onProgress,
+        prepared.checkpointId,
       )
       replaced = true
     } finally {
-      if (replaced) await session?.dispose()
+      if (replaced && !prepared.checkpointId) await session?.dispose()
     }
     if (prepared.communitySourceData && this.communitySources) {
       await this.communitySources.restoreBackup(prepared.communitySourceData, 'replace')

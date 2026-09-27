@@ -20,6 +20,9 @@ const {
   undoing,
   undoLastApplication,
   filteredResources,
+  candidatePage,
+  candidatePageCount,
+  pageCandidates,
   searchQuery,
   typeFilter,
   resourceTypes,
@@ -470,7 +473,7 @@ function selectRuleTemplate(event: Event): void {
           </section>
           <div class="ai-tagging__candidate-list">
             <label
-              v-for="resource in filteredResources"
+              v-for="resource in pageCandidates"
               :key="resource.id"
               class="ai-tagging__candidate"
               :class="{ 'is-selected': selectedIds.has(resource.id) }"
@@ -498,6 +501,23 @@ function selectRuleTemplate(event: Event): void {
               当前筛选条件下没有资源。
             </p>
           </div>
+          <nav
+            v-if="candidatePageCount > 1"
+            class="ai-tagging__pagination"
+            aria-label="待识别资源分页"
+          >
+            <button type="button" :disabled="candidatePage <= 1" @click="candidatePage--">
+              上一页
+            </button>
+            <span>{{ candidatePage }} / {{ candidatePageCount }} 页</span>
+            <button
+              type="button"
+              :disabled="candidatePage >= candidatePageCount"
+              @click="candidatePage++"
+            >
+              下一页
+            </button>
+          </nav>
         </section>
       </template>
 

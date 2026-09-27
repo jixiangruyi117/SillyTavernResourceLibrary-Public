@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
+import { rememberNativeFile } from './NativeFileSource'
 
 interface NativePickedFile {
   cancelled: boolean
@@ -31,5 +32,8 @@ export async function pickNativeImage(): Promise<File | null> {
   const blob = await response.blob()
   const type = picked.mimeType || blob.type || 'application/octet-stream'
   if (!type.startsWith('image/')) throw new Error('系统返回的文件不是图片')
-  return new File([blob], picked.name || 'image', { type, lastModified: Date.now() })
+  return rememberNativeFile(
+    new File([blob], picked.name || 'image', { type, lastModified: Date.now() }),
+    picked.uri,
+  )
 }

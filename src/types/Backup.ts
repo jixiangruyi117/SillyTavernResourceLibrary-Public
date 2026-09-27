@@ -171,6 +171,9 @@ export interface RestorePreview {
 }
 
 export interface PreparedRestore {
+  /** Durable plan references; file bodies remain in the existing staging owner. */
+  staging?: { jobId: string; paths: [string, string][] }
+  checkpointId?: string
   /** Replans the verified archive against an empty library before a full replacement. */
   forReplacement?: () => Promise<PreparedRestore>
   /** Opens staged, verified entries for the commit, then releases their bounded temporary data. */

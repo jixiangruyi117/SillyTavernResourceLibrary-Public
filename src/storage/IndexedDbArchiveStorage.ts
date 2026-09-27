@@ -95,14 +95,41 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     return this.vault?.isEnabled() !== true
   }
 
+  async isRestoreCommitted(checkpointId: string): Promise<boolean> {
+    return (
+      (await this.database.settings.get(`archive-restore-commit:${checkpointId}`))?.value === true
+    )
+  }
+
+  async clearRestoreCheckpoint(checkpointId: string): Promise<void> {
+    await this.database.transaction(
+      'rw',
+      this.database.settings,
+      this.database.restoreStaging,
+      async () => {
+        await this.database.settings.delete(`archive-restore-commit:${checkpointId}`)
+        await this.database.restoreStaging.where('jobId').equals(`commit:${checkpointId}`).delete()
+      },
+    )
+  }
+
   async restore(
     categories: Category[],
     resources: Resource[],
     versions: Resource[] = [],
     hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void> {
-    await this.writeResources(categories, resources, versions, hydrate, false, onProgress)
+    await this.writeResources(
+      categories,
+      resources,
+      versions,
+      hydrate,
+      false,
+      onProgress,
+      checkpointId,
+    )
   }
 
   private async writeResources(
@@ -112,6 +139,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     hydrate: (resource: Resource) => Promise<Resource>,
     replace = false,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void> {
     await this.restoreStaged(
       categories,
@@ -129,6 +157,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
       undefined,
       replace,
       onProgress,
+      checkpointId,
     )
   }
 
@@ -173,11 +202,13 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     beforeCommit?: () => Promise<unknown>,
     replace = false,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void> {
+    if (checkpointId && (await this.isRestoreCommitted(checkpointId))) return
     const storedCategories = this.vault
       ? await Promise.all(categories.map((category) => this.vault!.encodeCategory(category)))
       : categories
-    const jobId = crypto.randomUUID()
+    const jobId = checkpointId ? `commit:${checkpointId}` : crypto.randomUUID()
     try {
       // Release each hydrated body after IndexedDB has cloned it. The plan stays lightweight.
       const total = resources.length + versions.length
@@ -197,15 +228,30 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
             total,
             fileName: records[index]!.fileName,
           })
-          const record = await prepare(records[index]!)
-          await this.database.restoreStaging.put({
-            jobId,
-            path: `${scope}/${index}`,
-            size: records[index]!.fileSize,
-            sha256: records[index]!.contentHash,
-            updatedAt: Date.now(),
-            record,
-          })
+          const previous = checkpointId
+            ? await this.database.restoreStaging.get([jobId, `${scope}/${index}`])
+            : undefined
+          const planned = records[index]!
+          if (
+            previous &&
+            (previous.sha256 !== planned.contentHash ||
+              previous.size !== planned.fileSize ||
+              previous.record?.resource.id !== planned.id ||
+              previous.record.resource.updatedAt !== planned.updatedAt)
+          ) {
+            throw new Error('恢复检查点与当前计划不一致，请重新预检')
+          }
+          if (!previous?.record) {
+            const record = await prepare(planned)
+            await this.database.restoreStaging.put({
+              jobId,
+              path: `${scope}/${index}`,
+              size: records[index]!.fileSize,
+              sha256: records[index]!.contentHash,
+              updatedAt: Date.now(),
+              record,
+            })
+          }
           prepared += 1
           onProgress?.({
             phase: 'prepare',
@@ -226,8 +272,10 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
           this.database.resourceVersions,
           this.database.resourceVersionSummaries,
           this.database.restoreStaging,
+          this.database.settings,
         ],
         async () => {
+          if (checkpointId && (await this.isRestoreCommitted(checkpointId))) return
           if (replace) {
             await this.database.categories.clear()
             await this.database.resources.clear()
@@ -294,6 +342,12 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
               })
             }
           }
+          if (checkpointId)
+            await this.database.settings.put({
+              id: `archive-restore-commit:${checkpointId}`,
+              value: true,
+              updatedAt: Date.now(),
+            })
         },
       )
     } catch (error) {
@@ -312,7 +366,7 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
       }
       throw error
     } finally {
-      await this.database.restoreStaging.where('jobId').equals(jobId).delete()
+      if (!checkpointId) await this.database.restoreStaging.where('jobId').equals(jobId).delete()
     }
   }
 
@@ -322,8 +376,17 @@ export class IndexedDbArchiveStorage implements ArchiveStorageAdapter {
     versions: Resource[] = [],
     hydrate: (resource: Resource) => Promise<Resource> = async (resource) => resource,
     onProgress?: (progress: ArchiveRestoreProgress) => void,
+    checkpointId?: string,
   ): Promise<void> {
-    await this.writeResources(categories, resources, versions, hydrate, true, onProgress)
+    await this.writeResources(
+      categories,
+      resources,
+      versions,
+      hydrate,
+      true,
+      onProgress,
+      checkpointId,
+    )
   }
 }
 

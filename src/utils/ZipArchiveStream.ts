@@ -7,6 +7,7 @@ const DEFLATE_READ_BATCH_BYTES = 512 * 1024
 export async function* zipArchiveChunks(
   file: Blob,
   onPlan?: (plan: { entries: number; uncompressedBytes: number }) => void,
+  headersOnly = false,
 ): AsyncGenerator<Uint8Array> {
   const read = async (offset: number, length: number) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > file.size)
@@ -153,6 +154,7 @@ export async function* zipArchiveChunks(
     headerView.setUint32(22, entry.original, true)
     previousEnd = entry.offset + headerSize + entry.compressed
     if (previousEnd > directoryOffset) throw new Error('ZIP 条目越界')
+    if (headersOnly) continue
     yield header
     if (entry.method === 8) {
       // Keep inflater turns bounded while avoiding a separate Blob read for every

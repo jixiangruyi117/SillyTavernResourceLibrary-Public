@@ -1,7 +1,6 @@
 package buzz.jixiangruyi1207.srl;
 
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.util.Base64;
 import java.io.File;
 import java.io.FileInputStream;
@@ -98,31 +97,9 @@ final class NativeCloudCardMetadata {
     }
 
     static String createCharacterCardThumbnail(File file) throws Exception {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-        int sample = 1;
-        while (Math.max(bounds.outWidth / sample, bounds.outHeight / sample) > CARD_THUMBNAIL_EDGE * 2) {
-            sample *= 2;
-        }
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sample;
-        Bitmap decoded = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-        if (decoded == null) return null;
-        Bitmap thumbnail = decoded;
+        Bitmap thumbnail = NativeImageDecoder.thumbnail(file, CARD_THUMBNAIL_EDGE);
+        if (thumbnail == null) return null;
         try {
-            int width = decoded.getWidth();
-            int height = decoded.getHeight();
-            double scale = Math.min(1.0, (double) CARD_THUMBNAIL_EDGE / Math.max(width, height));
-            if (scale < 1.0) {
-                thumbnail = Bitmap.createScaledBitmap(
-                    decoded,
-                    Math.max(1, (int) Math.round(width * scale)),
-                    Math.max(1, (int) Math.round(height * scale)),
-                    true
-                );
-            }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             if (!thumbnail.compress(Bitmap.CompressFormat.PNG, 100, output)) return null;
             byte[] bytes = output.toByteArray();
@@ -131,8 +108,7 @@ final class NativeCloudCardMetadata {
             }
             return Base64.encodeToString(bytes, Base64.NO_WRAP);
         } finally {
-            if (thumbnail != decoded) thumbnail.recycle();
-            decoded.recycle();
+            thumbnail.recycle();
         }
     }
 

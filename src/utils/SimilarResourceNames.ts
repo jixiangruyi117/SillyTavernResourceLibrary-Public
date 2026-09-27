@@ -2,6 +2,8 @@ import type { ResourceSummary } from '../types/Resource'
 
 export type SimilarNameMode = 'precise' | 'broad'
 
+const nameCollator = new Intl.Collator('zh-CN')
+
 export interface SimilarResourceNameGroup {
   id: string
   /** 原始资源名称，按字典序排列，供分组列表展示。 */
@@ -143,10 +145,10 @@ export function findSimilarResourceNameGroups(
     .map((group) => {
       const sortedResources = [...group].sort(
         (left, right) =>
-          left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id),
+          nameCollator.compare(left.name, right.name) || left.id.localeCompare(right.id),
       )
       const distinctNames = [...new Set(sortedResources.map((resource) => resource.name))].sort(
-        (left, right) => left.localeCompare(right, 'zh-CN'),
+        nameCollator.compare,
       )
       return {
         id: sortedResources
@@ -160,6 +162,6 @@ export function findSimilarResourceNameGroups(
     .sort(
       (left, right) =>
         right.resources.length - left.resources.length ||
-        left.names[0].localeCompare(right.names[0], 'zh-CN'),
+        nameCollator.compare(left.names[0], right.names[0]),
     )
 }

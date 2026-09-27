@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { computeWorkerPool } from '../core/ComputeWorkerPool'
+import { hashNativeFile } from '../core/NativeFileSource'
 
 const WEB_CRYPTO_LIMIT = 4 * 1024 * 1024
 
@@ -89,6 +90,8 @@ export async function hashBytes(bytes: Uint8Array): Promise<string> {
 }
 
 export async function hashBlob(blob: Blob): Promise<string> {
+  const nativeHash = await hashNativeFile(blob)
+  if (nativeHash) return nativeHash
   if (blob.size <= WEB_CRYPTO_LIMIT) {
     return arrayBufferToHex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))
   }

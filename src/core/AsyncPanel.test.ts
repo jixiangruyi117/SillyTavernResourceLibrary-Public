@@ -27,6 +27,31 @@ async function settle(): Promise<void> {
 }
 
 describe('createAsyncPanel', () => {
+  it('弹窗加载占位在顶层并可取消，下载稍后完成不会重新打开', async () => {
+    let resolveModule!: (value: { default: typeof LoadedPanel }) => void
+    const close = vi.fn()
+    const Panel = createAsyncPanel(
+      'AI 标签实验台',
+      () =>
+        new Promise<{ default: typeof LoadedPanel }>((resolve) => {
+          resolveModule = resolve
+        }),
+      { modal: true },
+    )
+    const wrapper = mount(defineComponent({ render: () => h(Panel, { onClose: close }) }))
+    await nextTick()
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('正在打开AI 标签实验台')
+    expect(dialog.closest('.editor-overlay')?.parentElement).toBe(document.body)
+    ;(dialog.querySelector('button') as HTMLButtonElement).click()
+    expect(close).toHaveBeenCalledOnce()
+    wrapper.unmount()
+    resolveModule(loadedModule)
+    await flushPromises()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('面板内容')
+  })
+
   it('模块尚未返回时显示明确加载状态，而不是空白页', async () => {
     let resolveModule!: (value: { default: typeof LoadedPanel }) => void
     const Panel = createAsyncPanel(

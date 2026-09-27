@@ -13,6 +13,7 @@ import type {
 
 /** ZIP encoding owns backpressure; selection and resource mutation stay in ExportService. */
 export interface ArchiveTransferOptions {
+  createdAt?: string
   signal?: AbortSignal
   onProgress?: (progress: { writtenBytes: number; fileName?: string }) => void
 }
@@ -85,59 +86,13 @@ export async function encodeArchive(
     }
   }
   try {
-    const descriptors = [new Map<string, Blob>(), new Map<string, Blob>()] as const
-    const entries: [Resource, boolean][] = [
-      ...options.resources.map((resource): [Resource, boolean] => [resource, false]),
-      ...options.versions.map((resource): [Resource, boolean] => [resource, true]),
-    ]
-    entries.sort(([a, av], [b, bv]) => options.path(a, av).localeCompare(options.path(b, bv)))
-    for (const [planned, historical] of entries) {
-      throwIfArchiveAborted(options.signal)
-      const resource = await options.read(planned, historical)
-      throwIfArchiveAborted(options.signal)
-      const entry =
-        /^(image\/(png|jpeg|webp|gif)|audio\/|video\/)/i.test(resource.mimeType) ||
-        /\.(png|jpe?g|webp|gif|zip|gz|7z|rar|mp[34]|ogg|webm)$/i.test(resource.fileName)
-          ? new ZipPassThrough(options.path(resource, historical))
-          : new ZipDeflate(options.path(resource, historical), { level: 1 })
-      entry.mtime = new Date(
-        Number.isFinite(resource.updatedAt)
-          ? Math.min(Date.UTC(2107, 11, 31), Math.max(Date.UTC(1980, 0, 1), resource.updatedAt))
-          : Date.UTC(1980, 0, 1),
-      )
-      await push(entry, resource.originalBlob)
-      descriptors[historical ? 1 : 0].set(
-        resource.id,
-        new Blob([JSON.stringify(options.describe(resource, historical))]),
-      )
-    }
-    for (const attachment of options.communitySourceAttachments) {
-      const entry = new ZipPassThrough(
-        `${COMMUNITY_SOURCE_ATTACHMENT_ARCHIVE_PREFIX}${attachment.assetId}`,
-      )
-      entry.mtime = new Date(options.manifest.createdAt)
-      await push(entry, attachment.blob)
-    }
-    if (options.communitySourceData) {
-      const entry = new ZipDeflate(COMMUNITY_SOURCE_ARCHIVE_PATH, { level: 1 })
-      entry.mtime = new Date(options.manifest.createdAt)
-      await push(entry, new Blob([JSON.stringify(options.communitySourceData)]))
-    }
-    const { resources: _resources, versions: _versions, ...header } = options.manifest
-    const parts: BlobPart[] = [JSON.stringify(header).slice(0, -1)]
-    for (const [index, key] of ['resources', 'versions'].entries()) {
-      parts.push(`,"${key}":[`)
-      for (const [position, resource] of (index ? options.versions : options.resources).entries()) {
-        const descriptor = descriptors[index]!.get(resource.id)!
-        if (position) parts.push(',')
-        parts.push(descriptor)
-      }
-      parts.push(']')
-    }
-    parts.push('}')
-    const manifestEntry = new ZipDeflate('manifest.json', { level: 1 })
-    manifestEntry.mtime = new Date(options.manifest.createdAt)
-    await push(manifestEntry, new Blob(parts))
+    await writeArchiveEntries(options, {
+      write: async (path, blob, info) => {
+        const entry = info.compress ? new ZipDeflate(path, { level: 1 }) : new ZipPassThrough(path)
+        entry.mtime = new Date(info.mtime)
+        await push(entry, blob)
+      },
+    })
     throwIfArchiveAborted(options.signal)
     archive.end()
     await writeChain
@@ -192,4 +147,85 @@ export async function streamArchive(options: ArchiveEncoding): Promise<Blob> {
   } finally {
     writer?.releaseLock()
   }
+}
+
+export interface ArchiveEntryInfo {
+  mtime: number
+  compress: boolean
+  descriptor?: ArchivedResource
+}
+export interface ArchiveEntryWriter {
+  cached?(path: string): Promise<ArchivedResource | undefined>
+  write(path: string, blob: Blob, info: ArchiveEntryInfo): Promise<void>
+}
+
+/** Both native checkpoint compression and web ZIP encoding use the same manifest traversal. */
+export async function writeArchiveEntries(
+  options: ArchiveEncoding,
+  writer: ArchiveEntryWriter,
+): Promise<string[]> {
+  const paths: string[] = []
+  const emit = async (path: string, blob: Blob, info: ArchiveEntryInfo) => {
+    throwIfArchiveAborted(options.signal)
+    await writer.write(path, blob, info)
+    throwIfArchiveAborted(options.signal)
+    paths.push(path)
+  }
+  const descriptors = [new Map<string, Blob>(), new Map<string, Blob>()] as const
+  const entries: [Resource, boolean][] = [
+    ...options.resources.map((resource): [Resource, boolean] => [resource, false]),
+    ...options.versions.map((resource): [Resource, boolean] => [resource, true]),
+  ]
+  entries.sort(([a, av], [b, bv]) => options.path(a, av).localeCompare(options.path(b, bv)))
+  for (const [planned, historical] of entries) {
+    throwIfArchiveAborted(options.signal)
+    const path = options.path(planned, historical)
+    const cached = await writer.cached?.(path)
+    if (cached) {
+      descriptors[historical ? 1 : 0].set(planned.id, new Blob([JSON.stringify(cached)]))
+      paths.push(path)
+      continue
+    }
+    const resource = await options.read(planned, historical)
+    throwIfArchiveAborted(options.signal)
+    const descriptor = options.describe(resource, historical)
+    const compress = !(
+      /^(image\/(png|jpeg|webp|gif)|audio\/|video\/)/i.test(resource.mimeType) ||
+      /\.(png|jpe?g|webp|gif|zip|gz|7z|rar|mp[34]|ogg|webm)$/i.test(resource.fileName)
+    )
+    const mtime = Number.isFinite(resource.updatedAt)
+      ? Math.min(Date.UTC(2107, 11, 31), Math.max(Date.UTC(1980, 0, 1), resource.updatedAt))
+      : Date.UTC(1980, 0, 1)
+    await emit(path, resource.originalBlob, { compress, mtime, descriptor })
+    descriptors[historical ? 1 : 0].set(resource.id, new Blob([JSON.stringify(descriptor)]))
+  }
+  for (const attachment of options.communitySourceAttachments) {
+    await emit(COMMUNITY_SOURCE_ATTACHMENT_ARCHIVE_PREFIX + attachment.assetId, attachment.blob, {
+      compress: false,
+      mtime: Date.parse(options.manifest.createdAt),
+    })
+  }
+  if (options.communitySourceData)
+    await emit(
+      COMMUNITY_SOURCE_ARCHIVE_PATH,
+      new Blob([JSON.stringify(options.communitySourceData)]),
+      { compress: true, mtime: Date.parse(options.manifest.createdAt) },
+    )
+  const { resources: _resources, versions: _versions, ...header } = options.manifest
+  const parts: BlobPart[] = [JSON.stringify(header).slice(0, -1)]
+  for (const [index, key] of ['resources', 'versions'].entries()) {
+    parts.push(`,"${key}":[`)
+    for (const [position, resource] of (index ? options.versions : options.resources).entries()) {
+      const descriptor = descriptors[index]!.get(resource.id)!
+      if (position) parts.push(',')
+      parts.push(descriptor)
+    }
+    parts.push(']')
+  }
+  parts.push('}')
+  await emit('manifest.json', new Blob(parts), {
+    compress: true,
+    mtime: Date.parse(options.manifest.createdAt),
+  })
+  return paths
 }
