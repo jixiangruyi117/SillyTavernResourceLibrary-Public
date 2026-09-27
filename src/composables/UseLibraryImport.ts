@@ -253,7 +253,19 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       }
       handlingSharedImport = true
       try {
-        return await importTavernBackupFile(files[0]!)
+        const file = files[0]!
+        const kind = await resourceArchiveService.inspect(file)
+        if (kind === 'library') {
+          context.pendingBackupImport.value = file
+          context.openRestorePanel('import')
+          await context.handleRestoreInspect(file)
+          return true
+        }
+        if (kind !== 'tavern') {
+          context.showNotice('这个 ZIP 不是 SillyTavern 备份，请使用“导入本地资源 / 备份”。')
+          return false
+        }
+        return await importTavernBackupFile(file)
       } finally {
         handlingSharedImport = false
       }
@@ -272,9 +284,27 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           return false
         }
         const file = files[0]!
-        // The user's explicit route owns the parser. Do not run the generic ZIP
-        // classifier here: it also recognizes Tavern directory names and can
-        // mislabel an SRL archive before the restore service reads its manifest.
+        // Android route records the entry point, not the archive's authoritative type.
+        // Inspect once before dispatch so a stale/misrouted shortcut cannot force a
+        // Tavern ZIP into the SRL restore path. SRL manifests still take precedence
+        // inside ResourceArchiveService, so library archives containing Tavern-like
+        // directory names remain library backups.
+        updateImportTask(operationId, { phase: '核对备份包实际结构' })
+        const kind = await resourceArchiveService.inspect(file, (progress) =>
+          reportArchiveProgress(operationId, progress),
+        )
+        if (kind === 'tavern') {
+          taskCenter.complete(operationId)
+          await stopImportTask(operationId)
+          handlingSharedImport = false
+          return await importTavernBackupFile(file)
+        }
+        if (kind !== 'library') {
+          const error = new Error('这个 ZIP 不是资源库备份，请使用“导入本地资源 / 备份”。')
+          taskCenter.fail(operationId, error)
+          context.showNotice(error.message, 9000)
+          return false
+        }
         updateImportTask(operationId, { phase: '交由资源库恢复器预检' })
         context.pendingBackupImport.value = file
         context.openRestorePanel('import')
