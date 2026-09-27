@@ -54,7 +54,8 @@ public class NativeImagesPlugin extends Plugin {
     public void createThumbnail(PluginCall call) {
         runIo(call, () -> {
             File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
-            if (file.length() != call.getLong("size", -1L)) throw new IllegalStateException("原生文件大小已变化");
+            long expectedSize = NativeBridgeNumber.bounded(call.getData().opt("size"), 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "原生文件大小无效");
+            if (file.length() != expectedSize) throw new IllegalStateException("原生文件大小已变化");
             int edge = Math.max(32, Math.min(768, call.getInt("maxEdge", 640)));
             int quality = (int) Math.round(Math.max(0.5, Math.min(0.95, call.getDouble("quality", 0.82))) * 100);
             android.graphics.Bitmap thumbnail = NativeImageDecoder.thumbnail(file, edge);
