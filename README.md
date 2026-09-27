@@ -228,14 +228,13 @@ Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。�
 
 ### 打包网页功能的离线 APK（推荐）
 
-先按上文部署同一版本的 Worker。以下 PowerShell 示例中的地址和路径均替换为自己的配置，不写入源码：
+先确定自己的 Worker 地址。以下 PowerShell 示例中的地址和路径均替换为自己的配置，不写入源码：
 
 ```powershell
 pnpm install --frozen-lockfile
 $env:JAVA_HOME = 'X:\Android\jbr'
 $env:ANDROID_HOME = 'X:\Android\Sdk'
 $env:SRL_PUBLIC_ORIGIN = 'https://你的-worker.workers.dev'
-pnpm android:sync
 ```
 
 `SRL_PUBLIC_ORIGIN` 只设置 APK 本地 WebView 的来源，首页仍来自 APK 内置文件，不是在线网页套壳；可选功能包从自己的站点下载。不配置时使用本机 `localhost` 来源，仅能保证核心本地资源库，可选功能包没有有效下载站点。首次发行后保持应用 ID、此来源和签名不变，以保证覆盖升级继续读取原数据库。不要使用 `CAPACITOR_SERVER_URL` / Remote 模式制作离线发行包。
@@ -258,6 +257,8 @@ pnpm android:apk -Mode Packaged -Variant Release
 ```
 
 如果 key 密码不同，单独输入 `SRL_ANDROID_RELEASE_KEY_PASSWORD`。产物为 `android/app/build/outputs/apk/release/app-release.apk`；构建脚本执行签名验证。在工作目录 `android/` 运行 `./gradlew :app:lintRelease`（Windows PowerShell 使用 `.\gradlew.bat :app:lintRelease`），并用 SDK 的 `apksigner verify --verbose --print-certs` 核对后续版本证书与首次发行一致。APK 包名/图标、首次断网打开和已安装功能的离线访问需要安装验证。
+
+APK 构建脚本已生成网页并同步到 Android。签名包完成后，再按上文的 `pnpm exec wrangler deploy --config wrangler.jsonc` 部署此时的 `dist/`，并回读当前 buildId 的 catalog 与每个 `.srlapp` 大小、SHA-256。不要在两者之间重新运行 `pnpm build` 或 `pnpm android:sync`，否则功能包哈希可能变化，线上清单与 APK 对应的构建不一致。
 
 关闭构建终端或移除这四个签名环境变量。`.jks`、密码、Wrangler 本地配置、真实私人部署地址和签名 APK 不加入公开仓库；通过发行者自己的私有或单独分发渠道交付。公开源码不会连接作者官方更新服务器，也不提供通用自建 APK 更新服务；后续更新自行拉取源码、用同一密钥重新构建并覆盖安装。
 
