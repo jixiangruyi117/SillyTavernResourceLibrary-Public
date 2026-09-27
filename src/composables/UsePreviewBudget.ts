@@ -9,6 +9,7 @@ export function usePreviewBudget(
   name: string,
   requested: WatchSource<boolean>,
   host?: Readonly<Ref<Element | null | undefined>>,
+  retainWhileHidden?: () => boolean,
 ): { previewEnabled: Ref<boolean> } {
   const previewEnabled = ref(false)
   const scope = new ResourceScope()
@@ -32,7 +33,12 @@ export function usePreviewBudget(
   onMounted(() => {
     nextPreviewId += 1
     lease = previewBudget.register(`${name}:${nextPreviewId}`, {
-      suspend: () => (previewEnabled.value = false),
+      suspend: () => {
+        // Stateful readers survive a brief app switch; the existing release budget
+        // still reclaims them after a prolonged absence or memory pressure.
+        if (document.visibilityState === 'hidden' && retainWhileHidden?.()) return
+        previewEnabled.value = false
+      },
       release: () => (previewEnabled.value = false),
       resume: () => (previewEnabled.value = true),
     })

@@ -99,6 +99,7 @@ const { previewEnabled } = usePreviewBudget(
   'external-app',
   computed(() => Boolean(app.value)),
   previewHost,
+  () => isBuiltinReader.value,
 )
 const permissionRequest = ref<{
   appId: string
