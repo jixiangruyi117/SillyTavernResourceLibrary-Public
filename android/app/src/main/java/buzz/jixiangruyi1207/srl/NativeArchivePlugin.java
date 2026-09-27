@@ -53,7 +53,10 @@ public class NativeArchivePlugin extends Plugin {
     public void stageArchive(PluginCall call) {
         runIo(call, () -> {
             File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
-            if (file.length() != call.getLong("size", -1L)) throw new IllegalStateException("备份文件大小已变化");
+            NativeBridgeNumber.matchingFileSize(
+                call.getData().opt("size"), file.length(), NativeBridgeNumber.MAX_SAFE_INTEGER,
+                "备份文件大小无效", "备份文件大小已变化"
+            );
             call.resolve(NativeArchiveStaging.stage(getContext(), file));
         });
     }

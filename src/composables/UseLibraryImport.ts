@@ -77,6 +77,8 @@ interface ImportTotals {
   firstFailure: string
 }
 
+export type SharedImportOutcome = 'restore' | 'consumed' | 'thirdPartyApp'
+
 export function useLibraryImport(getContext: () => LibraryImportContext) {
   const linkImportUrls = computed(() => splitLinkImportText(getContext().linkImportText.value))
   let handlingSharedImport = false
@@ -238,13 +240,13 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
   async function handleSharedImportChoice(
     files: File[],
     route: 'libraryBackup' | 'tavernBackup' | 'resource' | 'thirdPartyApp',
-  ): Promise<boolean> {
+  ): Promise<SharedImportOutcome | false> {
     const context = getContext()
     if (!files.length || context.isBusy.value || handlingSharedImport) return false
     if (route === 'thirdPartyApp') {
       context.sharedAppImportFiles.value = files
       context.isFeatureHubOpen.value = true
-      return true
+      return 'thirdPartyApp'
     }
     if (route === 'tavernBackup') {
       if (files.length !== 1 || !/\.zip$/i.test(files[0]!.name)) {
@@ -253,7 +255,18 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       }
       handlingSharedImport = true
       try {
-        return await importTavernBackupFile(files[0]!)
+        const file = files[0]!
+        const kind = await resourceArchiveService.inspect(file)
+        if (kind === 'library') {
+          context.pendingBackupImport.value = file
+          await openPendingBackupImport()
+          return 'restore'
+        }
+        if (kind !== 'tavern') {
+          context.showNotice('这个 ZIP 不是 SillyTavern 备份，请使用“导入本地资源 / 备份”。')
+          return false
+        }
+        return (await importTavernBackupFile(file)) ? 'consumed' : false
       } finally {
         handlingSharedImport = false
       }
@@ -272,15 +285,34 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           return false
         }
         const file = files[0]!
-        // The user's explicit route owns the parser. Do not run the generic ZIP
-        // classifier here: it also recognizes Tavern directory names and can
-        // mislabel an SRL archive before the restore service reads its manifest.
+        // Android route records the entry point, not the archive's authoritative type.
+        // Inspect once before dispatch so a stale/misrouted shortcut cannot force a
+        // Tavern ZIP into the SRL restore path. SRL manifests still take precedence
+        // inside ResourceArchiveService, so library archives containing Tavern-like
+        // directory names remain library backups.
+        updateImportTask(operationId, { phase: '核对备份包实际结构' })
+        const kind = await resourceArchiveService.inspect(file, (progress) =>
+          reportArchiveProgress(operationId, progress),
+        )
+        if (kind === 'tavern') {
+          // Hand off ownership before starting the Tavern task. The outer finally
+          // will see an empty foreground task id and therefore cannot stop the new task.
+          taskCenter.complete(operationId)
+          await stopImportTask(operationId)
+          handlingSharedImport = false
+          return (await importTavernBackupFile(file)) ? 'consumed' : false
+        }
+        if (kind !== 'library') {
+          const error = new Error('这个 ZIP 不是资源库备份，请使用“导入本地资源 / 备份”。')
+          taskCenter.fail(operationId, error)
+          context.showNotice(error.message, 9000)
+          return false
+        }
         updateImportTask(operationId, { phase: '交由资源库恢复器预检' })
         context.pendingBackupImport.value = file
-        context.openRestorePanel('import')
         taskCenter.complete(operationId)
-        await context.handleRestoreInspect(file)
-        return true
+        await openPendingBackupImport()
+        return 'restore'
       }
 
       const ordinaryFiles: File[] = []
@@ -317,7 +349,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         `分享资源处理完成：成功 ${totals.imported}，重复 ${totals.duplicate}。`,
         9000,
       )
-      return true
+      return 'consumed'
     } catch (error) {
       taskCenter.fail(operationId, error)
       context.showNotice(error instanceof Error ? error.message : '分享文件识别失败', 9000)

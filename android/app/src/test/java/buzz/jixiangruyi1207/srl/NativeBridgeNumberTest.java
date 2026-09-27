@@ -42,4 +42,23 @@ public class NativeBridgeNumberTest {
             () -> NativeBridgeNumber.bounded(MAX_FILE_BYTES + 1L, 0L, MAX_FILE_BYTES, "invalid")
         );
     }
+
+    @Test
+    public void matchingFileSize_acceptsBridgeNumbersAndRejectsActualChanges() {
+        assertEquals(
+            3L * 1024L * 1024L * 1024L,
+            NativeBridgeNumber.matchingFileSize(
+                3.0d * 1024L * 1024L * 1024L,
+                3L * 1024L * 1024L * 1024L,
+                MAX_FILE_BYTES,
+                "invalid",
+                "changed"
+            )
+        );
+        IllegalStateException error = assertThrows(
+            IllegalStateException.class,
+            () -> NativeBridgeNumber.matchingFileSize(25.0d, 24L, MAX_FILE_BYTES, "invalid", "changed")
+        );
+        assertEquals("changed", error.getMessage());
+    }
 }

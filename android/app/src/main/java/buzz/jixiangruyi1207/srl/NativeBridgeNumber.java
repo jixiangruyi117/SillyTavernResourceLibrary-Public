@@ -22,6 +22,18 @@ final class NativeBridgeNumber {
         return value;
     }
 
+    static long matchingFileSize(
+        Object rawValue,
+        long actualSize,
+        long maximum,
+        String invalidMessage,
+        String changedMessage
+    ) {
+        long expectedSize = bounded(rawValue, 0L, maximum, invalidMessage);
+        if (actualSize != expectedSize) throw new IllegalStateException(changedMessage);
+        return expectedSize;
+    }
+
     static long boundedOrDefault(
         Object rawValue,
         long defaultValue,

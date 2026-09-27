@@ -40,7 +40,10 @@ public class NativeLibraryPlugin extends Plugin {
     public void hashFile(PluginCall call) {
         runIo(call, () -> {
             File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
-            if (file.length() != call.getLong("size", -1L)) throw new IllegalStateException("原生文件大小已变化");
+            NativeBridgeNumber.matchingFileSize(
+                call.getData().opt("size"), file.length(), MAX_FILE_BYTES,
+                "原生文件大小无效", "原生文件大小已变化"
+            );
             JSObject result = new JSObject();
             result.put("hash", NativeFileAccess.hash(file));
             call.resolve(result);

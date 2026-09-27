@@ -423,12 +423,15 @@ export function useApp() {
     // Close the route sheet first so progress and confirmation UI cannot stack on it.
     isImportChooserOpen.value = false
     try {
-      if (!(await handleSharedImportChoice(batch.files, route))) return
-      if (route === 'thirdPartyApp') return
-      if (route === 'libraryBackup') {
+      const outcome = await handleSharedImportChoice(batch.files, route)
+      if (!outcome) return
+      if (outcome === 'thirdPartyApp') return
+      if (outcome === 'restore') {
         // Keep the original shared ZIP until the restore is committed. If Android
         // recreates the WebView while the user is choosing a restore mode, the
-        // staged share can be recognized and preflighted again.
+        // staged share can be recognized and preflighted again. The inspected
+        // archive type owns acknowledgement timing, even when Android's route hint
+        // came from a different import shortcut.
         pendingSharedBackupBatch = batch
         return
       }

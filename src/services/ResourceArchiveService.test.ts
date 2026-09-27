@@ -52,6 +52,16 @@ describe('SillyTavern user archive', () => {
       'DO-NOT-IMPORT',
     )
   })
+  it('prioritizes an SRL manifest when the backup also contains Tavern directories', async () => {
+    const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
+    const archive = zip({
+      'manifest.json': '{"format":"srl-archive"}',
+      'characters/a.json': '{"name":"A"}',
+      'worlds/world.json': '{"entries":{}}',
+    })
+    expect(await service.inspect(archive)).toBe('library')
+    expect((await service.readResourceArchive(archive)).kind).toBe('library')
+  })
   it('extracts multiple ordinary resources from one ZIP without classifying a lone resource folder as Tavern', async () => {
     const service = new ResourceArchiveService(new MemoryRestoreStagingStore())
     const archive = zip({
