@@ -11,7 +11,7 @@ import type { CloudObjectSource } from './CloudStructuredSnapshot'
 interface NativeCloudJobStatus {
   id: string
   provider: CloudBackupProvider
-  status: 'staging' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'staging' | 'queued' | 'running' | 'committing' | 'completed' | 'failed' | 'cancelled'
   completed: number
   total: number
   updatedAt: number
@@ -19,6 +19,7 @@ interface NativeCloudJobStatus {
   resultId?: string
   resultName?: string
   uploadedBytes?: number
+  totalBytes?: number
   httpRequestCount?: number
   retryCount?: number
   networkMs?: number
@@ -91,7 +92,7 @@ interface NativeCloudTransferPlugin {
   getLatestJob(options: {
     provider?: CloudBackupProvider
   }): Promise<(NativeCloudJobStatus & { present: true }) | { present: false }>
-  cancelJob(options: { jobId: string }): Promise<void>
+  cancelJob(options: { jobId: string }): Promise<{ cancelled: boolean; status: string }>
   restoreStructuredFiles(options: {
     config: Record<string, unknown>
     secret: string
@@ -380,9 +381,13 @@ export async function uploadNativeStructuredSnapshot(options: {
         : 0
       const speed =
         state.uploadedBytes && state.networkMs
-          ? ` · ${(state.uploadedBytes / 1024 / 1024 / (state.networkMs / 1000)).toFixed(1)} MB/s`
+          ? ` · ${(state.uploadedBytes / 1024 / 1024 / (state.networkMs / 1000)).toFixed(1)} MiB/s`
           : ''
-      options.onProgress?.(`上传云端 ${percent}%${speed}；Android 切到后台也会继续…`)
+      const transferred =
+        state.totalBytes && state.totalBytes > 0
+          ? ` · ${(state.uploadedBytes ?? 0) / 1024 / 1024 < 10 ? ((state.uploadedBytes ?? 0) / 1024 / 1024).toFixed(1) : Math.round((state.uploadedBytes ?? 0) / 1024 / 1024)} MiB / ${state.totalBytes / 1024 / 1024 < 10 ? (state.totalBytes / 1024 / 1024).toFixed(1) : Math.round(state.totalBytes / 1024 / 1024)} MiB`
+          : ''
+      options.onProgress?.(`正在上传 ${state.completed}/${state.total}（${percent}%）${transferred}${speed}；Android 切到后台也会继续…`)
       if (state.status === 'completed') resolveCompleted(state)
       else if (state.status === 'failed' || state.status === 'cancelled') {
         rejectCompleted(
@@ -461,8 +466,8 @@ export async function uploadNativeStructuredSnapshot(options: {
       staged += 1
       options.onProgress?.(
         pipeline
-          ? `已交给 Android 暂存 ${staged} / ${total} 个对象；后台同步上传中…`
-          : `已交给 Android 暂存 ${staged} / ${total} 个对象…`,
+          ? `正在扫描并暂存 ${staged}/${total}；Android 后台同步上传中…`
+          : `正在扫描并暂存 ${staged}/${total}…`,
       )
     }
     mergeStagingMetrics(await stageObject(jobId, options.manifest, true))
@@ -470,11 +475,11 @@ export async function uploadNativeStructuredSnapshot(options: {
 
     if (pipeline) {
       await nativeTransfer.finishJobStaging({ jobId })
-      options.onProgress?.('全部对象已持久化；Android 会等待内容对象完成后最后提交快照清单…')
+      options.onProgress?.('正在提交快照……全部对象已持久化，等待内容对象上传完成后提交最终清单。')
     } else {
       // 兼容尚未实现流水协议的旧 APK：保持原来的“全部暂存后再启动”行为。
       await nativeTransfer.startJob({ jobId })
-      options.onProgress?.('变更对象已持久化，Android 正在后台上传；快照清单会最后提交…')
+      options.onProgress?.('正在提交快照……变更对象已持久化，等待后台上传完成后提交最终清单。')
     }
 
     return await awaitCompletion(stagingMetrics)
@@ -523,18 +528,19 @@ export async function readNativeRestoredCardMetadata(options: {
   return nativeTransfer.readRestoredCardMetadata(options)
 }
 
-export async function cancelActiveNativeCloudTransfer(): Promise<boolean> {
+export async function cancelActiveNativeCloudTransfer(): Promise<'cancelled' | 'committing' | undefined> {
   let jobId = activeJobId
   if (!jobId && isNativeCloudTransferAvailable()) {
     const latest = await nativeTransfer.getLatestJob({})
-    if (latest.present && ['staging', 'queued', 'running'].includes(latest.status)) {
+    if (latest.present && ['staging', 'queued', 'running', 'committing'].includes(latest.status)) {
       jobId = latest.id
     }
   }
-  if (!jobId) return false
-  activeJobId = ''
-  await nativeTransfer.cancelJob({ jobId })
-  return true
+  if (!jobId) return undefined
+  const result = await nativeTransfer.cancelJob({ jobId })
+  if (!result?.cancelled) return result?.status === 'committing' ? 'committing' : undefined
+  if (activeJobId === jobId) activeJobId = ''
+  return 'cancelled'
 }
 
 export async function saveNativeCloudCredential(

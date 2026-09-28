@@ -59,7 +59,7 @@ describe('NativeCloudTransfer', () => {
     transfer.commitObject.mockResolvedValue(undefined)
     transfer.startJob.mockResolvedValue({ status: 'queued' })
     transfer.finishJobStaging.mockResolvedValue({ status: 'running' })
-    transfer.cancelJob.mockResolvedValue(undefined)
+    transfer.cancelJob.mockResolvedValue({ cancelled: true, status: 'cancelled' })
     transfer.restoreStructuredFiles.mockResolvedValue({
       downloaded: 1,
       reused: 0,
@@ -181,8 +181,24 @@ describe('NativeCloudTransfer', () => {
       updatedAt: 1,
     })
 
-    await expect(cancelActiveNativeCloudTransfer()).resolves.toBe(true)
+    await expect(cancelActiveNativeCloudTransfer()).resolves.toBe('cancelled')
     expect(transfer.cancelJob).toHaveBeenCalledWith({ jobId: 'persisted-job' })
+  })
+
+  it('does not claim cancellation after the durable manifest commit boundary', async () => {
+    transfer.getLatestJob.mockResolvedValueOnce({
+      present: true,
+      id: 'committing-job',
+      provider: 'webdav',
+      status: 'committing',
+      completed: 5,
+      total: 6,
+      updatedAt: 2,
+    })
+    transfer.cancelJob.mockResolvedValueOnce({ cancelled: false, status: 'committing' })
+
+    await expect(cancelActiveNativeCloudTransfer()).resolves.toBe('committing')
+    expect(transfer.cancelJob).toHaveBeenCalledWith({ jobId: 'committing-job' })
   })
 
   it('把 CapacitorHttp 不接受的 PROPFIND 交给受限原生 WebDAV 通道', async () => {

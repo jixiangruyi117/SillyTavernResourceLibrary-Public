@@ -30,7 +30,7 @@ public class NativeArchiveProcessDeathProbe {
                 zip.putNextEntry(new ZipEntry(path)); zip.write(path.getBytes(StandardCharsets.UTF_8)); zip.closeEntry();
             }
         }
-        try { NativeArchiveStaging.stage(context,source(),(completed,reused)-> { if(completed==1) throw new IOException("checkpoint reached"); }); }
+        try { NativeArchiveStaging.stage(context,source(),(phase,readBytes,totalBytes,completed,entries,reused,stagedBytes,totalStagedBytes)-> { if(completed==1) throw new IOException("checkpoint reached"); }); }
         catch(IOException expected) { assertEquals("checkpoint reached",expected.getMessage()); }
         File dir=new File(NativeArchiveExport.root(context),exportId()); assertTrue(dir.mkdir());
         JSObject state=new JSObject(); state.put("id",exportId());

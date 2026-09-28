@@ -5,7 +5,7 @@ import { rememberNativeFile } from '../core/NativeFileSource'
  * 取回系统分享暂存的文件。
  *
  * 网页由 Service Worker 暂存；APK 由 Android 流式复制到应用私有持久目录。
- * 应用启动后交给常规导入管线，只有数据库导入成功才确认删除；
+ * 应用登录完成后交给常规导入管线，只有数据库导入成功才确认删除；
  * 失败文件保留七天供下次启动重试。文件从不离开本机。
  */
 
@@ -18,6 +18,7 @@ interface SharedFileMeta {
 }
 
 interface NativeSharedFile extends SharedFileMeta {
+  size?: number
   /** 0.0.2 及更早原生壳返回 Base64；保留读取能力，避免网页先更新时旧 APK 失效。 */
   data?: string
   /** 新原生壳返回应用私有暂存目录中的 file:// URI，避免 Base64 放大与多次内存复制。 */
@@ -64,17 +65,39 @@ async function takeNativeSharedFiles(): Promise<SharedFileBatch> {
   const cleanupTokens: string[] = []
   for (const shared of pending) {
     if (shared.uri) {
-      const response = await fetch(Capacitor.convertFileSrc(shared.uri), { cache: 'no-store' })
-      if (!response.ok) throw new Error(`读取系统分享暂存文件失败（HTTP ${response.status}）`)
-      const blob = await response.blob()
-      files.push(
-        rememberNativeFile(
-          new File([blob], shared.name || 'shared-file', {
-            type: shared.type || blob.type || 'application/octet-stream',
-          }),
-          shared.uri,
-        ),
-      )
+      if (
+        shared.route === 'libraryBackup' ||
+        shared.route === 'tavernBackup' ||
+        shared.route === 'resource' ||
+        shared.route === undefined
+      ) {
+        // ZIP routes keep Android's staged file as the byte owner. NativeArchive
+        // lists the central directory and inflates only selected entries. The
+        // generic chooser materializes only when the selected parser needs bytes.
+        files.push(
+          rememberNativeFile(
+            new File([], shared.name || 'shared-file', {
+              type: shared.type || 'application/octet-stream',
+            }),
+            shared.uri,
+            shared.size,
+          ),
+        )
+      } else {
+        // Third-party app import needs a regular File until it has a native source API.
+        const response = await fetch(Capacitor.convertFileSrc(shared.uri), { cache: 'no-store' })
+        if (!response.ok) throw new Error(`读取系统分享暂存文件失败（HTTP ${response.status}）`)
+        const blob = await response.blob()
+        files.push(
+          rememberNativeFile(
+            new File([blob], shared.name || 'shared-file', {
+              type: shared.type || blob.type || 'application/octet-stream',
+            }),
+            shared.uri,
+            shared.size ?? blob.size,
+          ),
+        )
+      }
     } else if (typeof shared.data === 'string') {
       files.push(base64File(shared as NativeSharedFile & { data: string }))
     } else continue

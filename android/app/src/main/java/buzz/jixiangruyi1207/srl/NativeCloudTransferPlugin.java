@@ -629,16 +629,66 @@ public class NativeCloudTransferPlugin extends Plugin {
     public void cancelJob(PluginCall call) {
         runIo(call, () -> {
             String jobId = safeId(call.getString("jobId"));
-            WorkManager.getInstance(getContext()).cancelUniqueWork(JOB_WORK_PREFIX + jobId);
             File root = jobRoot(jobId);
-            mutateJob(root, job -> {
-                String status = job.optString("status");
-                if (!"completed".equals(status) && !"failed".equals(status) && !"cancelled".equals(status)) {
-                    job.put("status", "cancelled");
-                }
-            });
+            JSONObject result = requestCancellation(root);
+            boolean cancelled = "cancelled".equals(result.optString("status"));
+            JSObject response = new JSObject();
+            response.put("cancelled", cancelled);
+            response.put("status", result.optString("status"));
+            if (!cancelled) {
+                call.resolve(response);
+                return;
+            }
+            // Persist cancellation before stopping WorkManager. Otherwise onStopped()
+            // can abort an HTTP call first and the worker may misclassify that IOException
+            // as a transient network failure and enqueue a retry.
+            WorkManager.getInstance(getContext()).cancelUniqueWork(JOB_WORK_PREFIX + jobId);
             new NativeSecretStore(getContext()).clear("cloud-job-" + jobId);
-            call.resolve();
+            call.resolve(response);
+        });
+    }
+
+    static synchronized JSONObject requestCancellation(File root) throws Exception {
+        return mutateJob(root, job -> {
+            String status = job.optString("status");
+            if ("completed".equals(status) || "failed".equals(status) || "cancelled".equals(status)) return;
+            JSONArray objects = job.optJSONArray("objects");
+            if (objects != null) {
+                for (int index = 0; index < objects.length(); index++) {
+                    JSONObject object = objects.optJSONObject(index);
+                    if (object != null && object.optBoolean("manifest") && object.optBoolean("uploaded")) {
+                        job.put("manifestCommitStarted", true);
+                        job.put("status", "committing");
+                        return;
+                    }
+                }
+            }
+            if (!"committing".equals(status)) {
+                job.put("status", "cancelled");
+            }
+        });
+    }
+
+    static synchronized void beginManifestCommit(File root) throws Exception {
+        mutateJob(root, job -> {
+            if ("cancelled".equals(job.optString("status"))) {
+                throw new IllegalStateException("云备份已取消");
+            }
+            if (!job.optBoolean("sealed", false)) {
+                throw new IllegalStateException("云备份对象尚未封口，不能提交最终清单");
+            }
+            JSONArray objects = job.getJSONArray("objects");
+            JSONObject manifest = null;
+            for (int index = 0; index < objects.length(); index++) {
+                JSONObject entry = objects.getJSONObject(index);
+                if (entry.optBoolean("manifest")) manifest = entry;
+                else if (!entry.optBoolean("uploaded", false)) {
+                    throw new IllegalStateException("内容对象尚未全部上传，不能提交最终清单");
+                }
+            }
+            if (manifest == null) throw new IllegalStateException("原生云任务缺少最终清单");
+            job.put("manifestCommitStarted", true);
+            job.put("status", "committing");
         });
     }
 
@@ -749,6 +799,15 @@ public class NativeCloudTransferPlugin extends Plugin {
         result.put("total", job.optInt("total", 0));
         result.put("updatedAt", job.optLong("updatedAt", 0));
         result.put("uploadedBytes", job.optLong("uploadedBytes", 0));
+        long totalBytes = 0L;
+        JSONArray stagedObjects = job.optJSONArray("objects");
+        if (stagedObjects != null) {
+            for (int index = 0; index < stagedObjects.length(); index++) {
+                long size = stagedObjects.optJSONObject(index) == null ? 0L : stagedObjects.optJSONObject(index).optLong("size", 0L);
+                if (size > 0L && totalBytes <= Long.MAX_VALUE - size) totalBytes += size;
+            }
+        }
+        result.put("totalBytes", totalBytes);
         result.put("httpRequestCount", job.optLong("httpRequestCount", 0));
         result.put("retryCount", job.optLong("retryCount", 0));
         result.put("networkMs", job.optLong("networkMs", 0));
@@ -765,7 +824,8 @@ public class NativeCloudTransferPlugin extends Plugin {
             try {
                 JSONObject value = readJob(candidate);
                 String status = value.optString("status");
-                if (value.optLong("updatedAt", candidate.lastModified()) < cutoff && !"queued".equals(status) && !"running".equals(status)) {
+                if (value.optLong("updatedAt", candidate.lastModified()) < cutoff
+                    && !"queued".equals(status) && !"running".equals(status) && !"committing".equals(status)) {
                     new NativeSecretStore(getContext()).clear("cloud-job-" + candidate.getName());
                     deleteRecursively(candidate);
                 }

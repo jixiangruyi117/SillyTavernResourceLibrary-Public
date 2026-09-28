@@ -564,6 +564,11 @@ export function useCloudBackupCenter(
   }
 
   async function createBackup(): Promise<void> {
+    if (androidNativeTransport && (await cloudBackupService.hasActiveNativeBackup())) {
+      nativeBackupActive.value = true
+      message.value = 'Android 已有同一后台备份任务在继续传输；已恢复前台状态显示，不会重复创建上传任务。'
+      return
+    }
     if (!(await saveConfig(true))) return
     let notificationWarning = ''
     if (androidNativeTransport) {
@@ -606,18 +611,42 @@ export function useCloudBackupCenter(
   }
 
   async function cancelNativeBackup(): Promise<void> {
-    if (!(await cloudBackupService.cancelActiveNativeBackup())) return
+    const result = await cloudBackupService.cancelActiveNativeBackup()
+    if (result === 'committing') {
+      message.value = '最终清单已开始提交，任务将完成后再更新状态；为避免产生不完整快照，当前不能撤销此提交。'
+      return
+    }
+    if (result !== 'cancelled') return
     nativeBackupActive.value = false
-    message.value = '已请求 Android 取消本次备份；未提交快照清单，旧备份不会受影响'
+    message.value = 'Android 已取消本次备份；最终快照清单未提交，旧备份不会受影响'
   }
 
   async function refreshNativeBackupState(): Promise<void> {
     if (!nativeTransport) return
-    nativeBackupActive.value = await cloudBackupService.hasActiveNativeBackup()
-    if (!nativeBackupActive.value) {
-      await cloudBackupService.reconcileNativeJob()
-      refreshSnapshot()
+    const active = await cloudBackupService.getActiveNativeBackupProgress()
+    nativeBackupActive.value = Boolean(active)
+    if (active) {
+      const percent = active.total
+        ? Math.min(100, Math.round((active.completed / active.total) * 100))
+        : 0
+      const bytes =
+        active.totalBytes > 0
+          ? ` · ${formatBytes(active.uploadedBytes)} / ${formatBytes(active.totalBytes)}`
+          : ''
+      const speed =
+        active.uploadedBytes > 0 && active.networkMs > 0
+          ? ` · ${formatBytes(active.uploadedBytes / (active.networkMs / 1000))}/s`
+          : ''
+      message.value =
+        active.status === 'staging'
+          ? `正在恢复后台备份状态：已暂存 ${active.completed}/${active.total}${bytes}`
+          : active.status === 'committing'
+            ? `正在提交最终清单；后台任务即将完成${bytes}`
+            : `后台备份继续上传中：${active.completed}/${active.total}（${percent}%）${bytes}${speed}`
+      return
     }
+    await cloudBackupService.reconcileNativeJob()
+    refreshSnapshot()
   }
 
   async function loadBackups(): Promise<void> {

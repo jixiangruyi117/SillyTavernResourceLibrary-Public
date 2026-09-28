@@ -1,15 +1,32 @@
-import { Capacitor, registerPlugin } from '@capacitor/core'
-import { nativeFileSource, rememberNativeFile } from '../core/NativeFileSource'
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { nativeFileSize, nativeFileSource, rememberNativeFile } from '../core/NativeFileSource'
 import type { ArchiveStageProgress } from '../services/ArchiveExtraction'
 import type { RestoreStagingEntry, RestoreStagingMetadata } from '../types/RestoreStaging'
 import { IndexedDbRestoreStagingStore } from './IndexedDbRestoreStagingStore'
 import { zipArchiveChunks } from '../utils/ZipArchiveStream'
 
 interface NativeArchivePlugin {
+  listArchiveEntries(options: { uri: string; size: number }): Promise<{ paths: string[] }>
   stageArchive(options: {
     uri: string
     size: number
+    requestId: string
+    selectedPaths?: string[]
   }): Promise<{ jobId: string; stagedBytes: number; completedEntries: number }>
+  addListener(
+    eventName: 'archiveProgress',
+    listener: (event: {
+      requestId: string
+      completedEntries: number
+      reusedEntries: number
+      phase: 'hashing' | 'staging'
+      readBytes: number
+      totalBytes: number
+      entryCount: number
+      stagedBytes: number
+      totalStagedBytes: number
+    }) => void,
+  ): Promise<PluginListenerHandle>
   readArchiveEntry(options: {
     jobId: string
     path: string
@@ -22,34 +39,76 @@ const plugin = registerPlugin<NativeArchivePlugin>('NativeArchive')
 export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
   async stageNativeArchive(
     file: File,
+    selectedPaths?: string[],
     onProgress?: (progress: ArchiveStageProgress) => void,
   ): Promise<string | undefined> {
     const uri = nativeFileSource(file)
     if (!uri) return undefined
+    const sourceSize = nativeFileSize(file)
     try {
-      // Keep the existing central-directory, overlap and ZIP64 validation owner.
-      for await (const _header of zipArchiveChunks(
-        file,
-        (plan) => {
-          if (plan.uncompressedBytes > 4 * 1024 * 1024 * 1024)
-            throw new Error('备份解压后超过支持的大小限制')
-        },
-        true,
-      )) {
-        /* Native ZipFile owns payload reads and decompression. */
+      // Browser-selected Files still get the JS central-directory overlap/ZIP64
+      // preflight. Android share placeholders intentionally contain no WebView
+      // bytes; NativeArchiveStaging is the authoritative safe-path/duplicate/
+      // size/CRC owner for those files and must read the file:// source directly.
+      if (file.size > 0) {
+        for await (const _header of zipArchiveChunks(
+          file,
+          (plan) => {
+            if (plan.uncompressedBytes > 4 * 1024 * 1024 * 1024)
+              throw new Error('备份解压后超过支持的大小限制')
+          },
+          true,
+        )) {
+          /* Native ZipFile owns payload reads and decompression. */
+        }
       }
-      const result = await plugin.stageArchive({ uri, size: file.size })
-      onProgress?.({
-        phase: 'complete',
-        readBytes: file.size,
-        totalBytes: file.size,
-        stagedBytes: result.stagedBytes,
-        totalStagedBytes: result.stagedBytes,
-        entries: result.completedEntries,
-        selectedEntries: result.completedEntries,
-        completedEntries: result.completedEntries,
-      })
-      return result.jobId
+      const requestId = crypto.randomUUID()
+      let listener: PluginListenerHandle | undefined
+      try {
+        listener = await plugin.addListener('archiveProgress', (event) => {
+          if (event.requestId !== requestId) return
+          onProgress?.({
+            phase: event.phase === 'hashing' ? 'reading' : 'staging',
+            readBytes: event.readBytes,
+            totalBytes: event.totalBytes,
+            stagedBytes: event.stagedBytes,
+            totalStagedBytes: event.totalStagedBytes,
+            entries: event.entryCount || event.completedEntries,
+            selectedEntries: event.entryCount || event.completedEntries,
+            completedEntries: event.completedEntries,
+          })
+        })
+        const result = await plugin.stageArchive({
+          uri,
+          size: sourceSize,
+          requestId,
+          ...(selectedPaths ? { selectedPaths } : {}),
+        })
+        onProgress?.({
+          phase: 'complete',
+          readBytes: selectedPaths ? result.stagedBytes : sourceSize,
+          totalBytes: selectedPaths ? result.stagedBytes : sourceSize,
+          stagedBytes: result.stagedBytes,
+          totalStagedBytes: result.stagedBytes,
+          entries: result.completedEntries,
+          selectedEntries: result.completedEntries,
+          completedEntries: result.completedEntries,
+        })
+        return result.jobId
+      } finally {
+        await listener?.remove()
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code === 'UNIMPLEMENTED') return undefined
+      throw error
+    }
+  }
+
+  async listNativeArchiveEntries(file: File): Promise<string[] | undefined> {
+    const uri = nativeFileSource(file)
+    if (!uri) return undefined
+    try {
+      return (await plugin.listArchiveEntries({ uri, size: nativeFileSize(file) })).paths
     } catch (error) {
       if ((error as { code?: string }).code === 'UNIMPLEMENTED') return undefined
       throw error

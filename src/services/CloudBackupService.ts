@@ -146,13 +146,33 @@ export class CloudBackupService extends CloudBackupTransport {
     }
   }
 
-  async cancelActiveNativeBackup(): Promise<boolean> {
+  async cancelActiveNativeBackup(): Promise<'cancelled' | 'committing' | undefined> {
     return cancelActiveNativeCloudTransfer()
   }
 
   async hasActiveNativeBackup(): Promise<boolean> {
     const latest = await getLatestNativeCloudJob().catch(() => null)
-    return Boolean(latest && ['staging', 'queued', 'running'].includes(latest.status))
+    return Boolean(latest && ['staging', 'queued', 'running', 'committing'].includes(latest.status))
+  }
+
+  async getActiveNativeBackupProgress(): Promise<{
+    status: 'staging' | 'queued' | 'running' | 'committing'
+    completed: number
+    total: number
+    uploadedBytes: number
+    totalBytes: number
+    networkMs: number
+  } | null> {
+    const latest = await getLatestNativeCloudJob().catch(() => null)
+    if (!latest || !['staging', 'queued', 'running', 'committing'].includes(latest.status)) return null
+    return {
+      status: latest.status as 'staging' | 'queued' | 'running' | 'committing',
+      completed: latest.completed,
+      total: latest.total,
+      uploadedBytes: latest.uploadedBytes ?? 0,
+      totalBytes: latest.totalBytes ?? 0,
+      networkMs: latest.networkMs ?? 0,
+    }
   }
   getSnapshot(): CloudBackupSnapshot {
     return this.configuration.getSnapshot()
@@ -274,7 +294,7 @@ export class CloudBackupService extends CloudBackupTransport {
     const credential = secret || this.requireSecret(resolved.provider)
     if (isNativeCloudTransferAvailable()) {
       const latest = await getLatestNativeCloudJob(resolved.provider).catch(() => null)
-      if (latest && ['staging', 'queued', 'running'].includes(latest.status)) {
+      if (latest && ['staging', 'queued', 'running', 'committing'].includes(latest.status)) {
         throw new Error('已有 Android 原生云备份正在继续；不会重新开始整个备份')
       }
     }
@@ -772,6 +792,10 @@ export class CloudBackupService extends CloudBackupTransport {
     const config = provider ? snapshot[provider] : undefined
     if (!config?.autoBackup) return 'disabled'
     if (!this.getSecret(provider)) return 'credential'
+    // A native job is already the durable owner while Android is uploading in the
+    // background. Returning to the foreground must reconcile/bind to it, never
+    // schedule a second backup for the same due window.
+    if (await this.hasActiveNativeBackup()) return 'waiting'
     if (!(await allowsAutomaticBackup(normalizeProtection(config.protection)))) return 'waiting'
     const status = snapshot.status
     const now = Date.now()

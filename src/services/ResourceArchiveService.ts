@@ -29,11 +29,21 @@ const TAVERN_NON_RESOURCE_DIRECTORIES = new Set([
   'reasoning',
 ])
 
+function isTavernChatPath(path: string): boolean {
+  const parts = path.toLowerCase().split('/')
+  return (
+    parts.some((part) => part === 'chats' || part === 'group chats') &&
+    /\.jsonl$/i.test(path) &&
+    !parts.some((part) => ['backups', '.git', '__macosx'].includes(part))
+  )
+}
+
 function isResourcePath(path: string): boolean {
   const parts = path.toLowerCase().split('/')
   return (
-    parts.some((part) => TAVERN_RESOURCE_DIRECTORIES.has(part)) &&
-    /\.(png|json|css|txt)$/i.test(path) &&
+    (isTavernChatPath(path) ||
+      (parts.some((part) => TAVERN_RESOURCE_DIRECTORIES.has(part)) &&
+        /\.(png|json|css|txt)$/i.test(path))) &&
     !parts.some((part) => ['backups', 'secrets.json', 'config.yaml', '.git'].includes(part))
   )
 }
@@ -55,8 +65,10 @@ function isOrdinaryResourcePath(path: string): boolean {
 }
 
 function fileMimeType(name: string): string {
-  return /\.json$/i.test(name)
-    ? 'application/json'
+  return /\.jsonl$/i.test(name)
+    ? 'application/x-ndjson'
+    : /\.json$/i.test(name)
+      ? 'application/json'
     : /\.png$/i.test(name)
       ? 'image/png'
       : /\.css$/i.test(name)
@@ -196,6 +208,7 @@ export class ResourceArchiveService {
   async *tavernFiles(
     file: File,
     onProgress?: (progress: ArchiveStageProgress) => void,
+    options: { includeChats?: boolean } = {},
   ): AsyncGenerator<File> {
     const paths: string[] = []
     let contentLogPath: string | undefined
@@ -211,7 +224,9 @@ export class ResourceArchiveService {
           .split('/')
           .find((part) => TAVERN_NON_RESOURCE_DIRECTORIES.has(part))
         if (directory) structureDirectories.add(directory)
-        const include = isResourcePath(path) || isSettingsPath(path)
+        const include =
+          (isResourcePath(path) && (options.includeChats === true || !isTavernChatPath(path))) ||
+          isSettingsPath(path)
         if (include) paths.push(path)
         const isContentLog = /(?:^|\/)content\.log$/iu.test(path)
         if (!contentLogPath && isContentLog) contentLogPath = path

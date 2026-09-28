@@ -6,8 +6,9 @@ const DEFLATE_READ_BATCH_BYTES = 512 * 1024
 
 export async function* zipArchiveChunks(
   file: Blob,
-  onPlan?: (plan: { entries: number; uncompressedBytes: number }) => void,
+  onPlan?: (plan: { entries: number; fileEntries: number; uncompressedBytes: number }) => void,
   headersOnly = false,
+  selectEntry?: (path: string) => boolean,
 ): AsyncGenerator<Uint8Array> {
   const read = async (offset: number, length: number) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > file.size)
@@ -74,7 +75,10 @@ export async function* zipArchiveChunks(
     crc: number
     method: number
     name: Uint8Array
+    decodedName: string
+    selected: boolean
   }> = []
+  const paths = new Set<string>()
   for (let index = 0; index < count; index++) {
     if (cursor + 46 > directory.length || data.getUint32(cursor, true) !== 0x02014b50)
       throw new Error('ZIP 目录损坏')
@@ -91,6 +95,17 @@ export async function* zipArchiveChunks(
     let original = data.getUint32(cursor + 24, true)
     let offset = data.getUint32(cursor + 42, true)
     const name = directory.slice(cursor + 46, cursor + 46 + nameLength)
+    const decodedName = new TextDecoder('utf-8', { fatal: false }).decode(name)
+    if (
+      !decodedName ||
+      decodedName.startsWith('/') ||
+      decodedName.startsWith('\\') ||
+      /^[a-z]:/iu.test(decodedName) ||
+      decodedName.split(/[\\/]/u).includes('..') ||
+      paths.has(decodedName)
+    )
+      throw new Error('备份包含不安全或重复路径')
+    paths.add(decodedName)
     let extra = cursor + 46 + nameLength
     const extraEnd = extra + extraLength
     while (extra + 4 <= extraEnd) {
@@ -123,14 +138,24 @@ export async function* zipArchiveChunks(
       compressed,
       original,
       name,
+      decodedName,
+      selected: !selectEntry || selectEntry(decodedName),
       crc: data.getUint32(cursor + 16, true),
       method: data.getUint16(cursor + 10, true),
     })
     cursor = recordEnd
   }
-  const uncompressedBytes = entries.reduce((total, entry) => total + entry.original, 0)
+  const uncompressedBytes = entries.reduce(
+    (total, entry) => total + (entry.selected ? entry.original : 0),
+    0,
+  )
   if (!Number.isSafeInteger(uncompressedBytes)) throw new Error('ZIP 解压后大小超出支持范围')
-  onPlan?.({ entries: entries.length, uncompressedBytes })
+  onPlan?.({
+    entries: entries.length,
+    fileEntries: entries.filter((entry) => entry.selected && !entry.decodedName.endsWith('/'))
+      .length,
+    uncompressedBytes,
+  })
   for (const entry of entries.sort((a, b) => a.offset - b.offset)) {
     const fixed = view(await read(entry.offset, 30))
     if (
@@ -154,7 +179,7 @@ export async function* zipArchiveChunks(
     headerView.setUint32(22, entry.original, true)
     previousEnd = entry.offset + headerSize + entry.compressed
     if (previousEnd > directoryOffset) throw new Error('ZIP 条目越界')
-    if (headersOnly) continue
+    if (headersOnly || !entry.selected) continue
     yield header
     if (entry.method === 8) {
       // Keep inflater turns bounded while avoiding a separate Blob read for every

@@ -15,12 +15,70 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
 public class NativeCloudTransferRegressionTest {
+    @Test
+    public void cancellationAndManifestCommitHaveOneDurableWinner() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            for (int attempt = 0; attempt < 20; attempt++) {
+                String id = UUID.randomUUID().toString();
+                File root = new File(NativeCloudTransferPlugin.jobsRoot(context), id);
+                assertTrue(root.mkdir());
+                JSONObject job = new JSONObject();
+                job.put("id", id);
+                job.put("status", "running");
+                job.put("sealed", true);
+                org.json.JSONArray objects = new org.json.JSONArray();
+                objects.put(new JSONObject().put("token", "content").put("uploaded", true));
+                objects.put(new JSONObject().put("token", "manifest").put("manifest", true).put("uploaded", false));
+                job.put("objects", objects);
+                NativeCloudTransferPlugin.writeJob(root, job);
+
+                CountDownLatch start = new CountDownLatch(1);
+                Future<Boolean> commit = executor.submit(() -> {
+                    start.await();
+                    try {
+                        NativeCloudTransferPlugin.beginManifestCommit(root);
+                        return true;
+                    } catch (IllegalStateException cancellationWon) {
+                        return false;
+                    }
+                });
+                Future<JSONObject> cancel = executor.submit(() -> {
+                    start.await();
+                    return NativeCloudTransferPlugin.requestCancellation(root);
+                });
+                start.countDown();
+                boolean commitWon = commit.get();
+                JSONObject cancelResult = cancel.get();
+                JSONObject durable = NativeCloudTransferPlugin.readJob(root);
+                if (commitWon) {
+                    assertEquals("committing", durable.getString("status"));
+                    assertTrue(durable.getBoolean("manifestCommitStarted"));
+                    assertEquals("committing", cancelResult.getString("status"));
+                } else {
+                    assertEquals("cancelled", durable.getString("status"));
+                    assertFalse(durable.optBoolean("manifestCommitStarted", false));
+                    assertEquals("cancelled", cancelResult.getString("status"));
+                }
+                new File(root, "job.json").delete();
+                root.delete();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     @Test
     public void durableCredentialInvalidationRemovesTheOldSecretUntilReplacement() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();

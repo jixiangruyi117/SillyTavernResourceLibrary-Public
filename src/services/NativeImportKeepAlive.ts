@@ -58,6 +58,24 @@ export function updateNativeImportKeepAlive(title: string, phase: string, progre
     .catch(() => {})
 }
 
+export async function suspendNativeImportKeepAlive(): Promise<void> {
+  if (!isNativeImportKeepAliveAvailable()) return
+  await serializeLifecycle(async () => {
+    if (!activeTasks) return
+    activeTasks = 0
+    try {
+      await nativeImport.stop({
+        title: 'SRL 导入',
+        message: '已返回前台',
+        successful: false,
+        notify: false,
+      })
+    } catch {
+      // Returning to foreground must never alter the import result.
+    }
+  })
+}
+
 export async function stopNativeImportKeepAlive(result: {
   title: string
   message: string

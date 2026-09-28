@@ -7,8 +7,10 @@ import type {
 export interface RestoreStagingStore {
   stageNativeArchive?(
     file: File,
+    selectedPaths?: string[],
     onProgress?: (progress: import('../services/ArchiveExtraction').ArchiveStageProgress) => void,
   ): Promise<string | undefined>
+  listNativeArchiveEntries?(file: File): Promise<string[] | undefined>
   putChunk(chunk: RestoreStagingChunk): Promise<void>
   complete(entry: RestoreStagingMetadata): Promise<void>
   getMetadata(jobId: string, path: string): Promise<RestoreStagingMetadata | undefined>

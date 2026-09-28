@@ -9,6 +9,7 @@ import type { RestoreRecoveryTask, ExportRecoveryTask } from '../services/Archiv
 import { openCheckpointArchiveWriter, discardCheckpointArchive } from '../core/NativeArchiveExport'
 import type { ArchiveTransferOptions } from '../services/ArchiveZipWriter'
 import { hashBlob } from '../services/HashService'
+import { hashNativeFile, nativeFileSize } from '../core/NativeFileSource'
 import { noticeCenter } from '../core/NoticeCenter'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import {
@@ -37,7 +38,7 @@ import {
   isNativeImportKeepAliveAvailable,
   notifyNativeImportAwaitingChoice,
   startNativeImportKeepAlive,
-  stopNativeImportKeepAlive,
+  suspendNativeImportKeepAlive,
   updateNativeImportKeepAlive,
 } from '../services/NativeImportKeepAlive'
 import {
@@ -271,6 +272,58 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
   })
   let waitingForRestoreChoiceInBackground = false
   let requestingRestoreChoiceReminder = false
+  let activeArchiveProtection: { operationId: string; title: string } | undefined
+  let archiveProtectionRunning = false
+  let archiveProtectionStarting: Promise<void> | undefined
+
+  async function syncArchiveBackgroundProtection(): Promise<void> {
+    const active = activeArchiveProtection
+    if (!active || !isNativeImportKeepAliveAvailable()) return
+    if (document.visibilityState === 'hidden') {
+      if (archiveProtectionRunning) return
+      if (archiveProtectionStarting) return archiveProtectionStarting
+      const task = taskCenter.list().find((item) => item.operationId === active.operationId)
+      if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return
+      const starting = (async () => {
+        const started = await startNativeImportKeepAlive(active.title, task.phase)
+        if (!started) return
+        if (
+          activeArchiveProtection?.operationId !== active.operationId ||
+          document.visibilityState !== 'hidden'
+        ) {
+          await suspendNativeImportKeepAlive()
+          return
+        }
+        archiveProtectionRunning = true
+        updateNativeImportKeepAlive(active.title, task.phase, task.progress)
+      })()
+      archiveProtectionStarting = starting
+      try {
+        await starting
+      } finally {
+        if (archiveProtectionStarting === starting) archiveProtectionStarting = undefined
+      }
+      return
+    }
+    if (!archiveProtectionRunning) return
+    archiveProtectionRunning = false
+    await suspendNativeImportKeepAlive()
+  }
+
+  async function beginArchiveProtection(operationId: string, title: string): Promise<void> {
+    activeArchiveProtection = { operationId, title }
+    if (document.visibilityState !== 'hidden' && isNativeImportKeepAliveAvailable())
+      void requestNativeNotifications().catch(() => false)
+    await syncArchiveBackgroundProtection()
+  }
+
+  async function endArchiveProtection(operationId: string): Promise<void> {
+    if (activeArchiveProtection?.operationId !== operationId) return
+    activeArchiveProtection = undefined
+    if (!archiveProtectionRunning) return
+    archiveProtectionRunning = false
+    await suspendNativeImportKeepAlive()
+  }
 
   async function remindForRestoreChoice(): Promise<void> {
     const context = getContext()
@@ -298,11 +351,17 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
 
   const handleRestoreVisibilityChange = (): void => {
     if (document.visibilityState === 'hidden') void remindForRestoreChoice()
+    void syncArchiveBackgroundProtection()
   }
   document.addEventListener('visibilitychange', handleRestoreVisibilityChange)
-  onScopeDispose(() =>
-    document.removeEventListener('visibilitychange', handleRestoreVisibilityChange),
-  )
+  onScopeDispose(() => {
+    document.removeEventListener('visibilitychange', handleRestoreVisibilityChange)
+    activeArchiveProtection = undefined
+    if (archiveProtectionRunning) {
+      archiveProtectionRunning = false
+      void suspendNativeImportKeepAlive()
+    }
+  })
 
   async function handleExport(details: {
     mode: 'full' | 'partial'
@@ -348,10 +407,10 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           taskCenter.update(operationId, { phase: `生成 ZIP：${archiveName}` })
         }
         taskCenter.updateTransfer(operationId, { transferredBytes: writtenBytes })
-        updateNativeImportKeepAlive('导出备份', `已写入 ${formatBytes(writtenBytes)}`)
+        if (archiveProtectionRunning)
+          updateNativeImportKeepAlive('导出备份', `已写入 ${formatBytes(writtenBytes)}`)
       },
     }
-    let keepAliveStarted = false
     let exportRecovery = resumed
     try {
       const portableData: ArchivePortableData = resumed?.payload.options.portableData ?? {
@@ -463,11 +522,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       }
       transfer.createdAt = exportRecovery?.payload.createdAt
       checkCancelled()
-      if (isNativeImportKeepAliveAvailable()) {
-        await requestNativeNotifications().catch(() => false)
-        keepAliveStarted = await startNativeImportKeepAlive('导出备份', '流式压缩并写入目标')
-      }
       taskCenter.update(operationId, { phase: '流式压缩并写入目标' })
+      await beginArchiveProtection(operationId, '导出备份')
       const streamedArchives =
         exportRecovery || nativeSafStatus?.available
           ? await exportService.createArchivesFromSource(
@@ -545,15 +601,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice(error instanceof Error ? error.message : '导出失败')
     } finally {
       context.isExporting.value = false
-      if (keepAliveStarted) {
-        const task = taskCenter.list().find((item) => item.operationId === operationId)
-        await stopNativeImportKeepAlive({
-          title: task?.status === 'completed' ? '备份导出完成' : '备份导出未完成',
-          message: task?.error || '请在导出目标中查看备份文件。',
-          successful: task?.status === 'completed',
-          notify: document.visibilityState === 'hidden',
-        })
-      }
+      await endArchiveProtection(operationId)
     }
   }
 
@@ -674,7 +722,9 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         if (summary.kind !== 'restore') continue
         const pending = (await archiveRecoveryService.store.read(summary.id)) as
           RestoreRecoveryTask | undefined
-        if (pending?.payload.source?.size === file.size) fileHash ??= await hashBlob(file)
+        const sourceSize = nativeFileSize(file)
+        if (pending?.payload.source?.size === sourceSize)
+          fileHash ??= (await hashNativeFile(file)) ?? (await hashBlob(file))
         if (pending && pending.payload.source?.hash === fileHash && fileHash) {
           offerRestoreRecovery(pending)
           await archiveRecoveryService.reselectSource(pending, file)
@@ -688,12 +738,13 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       0,
       context.storageHealth.value.quota - context.storageHealth.value.usage,
     )
-    const mayExceedRemainingSpace = remainingBytes > 0 && file.size * 2 > remainingBytes
+    const restoreSourceSize = nativeFileSize(file)
+    const mayExceedRemainingSpace = remainingBytes > 0 && restoreSourceSize * 2 > remainingBytes
     if (
-      (file.size >= context.LARGE_ARCHIVE_BYTES || mayExceedRemainingSpace) &&
+      (restoreSourceSize >= context.LARGE_ARCHIVE_BYTES || mayExceedRemainingSpace) &&
       !(await confirmAction({
         title: '大备份包预检',
-        message: `该备份包为 ${formatBytes(file.size)}，解压校验可能临时占用约 2 倍空间。${
+        message: `该备份包为 ${formatBytes(restoreSourceSize)}，解压校验可能临时占用约 2 倍空间。${
           remainingBytes ? `当前剩余配额约 ${formatBytes(remainingBytes)}。` : ''
         }将使用分块读取，是否继续？`,
         confirmLabel: '继续预检',
@@ -710,15 +761,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     context.restoreSourceFile.value = file
     context.preparedRestore.value = undefined
     context.restoreReport.value = undefined
-    let keepAliveStarted = false
-    if (isNativeImportKeepAliveAvailable()) {
-      const notificationsGranted = await requestNativeNotifications().catch(() => false)
-      keepAliveStarted = await startNativeImportKeepAlive('备份预检', '读取 ZIP 并校验')
-      if (!notificationsGranted)
-        taskCenter.update(operationId, { phase: '读取 ZIP 并校验（系统通知未开启）' })
-      else if (!keepAliveStarted)
-        taskCenter.update(operationId, { phase: '读取 ZIP 并校验（后台任务通知未能启动）' })
-    }
+    await beginArchiveProtection(operationId, '备份预检')
     try {
       restoreRecovery =
         recovery ?? (await archiveRecoveryService.createRestore(file, vaultService.isEnabled()))
@@ -751,13 +794,14 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
                 }
               : { transferredBytes: progress.readBytes, totalBytes: progress.totalBytes }
           taskCenter.updateTransfer(operationId, transferred)
-          updateNativeImportKeepAlive(
-            '备份预检',
-            phase,
-            transferred.totalBytes
-              ? transferred.transferredBytes / transferred.totalBytes
-              : undefined,
-          )
+          if (archiveProtectionRunning)
+            updateNativeImportKeepAlive(
+              '备份预检',
+              phase,
+              transferred.totalBytes
+                ? transferred.transferredBytes / transferred.totalBytes
+                : undefined,
+            )
         },
       )
       if (restoreRecovery) {
@@ -765,7 +809,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         await archiveRecoveryService.savePrepared(restoreRecovery, context.preparedRestore.value)
       }
       taskCenter.complete(operationId)
-      if (keepAliveStarted && document.visibilityState === 'hidden') {
+      if (document.visibilityState === 'hidden') {
         waitingForRestoreChoiceInBackground = true
         await notifyNativeImportAwaitingChoice(
           '备份预检已完成',
@@ -778,14 +822,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice(error instanceof Error ? error.message : '备份预检失败')
     } finally {
       context.isRestoring.value = false
-      if (keepAliveStarted) {
-        await stopNativeImportKeepAlive({
-          title: '备份预检已结束',
-          message: '备份已校验，等待你选择恢复方式。',
-          successful: Boolean(context.preparedRestore.value),
-          notify: false,
-        })
-      }
+      await endArchiveProtection(operationId)
     }
   }
 
@@ -855,12 +892,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       phase: createSafetySnapshot ? '创建用户选择的安全快照' : '准备恢复数据',
     })
     waitingForRestoreChoiceInBackground = false
-    const keepAliveStarted = isNativeImportKeepAliveAvailable()
-      ? await startNativeImportKeepAlive(
-          '恢复备份',
-          createSafetySnapshot ? '创建安全快照' : '准备恢复数据',
-        )
-      : false
+    await beginArchiveProtection(operationId, '恢复备份')
     try {
       const recovery = resumed ?? restoreRecovery
       if (!resumed && mode === 'replace') prepared = (await prepared.forReplacement?.()) ?? prepared
@@ -907,7 +939,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           progress: ratio,
           itemProgress: { completed: progress.completed, total: progress.total },
         })
-        updateNativeImportKeepAlive('恢复备份', phase, ratio)
+        if (archiveProtectionRunning) updateNativeImportKeepAlive('恢复备份', phase, ratio)
       }
       let report: RestoreReport
       if (mode === 'replace') {
@@ -940,15 +972,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice(`恢复未全部完成，请核对资源列表与设置后重试${reason}`)
     } finally {
       context.isRestoring.value = false
-      if (keepAliveStarted) {
-        const task = taskCenter.list().find((item) => item.operationId === operationId)
-        await stopNativeImportKeepAlive({
-          title: task?.status === 'completed' ? '备份恢复完成' : '备份恢复未完成',
-          message: task?.error || '资源库恢复任务已结束',
-          successful: task?.status === 'completed',
-          notify: document.visibilityState === 'hidden',
-        })
-      }
+      await endArchiveProtection(operationId)
     }
   }
 

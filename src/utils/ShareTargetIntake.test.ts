@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { clearShareTargetQuery, takeSharedFileBatch, takeSharedFiles } from './ShareTargetIntake'
+import { nativeFileSource } from '../core/NativeFileSource'
 
 const native = vi.hoisted(() => ({
   enabled: false,
@@ -63,7 +64,9 @@ describe('native pending intake', () => {
     expect(batch.route).toBe('libraryBackup')
     expect((await takeSharedFileBatch()).files).toEqual([])
     expect((await takeSharedFileBatch()).files).toEqual([])
-    expect(fetchFile).toHaveBeenCalledTimes(1)
+    expect(fetchFile).not.toHaveBeenCalled()
+    expect(batch.files[0]?.size).toBe(0)
+    expect(nativeFileSource(batch.files[0]!)).toBe('file:///backup.zip')
     expect(native.cleanupPendingShare).not.toHaveBeenCalled()
     // 文件同名不能作为身份：新分享有自己的 token，仍须接收。
     native.getPendingShare.mockResolvedValue({
@@ -77,7 +80,7 @@ describe('native pending intake', () => {
     expect(native.cleanupPendingShare).toHaveBeenCalledWith({ tokens: ['new-test'] })
   })
 
-  it('读取失败不吞掉下一次投递', async () => {
+  it('资源 ZIP 分享保持原生暂存，不在 intake 读取 ZIP Blob', async () => {
     native.enabled = true
     native.getPendingShare.mockResolvedValue({
       files: [
@@ -86,17 +89,17 @@ describe('native pending intake', () => {
           type: 'application/zip',
           uri: 'file:///retry.zip',
           cleanupToken: 'retry-test',
+          route: 'resource',
         },
       ],
     })
-    const fetchFile = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('read failed'))
-      .mockResolvedValue({ ok: true, blob: async () => new Blob(['zip']) })
+    const fetchFile = vi.fn()
     vi.stubGlobal('fetch', fetchFile)
-    await expect(takeSharedFileBatch()).rejects.toThrow('read failed')
     const batch = await takeSharedFileBatch()
     expect(batch.files).toHaveLength(1)
+    expect(batch.files[0]?.size).toBe(0)
+    expect(nativeFileSource(batch.files[0]!)).toBe('file:///retry.zip')
+    expect(fetchFile).not.toHaveBeenCalled()
     await batch.acknowledge()
   })
 })

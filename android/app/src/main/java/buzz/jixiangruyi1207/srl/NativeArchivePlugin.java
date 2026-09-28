@@ -1,6 +1,7 @@
 package buzz.jixiangruyi1207.srl;
 import android.net.Uri;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -18,12 +19,18 @@ public class NativeArchivePlugin extends Plugin {
         runIo(call, () -> {
             String data=call.getString("data", "");
             if(data.length()>1400000) throw new IllegalArgumentException("恢复分块过大");
-            NativeArchiveTasks.appendSource(getContext(),call.getString("id"),call.getLong("offset",-1L),android.util.Base64.decode(data,android.util.Base64.NO_WRAP));
+            long offset = NativeBridgeNumber.bounded(call.getData().opt("offset"), 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "恢复分块位置无效");
+            NativeArchiveTasks.appendSource(getContext(),call.getString("id"),offset,android.util.Base64.decode(data,android.util.Base64.NO_WRAP));
             call.resolve();
         });
     }
     @PluginMethod public void finishArchiveSource(PluginCall call) {
-        runIo(call, () -> { JSObject result=new JSObject(); result.put("uri",NativeArchiveTasks.finishSource(getContext(),call.getString("id"),call.getLong("size",-1L),call.getString("hash"))); call.resolve(result); });
+        runIo(call, () -> {
+            long size = NativeBridgeNumber.bounded(call.getData().opt("size"), 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "恢复源文件大小无效");
+            JSObject result=new JSObject();
+            result.put("uri",NativeArchiveTasks.finishSource(getContext(),call.getString("id"),size,call.getString("hash")));
+            call.resolve(result);
+        });
     }
     @PluginMethod
     public void saveArchiveTask(PluginCall call) {
@@ -50,6 +57,18 @@ public class NativeArchivePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void listArchiveEntries(PluginCall call) {
+        runIo(call, () -> {
+            File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
+            NativeBridgeNumber.matchingFileSize(
+                call.getData().opt("size"), file.length(), NativeBridgeNumber.MAX_SAFE_INTEGER,
+                "备份文件大小无效", "备份文件大小已变化"
+            );
+            call.resolve(NativeArchiveStaging.list(getContext(), file));
+        });
+    }
+
+    @PluginMethod
     public void stageArchive(PluginCall call) {
         runIo(call, () -> {
             File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
@@ -57,7 +76,29 @@ public class NativeArchivePlugin extends Plugin {
                 call.getData().opt("size"), file.length(), NativeBridgeNumber.MAX_SAFE_INTEGER,
                 "备份文件大小无效", "备份文件大小已变化"
             );
-            call.resolve(NativeArchiveStaging.stage(getContext(), file));
+            String requestId = call.getString("requestId", "");
+            JSArray selectedArray = call.getArray("selectedPaths");
+            java.util.Set<String> selectedPaths = null;
+            if (selectedArray != null) {
+                selectedPaths = new java.util.HashSet<>();
+                for (int index = 0; index < selectedArray.length(); index++) {
+                    String path = selectedArray.getString(index);
+                    if (path == null || path.length() > 4096 || !selectedPaths.add(path)) throw new IllegalArgumentException("ZIP 选择路径无效或重复");
+                }
+            }
+            call.resolve(NativeArchiveStaging.stage(getContext(), file, selectedPaths, (phase, readBytes, totalBytes, completed, entryCount, reused, stagedBytes, totalStagedBytes) -> {
+                JSObject progress = new JSObject();
+                progress.put("requestId", requestId);
+                progress.put("phase", phase);
+                progress.put("readBytes", readBytes);
+                progress.put("totalBytes", totalBytes);
+                progress.put("completedEntries", completed);
+                progress.put("entryCount", entryCount);
+                progress.put("reusedEntries", reused);
+                progress.put("stagedBytes", stagedBytes);
+                progress.put("totalStagedBytes", totalStagedBytes);
+                notifyListeners("archiveProgress", progress);
+            }));
         });
     }
 

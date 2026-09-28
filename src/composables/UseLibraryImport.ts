@@ -1,5 +1,5 @@
 import type { ComputedRef, Ref, ShallowRef } from 'vue'
-import { computed, nextTick } from 'vue'
+import { computed, nextTick, onScopeDispose } from 'vue'
 import { resourceArchiveService, resourceService } from '../core/AppContainer'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 import { confirmChatImports } from './UseChatImportConfirmation'
@@ -32,10 +32,12 @@ import {
   isNativeImportKeepAliveAvailable,
   startNativeImportKeepAlive,
   stopNativeImportKeepAlive,
+  suspendNativeImportKeepAlive,
   updateNativeImportKeepAlive,
 } from '../services/NativeImportKeepAlive'
 import { requestNativeNotifications } from '../core/NativeSecurity'
 import type { NoticeType } from '../core/NoticeCenter'
+import { materializeNativeFile, nativeFileSource } from '../core/NativeFileSource'
 
 interface LibraryImportContext {
   pendingBackupImport: Ref<File | undefined>
@@ -82,21 +84,71 @@ export type SharedImportOutcome = 'restore' | 'consumed' | 'thirdPartyApp'
 export function useLibraryImport(getContext: () => LibraryImportContext) {
   const linkImportUrls = computed(() => splitLinkImportText(getContext().linkImportText.value))
   let handlingSharedImport = false
-  let foregroundImportTaskId = ''
+  let activeImportTaskId = ''
+  let backgroundKeepAliveTaskId = ''
+  let backgroundKeepAliveStarting: Promise<void> | undefined
+  let notificationPermissionChecked = false
+
+  async function enterBackgroundProtection(): Promise<void> {
+    if (backgroundKeepAliveStarting) return backgroundKeepAliveStarting
+    const taskId = activeImportTaskId
+    if (!taskId || backgroundKeepAliveTaskId === taskId || !isNativeImportKeepAliveAvailable())
+      return
+    const task = taskCenter.list().find((item) => item.operationId === taskId)
+    if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return
+    const starting = (async () => {
+      const started = await startNativeImportKeepAlive(task.name, task.phase)
+      if (!started) return
+      if (activeImportTaskId !== taskId || document.visibilityState !== 'hidden') {
+        await suspendNativeImportKeepAlive()
+        return
+      }
+      backgroundKeepAliveTaskId = taskId
+      updateNativeImportKeepAlive(task.name, task.phase, task.progress)
+    })()
+    backgroundKeepAliveStarting = starting
+    try {
+      await starting
+    } finally {
+      if (backgroundKeepAliveStarting === starting) backgroundKeepAliveStarting = undefined
+    }
+  }
+
+  async function leaveBackgroundProtection(): Promise<void> {
+    if (!backgroundKeepAliveTaskId) return
+    backgroundKeepAliveTaskId = ''
+    await suspendNativeImportKeepAlive()
+  }
+
+  function handleImportVisibilityChange(): void {
+    if (document.visibilityState === 'hidden') void enterBackgroundProtection()
+    else void leaveBackgroundProtection()
+  }
+
+  document.addEventListener('visibilitychange', handleImportVisibilityChange)
+  onScopeDispose(() => {
+    document.removeEventListener('visibilitychange', handleImportVisibilityChange)
+    activeImportTaskId = ''
+    if (backgroundKeepAliveTaskId) void leaveBackgroundProtection()
+  })
 
   async function startImportTask(taskId: string): Promise<void> {
-    const task = taskCenter.list().find((item) => item.operationId === taskId)
-    if (!task || !isNativeImportKeepAliveAvailable()) return
-    const notificationsGranted = await requestNativeNotifications().catch(() => false)
-    if (!notificationsGranted) {
-      getContext().showNotice('系统通知未开启；后台导入仍会尝试继续，但通知栏可能不显示进度。')
+    activeImportTaskId = taskId
+    // Ask while the Activity is visible; never try to open a permission prompt
+    // after Android has already backgrounded the app.
+    if (
+      document.visibilityState !== 'hidden' &&
+      isNativeImportKeepAliveAvailable() &&
+      !notificationPermissionChecked
+    ) {
+      notificationPermissionChecked = true
+      const granted = await requestNativeNotifications().catch(() => false)
+      if (!granted)
+        getContext().showNotice('系统通知未开启；切到后台时仍会尝试保活，但通知栏可能不显示进度。')
     }
-    foregroundImportTaskId = taskId
-    const started = await startNativeImportKeepAlive(task.name, task.phase)
-    if (!started) {
-      foregroundImportTaskId = ''
-      getContext().showNotice('Android 后台导入通知未能启动；导入仍会继续，切换到后台后可能暂停。')
-    }
+    // Foreground imports use the normal TaskCenter/UI path. Native keep-alive is
+    // only a protection layer entered after the app actually becomes hidden.
+    if (document.visibilityState === 'hidden') await enterBackgroundProtection()
   }
 
   function updateImportTask(
@@ -104,15 +156,16 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     changes: Parameters<typeof taskCenter.update>[1],
   ): void {
     taskCenter.update(taskId, changes)
-    if (foregroundImportTaskId !== taskId) return
+    if (backgroundKeepAliveTaskId !== taskId) return
     const task = taskCenter.list().find((item) => item.operationId === taskId)
     if (task) updateNativeImportKeepAlive(task.name, task.phase, task.progress)
   }
 
   async function stopImportTask(taskId: string): Promise<void> {
-    if (foregroundImportTaskId !== taskId) return
+    if (activeImportTaskId === taskId) activeImportTaskId = ''
+    if (backgroundKeepAliveTaskId !== taskId) return
     const task = taskCenter.list().find((item) => item.operationId === taskId)
-    foregroundImportTaskId = ''
+    backgroundKeepAliveTaskId = ''
     await stopNativeImportKeepAlive({
       title: task?.status === 'completed' ? '导入已完成' : '导入未完成',
       message: task?.error || task?.name || '导入任务已结束',
@@ -198,13 +251,22 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     await startImportTask(operationId)
     try {
       context.showNotice(`正在处理 SillyTavern 备份：${file.name}…`)
+      const includeChats = await confirmAction({
+        title: '导入酒馆聊天记录',
+        message:
+          '是否同时导入备份中的 SillyTavern JSONL 聊天？聊天会复用资源库现有聊天解析器并保留原件；不会仅凭文件夹名称猜测角色绑定。大型酒馆备份包含大量聊天时会明显增加导入时间和存储占用。',
+        confirmLabel: '同时导入聊天',
+        cancelLabel: '只导入资源',
+      })
       let batch: File[] = []
       let count = 0
       const totals: ImportTotals = { imported: 0, duplicate: 0, failed: 0, firstFailure: '' }
       updateImportTask(operationId, { phase: '验证备份结构并解压资源' })
-      for await (const resourceFile of resourceArchiveService.tavernFiles(file, (progress) => {
-        reportArchiveProgress(operationId, progress)
-      })) {
+      for await (const resourceFile of resourceArchiveService.tavernFiles(
+        file,
+        (progress) => reportArchiveProgress(operationId, progress),
+        { includeChats },
+      )) {
         batch.push(resourceFile)
         count++
         if (batch.length === 10) {
@@ -219,7 +281,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       }
       context.showNotice(
         count
-          ? `酒馆备份已提取 ${count} 个受支持资源文件：成功 ${totals.imported}，重复 ${totals.duplicate}，失败 ${totals.failed}${totals.firstFailure ? `（${totals.firstFailure}）` : ''}。${context.pendingVersionImports.value.length ? '有文件待确认历史版本。' : ''}聊天、缓存、账号密钥、系统提示词及不支持的配置未导入。`
+          ? `酒馆备份已提取 ${count} 个受支持资源文件：成功 ${totals.imported}，重复 ${totals.duplicate}，失败 ${totals.failed}${totals.firstFailure ? `（${totals.firstFailure}）` : ''}。${context.pendingVersionImports.value.length ? '有文件待确认历史版本。' : ''}${includeChats ? '聊天记录已按现有聊天解析规则处理；' : '聊天记录未导入；'}缓存、账号密钥、系统提示词及不支持的配置未导入。`
           : '已确认是 SillyTavern 备份，但没有发现当前支持导入的资源。',
         9000,
         false,
@@ -243,6 +305,15 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
   ): Promise<SharedImportOutcome | false> {
     const context = getContext()
     if (!files.length || context.isBusy.value || handlingSharedImport) return false
+    // ZIP routes can be inspected and selectively staged by NativeArchive. Only
+    // routes whose downstream owner requires a regular File materialize the source.
+    if (route === 'thirdPartyApp') {
+      files = await Promise.all(files.map((file) => materializeNativeFile(file)))
+    } else if (route === 'resource') {
+      files = await Promise.all(
+        files.map((file) => (/\.zip$/i.test(file.name) ? file : materializeNativeFile(file))),
+      )
+    }
     if (route === 'thirdPartyApp') {
       context.sharedAppImportFiles.value = files
       context.isFeatureHubOpen.value = true
@@ -257,13 +328,12 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       try {
         const file = files[0]!
         const kind = await resourceArchiveService.inspect(file)
-        if (kind === 'library') {
-          context.pendingBackupImport.value = file
-          await openPendingBackupImport()
-          return 'restore'
-        }
         if (kind !== 'tavern') {
-          context.showNotice('这个 ZIP 不是 SillyTavern 备份，请使用“导入本地资源 / 备份”。')
+          context.showNotice(
+            kind === 'library'
+              ? '选择的是“酒馆备份”，但文件实际是资源库备份。请从系统分享菜单选择“SRL · 资源库备份”。'
+              : '选择的是“酒馆备份”，但文件结构不匹配。请重新选择正确的分享类型。',
+          )
           return false
         }
         return (await importTavernBackupFile(file)) ? 'consumed' : false
@@ -290,23 +360,31 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         // Tavern ZIP into the SRL restore path. SRL manifests still take precedence
         // inside ResourceArchiveService, so library archives containing Tavern-like
         // directory names remain library backups.
-        updateImportTask(operationId, { phase: '核对备份包实际结构' })
-        const kind = await resourceArchiveService.inspect(file, (progress) =>
-          reportArchiveProgress(operationId, progress),
-        )
-        if (kind === 'tavern') {
-          // Hand off ownership before starting the Tavern task. The outer finally
-          // will see an empty foreground task id and therefore cannot stop the new task.
-          taskCenter.complete(operationId)
-          await stopImportTask(operationId)
-          handlingSharedImport = false
-          return (await importTavernBackupFile(file)) ? 'consumed' : false
-        }
-        if (kind !== 'library') {
-          const error = new Error('这个 ZIP 不是资源库备份，请使用“导入本地资源 / 备份”。')
-          taskCenter.fail(operationId, error)
-          context.showNotice(error.message, 9000)
-          return false
+        // Android direct-share files stay native-backed so multi-GB archives are
+        // never materialized in WebView memory. The restore preflight below parses
+        // and validates the SRL manifest authoritatively. Browser/local Files can
+        // still use the cheap classifier before handoff.
+        if (!nativeFileSource(file)) {
+          updateImportTask(operationId, { phase: '核对备份包实际结构' })
+          const kind = await resourceArchiveService.inspect(file, (progress) =>
+            reportArchiveProgress(operationId, progress),
+          )
+          if (kind === 'tavern') {
+            const error = new Error(
+              '选择的是“资源库备份”，但文件实际是酒馆备份。请从系统分享菜单选择“SRL · 酒馆备份”。',
+            )
+            taskCenter.fail(operationId, error)
+            context.showNotice(error.message, 9000)
+            return false
+          }
+          if (kind !== 'library') {
+            const error = new Error(
+              '选择的是“资源库备份”，但文件结构不匹配。请重新选择正确的分享类型。',
+            )
+            taskCenter.fail(operationId, error)
+            context.showNotice(error.message, 9000)
+            return false
+          }
         }
         updateImportTask(operationId, { phase: '交由资源库恢复器预检' })
         context.pendingBackupImport.value = file
@@ -436,7 +514,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       transferredBytes: progress.readBytes,
       totalBytes: progress.totalBytes,
     })
-    if (foregroundImportTaskId === operationId) {
+    if (backgroundKeepAliveTaskId === operationId) {
       const task = taskCenter.list().find((item) => item.operationId === operationId)
       if (task) updateNativeImportKeepAlive(task.name, task.phase, task.progress)
     }

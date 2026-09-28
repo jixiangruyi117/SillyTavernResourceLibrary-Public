@@ -131,7 +131,7 @@ public class NativeFilePipelineTest {
         String jobId = "native-zip-" + NativeFileAccess.hash(source);
         try {
             try {
-                NativeArchiveStaging.stage(context, source, (completed, reused) -> {
+                NativeArchiveStaging.stage(context, source, (phase, readBytes, totalBytes, completed, entries, reused, stagedBytes, totalStagedBytes) -> {
                     if (completed == 1) throw new IOException("simulate interruption");
                 });
                 fail("expected interruption");
@@ -146,6 +146,50 @@ public class NativeFilePipelineTest {
             assertEquals(entry.getString("sha256"), NativeFileAccess.hash(payload));
             assertEquals(3, NativeArchiveStaging.stage(context, source).getInt("reusedEntries"));
         } finally { NativeArchiveStaging.remove(context, jobId); source.delete(); }
+    }
+
+    @Test public void selectiveTavernStagingDoesNotInflateUnselectedChatPayload() throws Exception {
+        File source = new File(context.getFilesDir(), "srl-shared-intake/selective-" + java.util.UUID.randomUUID() + ".zip");
+        File parent = source.getParentFile();
+        assertTrue(parent.isDirectory() || parent.mkdirs());
+        String chatPath = "chats/character/1.jsonl";
+        String resourcePath = "characters/card.json";
+        try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(source))) {
+            zip.putNextEntry(new ZipEntry(chatPath));
+            zip.write("this compressed chat must not be read".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry(resourcePath));
+            zip.write("selected resource".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        try (RandomAccessFile archive = new RandomAccessFile(source, "rw")) {
+            archive.seek(26);
+            int nameLength = Short.reverseBytes(archive.readShort()) & 0xffff;
+            int extraLength = Short.reverseBytes(archive.readShort()) & 0xffff;
+            assertEquals(chatPath.getBytes(StandardCharsets.UTF_8).length, nameLength);
+            long compressedPayload = 30L + nameLength + extraLength;
+            archive.seek(compressedPayload);
+            int firstByte = archive.readUnsignedByte();
+            archive.seek(compressedPayload);
+            archive.writeByte(firstByte ^ 0xff);
+        }
+
+        JSObject listing = NativeArchiveStaging.list(context, source);
+        assertEquals(2, listing.getJSONArray("paths").length());
+        JSObject staged = NativeArchiveStaging.stage(
+            context, source, java.util.Collections.singleton(resourcePath),
+            (phase, readBytes, totalBytes, completed, entries, reused, stagedBytes, totalStagedBytes) -> {}
+        );
+        String jobId = staged.getString("jobId");
+        try {
+            assertEquals(1, staged.getInt("completedEntries"));
+            assertEquals(resourcePath, NativeArchiveStaging.read(context, jobId, resourcePath)
+                .getJSObject("entry").getString("path"));
+            assertNull(NativeArchiveStaging.read(context, jobId, chatPath).optJSONObject("entry"));
+        } finally {
+            NativeArchiveStaging.remove(context, jobId);
+            source.delete();
+        }
     }
 
     @Test public void traversalIsRejectedAndPrivateSettingsCannotBeRead() throws Exception {

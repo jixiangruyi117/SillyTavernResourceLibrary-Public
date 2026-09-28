@@ -16,12 +16,11 @@ public class NativeBackupNotificationReceiver extends BroadcastReceiver {
         PendingResult result = goAsync();
         NativeExecutors.ioLimited().execute(() -> {
             try {
-                WorkManager.getInstance(context).cancelUniqueWork(NativeCloudTransferPlugin.JOB_WORK_PREFIX + jobId);
                 File root = new File(NativeCloudTransferPlugin.jobsRoot(context), jobId);
-                org.json.JSONObject job = NativeCloudTransferPlugin.readJob(root);
-                job.put("status", "cancelled");
-                job.put("updatedAt", System.currentTimeMillis());
-                NativeCloudTransferPlugin.writeJob(root, job);
+                org.json.JSONObject job = NativeCloudTransferPlugin.requestCancellation(root);
+                if (!"cancelled".equals(job.optString("status"))) return;
+                // The durable state is authoritative; only then interrupt the worker.
+                WorkManager.getInstance(context).cancelUniqueWork(NativeCloudTransferPlugin.JOB_WORK_PREFIX + jobId);
                 new NativeSecretStore(context).clear("cloud-job-" + jobId);
             } catch (Exception ignored) {
                 // 任务已结束或已清理时无需重试取消。

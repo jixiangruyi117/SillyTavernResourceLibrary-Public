@@ -26,6 +26,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
+import java.util.concurrent.CopyOnWriteArrayList;
+import okhttp3.Call;
 import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -54,8 +56,37 @@ public class NativeCloudUploadWorker extends Worker {
     private long verifyMs;
     private long lastForegroundAt;
     private int lastForegroundCompleted;
+    private boolean manifestCommitStarted;
+    private final CopyOnWriteArrayList<Call> activeCalls = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Future<Void>> activeFutures = new CopyOnWriteArrayList<>();
 
     public NativeCloudUploadWorker(@NonNull Context context, @NonNull WorkerParameters parameters) { super(context, parameters); }
+
+    @Override public void onStopped() {
+        for (Call call : activeCalls) call.cancel();
+        for (Future<Void> future : activeFutures) future.cancel(true);
+        activeCalls.clear();
+        activeFutures.clear();
+        super.onStopped();
+    }
+
+    private void throwIfCancelled() throws Exception {
+        if (isStopped() || Thread.currentThread().isInterrupted()) throw new IllegalStateException("云备份已取消");
+        if (root != null) {
+            JSONObject latest = NativeCloudTransferPlugin.readJob(root);
+            if ("cancelled".equals(latest.optString("status"))) throw new IllegalStateException("云备份已取消");
+        }
+    }
+
+    private void cancellableSleep(long millis) throws Exception {
+        long deadline = System.currentTimeMillis() + millis;
+        while (true) {
+            throwIfCancelled();
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) return;
+            Thread.sleep(Math.min(100L, remaining));
+        }
+    }
 
     @NonNull @Override
     public Result doWork() {
@@ -75,6 +106,7 @@ public class NativeCloudUploadWorker extends Worker {
             retryCount = initial.optLong("retryCount", 0);
             networkMs = initial.optLong("networkMs", 0);
             verifyMs = initial.optLong("verifyMs", 0);
+            manifestCommitStarted = initial.optBoolean("manifestCommitStarted", false);
 
             NativeSecretStore secrets = new NativeSecretStore(getApplicationContext());
             secret = secrets.read("cloud-job-" + jobId);
@@ -89,6 +121,9 @@ public class NativeCloudUploadWorker extends Worker {
             if (manifest.optBoolean("uploaded", false)) {
                 result = new UploadResult(manifest.optString("resultId", manifest.getString("name")));
             } else {
+                NativeCloudTransferPlugin.beginManifestCommit(root);
+                manifestCommitStarted = true;
+                setForegroundAsync(foreground("正在提交最终清单…", completed, total)).get();
                 result = uploadWithRetry(manifest);
                 markCompleted(manifest, result);
             }
@@ -120,7 +155,7 @@ public class NativeCloudUploadWorker extends Worker {
 
     private JSONObject drainContentsUntilSealed() throws Exception {
         while (true) {
-            if (isStopped()) throw new IllegalStateException("云备份已取消");
+            throwIfCancelled();
             JSONObject latest = NativeCloudTransferPlugin.readJob(root);
             if ("cancelled".equals(latest.optString("status"))) throw new IllegalStateException("云备份已取消");
             total = latest.optInt("total", total);
@@ -140,14 +175,30 @@ public class NativeCloudUploadWorker extends Worker {
 
             if (!pendingContents.isEmpty()) {
                 List<Future<Void>> futures = new ArrayList<>();
-                for (JSONObject entry : pendingContents) {
-                    futures.add(NativeExecutors.network().submit((Callable<Void>) () -> {
-                        UploadResult result = uploadWithRetry(entry);
-                        markCompleted(entry, result);
-                        return null;
-                    }));
+                try {
+                    for (JSONObject entry : pendingContents) {
+                        throwIfCancelled();
+                        Future<Void> future = NativeExecutors.network().submit((Callable<Void>) () -> {
+                            throwIfCancelled();
+                            UploadResult result = uploadWithRetry(entry);
+                            throwIfCancelled();
+                            markCompleted(entry, result);
+                            return null;
+                        });
+                        futures.add(future);
+                        activeFutures.add(future);
+                    }
+                    for (Future<Void> future : futures) {
+                        throwIfCancelled();
+                        future.get();
+                        activeFutures.remove(future);
+                    }
+                } finally {
+                    for (Future<Void> future : futures) {
+                        if (!future.isDone()) future.cancel(true);
+                        activeFutures.remove(future);
+                    }
                 }
-                for (Future<Void> future : futures) future.get();
                 continue;
             }
 
@@ -169,7 +220,7 @@ public class NativeCloudUploadWorker extends Worker {
             if (System.currentTimeMillis() - lastStagedAt > STAGING_IDLE_TIMEOUT_MS) {
                 throw new IllegalStateException("原生云任务等待网页暂存超时");
             }
-            Thread.sleep(100L);
+            cancellableSleep(100L);
         }
     }
 
@@ -189,7 +240,7 @@ public class NativeCloudUploadWorker extends Worker {
                 }
                 if (attempt < 3) {
                     addMetric("retryCount", 1L);
-                    Thread.sleep(attempt * 800L);
+                    cancellableSleep(attempt * 800L);
                 }
             }
         }
@@ -226,7 +277,7 @@ public class NativeCloudUploadWorker extends Worker {
             for (int poll = 0; poll < 4; poll++) {
                 HttpResult confirmed = request("GET", api + "/releases/assets/" + id, githubHeaders(), null, 0L, 404);
                 if (confirmed.code == 200 && new JSONObject(confirmed.body).optLong("size", -1) == entry.getLong("size")) return new UploadResult(id);
-                if (poll < 3) Thread.sleep((poll + 1) * 600L);
+                if (poll < 3) cancellableSleep((poll + 1) * 600L);
             }
         } finally {
             addMetric("verifyMs", elapsedMs(verifyStarted));
@@ -314,7 +365,13 @@ public class NativeCloudUploadWorker extends Worker {
         long started = System.nanoTime();
         Request.Builder request = new Request.Builder().url(url).method(method, body);
         for (java.util.Map.Entry<String,String> header : headers.entrySet()) request.header(header.getKey(), header.getValue());
-        try (Response response = NativeHttpClients.CLOUD.newCall(request.build()).execute()) {
+        Call call = NativeHttpClients.CLOUD.newCall(request.build());
+        boolean requestCompleted = false;
+        activeCalls.add(call);
+        try {
+            throwIfCancelled();
+            try (Response response = call.execute()) {
+            throwIfCancelled();
             int code = response.code();
             ResponseBody responseBody = response.body();
             String responseText = responseBody == null ? "" : readText(responseBody.byteStream(), 1024 * 1024);
@@ -323,11 +380,14 @@ public class NativeCloudUploadWorker extends Worker {
             if (acceptedExtra >= 0 && code != acceptedExtra && (code < 200 || code >= 300)) {
                 throw new CloudHttpException(code, "云端请求失败：" + responseText);
             }
+            requestCompleted = true;
             return result;
+            }
         } finally {
+            activeCalls.remove(call);
             addMetric("httpRequestCount", 1L);
             addMetric("networkMs", elapsedMs(started));
-            if (body != null) addMetric("uploadedBytes", bodySize);
+            if (body != null && requestCompleted) addMetric("uploadedBytes", bodySize);
         }
     }
 
@@ -471,6 +531,10 @@ public class NativeCloudUploadWorker extends Worker {
                 throw new IllegalStateException("云备份已取消");
             }
             current.put("status", status);
+            if (current.optBoolean("manifestCommitStarted", false)
+                && !"completed".equals(status) && !"failed".equals(status) && !"cancelled".equals(status)) {
+                current.put("status", "committing");
+            }
             current.put("error", error == null ? JSONObject.NULL : error);
             if (resultId != null) current.put("resultId", resultId);
             if (resultName != null) current.put("resultName", resultName);
@@ -509,8 +573,8 @@ public class NativeCloudUploadWorker extends Worker {
         PendingIntent cancelPending = PendingIntent.getBroadcast(getApplicationContext(), NOTIFICATION_ID, cancel, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(getApplicationContext(), CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle("SRL 云备份").setContentText(text)
-            .setOnlyAlertOnce(true).setOngoing(true).setContentIntent(pending)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消本次", cancelPending);
+            .setOnlyAlertOnce(true).setOngoing(true).setContentIntent(pending);
+        if (!manifestCommitStarted) builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消本次", cancelPending);
         if (total > 0) builder.setProgress(total, Math.min(completed, total), false); else builder.setProgress(0, 0, true);
         if (Build.VERSION.SDK_INT >= 29) return new ForegroundInfo(NOTIFICATION_ID, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         return new ForegroundInfo(NOTIFICATION_ID, builder.build());

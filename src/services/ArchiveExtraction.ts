@@ -33,14 +33,23 @@ export async function stageArchive(
   selectEntry?: (path: string) => boolean,
   onProgress?: (progress: ArchiveStageProgress) => void,
 ): Promise<string> {
-  if (!selectEntry && staging.stageNativeArchive) {
-    const nativeJob = await staging.stageNativeArchive(file, onProgress)
-    if (nativeJob) return nativeJob
+  if (staging.stageNativeArchive) {
+    let selectedPaths: string[] | undefined
+    if (selectEntry) {
+      const nativePaths = await staging.listNativeArchiveEntries?.(file)
+      if (nativePaths) selectedPaths = nativePaths.filter(selectEntry)
+    }
+    if (!selectEntry || selectedPaths) {
+      const nativeJob = await staging.stageNativeArchive(file, selectedPaths, onProgress)
+      if (nativeJob) return nativeJob
+    }
   }
   const jobId = crypto.randomUUID()
   const entries: Promise<void>[] = []
   const pendingWrites = new Set<Promise<void>>()
   const paths = new Set<string>()
+  const selectedPaths = new Set<string>()
+  const excludedPaths = new Set<string>()
   let archiveSize = 0
   let readBytes = 0
   let stagedBytes = 0
@@ -55,7 +64,10 @@ export async function stageArchive(
     }
     paths.add(entry.name)
     if (paths.size > 100_000) throw new Error('备份文件数量超过限制')
-    if (selectEntry && !selectEntry(entry.name)) return
+    if (selectEntry && excludedPaths.has(entry.name)) return
+    if (selectEntry && !selectedPaths.has(entry.name)) {
+      throw new Error(`ZIP 解压器返回了目录中不存在的路径：${entry.name}`)
+    }
     selectedEntries++
     const completion = new Promise<void>((resolve, reject) => {
       let totalLength = 0
@@ -161,12 +173,25 @@ export async function stageArchive(
   archive.register(UnzipInflate)
 
   try {
-    for await (const chunk of zipArchiveChunks(file, (plan) => {
-      totalStagedBytes = plan.uncompressedBytes
-      if (totalStagedBytes > 4 * 1024 * 1024 * 1024) {
-        throw new Error('备份解压后超过支持的大小限制')
-      }
-    })) {
+    const shouldSelect = selectEntry
+      ? (path: string) => {
+          const selected = selectEntry(path)
+          if (selected) selectedPaths.add(path)
+          else excludedPaths.add(path)
+          return selected
+        }
+      : undefined
+    for await (const chunk of zipArchiveChunks(
+      file,
+      (plan) => {
+        totalStagedBytes = plan.uncompressedBytes
+        if (totalStagedBytes > 4 * 1024 * 1024 * 1024) {
+          throw new Error('备份解压后超过支持的大小限制')
+        }
+      },
+      false,
+      shouldSelect,
+    )) {
       readBytes = Math.min(file.size, readBytes + chunk.byteLength)
       archive.push(chunk, false)
       if (pendingWrites.size) await Promise.all(Array.from(pendingWrites))

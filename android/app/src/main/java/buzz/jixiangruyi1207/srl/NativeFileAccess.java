@@ -10,6 +10,8 @@ import java.util.Locale;
 
 /** Only files owned by resource/import pipelines may be exposed to bridge operations. */
 final class NativeFileAccess {
+    interface Progress { void update(long readBytes, long totalBytes) throws Exception; }
+
     static File resolve(Context context, String value) throws Exception {
         if (value == null) throw new IOException("缺少原生文件位置");
         Uri uri = Uri.parse(value);
@@ -30,11 +32,21 @@ final class NativeFileAccess {
     }
 
     static String hash(File file) throws Exception {
+        return hash(file, (readBytes, totalBytes) -> {});
+    }
+
+    static String hash(File file, Progress progress) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] buffer = new byte[256 * 1024];
+        long readBytes = 0L;
+        long totalBytes = file.length();
         try (FileInputStream input = new FileInputStream(file)) {
             int count;
-            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
+            while ((count = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, count);
+                readBytes += count;
+                progress.update(readBytes, totalBytes);
+            }
         }
         StringBuilder hex = new StringBuilder(64);
         for (byte value : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", value));
