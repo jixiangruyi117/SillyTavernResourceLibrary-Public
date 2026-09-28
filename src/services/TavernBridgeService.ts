@@ -53,6 +53,33 @@ export interface TavernBridgeImportResult {
   name: string
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('任务已取消', 'AbortError')
+}
+
+function withAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted)
+    return Promise.reject(signal.reason ?? new DOMException('任务已取消', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => {
+      signal.removeEventListener('abort', abort)
+      reject(signal.reason ?? new DOMException('任务已取消', 'AbortError'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    void promise.then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
+}
+
 export interface TavernBridgeState {
   status: TavernBridgeStatus
   detail: string
@@ -76,7 +103,23 @@ interface PendingPull {
   files: File[]
   resolve: (files: File[]) => void
   reject: (error: Error) => void
+  idleTimer: number
+  absoluteTimer: number
 }
+
+interface PendingList {
+  items: TavernResourceItem[]
+  resolve: (items: TavernResourceItem[]) => void
+  reject: (error: Error) => void
+  pageCount?: number
+  pages: Map<number, TavernResourceItem[]>
+  idleTimer: number
+  absoluteTimer: number
+}
+
+const PULL_IDLE_TIMEOUT_MS = 120_000
+const PULL_ABSOLUTE_TIMEOUT_MS = 30 * 60_000
+const LIST_IDLE_TIMEOUT_MS = 180_000
 
 export class TavernBridgeService extends EventTarget {
   private directory?: TavernDirectoryService
@@ -96,10 +139,7 @@ export class TavernBridgeService extends EventTarget {
   private relayWindow?: Window
   private relayOrigin = ''
   private messageChain = Promise.resolve()
-  private readonly pendingLists = new Map<
-    string,
-    { resolve: (items: TavernResourceItem[]) => void; reject: (error: Error) => void }
-  >()
+  private readonly pendingLists = new Map<string, PendingList>()
   private readonly pendingPulls = new Map<string, PendingPull>()
   private readonly pendingSends = new Map<
     string,
@@ -114,6 +154,7 @@ export class TavernBridgeService extends EventTarget {
     { resolve: (value: LocalTavernDirectSession) => void; reject: (error: Error) => void }
   >()
   private readonly incoming = new Map<string, IncomingTransfer>()
+  private readonly cancelledPulls = new Set<string>()
   private readonly chunkSender = new TavernChunkSender((payload) =>
     this.send('file-chunk', { ...payload }, [payload.data]),
   )
@@ -262,12 +303,23 @@ export class TavernBridgeService extends EventTarget {
     if (!canUseLocalTavernDirect()) throw new Error('本机酒馆一键连接仅支持 Android APK')
     this.disconnect('正在请求本机酒馆连接')
     let response: Response
+    let csrfToken: string
     try {
+      const csrfResponse = await fetch(new URL('/csrf-token', LOCAL_TAVERN_ORIGIN).href, {
+        cache: 'no-store',
+        credentials: 'include',
+      })
+      if (!csrfResponse.ok) throw new Error(`获取酒馆 CSRF 令牌失败（HTTP ${csrfResponse.status}）`)
+      const responseToken = (await csrfResponse.json())?.token
+      if (typeof responseToken !== 'string' || !responseToken)
+        throw new Error('酒馆没有返回有效的 CSRF 令牌')
+      csrfToken = responseToken
       response = await fetch(new URL('local-pair/requests', LOCAL_TAVERN_RELAY_BASE).href, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         body: JSON.stringify({ srlUrl: window.location.href }),
         cache: 'no-store',
+        credentials: 'include',
       })
     } catch {
       throw new Error('未发现本机酒馆；请先在同一台设备启动 http://127.0.0.1:8000')
@@ -294,7 +346,7 @@ export class TavernBridgeService extends EventTarget {
     ) {
       throw new Error('本机酒馆返回的连接会话无效')
     }
-    const port = new TavernHttpRelayPort(relayBase.href, { code, token })
+    const port = new TavernHttpRelayPort(relayBase.href, { code, token, csrfToken })
     port.onmessage = (portEvent) => {
       this.messageChain = this.messageChain
         .then(() => this.handlePortMessage(portEvent.data))
@@ -502,27 +554,69 @@ export class TavernBridgeService extends EventTarget {
     if (!this.invitation || !this.port) throw new Error('酒馆通信通道尚未准备好')
     this.send('srl-accept', {
       pairCode: this.invitation.pairCode,
-      capabilities: supportsBridgeGzip() ? ['gzip'] : [],
+      capabilities: [
+        'catalog-pages-v1',
+        'pull-cancel-v1',
+        'pull-progress-v1',
+        ...(supportsBridgeGzip() ? ['gzip'] : []),
+      ],
     })
   }
 
-  async listResources(kind?: 'chat'): Promise<TavernResourceItem[]> {
+  async listResources(
+    kind?: 'chat',
+    options: { signal?: AbortSignal } = {},
+  ): Promise<TavernResourceItem[]> {
+    throwIfAborted(options.signal)
     if (kind && !this.peerCapabilities.includes('chat-archive-v1'))
       throw new Error('此连接不支持聊天归档，请使用配套测试版酒馆扩展')
-    if (this.directory) return this.directory.listResources()
+    if (this.directory) {
+      const items = await this.directory.listResources()
+      throwIfAborted(options.signal)
+      return items
+    }
     this.assertConnected()
+    if (!this.peerCapabilities.includes('catalog-pages-v1'))
+      throw new Error('酒馆扩展不支持大型资源清单，请更新酒馆互传扩展后重试')
     const requestId = crypto.randomUUID()
-    const pending = new Promise<TavernResourceItem[]>((resolve, reject) => {
-      this.pendingLists.set(requestId, { resolve, reject })
+    let resolveList!: (items: TavernResourceItem[]) => void
+    let rejectList!: (error: Error) => void
+    const pendingPromise = new Promise<TavernResourceItem[]>((resolve, reject) => {
+      resolveList = resolve
+      rejectList = reject
     })
-    void this.send('list-request', { requestId, ...(kind ? { kind } : {}) }).catch((error) =>
-      this.pendingLists.get(requestId)?.reject(error),
+    const pending: PendingList = {
+      items: [],
+      resolve: resolveList,
+      reject: rejectList,
+      pages: new Map(),
+      idleTimer: 0,
+      absoluteTimer: 0,
+    }
+    this.pendingLists.set(requestId, pending)
+    this.touchList(requestId)
+    pending.absoluteTimer = window.setTimeout(
+      () => this.failList(requestId, '读取酒馆资源超过 30 分钟，请检查酒馆目录状态'),
+      PULL_ABSOLUTE_TIMEOUT_MS,
     )
-    return this.withTimeout(pending, requestId, this.pendingLists, '读取酒馆资源超时')
+    void this.send('list-request', { requestId, ...(kind ? { kind } : {}) }).catch((error) =>
+      this.failList(requestId, error instanceof Error ? error.message : '发送资源清单请求失败'),
+    )
+    return withAbortSignal(pendingPromise, options.signal).finally(() => {
+      if (options.signal?.aborted) this.failList(requestId, '资源库已取消读取清单')
+    })
   }
 
-  async checkUserAvatarIds(ids: string[]): Promise<Set<string>> {
-    if (this.directory) return this.directory.checkUserAvatarIds(ids)
+  async checkUserAvatarIds(
+    ids: string[],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Set<string>> {
+    throwIfAborted(options.signal)
+    if (this.directory) {
+      const result = await this.directory.checkUserAvatarIds(ids)
+      throwIfAborted(options.signal)
+      return result
+    }
     this.assertConnected()
     if (!this.peerCapabilities.includes('persona-avatar-check-v1')) {
       throw new Error('酒馆页面扩展不支持头像核对，请更新扩展后重试')
@@ -534,22 +628,67 @@ export class TavernBridgeService extends EventTarget {
     void this.send('persona-avatar-check-request', { requestId, avatarIds: ids }).catch((error) =>
       this.pendingAvatarChecks.get(requestId)?.reject(error),
     )
-    return this.withTimeout(pending, requestId, this.pendingAvatarChecks, '核对酒馆头像超时')
+    return withAbortSignal(
+      this.withTimeout(pending, requestId, this.pendingAvatarChecks, '核对酒馆头像超时'),
+      options.signal,
+    ).finally(() => {
+      if (options.signal?.aborted) this.pendingAvatarChecks.delete(requestId)
+    })
   }
 
-  async pullResources(items: TavernResourceItem[]): Promise<File[]> {
-    if (this.directory) return this.directory.pullResources(items)
+  async pullResources(
+    items: TavernResourceItem[],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<File[]> {
+    throwIfAborted(options.signal)
+    if (this.directory) {
+      const files = await this.directory.pullResources(items)
+      throwIfAborted(options.signal)
+      return files
+    }
     this.assertConnected()
+    if (
+      !this.peerCapabilities.includes('pull-cancel-v1') ||
+      !this.peerCapabilities.includes('pull-progress-v1')
+    )
+      throw new Error('酒馆扩展不支持接收取消与进度续时，请更新酒馆互传扩展后重试')
     const requestId = crypto.randomUUID()
-    const pending = new Promise<File[]>((resolve, reject) => {
-      this.pendingPulls.set(requestId, { files: [], resolve, reject })
+    let resolvePull!: (files: File[]) => void
+    let rejectPull!: (error: Error) => void
+    const result = new Promise<File[]>((resolve, reject) => {
+      resolvePull = resolve
+      rejectPull = reject
     })
+    const pending: PendingPull = {
+      files: [],
+      resolve: resolvePull,
+      reject: rejectPull,
+      idleTimer: 0,
+      absoluteTimer: 0,
+    }
+    this.pendingPulls.set(requestId, pending)
+    this.touchPull(requestId)
+    pending.absoluteTimer = window.setTimeout(
+      () => this.failPull(requestId, '从酒馆接收资源超过 30 分钟，已停止本次传输', true),
+      PULL_ABSOLUTE_TIMEOUT_MS,
+    )
     void this.send('pull-request', {
       requestId,
       items: items.map(({ id }) => ({ id })),
       localDirect: this.isLocalTavernDirectAvailable(),
-    }).catch((error) => this.pendingPulls.get(requestId)?.reject(error))
-    return this.withTimeout(pending, requestId, this.pendingPulls, '从酒馆接收资源超时', 120_000)
+    }).catch((error) =>
+      this.failPull(requestId, error instanceof Error ? error.message : '发送取回请求失败', false),
+    )
+    const onAbort = (): void =>
+      this.failPull(
+        requestId,
+        options.signal?.reason instanceof Error
+          ? options.signal.reason.message
+          : '资源库已取消接收',
+        true,
+      )
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    return result.finally(() => options.signal?.removeEventListener('abort', onAbort))
   }
 
   async sendFiles(
@@ -562,13 +701,20 @@ export class TavernBridgeService extends EventTarget {
     }>,
     conflictPolicy: TavernConflictPolicy,
     onProgress?: (completed: number, total: number, detail?: string) => void,
+    options: { signal?: AbortSignal } = {},
   ): Promise<TavernBridgeImportResult[]> {
-    if (this.directory) return this.directory.sendFiles(files, conflictPolicy, onProgress)
+    throwIfAborted(options.signal)
+    if (this.directory) {
+      const results = await this.directory.sendFiles(files, conflictPolicy, onProgress)
+      throwIfAborted(options.signal)
+      return results
+    }
     this.assertConnected()
     const requestId = crypto.randomUUID()
     const results: TavernBridgeImportResult[] = []
     const localDirect = this.isLocalTavernDirectAvailable()
     for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+      throwIfAborted(options.signal)
       const item = files[fileIndex]!
       if (item.file.size > TAVERN_BRIDGE_MAX_FILE_SIZE) {
         throw new Error(`${item.file.name} 超过单文件 256 MB 限制`)
@@ -578,6 +724,7 @@ export class TavernBridgeService extends EventTarget {
         this.pendingSends.set(transferId, { resolve, reject })
       })
       void result.catch(() => undefined)
+      let localDirectSession: LocalTavernDirectSession | undefined
       try {
         // 对端声明 gzip 能力时压缩 JSON 类资源；size/sha256 描述实际传输载荷，
         // 旧端的分块记账与完整性校验因此保持不变。
@@ -587,15 +734,17 @@ export class TavernBridgeService extends EventTarget {
           isCompressibleKind(item.kind) &&
           item.file.size > BRIDGE_COMPRESS_MIN_BYTES
         const payload = useGzip ? await gzipBlob(item.file) : item.file
+        throwIfAborted(options.signal)
         const sha256 = await bridgeSha256(payload)
-        let localDirectSession: LocalTavernDirectSession | undefined
+        throwIfAborted(options.signal)
         if (localDirect) {
           try {
-            localDirectSession = await this.requestLocalDirectSession()
+            localDirectSession = await this.requestLocalDirectSession(options.signal)
             const uploaded = await uploadLocalTavernDirectFile(
               localDirectSession,
               payload,
               item.file.name,
+              options.signal,
             )
             if (uploaded.size !== payload.size || uploaded.sha256 !== sha256) {
               throw new Error('本机直传上传后的完整性校验失败')
@@ -603,6 +752,7 @@ export class TavernBridgeService extends EventTarget {
           } catch {
             if (localDirectSession) await removeLocalTavernDirectFile(localDirectSession)
             localDirectSession = undefined
+            throwIfAborted(options.signal)
             onProgress?.(
               fileIndex,
               files.length,
@@ -626,31 +776,46 @@ export class TavernBridgeService extends EventTarget {
           ...(localDirectSession ? { localDirectSession } : {}),
           ...(useGzip ? { contentEncoding: 'gzip', rawSize: item.file.size } : {}),
         })
+        throwIfAborted(options.signal)
         onProgress?.(fileIndex, files.length, `正在上传 ${item.displayName}`)
         if (localDirectSession) {
           onProgress?.(fileIndex, files.length, `正在本机直传 ${item.displayName}`)
         } else {
-          await this.chunkSender.send(payload, requestId, transferId, (uploadedBytes) => {
-            onProgress?.(
-              fileIndex,
-              files.length,
-              `正在上传 ${item.displayName} · ${uploadedBytes} / ${payload.size} bytes`,
-            )
-          })
+          await this.chunkSender.send(
+            payload,
+            requestId,
+            transferId,
+            (uploadedBytes) => {
+              onProgress?.(
+                fileIndex,
+                files.length,
+                `正在上传 ${item.displayName} · ${uploadedBytes} / ${payload.size} bytes`,
+              )
+            },
+            options.signal,
+          )
         }
+        throwIfAborted(options.signal)
         await this.send('file-end', { requestId, transferId })
         onProgress?.(fileIndex, files.length, `等待酒馆导入 ${item.displayName}`)
         results.push(
-          await this.withTimeout(
-            result,
-            transferId,
-            this.pendingSends,
-            `${item.file.name} 导入酒馆超时`,
-            90_000,
+          await withAbortSignal(
+            this.withTimeout(
+              result,
+              transferId,
+              this.pendingSends,
+              `${item.file.name} 导入酒馆超时`,
+              90_000,
+            ),
+            options.signal,
           ),
         )
         onProgress?.(fileIndex + 1, files.length, `${item.displayName} 已完成`)
       } finally {
+        if (options.signal?.aborted) {
+          void this.send('file-cancel', { requestId, transferId }).catch(() => undefined)
+          if (localDirectSession) await removeLocalTavernDirectFile(localDirectSession)
+        }
         this.pendingSends.delete(transferId)
       }
     }
@@ -661,6 +826,7 @@ export class TavernBridgeService extends EventTarget {
     if (!isTavernEnvelope(message)) return
     const requestId = typeof message.requestId === 'string' ? message.requestId : ''
     const transferId = typeof message.transferId === 'string' ? message.transferId : ''
+    if (requestId && this.cancelledPulls.has(requestId)) return
     if (message.type === 'st-ready') {
       const bridgeVersion = typeof message.bridgeVersion === 'string' ? message.bridgeVersion : ''
       this.peerCapabilities = Array.isArray(message.capabilities)
@@ -697,8 +863,25 @@ export class TavernBridgeService extends EventTarget {
       }
     } else if (message.type === 'list-response') {
       const pending = this.pendingLists.get(requestId)
-      this.pendingLists.delete(requestId)
-      pending?.resolve(Array.isArray(message.items) ? (message.items as TavernResourceItem[]) : [])
+      if (!pending) return
+      const items = Array.isArray(message.items) ? (message.items as TavernResourceItem[]) : []
+      const pageIndex = Number(message.pageIndex)
+      const pageCount = Number(message.pageCount)
+      if (Number.isInteger(pageIndex) && Number.isInteger(pageCount) && pageCount > 0) {
+        if (pageIndex < 0 || pageIndex >= pageCount || pageCount > 1000)
+          throw new Error('酒馆资源清单分页信息无效')
+        if (pending.pageCount !== undefined && pending.pageCount !== pageCount)
+          throw new Error('酒馆资源清单分页总数发生变化')
+        pending.pageCount = pageCount
+        pending.pages.set(pageIndex, items)
+        this.touchList(requestId)
+        if (pending.pages.size === pageCount) this.finishList(requestId)
+      } else {
+        pending.items.push(...items)
+        this.finishList(requestId)
+      }
+    } else if (message.type === 'list-progress') {
+      this.touchList(requestId)
     } else if (message.type === 'persona-avatar-check-response') {
       const pending = this.pendingAvatarChecks.get(requestId)
       this.pendingAvatarChecks.delete(requestId)
@@ -707,6 +890,8 @@ export class TavernBridgeService extends EventTarget {
         : []
       pending?.resolve(new Set(existingIds))
     } else if (message.type === 'file-start' && message.direction === 'to-srl') {
+      if (this.cancelledPulls.has(requestId)) return
+      this.touchPull(requestId)
       if (
         typeof message.size !== 'number' ||
         !Number.isSafeInteger(message.size) ||
@@ -747,6 +932,7 @@ export class TavernBridgeService extends EventTarget {
         this.incoming.set(transferId, { meta: message, chunks: [], received: 0 })
       }
     } else if (message.type === 'file-chunk') {
+      if (this.cancelledPulls.has(requestId)) return
       const transfer = this.incoming.get(transferId)
       if (!transfer || !(message.data instanceof ArrayBuffer) || typeof message.index !== 'number')
         return
@@ -769,14 +955,20 @@ export class TavernBridgeService extends EventTarget {
         transfer.received += message.data.byteLength
       }
       if (transfer.received > Number(transfer.meta.size)) throw new Error('接收数据超过声明大小')
+      this.touchPull(requestId)
       await this.send('file-chunk-ack', { transferId, index: message.index })
     } else if (message.type === 'file-chunk-ack') {
       this.chunkSender.acknowledge(transferId, message.index)
     } else if (message.type === 'file-end') {
+      if (this.cancelledPulls.has(requestId)) return
+      this.touchPull(requestId)
       await this.finishIncoming(requestId, transferId)
+    } else if (message.type === 'pull-progress') {
+      this.touchPull(requestId)
     } else if (message.type === 'pull-complete') {
       const pending = this.pendingPulls.get(requestId)
       this.pendingPulls.delete(requestId)
+      this.clearPullTimers(pending)
       pending?.resolve(pending.files)
     } else if (message.type === 'file-result') {
       const pending = this.pendingSends.get(transferId)
@@ -789,11 +981,9 @@ export class TavernBridgeService extends EventTarget {
         this.pendingSends.get(transferId)?.reject(error)
         this.pendingSends.delete(transferId)
       } else if (requestId && this.pendingPulls.has(requestId)) {
-        this.pendingPulls.get(requestId)?.reject(error)
-        this.pendingPulls.delete(requestId)
+        this.failPull(requestId, error.message, false)
       } else if (requestId && this.pendingLists.has(requestId)) {
-        this.pendingLists.get(requestId)?.reject(error)
-        this.pendingLists.delete(requestId)
+        this.failList(requestId, error.message)
       } else if (requestId && this.pendingAvatarChecks.has(requestId)) {
         this.pendingAvatarChecks.get(requestId)?.reject(error)
         this.pendingAvatarChecks.delete(requestId)
@@ -838,6 +1028,89 @@ export class TavernBridgeService extends EventTarget {
     if (transfer.localDirectSession) await removeLocalTavernDirectFile(transfer.localDirectSession)
   }
 
+  private touchPull(requestId: string): void {
+    const pending = this.pendingPulls.get(requestId)
+    if (!pending) return
+    window.clearTimeout(pending.idleTimer)
+    pending.idleTimer = window.setTimeout(
+      () => this.failPull(requestId, '从酒馆接收资源连续 120 秒没有进度，已停止后续接收', true),
+      PULL_IDLE_TIMEOUT_MS,
+    )
+  }
+
+  private touchList(requestId: string): void {
+    const pending = this.pendingLists.get(requestId)
+    if (!pending) return
+    window.clearTimeout(pending.idleTimer)
+    pending.idleTimer = window.setTimeout(
+      () => this.failList(requestId, '读取酒馆资源连续 180 秒没有进度，请检查酒馆连接'),
+      LIST_IDLE_TIMEOUT_MS,
+    )
+  }
+
+  private finishList(requestId: string): void {
+    const pending = this.pendingLists.get(requestId)
+    if (!pending) return
+    this.pendingLists.delete(requestId)
+    window.clearTimeout(pending.idleTimer)
+    window.clearTimeout(pending.absoluteTimer)
+    pending.resolve(
+      pending.pageCount === undefined
+        ? pending.items
+        : Array.from(
+            { length: pending.pageCount },
+            (_, index) => pending.pages.get(index) ?? [],
+          ).flat(),
+    )
+  }
+
+  private failList(requestId: string, message: string): void {
+    const pending = this.pendingLists.get(requestId)
+    if (!pending) return
+    this.pendingLists.delete(requestId)
+    window.clearTimeout(pending.idleTimer)
+    window.clearTimeout(pending.absoluteTimer)
+    pending.reject(new Error(message))
+  }
+
+  private clearPullTimers(pending?: PendingPull): void {
+    if (!pending) return
+    window.clearTimeout(pending.idleTimer)
+    window.clearTimeout(pending.absoluteTimer)
+  }
+
+  private failPull(requestId: string, message: string, notifyPeer: boolean): void {
+    const pending = this.pendingPulls.get(requestId)
+    if (!pending) return
+    this.pendingPulls.delete(requestId)
+    this.clearPullTimers(pending)
+    this.clearIncomingForRequest(requestId)
+    pending.files.length = 0
+    if (notifyPeer) {
+      this.rememberCancelledPull(requestId)
+      void this.send('pull-cancel', { requestId, reason: message }).catch(() => undefined)
+    }
+    pending.reject(new Error(message))
+  }
+
+  private clearIncomingForRequest(requestId: string): void {
+    for (const [transferId, transfer] of this.incoming) {
+      if (transfer.meta.requestId !== requestId) continue
+      this.incoming.delete(transferId)
+      if (transfer.localDirectSession) void removeLocalTavernDirectFile(transfer.localDirectSession)
+    }
+  }
+
+  private rememberCancelledPull(requestId: string): void {
+    this.cancelledPulls.add(requestId)
+    while (this.cancelledPulls.size > 64) {
+      const oldest = this.cancelledPulls.values().next().value as string | undefined
+      if (!oldest) break
+      this.cancelledPulls.delete(oldest)
+    }
+    window.setTimeout(() => this.cancelledPulls.delete(requestId), PULL_ABSOLUTE_TIMEOUT_MS)
+  }
+
   disconnect(detail = '连接已断开'): void {
     this.directory = undefined
     if (this.helloTimer) window.clearInterval(this.helloTimer)
@@ -872,8 +1145,16 @@ export class TavernBridgeService extends EventTarget {
   }
 
   private rejectPending(error: Error): void {
-    for (const pending of this.pendingLists.values()) pending.reject(error)
-    for (const pending of this.pendingPulls.values()) pending.reject(error)
+    for (const pending of this.pendingLists.values()) {
+      window.clearTimeout(pending.idleTimer)
+      window.clearTimeout(pending.absoluteTimer)
+      pending.reject(error)
+    }
+    for (const pending of this.pendingPulls.values()) {
+      this.clearPullTimers(pending)
+      pending.files.length = 0
+      pending.reject(error)
+    }
     for (const pending of this.pendingSends.values()) pending.reject(error)
     for (const pending of this.pendingAvatarChecks.values()) pending.reject(error)
     for (const pending of this.pendingLocalDirectSessions.values()) pending.reject(error)
@@ -883,6 +1164,7 @@ export class TavernBridgeService extends EventTarget {
     this.pendingAvatarChecks.clear()
     this.pendingLocalDirectSessions.clear()
     this.incoming.clear()
+    this.cancelledPulls.clear()
     this.chunkSender.cancel(error)
   }
 
@@ -905,7 +1187,7 @@ export class TavernBridgeService extends EventTarget {
     if (this.state.status !== 'connected' || !this.port) throw new Error('请先完成酒馆配对')
   }
 
-  private async requestLocalDirectSession(): Promise<LocalTavernDirectSession> {
+  private async requestLocalDirectSession(signal?: AbortSignal): Promise<LocalTavernDirectSession> {
     const requestId = crypto.randomUUID()
     const pending = new Promise<LocalTavernDirectSession>((resolve, reject) => {
       this.pendingLocalDirectSessions.set(requestId, { resolve, reject })
@@ -913,12 +1195,15 @@ export class TavernBridgeService extends EventTarget {
     void this.send('local-direct-session-request', { requestId }).catch((error) =>
       this.pendingLocalDirectSessions.get(requestId)?.reject(error),
     )
-    return this.withTimeout(
-      pending,
-      requestId,
-      this.pendingLocalDirectSessions,
-      '创建本机直传会话超时',
-      15_000,
+    return withAbortSignal(
+      this.withTimeout(
+        pending,
+        requestId,
+        this.pendingLocalDirectSessions,
+        '创建本机直传会话超时',
+        15_000,
+      ),
+      signal,
     )
   }
 

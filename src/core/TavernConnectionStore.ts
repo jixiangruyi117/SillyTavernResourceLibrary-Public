@@ -5,11 +5,13 @@ import { negotiateTavernCapabilities, type TavernCapabilities } from './TavernCa
 export interface TavernConnectionSnapshot extends TavernBridgeState {
   negotiated: TavernCapabilities
   inventory: TavernResourceItem[]
+  chatInventoryLoaded: boolean
   lastSyncAt?: number
 }
 
 export class TavernConnectionStore extends EventTarget {
   private inventory: TavernResourceItem[] = []
+  private chatInventoryLoaded = false
   private lastSyncAt?: number
 
   constructor() {
@@ -23,6 +25,7 @@ export class TavernConnectionStore extends EventTarget {
       ...state,
       negotiated: negotiateTavernCapabilities(state.capabilities),
       inventory: this.inventory.map((item) => ({ ...item })),
+      chatInventoryLoaded: this.chatInventoryLoaded,
       lastSyncAt: this.lastSyncAt,
     }
   }
@@ -33,19 +36,24 @@ export class TavernConnectionStore extends EventTarget {
       ...(kind ? this.inventory.filter((item) => item.kind !== kind) : []),
       ...inventory.map((item) => ({ ...item })),
     ]
+    this.chatInventoryLoaded = kind === 'chat'
     this.lastSyncAt = Date.now()
     this.publish()
     return this.inventory.map((item) => ({ ...item }))
   }
 
   recordSync(inventory?: TavernResourceItem[]): void {
-    if (inventory) this.inventory = inventory.map((item) => ({ ...item }))
+    if (inventory) {
+      this.inventory = inventory.map((item) => ({ ...item }))
+      this.chatInventoryLoaded = inventory.some((item) => item.kind === 'chat')
+    }
     this.lastSyncAt = Date.now()
     this.publish()
   }
 
   clearInventory(): void {
     this.inventory = []
+    this.chatInventoryLoaded = false
     this.lastSyncAt = undefined
     this.publish()
   }
@@ -53,6 +61,7 @@ export class TavernConnectionStore extends EventTarget {
   private readonly handleBridgeState = (): void => {
     if (tavernBridgeService.getState().status !== 'connected') {
       this.inventory = []
+      this.chatInventoryLoaded = false
       this.lastSyncAt = undefined
     }
     this.publish()

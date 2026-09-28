@@ -20,6 +20,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -44,7 +46,7 @@ data class NativeTavernResourceItem(
  * 纯原生 HTTPS 设备码中继。
  *
  * 控制消息严格串行；只有已经带 index/ACK 回压的 file-chunk 使用独立请求，
- * 窗口按 ACK 耗时在 2..8 之间调整，避免再次落回逐块串行，也不引入无界并发。
+ * 窗口按 ACK 耗时在 3..16 之间调整，避免再次落回逐块串行，也不引入无界并发。
  */
 class NativeTavernBridgeService(
     context: Context,
@@ -56,9 +58,9 @@ class NativeTavernBridgeService(
         const val VERSION = 2
         const val CHUNK_SIZE = 256 * 1024
         const val MAX_FILE_SIZE = 256L * 1024 * 1024
-        private const val MIN_WINDOW = 2
-        private const val DEFAULT_WINDOW = 4
-        private const val MAX_WINDOW = 8
+        private const val MIN_WINDOW = 3
+        private const val DEFAULT_WINDOW = 8
+        private const val MAX_WINDOW = 16
     }
 
     private val appContext = context.applicationContext
@@ -78,11 +80,13 @@ class NativeTavernBridgeService(
     private var token = ""
     private var relayBase = ""
     private var peerCapabilities = emptySet<String>()
-    private val pendingLists = ConcurrentHashMap<String, CompletableFuture<List<NativeTavernResourceItem>>>()
+    private val pendingLists = ConcurrentHashMap<String, PendingList>()
     private val pendingPulls = ConcurrentHashMap<String, PendingPull>()
     private val pendingSends = ConcurrentHashMap<String, CompletableFuture<String>>()
     private val incoming = ConcurrentHashMap<String, IncomingTransfer>()
     private val chunkAcks = ConcurrentHashMap<String, CompletableFuture<Unit>>()
+    private val cancelledPulls = ConcurrentHashMap.newKeySet<String>()
+    private val timeoutExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
 
     @Volatile
     var state: NativeTavernBridgeState = NativeTavernBridgeState()
@@ -123,31 +127,41 @@ class NativeTavernBridgeService(
 
     fun accept(): CompletableFuture<Unit> {
         require(state.status == "pairing") { "酒馆通信通道尚未准备好" }
-        return sendControl("srl-accept", JSONObject().put("pairCode", state.pairCode).put("capabilities", JSONArray()))
+        return sendControl("srl-accept", JSONObject().put("pairCode", state.pairCode).put("capabilities", JSONArray().put("catalog-pages-v1").put("pull-cancel-v1").put("pull-progress-v1")))
     }
 
     fun listResources(): CompletableFuture<List<NativeTavernResourceItem>> {
         assertConnected()
+        require("catalog-pages-v1" in peerCapabilities) { "酒馆扩展不支持大型资源清单，请更新酒馆互传扩展后重试" }
         val requestId = UUID.randomUUID().toString()
         val result = CompletableFuture<List<NativeTavernResourceItem>>()
-        pendingLists[requestId] = result
+        pendingLists[requestId] = PendingList(result)
+        touchList(requestId)
         sendControl("list-request", JSONObject().put("requestId", requestId)).whenComplete { _, error ->
-            if (error != null) pendingLists.remove(requestId)?.completeExceptionally(error)
+            if (error != null) failList(requestId, error)
         }
-        return withTimeout(result, 35, "读取酒馆资源超时").whenComplete { _, _ -> pendingLists.remove(requestId) }
+        return result
     }
 
     fun pullResources(items: List<NativeTavernResourceItem>): CompletableFuture<List<File>> {
         assertConnected()
+        require("pull-cancel-v1" in peerCapabilities && "pull-progress-v1" in peerCapabilities) {
+            "酒馆扩展不支持接收取消与进度续时，请更新酒馆互传扩展后重试"
+        }
         require(items.isNotEmpty()) { "请先选择要接收的酒馆资源" }
         val requestId = UUID.randomUUID().toString()
         val result = CompletableFuture<List<File>>()
         pendingPulls[requestId] = PendingPull(CopyOnWriteArrayList(), result)
+        touchPull(requestId)
+        pendingPulls[requestId]?.absoluteTimeout = timeoutExecutor.schedule(
+            { cancelPull(requestId, "从酒馆接收资源超过 30 分钟，已停止本次传输") },
+            30, TimeUnit.MINUTES,
+        )
         val requested = JSONArray(items.map { JSONObject().put("id", it.id) })
         sendControl("pull-request", JSONObject().put("requestId", requestId).put("items", requested)).whenComplete { _, error ->
-            if (error != null) pendingPulls.remove(requestId)?.future?.completeExceptionally(error)
+            if (error != null) failPull(requestId, error)
         }
-        return withTimeout(result, 180, "从酒馆接收资源超时").whenComplete { _, _ -> pendingPulls.remove(requestId) }
+        return result
     }
 
     fun sendResources(resources: List<NativeResource>, conflictPolicy: String): CompletableFuture<List<String>> {
@@ -226,6 +240,7 @@ class NativeTavernBridgeService(
         val type = message.optString("type")
         val requestId = message.optString("requestId")
         val transferId = message.optString("transferId")
+        if (requestId in cancelledPulls) return
         when (type) {
             "st-ready" -> {
                 peerCapabilities = message.optJSONArray("capabilities")?.stringSet().orEmpty()
@@ -239,13 +254,30 @@ class NativeTavernBridgeService(
                         NativeTavernResourceItem(it.optString("id"), it.optString("kind"), it.optString("name"), it.optString("fileName"), it.optString("detail"))
                     }?.takeIf { it.id.isNotBlank() }
                 }
-                pendingLists.remove(requestId)?.complete(parsed)
+                val pending = pendingLists[requestId] ?: return
+                val pageIndex = message.optInt("pageIndex", -1)
+                val pageCount = message.optInt("pageCount", -1)
+                if (pageIndex >= 0 && pageCount > 0) {
+                    require(pageIndex < pageCount && pageCount <= 1000) { "酒馆资源清单分页信息无效" }
+                    pending.pageCount = pageCount
+                    pending.pages.putIfAbsent(pageIndex, parsed)
+                    touchList(requestId)
+                    if (pending.pages.size == pageCount) finishList(requestId)
+                } else {
+                    pending.pages[0] = parsed
+                    finishList(requestId)
+                }
             }
-            "file-start" -> if (message.optString("direction") == "to-srl") beginIncoming(message)
-            "file-chunk" -> receiveChunk(message)
+            "list-progress" -> touchList(requestId)
+            "pull-progress" -> touchPull(requestId)
+            "file-start" -> if (message.optString("direction") == "to-srl") { touchPull(requestId); beginIncoming(message) }
+            "file-chunk" -> { touchPull(requestId); receiveChunk(message) }
             "file-chunk-ack" -> chunkAcks.remove("$transferId:${message.optInt("index", -1)}")?.complete(Unit)
-            "file-end" -> finishIncoming(requestId, transferId)
-            "pull-complete" -> pendingPulls.remove(requestId)?.let { it.future.complete(it.files.toList()) }
+            "file-end" -> { touchPull(requestId); finishIncoming(requestId, transferId) }
+            "pull-complete" -> pendingPulls.remove(requestId)?.let {
+                clearPullTimers(it)
+                it.future.complete(it.files.toList())
+            }
             "file-result" -> {
                 val result = message.optJSONObject("result")
                 pendingSends.remove(transferId)?.complete("${result?.optString("name").orEmpty().ifBlank { "资源" }}：${result?.optString("status").orEmpty().ifBlank { "完成" }}")
@@ -254,12 +286,86 @@ class NativeTavernBridgeService(
                 val error = IllegalStateException(message.optString("error", "酒馆操作失败"))
                 if (transferId.isNotBlank()) pendingSends.remove(transferId)?.completeExceptionally(error)
                 else if (requestId.isNotBlank()) {
-                    pendingPulls.remove(requestId)?.future?.completeExceptionally(error)
-                    pendingLists.remove(requestId)?.completeExceptionally(error)
+                    failPull(requestId, error)
+                    failList(requestId, error)
                 }
             }
             "disconnect" -> disconnectInternal("酒馆扩展已断开", notify = true)
         }
+    }
+
+    private fun touchPull(requestId: String) {
+        val pending = pendingPulls[requestId] ?: return
+        pending.lastProgressAt = System.currentTimeMillis()
+        pending.idleTimeout?.cancel(false)
+        pending.idleTimeout = timeoutExecutor.schedule(
+            { cancelPull(requestId, "从酒馆接收资源连续 120 秒没有进度，已停止后续接收") },
+            120, TimeUnit.SECONDS,
+        )
+    }
+
+    private fun clearPullTimers(pending: PendingPull) {
+        pending.idleTimeout?.cancel(false)
+        pending.absoluteTimeout?.cancel(false)
+    }
+
+    private fun cancelPull(requestId: String, message: String) {
+        val pending = pendingPulls.remove(requestId) ?: return
+        clearPullTimers(pending)
+        clearIncomingForRequest(requestId)
+        pending.files.forEach(File::delete)
+        cancelledPulls.add(requestId)
+        timeoutExecutor.schedule({ cancelledPulls.remove(requestId) }, 30, TimeUnit.MINUTES)
+        sendControl("pull-cancel", JSONObject().put("requestId", requestId).put("reason", message))
+        pending.future.completeExceptionally(IllegalStateException(message))
+    }
+
+    private fun failPull(requestId: String, error: Throwable) {
+        val pending = pendingPulls.remove(requestId) ?: return
+        clearPullTimers(pending)
+        clearIncomingForRequest(requestId)
+        pending.files.forEach(File::delete)
+        pending.future.completeExceptionally(error)
+    }
+
+    private fun clearIncomingForRequest(requestId: String) {
+        incoming.entries.toList().forEach { (transferId, transfer) ->
+            if (transfer.meta.optString("requestId") == requestId && incoming.remove(transferId, transfer)) {
+                transfer.closeAndDelete()
+            }
+        }
+    }
+
+    private fun touchList(requestId: String) {
+        val pending = pendingLists[requestId] ?: return
+        pending.idleTimeout?.cancel(false)
+        pending.idleTimeout = timeoutExecutor.schedule(
+            { failList(requestId, IllegalStateException("读取酒馆资源连续 180 秒没有进度")) },
+            180, TimeUnit.SECONDS,
+        )
+        if (pending.absoluteTimeout == null) {
+            pending.absoluteTimeout = timeoutExecutor.schedule(
+                { failList(requestId, IllegalStateException("读取酒馆资源超过 30 分钟，请检查酒馆目录状态")) },
+                30, TimeUnit.MINUTES,
+            )
+        }
+    }
+
+    private fun finishList(requestId: String) {
+        val pending = pendingLists.remove(requestId) ?: return
+        pending.idleTimeout?.cancel(false)
+        pending.absoluteTimeout?.cancel(false)
+        val result = pending.pageCount?.let { pageCount ->
+            (0 until pageCount).flatMap { pending.pages[it].orEmpty() }
+        } ?: pending.pages[0].orEmpty()
+        pending.future.complete(result)
+    }
+
+    private fun failList(requestId: String, error: Throwable) {
+        val pending = pendingLists.remove(requestId) ?: return
+        pending.idleTimeout?.cancel(false)
+        pending.absoluteTimeout?.cancel(false)
+        pending.future.completeExceptionally(error)
     }
 
     private fun beginIncoming(message: JSONObject) {
@@ -421,11 +527,12 @@ class NativeTavernBridgeService(
         relayBase = ""
         peerCapabilities = emptySet()
         val error = IllegalStateException(detail)
-        pendingLists.values.forEach { it.completeExceptionally(error) }
-        pendingPulls.values.forEach { it.future.completeExceptionally(error); it.files.forEach(File::delete) }
+        pendingLists.values.forEach { it.idleTimeout?.cancel(false); it.absoluteTimeout?.cancel(false); it.future.completeExceptionally(error) }
+        pendingPulls.values.forEach { clearPullTimers(it); it.future.completeExceptionally(error); it.files.forEach(File::delete) }
         pendingSends.values.forEach { it.completeExceptionally(error) }
         incoming.values.forEach(IncomingTransfer::closeAndDelete)
         pendingLists.clear(); pendingPulls.clear(); pendingSends.clear(); incoming.clear(); chunkAcks.clear()
+        cancelledPulls.clear()
         if (notify) setState("idle", detail, pairCode = "", bridgeVersion = "")
     }
 
@@ -436,9 +543,23 @@ class NativeTavernBridgeService(
         transferExecutor.shutdownNow()
         pollExecutor.shutdownNow()
         chunkExecutor.shutdownNow()
+        timeoutExecutor.shutdownNow()
     }
 
-    private data class PendingPull(val files: CopyOnWriteArrayList<File>, val future: CompletableFuture<List<File>>)
+    private data class PendingList(
+        val future: CompletableFuture<List<NativeTavernResourceItem>>,
+        val pages: MutableMap<Int, List<NativeTavernResourceItem>> = ConcurrentHashMap(),
+        @Volatile var pageCount: Int? = null,
+        @Volatile var idleTimeout: ScheduledFuture<*>? = null,
+        @Volatile var absoluteTimeout: ScheduledFuture<*>? = null,
+    )
+    private data class PendingPull(
+        val files: CopyOnWriteArrayList<File>,
+        val future: CompletableFuture<List<File>>,
+        @Volatile var lastProgressAt: Long = System.currentTimeMillis(),
+        @Volatile var idleTimeout: ScheduledFuture<*>? = null,
+        @Volatile var absoluteTimeout: ScheduledFuture<*>? = null,
+    )
     private data class ChunkPending(val future: CompletableFuture<Unit>, val sentAt: Long, val size: Int)
     private data class IncomingTransfer(
         val meta: JSONObject,

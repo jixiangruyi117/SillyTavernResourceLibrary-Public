@@ -4,8 +4,10 @@ import { hashBlob } from './HashService'
 export const TAVERN_BRIDGE_PROTOCOL = 'srl-tavern-bridge'
 export const TAVERN_BRIDGE_VERSION = BUILD_INFO.bridgeProtocolVersion
 export const TAVERN_BRIDGE_CHUNK_SIZE = 256 * 1024
-export const TAVERN_BRIDGE_MIN_IN_FLIGHT_CHUNKS = 2
-export const TAVERN_BRIDGE_DEFAULT_IN_FLIGHT_CHUNKS = 4
+export const TAVERN_BRIDGE_MIN_IN_FLIGHT_CHUNKS = 3
+export const TAVERN_BRIDGE_DEFAULT_IN_FLIGHT_CHUNKS = 6
+// Relay delivery acknowledgements are committed on the receiver's next poll.
+// Keep one queue window below the 4 MiB cap while allowing useful concurrency.
 export const TAVERN_BRIDGE_MAX_IN_FLIGHT_CHUNKS = 8
 export const TAVERN_BRIDGE_MAX_FILE_SIZE = 256 * 1024 * 1024
 

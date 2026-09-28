@@ -370,7 +370,7 @@ export function useUserPersonaApp(
     if (busy.value || !(await confirmDiscardDraft())) return
     transferOpen.value = true
   }
-  async function importTransferredFiles(files: File[]): Promise<void> {
+  async function importTransferredFiles(files: File[], onComplete?: () => void): Promise<void> {
     loading.value = true
     errorMessage.value = ''
     try {
@@ -387,6 +387,7 @@ export function useUserPersonaApp(
       transferOpen.value = false
     } finally {
       loading.value = false
+      onComplete?.()
     }
   }
   async function selectHeaderMore(action: ActionSheetAction): Promise<void> {

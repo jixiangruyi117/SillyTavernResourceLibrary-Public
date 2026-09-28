@@ -783,7 +783,9 @@ const isBatchBarVisible = computed(
       @update:ui-font-scale="applyUiFontScale"
       @save-css="saveCustomUiCss"
       @library-changed="handleLibraryChanged"
-      @import-files="importResourceFiles"
+      @import-files="
+        (files, onComplete) => void importResourceFiles(files).finally(() => onComplete?.())
+      "
       @shared-app-files-consumed="handleSharedAppFilesConsumed"
     />
 

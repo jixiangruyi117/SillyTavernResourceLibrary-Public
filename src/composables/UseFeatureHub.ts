@@ -83,7 +83,7 @@ export type FeatureHubEvents = {
   'update:uiFontScale': [value: UiFontScale]
   'save-css': [value: string]
   'library-changed': []
-  'import-files': [files: File[]]
+  'import-files': [files: File[], onComplete?: () => void]
   'feature-app-active': [active: boolean]
   'shared-app-files-consumed': []
 }

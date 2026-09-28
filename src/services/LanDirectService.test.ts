@@ -23,6 +23,7 @@ describe('LanDirectService', () => {
     { 'content-encoding': 'gzip' },
     { 'content-encoding': 'gzip', 'content-length': '24' },
     { 'content-length': '4' },
+    { 'content-length': '0, 4' },
   ])('按实际解压后的字节与哈希验证直传内容 %j', async (headers) => {
     vi.stubGlobal(
       'fetch',
@@ -136,6 +137,7 @@ describe('LanDirectService', () => {
         method: 'PUT',
         headers: expect.objectContaining({
           'X-SRL-Direct-Token': 'token_123456789012345678901234567890',
+          'Content-Type': 'application/octet-stream',
         }),
       }),
     )

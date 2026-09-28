@@ -17,6 +17,8 @@ const emit = defineEmits<TavernBridgeCenterEvents>()
 const {
   state,
   busy,
+  canCancelTransfer,
+  cancelTransfer,
   canBindDirectory,
   bindDirectory,
   acceptPairing,
@@ -41,8 +43,12 @@ const {
   showOnlyMissingLocal,
   tavernReceiveFilters,
   tavernReceiveFilter,
+  selectTavernReceiveFilter,
   tavernSearch,
   visibleTavernItems,
+  pagedVisibleTavernItems,
+  tavernPage,
+  tavernPageCount,
   selectAllTavern,
   selectedTavernIds,
   showOnlySelectedTavern,
@@ -60,6 +66,9 @@ const {
   selectAllLocal,
   selectedLocalIds,
   filteredLocalResources,
+  pagedFilteredLocalResources,
+  localPage,
+  localPageCount,
   tavernItems,
   showOnlySelectedLocal,
   resourceLabel,
@@ -318,14 +327,12 @@ const {
           <div>
             <h2>酒馆资源</h2>
           </div>
-          <button type="button" :disabled="busy" @click="refreshTavernResources()">刷新目录</button>
           <button
-            v-if="state.capabilities?.includes('chat-archive-v1')"
             type="button"
             :disabled="busy"
-            @click="refreshTavernResources('chat')"
+            @click="refreshTavernResources(tavernReceiveFilter === 'chat' ? 'chat' : undefined)"
           >
-            读取聊天记录
+            {{ tavernReceiveFilter === 'chat' ? '重新读取聊天记录' : '刷新目录' }}
           </button>
         </header>
         <div class="tavern-bridge-explorer">
@@ -335,7 +342,7 @@ const {
               :key="filter.key"
               type="button"
               :class="{ 'is-active': tavernReceiveFilter === filter.key }"
-              @click="tavernReceiveFilter = filter.key"
+              @click="selectTavernReceiveFilter(filter.key)"
             >
               <span>{{ filter.label }}</span>
               <small>{{ filter.count }}</small>
@@ -379,7 +386,7 @@ const {
         </div>
         <div class="tavern-bridge-resource-grid">
           <button
-            v-for="item in visibleTavernItems"
+            v-for="item in pagedVisibleTavernItems"
             :key="item.id"
             type="button"
             class="tavern-bridge-resource-card"
@@ -398,10 +405,10 @@ const {
             >
             <span class="tavern-bridge-resource-card__meta">
               <em>{{ tavernResourceLabel(item.kind) }}</em>
-              <small v-if="item.kind === 'chat'" class="tavern-bridge-file-size">{{
+              <small class="tavern-bridge-file-size">{{
                 typeof item.size === 'number' && Number.isFinite(item.size) && item.size >= 0
                   ? formatBytes(item.size)
-                  : item.sizeLabel || '大小未提供'
+                  : item.sizeLabel || '酒馆未提供大小'
               }}</small>
               <em v-if="itemExistsLocally(item)" class="tavern-bridge-exists">可能已在库中</em>
             </span>
@@ -410,6 +417,21 @@ const {
             当前分类没有匹配资源，请切换分类或清除搜索。
           </p>
         </div>
+        <nav v-if="tavernPageCount > 1" class="tavern-bridge-pagination" aria-label="酒馆资源分页">
+          <button type="button" :disabled="busy || tavernPage <= 1" @click="tavernPage -= 1">
+            <span aria-hidden="true">‹</span> 上一页
+          </button>
+          <span class="tavern-bridge-page-indicator"
+            >第 {{ tavernPage }} / {{ tavernPageCount }} 页</span
+          >
+          <button
+            type="button"
+            :disabled="busy || tavernPage >= tavernPageCount"
+            @click="tavernPage += 1"
+          >
+            下一页 <span aria-hidden="true">›</span>
+          </button>
+        </nav>
         <button
           class="tavern-bridge__primary tavern-bridge__sticky-action"
           type="button"
@@ -620,7 +642,7 @@ const {
         </p>
         <div class="tavern-bridge-resource-grid">
           <button
-            v-for="resource in filteredLocalResources"
+            v-for="resource in pagedFilteredLocalResources"
             :key="resource.id"
             type="button"
             class="tavern-bridge-resource-card"
@@ -636,8 +658,10 @@ const {
             >
             <span class="tavern-bridge-resource-card__meta">
               <em>{{ resourceLabel(resource) }}</em>
-              <small v-if="resource.type === 'chat'" class="tavern-bridge-file-size">{{
-                formatBytes(resource.fileSize)
+              <small class="tavern-bridge-file-size">{{
+                Number.isFinite(resource.fileSize) && resource.fileSize >= 0
+                  ? formatBytes(resource.fileSize)
+                  : '大小未知'
               }}</small>
               <em v-if="resourceExistsInTavern(resource)" class="tavern-bridge-exists"
                 >酒馆可能已有</em
@@ -648,6 +672,21 @@ const {
             当前筛选没有可发送资源，请切换分类或清除筛选。
           </p>
         </div>
+        <nav v-if="localPageCount > 1" class="tavern-bridge-pagination" aria-label="本地资源分页">
+          <button type="button" :disabled="busy || localPage <= 1" @click="localPage -= 1">
+            <span aria-hidden="true">‹</span> 上一页
+          </button>
+          <span class="tavern-bridge-page-indicator"
+            >第 {{ localPage }} / {{ localPageCount }} 页</span
+          >
+          <button
+            type="button"
+            :disabled="busy || localPage >= localPageCount"
+            @click="localPage += 1"
+          >
+            下一页 <span aria-hidden="true">›</span>
+          </button>
+        </nav>
         <button
           class="tavern-bridge__primary tavern-bridge__sticky-action"
           type="button"
@@ -665,6 +704,14 @@ const {
       >
         <p v-if="error" role="alert">{{ error }}</p>
         <strong v-else-if="progress">{{ progress }}</strong>
+        <button
+          v-if="busy && canCancelTransfer"
+          class="tavern-bridge-cancel"
+          type="button"
+          @click="cancelTransfer"
+        >
+          停止当前传输
+        </button>
         <ul v-if="transferQueue.length" class="tavern-bridge-queue">
           <li v-for="item in transferQueue" :key="item.key" :data-status="item.status">
             <i aria-hidden="true"></i>
@@ -679,7 +726,7 @@ const {
                   ? '进行中'
                   : item.status === 'done'
                     ? '完成'
-                    : '失败'
+                    : '失败 / 未完成'
             }}</em>
           </li>
         </ul>
@@ -689,7 +736,7 @@ const {
           type="button"
           @click="retryFailedTransfers"
         >
-          重试 {{ failedTransferKeys.length }} 个失败项
+          重试 {{ failedTransferKeys.length }} 个失败或未完成项
         </button>
         <ol v-if="reports.length">
           <li v-for="item in reports.slice(0, 5)" :key="item">{{ item }}</li>
@@ -702,7 +749,7 @@ const {
     <TavernParcelExchange
       :resources="resources"
       :initial-ids="initialLocalIds"
-      @import-files="emit('import-files', $event)"
+      @import-files="(files, onComplete) => emit('import-files', files, onComplete)"
     />
     <section
       v-if="!initialKind"

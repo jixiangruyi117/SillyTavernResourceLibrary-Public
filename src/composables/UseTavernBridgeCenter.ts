@@ -1,5 +1,5 @@
 import type { EmitFn } from 'vue'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { parseSillyTavernPersonaBackup } from '../parser/SillyTavernPersonaBackup'
 import { browserStorageService, resourceService } from '../core/AppContainer'
@@ -42,7 +42,7 @@ export type TavernBridgeCenterProps = {
 
 export type TavernBridgeCenterEvents = {
   back: []
-  'import-files': [files: File[]]
+  'import-files': [files: File[], onComplete?: () => void]
 }
 
 export type LocalSendFilter =
@@ -117,6 +117,22 @@ export function useTavernBridgeCenter(
   )
 
   const busy = ref(false)
+  const canCancelTransfer = ref(false)
+  const activeAbortController = shallowRef<AbortController | null>(null)
+  function beginTransfer(): AbortSignal {
+    const controller = new AbortController()
+    activeAbortController.value = controller
+    canCancelTransfer.value = true
+    return controller.signal
+  }
+  function endTransfer(): void {
+    activeAbortController.value = null
+    canCancelTransfer.value = false
+  }
+  function cancelTransfer(): void {
+    activeAbortController.value?.abort(new DOMException('已取消当前传输', 'AbortError'))
+    progress.value = '正在停止当前传输并清理未完成数据…'
+  }
   const canBindDirectory = tavernBridgeService.canBindDirectory()
   async function bindDirectory(reuse = true): Promise<void> {
     if (busy.value) return
@@ -222,22 +238,38 @@ export function useTavernBridgeCenter(
   )
 
   const failedTransferKeys = computed(() =>
-    transferQueue.value.filter((item) => item.status === 'failed').map((item) => item.key),
+    transferQueue.value
+      .filter((item) => item.status === 'failed' || item.status === 'pending')
+      .map((item) => item.key),
   )
 
   let lastTransferDirection: 'pull' | 'send' = restoredDraft?.direction ?? 'pull'
   let transferOrigin = restoredDraft?.origin ?? ''
   if (restoredDraft) conflictPolicy.value = restoredDraft.policy
+  let transferDraftTimer = 0
+  const persistTransferDraft = () => {
+    browserStorageService.setBridgeTransferDraft({
+      direction: lastTransferDirection,
+      origin: transferOrigin,
+      policy: conflictPolicy.value,
+      at: Date.now(),
+      // Keep resumable entries first. The storage contract retains at most 200 items.
+      items: transferQueue.value
+        .filter((item) => item.status !== 'done')
+        .slice(0, 200)
+        .map((item) => ({
+          ...item,
+          name: item.name.slice(0, 200),
+          detail: item.detail.slice(0, 240),
+        })),
+    })
+  }
   watch(
     transferQueue,
-    (items) =>
-      browserStorageService.setBridgeTransferDraft({
-        direction: lastTransferDirection,
-        origin: transferOrigin,
-        policy: conflictPolicy.value,
-        at: Date.now(),
-        items: items.map((item) => ({ ...item })),
-      }),
+    () => {
+      window.clearTimeout(transferDraftTimer)
+      transferDraftTimer = window.setTimeout(persistTransferDraft, 2_000)
+    },
     { deep: true, flush: 'sync' },
   )
 
@@ -398,6 +430,42 @@ export function useTavernBridgeCenter(
           (item.kind === 'chat' && item.detail.toLocaleLowerCase().includes(keyword))),
     )
   })
+  const tavernPageSize = 10
+  const tavernPage = ref(1)
+  const tavernPageCount = computed(() =>
+    Math.max(1, Math.ceil(visibleTavernItems.value.length / tavernPageSize)),
+  )
+  const pagedVisibleTavernItems = computed(() => {
+    const start = (tavernPage.value - 1) * tavernPageSize
+    return visibleTavernItems.value.slice(start, start + tavernPageSize)
+  })
+  watch([tavernSearch, tavernReceiveFilter, showOnlyMissingTavern, showOnlySelectedTavern], () => {
+    tavernPage.value = 1
+  })
+
+  const localPageSize = 10
+  const localPage = ref(1)
+  const localPageCount = computed(() =>
+    Math.max(1, Math.ceil(filteredLocalResources.value.length / localPageSize)),
+  )
+  const pagedFilteredLocalResources = computed(() => {
+    const start = (localPage.value - 1) * localPageSize
+    return filteredLocalResources.value.slice(start, start + localPageSize)
+  })
+  watch(
+    [
+      search,
+      localSendFilter,
+      showOnlyMissingLocal,
+      showOnlySelectedLocal,
+      bridgeFolderFilter,
+      bridgeTagFilter,
+      bridgeFavoritesOnly,
+    ],
+    () => {
+      localPage.value = 1
+    },
+  )
 
   const tavernReceiveFilters = computed<
     Array<{ key: TavernReceiveFilter; label: string; count: number }>
@@ -428,7 +496,10 @@ export function useTavernBridgeCenter(
       }))
       .filter(
         (filter) =>
-          filter.key === 'all' || filter.key === tavernReceiveFilter.value || filter.count > 0,
+          filter.key === 'all' ||
+          filter.key === tavernReceiveFilter.value ||
+          filter.count > 0 ||
+          (filter.key === 'chat' && state.value.capabilities?.includes('chat-archive-v1')),
       )
   })
 
@@ -550,6 +621,17 @@ export function useTavernBridgeCenter(
     }
   }
 
+  function selectTavernReceiveFilter(filter: TavernReceiveFilter): void {
+    tavernReceiveFilter.value = filter
+    if (
+      filter === 'chat' &&
+      state.value.capabilities?.includes('chat-archive-v1') &&
+      !state.value.chatInventoryLoaded
+    ) {
+      void refreshTavernResources('chat')
+    }
+  }
+
   function toggleSelection(target: 'tavern' | 'local', id: string): void {
     const source = target === 'tavern' ? selectedTavernIds : selectedLocalIds
     const next = new Set(source.value)
@@ -600,45 +682,88 @@ export function useTavernBridgeCenter(
     return labels[kind]
   }
 
-  async function runPullQueue(items: TavernResourceItem[]): Promise<void> {
+  async function runPullQueue(items: TavernResourceItem[], signal?: AbortSignal): Promise<void> {
     lastTransferDirection = 'pull'
     busy.value = true
     error.value = ''
-    const files: File[] = []
-    const receivedEntries: TransferQueueItem[] = []
+    let files: File[] = []
+    let receivedEntries: TransferQueueItem[] = []
+    let batchBytes = 0
+    let receivedCount = 0
     let done = 0
+    const importBatch = async (): Promise<void> => {
+      if (!files.length || disposed) return
+      const batch = files
+      const entries = receivedEntries
+      files = []
+      receivedEntries = []
+      batchBytes = 0
+      await new Promise<void>((resolve) => emit('import-files', batch, resolve))
+      for (const entry of entries) {
+        entry.status = 'done'
+        entry.detail = '已导入处理，请查看资源库提示'
+      }
+      const remainingSelection = new Set(selectedTavernIds.value)
+      for (const entry of entries) remainingSelection.delete(entry.key)
+      selectedTavernIds.value = remainingSelection
+    }
     try {
-      for (const item of items) {
-        if (disposed) break
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]!
+        if (disposed || signal?.aborted) break
         const entry = transferQueue.value.find((queued) => queued.key === item.id)
         if (!entry) continue
         entry.status = 'active'
         progress.value = `正在接收 ${done + 1} / ${items.length}：${item.name}`
         try {
-          const [file] = await tavernBridgeService.pullResources([item])
+          const [file] = await tavernBridgeService.pullResources([item], { signal })
           if (!file) throw new Error('酒馆没有返回文件，资源可能已被删除')
           files.push(file)
+          batchBytes += file.size
+          receivedCount += 1
           receivedEntries.push(entry)
-          entry.detail = '已接收，等待交给资源库导入'
+          entry.detail = '已接收，等待分批导入'
         } catch (reason) {
+          if (signal?.aborted) {
+            entry.status = 'pending'
+            entry.detail = '已取消，未完成的资源可重试'
+            for (const remaining of items.slice(index + 1)) {
+              const queued = transferQueue.value.find((candidate) => candidate.key === remaining.id)
+              if (queued && queued.status !== 'done') queued.detail = '已取消，尚未开始'
+            }
+            break
+          }
           entry.status = 'failed'
           entry.detail = reason instanceof Error ? reason.message : '接收失败'
+          const message = entry.detail
+          const transportFailed =
+            state.value.status !== 'connected' ||
+            /超时|连接已断开|通信通道|中继|分块确认/u.test(message)
+          if (transportFailed) {
+            for (const remaining of items.slice(index + 1)) {
+              const queued = transferQueue.value.find((candidate) => candidate.key === remaining.id)
+              if (queued && queued.status !== 'done') {
+                queued.status = 'pending'
+                queued.detail = '上一项传输中断，尚未尝试；恢复连接后可继续'
+              }
+            }
+            break
+          }
         }
         done += 1
+        if (files.length >= 25 || batchBytes >= 64 * 1024 * 1024) await importBatch()
       }
-      if (files.length && !disposed) {
-        emit('import-files', files)
-        for (const entry of receivedEntries) {
-          entry.status = 'done'
-          entry.detail = '已交给资源库导入，请查看结果通知'
-        }
-        selectedTavernIds.value = new Set()
-      }
+      await importBatch()
       const failed = transferQueue.value.filter((item) => item.status === 'failed').length
-      progress.value = failed
-        ? `接收完成：成功 ${files.length} 项、失败 ${failed} 项；失败项可单独重试`
-        : `已从酒馆取回 ${files.length} 个文件，正在导入资源库；导入结果会在底部通知中显示`
-      recordReport(`从酒馆接收 ${files.length} 项${failed ? `（${failed} 项失败）` : ''}`)
+      const paused = transferQueue.value.filter((item) => item.status === 'pending').length
+      progress.value = signal?.aborted
+        ? `已取消：已接收 ${receivedCount} 项；未完成项可重试`
+        : failed
+          ? `接收暂停：已接收 ${receivedCount} 项、失败 ${failed} 项${paused ? `、未尝试 ${paused} 项` : ''}；可重试失败和未完成项`
+          : `已从酒馆取回 ${receivedCount} 项；资源已分批交给导入，结果会在底部通知中显示`
+      recordReport(
+        `从酒馆接收 ${receivedCount} 项${failed || paused ? `（失败 ${failed}、未尝试 ${paused}）` : ''}`,
+      )
       tavernConnectionStore.recordSync(tavernItems.value)
     } finally {
       busy.value = false
@@ -657,7 +782,12 @@ export function useTavernBridgeCenter(
       status: 'pending',
       detail: '',
     }))
-    await runPullQueue(items)
+    const signal = beginTransfer()
+    try {
+      await runPullQueue(items, signal)
+    } finally {
+      endTransfer()
+    }
   }
 
   async function retryFailedTransfers(): Promise<void> {
@@ -678,7 +808,12 @@ export function useTavernBridgeCenter(
         return
       }
       for (const entry of transferQueue.value) if (keys.has(entry.key)) entry.status = 'pending'
-      await runPullQueue(items)
+      const signal = beginTransfer()
+      try {
+        await runPullQueue(items, signal)
+      } finally {
+        endTransfer()
+      }
     } else {
       const summaries = supportedLocalResources.value.filter((resource) => keys.has(resource.id))
       if (!summaries.length) {
@@ -689,19 +824,22 @@ export function useTavernBridgeCenter(
       let avatarPlans: Map<string, PersonaAvatarPlan>
       let personaPlans: Map<string, PersonaSendPlan>
       busy.value = true
+      const signal = beginTransfer()
       try {
-        const prepared = await preparePersonaSendPlans(summaries)
+        const prepared = await preparePersonaSendPlans(summaries, signal)
         if (!prepared) return
         personaPlans = prepared
-        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans)
+        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans, signal)
         if (!avatars) return
         avatarPlans = avatars
         if (state.value.status !== 'connected') throw new Error('酒馆连接已断开，请重新连接后重试')
         for (const entry of transferQueue.value) if (keys.has(entry.key)) entry.status = 'pending'
-        await runSendQueue(summaries, avatarPlans, personaPlans)
+        await runSendQueue(summaries, avatarPlans, personaPlans, signal)
       } catch (reason) {
-        error.value = reason instanceof Error ? reason.message : '无法核对酒馆头像'
+        if (signal.aborted) progress.value = '已取消发送；未完成项可重试'
+        else error.value = reason instanceof Error ? reason.message : '无法核对酒馆头像'
       } finally {
+        endTransfer()
         busy.value = false
       }
     }
@@ -756,12 +894,22 @@ export function useTavernBridgeCenter(
     )
     if (!summaries.length || busy.value) return
     busy.value = true
+    const signal = beginTransfer()
+    transferQueue.value = summaries.map((summary) => ({
+      key: summary.id,
+      name: summary.name,
+      label: '发送',
+      status: 'pending',
+      detail: '等待发送前核对',
+      operationId: crypto.randomUUID(),
+    }))
+    progress.value = `正在准备发送 ${summaries.length} 项：核对同名资源和传输方式`
     try {
       if (!(await confirmDirectoryWrite())) return
       if (summaries.some((resource) => resource.type === RESOURCE_TYPE.CHAT)) {
         if (!state.value.capabilities.includes('chat-import-v1'))
           throw new Error('请先更新酒馆互传扩展：当前版本不支持聊天回传')
-        const inventory = await tavernBridgeService.listResources()
+        const inventory = await tavernBridgeService.listResources(undefined, { signal })
         chatReturnPlans.clear()
         for (const summary of summaries.filter((item) => item.type === RESOURCE_TYPE.CHAT)) {
           const chat = await resourceService.get(summary.id)
@@ -818,10 +966,10 @@ export function useTavernBridgeCenter(
       let avatarPlans: Map<string, PersonaAvatarPlan>
       let personaPlans: Map<string, PersonaSendPlan>
       try {
-        const prepared = await preparePersonaSendPlans(summaries)
+        const prepared = await preparePersonaSendPlans(summaries, signal)
         if (!prepared) return
         personaPlans = prepared
-        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans)
+        const avatars = await preparePersonaAvatarPlans(summaries, personaPlans, signal)
         if (!avatars) return
         avatarPlans = avatars
       } catch (reason) {
@@ -834,24 +982,29 @@ export function useTavernBridgeCenter(
       }
       lastTransferDirection = 'send'
       transferOrigin = state.value.tavernOrigin
-      transferQueue.value = summaries.map((summary) => ({
-        key: summary.id,
-        name: summary.name,
-        label: '发送',
-        status: 'pending',
-        detail: '',
-        operationId: crypto.randomUUID(),
-      }))
-      await runSendQueue(summaries, avatarPlans, personaPlans)
+      if (signal.aborted) throw signal.reason
+      await runSendQueue(summaries, avatarPlans, personaPlans, signal)
     } catch (reason) {
-      error.value = reason instanceof Error ? reason.message : '发送失败'
+      if (signal.aborted) {
+        for (const entry of transferQueue.value) {
+          if (entry.status !== 'done') {
+            entry.status = 'pending'
+            entry.detail = '已取消，未完成资源可重试'
+          }
+        }
+        progress.value = '已取消发送；未完成项可重试'
+      } else {
+        error.value = reason instanceof Error ? reason.message : '发送失败'
+      }
     } finally {
+      endTransfer()
       busy.value = false
     }
   }
 
   async function preparePersonaSendPlans(
     summaries: ResourceSummary[],
+    signal?: AbortSignal,
   ): Promise<Map<string, PersonaSendPlan> | null> {
     const plans = new Map<string, PersonaSendPlan>()
     if (
@@ -860,7 +1013,7 @@ export function useTavernBridgeCenter(
     )
       return plans
     // 目录用于展示，可能是旧快照；发送前单独核对酒馆当前的人设键和内容。
-    const current = await tavernBridgeService.listResources()
+    const current = await tavernBridgeService.listResources(undefined, { signal })
     for (const summary of summaries) {
       if (summary.type !== RESOURCE_TYPE.USER_PERSONA) continue
       const resource = await resourceService.get(summary.id)
@@ -870,7 +1023,7 @@ export function useTavernBridgeCenter(
       const avatarId = local.entries[0]!.avatarId
       const remote = current.find((item) => item.id === `userPersona:${avatarId}`)
       if (!remote) continue
-      const [remoteFile] = await tavernBridgeService.pullResources([remote])
+      const [remoteFile] = await tavernBridgeService.pullResources([remote], { signal })
       if (!remoteFile) throw new Error(`无法核对酒馆人设“${summary.name}”`)
       if (personaContentMatches(local.raw, JSON.parse(await remoteFile.text()), avatarId)) {
         plans.set(summary.id, { skip: true })
@@ -903,6 +1056,7 @@ export function useTavernBridgeCenter(
   async function preparePersonaAvatarPlans(
     summaries: ResourceSummary[],
     personaPlans = new Map<string, PersonaSendPlan>(),
+    signal?: AbortSignal,
   ): Promise<Map<string, PersonaAvatarPlan> | null> {
     const plans = new Map<string, PersonaAvatarPlan>()
     if (
@@ -967,6 +1121,7 @@ export function useTavernBridgeCenter(
     for (let index = 0; index < avatarIds.length; index += 100) {
       const batch = await tavernBridgeService.checkUserAvatarIds(
         avatarIds.slice(index, index + 100),
+        { signal },
       )
       for (const id of batch) existing.add(id)
     }
@@ -996,6 +1151,7 @@ export function useTavernBridgeCenter(
     summaries: ResourceSummary[],
     avatarPlans = new Map<string, PersonaAvatarPlan>(),
     personaPlans = new Map<string, PersonaSendPlan>(),
+    signal?: AbortSignal,
   ): Promise<void> {
     lastTransferDirection = 'send'
     busy.value = true
@@ -1003,6 +1159,16 @@ export function useTavernBridgeCenter(
     let sentCount = 0
     try {
       for (let index = 0; index < summaries.length; index += 1) {
+        if (signal?.aborted) {
+          for (const remaining of summaries.slice(index)) {
+            const queued = transferQueue.value.find((item) => item.key === remaining.id)
+            if (queued && queued.status !== 'done') {
+              queued.status = 'pending'
+              queued.detail = '已取消，尚未发送；可重试'
+            }
+          }
+          break
+        }
         const summary = summaries[index]!
         const entry = transferQueue.value.find((queued) => queued.key === summary.id)
         if (!entry) continue
@@ -1043,6 +1209,8 @@ export function useTavernBridgeCenter(
                   },
                 ],
                 personaAvatarMode.value === 'replace' ? 'overwrite' : 'skip',
+                undefined,
+                { signal },
               )
               avatarDetail =
                 avatarResult?.status === 'skipped'
@@ -1076,6 +1244,7 @@ export function useTavernBridgeCenter(
             (_completed, _total, detail) => {
               if (detail) progress.value = detail
             },
+            { signal },
           )
           if (chatPlan?.regexFile) {
             avatarDetail = '聊天已导入'
@@ -1090,6 +1259,8 @@ export function useTavernBridgeCenter(
                 },
               ],
               'copy',
+              undefined,
+              { signal },
             )
             avatarDetail = '配套正则已添加，保持停用'
           }
@@ -1106,6 +1277,18 @@ export function useTavernBridgeCenter(
             .join(' · ')
           if (result?.status !== 'skipped') sentCount += 1
         } catch (reason) {
+          if (signal?.aborted) {
+            entry.status = 'pending'
+            entry.detail = '已取消，未完成资源可重试'
+            for (const remaining of summaries.slice(index + 1)) {
+              const queued = transferQueue.value.find((item) => item.key === remaining.id)
+              if (queued && queued.status !== 'done') {
+                queued.status = 'pending'
+                queued.detail = '已取消，尚未发送；可重试'
+              }
+            }
+            break
+          }
           entry.status = 'failed'
           const message = reason instanceof Error ? reason.message : '发送失败'
           entry.detail = [
@@ -1126,11 +1309,13 @@ export function useTavernBridgeCenter(
           .catch(() => tavernItems.value)
       }
       recordReport(`发送 ${sentCount} 项到酒馆${failed ? `（${failed} 项失败）` : ''}`)
-      progress.value = failed
-        ? `发送完成：成功 ${sentCount} 项、失败 ${failed} 项；失败项可单独重试`
-        : state.value.transport === 'directory'
-          ? `已写入 ${sentCount} 项到酒馆目录；下次启动酒馆后生效`
-          : `已发送 ${sentCount} 项到酒馆；如果酒馆界面未刷新，请在酒馆内刷新对应列表`
+      progress.value = signal?.aborted
+        ? `已取消：已发送 ${sentCount} 项；未完成项可重试`
+        : failed
+          ? `发送完成：成功 ${sentCount} 项、失败 ${failed} 项；失败项可单独重试`
+          : state.value.transport === 'directory'
+            ? `已写入 ${sentCount} 项到酒馆目录；下次启动酒馆后生效`
+            : `已发送 ${sentCount} 项到酒馆；如果酒馆界面未刷新，请在酒馆内刷新对应列表`
     } finally {
       busy.value = false
     }
@@ -1191,6 +1376,10 @@ export function useTavernBridgeCenter(
 
   onUnmounted(() => {
     disposed = true
+    activeAbortController.value?.abort(new DOMException('页面已关闭，停止当前传输', 'AbortError'))
+    endTransfer()
+    window.clearTimeout(transferDraftTimer)
+    persistTransferDraft()
     tavernConnectionStore.removeEventListener('change', handleState)
   })
   return {
@@ -1198,6 +1387,8 @@ export function useTavernBridgeCenter(
     bindDirectory,
     state,
     busy,
+    canCancelTransfer,
+    cancelTransfer,
     acceptPairing,
     canShowDeviceJoin,
     joinDeviceRelay,
@@ -1220,8 +1411,12 @@ export function useTavernBridgeCenter(
     showOnlyMissingLocal,
     tavernReceiveFilters,
     tavernReceiveFilter,
+    selectTavernReceiveFilter,
     tavernSearch,
     visibleTavernItems,
+    pagedVisibleTavernItems,
+    tavernPage,
+    tavernPageCount,
     selectAllTavern,
     selectedTavernIds,
     showOnlySelectedTavern,
@@ -1241,6 +1436,9 @@ export function useTavernBridgeCenter(
     selectAllLocal,
     selectedLocalIds,
     filteredLocalResources,
+    pagedFilteredLocalResources,
+    localPage,
+    localPageCount,
     tavernItems,
     showOnlySelectedLocal,
     resourceLabel,

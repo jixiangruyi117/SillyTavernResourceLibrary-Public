@@ -63,17 +63,20 @@ export async function uploadLocalTavernDirectFile(
   session: LocalTavernDirectSession,
   file: Blob,
   name: string,
+  signal?: AbortSignal,
 ): Promise<{ size: number; sha256: string }> {
   if (file.size > session.maxFileSize) throw new Error(`${name} 超过本机直传大小限制`)
   const response = await fetch(directUrl(session), {
     method: 'PUT',
     headers: {
       ...directHeaders(session),
-      'Content-Type': file.type || 'application/octet-stream',
+      // SillyTavern parses application/json before plugin routes; keep raw resource bytes intact.
+      'Content-Type': 'application/octet-stream',
       // The original name travels in file-start; HTTP headers cannot carry Unicode names.
     },
     body: file,
     cache: 'no-store',
+    signal,
   })
   if (!response.ok) throw responseError('上传到本机酒馆', response.status)
   const result = (await response.json()) as { size?: unknown; sha256?: unknown }
@@ -96,11 +99,27 @@ export async function downloadLocalTavernDirectFile(
   // Fetch decodes HTTP compression; its Content-Length, if present, describes wire bytes.
   const encoding = response.headers.get('content-encoding')?.trim().toLowerCase()
   const length = response.headers.get('content-length')
-  const size = length !== null && (!encoding || encoding === 'identity') ? Number(length) : null
+  const lengths = length?.split(',').map((value) => value.trim()) ?? []
+  const parsedLengths = lengths.map((value) => (/^\d+$/.test(value) ? Number(value) : NaN))
+  const validLengths = parsedLengths.length > 0 && parsedLengths.every(Number.isSafeInteger)
   if (
-    size !== null &&
-    (!/^\d+$/.test(length!) || !Number.isSafeInteger(size) || size > session.maxFileSize)
+    length !== null &&
+    (!encoding || encoding === 'identity') &&
+    !validLengths &&
+    lengths.length === 1
   ) {
+    throw new Error('本机酒馆返回的文件大小无效')
+  }
+  // Android WebView may merge its intercepted response length with the server value ("0, N").
+  // Treat conflicting or malformed copies as unknown and verify the actual bounded stream below.
+  const size =
+    length !== null &&
+    (!encoding || encoding === 'identity') &&
+    validLengths &&
+    parsedLengths.every((value) => value === parsedLengths[0])
+      ? parsedLengths[0]
+      : null
+  if (size !== null && size > session.maxFileSize) {
     throw new Error('本机酒馆返回的文件大小无效')
   }
   const sha256 = response.headers.get('x-srl-direct-sha256') ?? ''

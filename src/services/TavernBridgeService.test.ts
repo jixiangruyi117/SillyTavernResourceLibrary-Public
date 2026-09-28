@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { BRIDGE_EXTENSION_VERSION } from '../utils/BridgeInstall'
 import { TavernBridgeService, TavernHttpRelayPort } from './TavernBridgeService'
+import { LOCAL_TAVERN_RELAY_BASE } from './TavernHttpRelayPort'
 import { tavernEnvelope } from './TavernBridgeProtocol'
 import { createChatArchive, readChatArchive } from './TavernChatArchiveCodec.mjs'
 import { hashBlob } from './HashService'
@@ -11,6 +12,7 @@ interface BridgeServiceTestAccess {
   handleWindowMessage(event: MessageEvent): void
   relayOrigin: string
   relayWindow: Window
+  incoming: Map<string, { received: number }>
 }
 
 describe('TavernBridgeService', () => {
@@ -30,8 +32,8 @@ describe('TavernBridgeService', () => {
     await expect(service.listResources('chat')).rejects.toThrow('不支持聊天')
     await access.handlePortMessage(
       tavernEnvelope('st-ready', {
-        bridgeVersion: '0.3.36-chat.1',
-        capabilities: ['chat-archive-v1'],
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['chat-archive-v1', 'catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1'],
       }),
     )
     const list = service.listResources('chat')
@@ -139,6 +141,174 @@ describe('TavernBridgeService', () => {
     })
   })
 
+  it('assembles large catalog pages in catalog order and refreshes the idle deadline', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+    })
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1'],
+      }),
+    )
+
+    const result = service.listResources()
+    const request = port.postMessage.mock.calls.at(-1)![0]
+    await vi.advanceTimersByTimeAsync(179_000)
+    await access.handlePortMessage(
+      tavernEnvelope('list-progress', { requestId: request.requestId }),
+    )
+    await vi.advanceTimersByTimeAsync(179_000)
+    const first = {
+      id: 'theme:first',
+      kind: 'theme' as const,
+      name: '第一项',
+      fileName: '1.json',
+      detail: '',
+    }
+    const second = {
+      id: 'theme:second',
+      kind: 'theme' as const,
+      name: '第二项',
+      fileName: '2.json',
+      detail: '',
+    }
+    await access.handlePortMessage(
+      tavernEnvelope('list-response', {
+        requestId: request.requestId,
+        pageIndex: 1,
+        pageCount: 2,
+        items: [second],
+      }),
+    )
+    await access.handlePortMessage(
+      tavernEnvelope('list-response', {
+        requestId: request.requestId,
+        pageIndex: 0,
+        pageCount: 2,
+        items: [first],
+      }),
+    )
+
+    await expect(result).resolves.toEqual([first, second])
+    service.destroy()
+  })
+
+  it('cancels timed-out pulls and deletes partial incoming data before rejecting', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+    })
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1'],
+      }),
+    )
+    const pending = service.pullResources([
+      {
+        id: 'theme:slow',
+        kind: 'theme',
+        name: '慢主题',
+        fileName: 'slow.json',
+        detail: '',
+      },
+    ])
+    const request = port.postMessage.mock.calls.at(-1)![0]
+    await access.handlePortMessage(
+      tavernEnvelope('file-start', {
+        requestId: request.requestId,
+        transferId: 'slow-transfer',
+        direction: 'to-srl',
+        name: 'slow.json',
+        size: 3,
+        sha256: 'unused',
+      }),
+    )
+    await access.handlePortMessage(
+      tavernEnvelope('file-chunk', {
+        requestId: request.requestId,
+        transferId: 'slow-transfer',
+        index: 0,
+        data: new Uint8Array([1, 2, 3]).buffer,
+      }),
+    )
+    const rejected = expect(pending).rejects.toThrow('连续 120 秒没有进度')
+    await vi.advanceTimersByTimeAsync(120_000)
+    await rejected
+    expect(access.incoming.size).toBe(0)
+    expect(port.postMessage.mock.calls.map(([message]) => message.type)).toContain('pull-cancel')
+    await access.handlePortMessage(
+      tavernEnvelope('operation-error', {
+        requestId: request.requestId,
+        error: 'late cancel response',
+      }),
+    )
+    expect(service.getState().status).toBe('connected')
+    service.destroy()
+  })
+
+  it('cancels an outgoing transfer, rejects its chunk waiter, and tells the Tavern to clear staging', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      location: { href: 'https://srl.example.test/', origin: 'https://srl.example.test' },
+    })
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1'],
+      }),
+    )
+    const controller = new AbortController()
+    const pending = service.sendFiles(
+      [
+        {
+          file: new File(['pending payload'], 'pending.json', { type: 'application/json' }),
+          kind: 'character',
+          displayName: 'pending',
+        },
+      ],
+      'copy',
+      undefined,
+      { signal: controller.signal },
+    )
+    await vi.waitFor(() => {
+      expect(port.postMessage.mock.calls.some(([message]) => message.type === 'file-chunk')).toBe(
+        true,
+      )
+    })
+    controller.abort(new DOMException('已取消', 'AbortError'))
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    const messages = port.postMessage.mock.calls.map(([message]) => message.type)
+    expect(messages).toContain('file-cancel')
+    expect(messages).not.toContain('file-end')
+    service.destroy()
+  })
+
   it('round-trips an avatar existence check only with a capable connected Bridge', async () => {
     const service = new TavernBridgeService()
     vi.stubGlobal('window', {
@@ -156,7 +326,7 @@ describe('TavernBridgeService', () => {
     }
     await (service as unknown as BridgeServiceTestAccess).handlePortMessage(
       tavernEnvelope('st-ready', {
-        bridgeVersion: '0.3.31',
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
         capabilities: ['persona-avatar-check-v1'],
       }),
     )
@@ -186,7 +356,10 @@ describe('TavernBridgeService', () => {
       const port = { postMessage: vi.fn(), close: vi.fn() }
       ;(service as unknown as { port: typeof port }).port = port
       await (service as unknown as BridgeServiceTestAccess).handlePortMessage(
-        tavernEnvelope('st-ready', { bridgeVersion: BRIDGE_EXTENSION_VERSION }),
+        tavernEnvelope('st-ready', {
+          bridgeVersion: BRIDGE_EXTENSION_VERSION,
+          capabilities: ['catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1'],
+        }),
       )
       const pending = service.pullResources([
         {
@@ -283,6 +456,12 @@ describe('TavernBridgeService', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ token: 'csrf-test-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             code: 'AB23CD45',
@@ -298,9 +477,19 @@ describe('TavernBridgeService', () => {
 
     await service.connectLocalTavern()
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:8000/csrf-token',
+      expect.objectContaining({ cache: 'no-store', credentials: 'include' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       'http://127.0.0.1:8000/api/plugins/srl-bridge/local-pair/requests',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'csrf-test-token' },
+      }),
     )
     expect(service.getState()).toMatchObject({
       status: 'discovering',
@@ -322,7 +511,15 @@ describe('TavernBridgeService', () => {
     })
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 404 })),
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ token: 'csrf-test-token' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 404 })),
     )
     const service = new TavernBridgeService()
 
@@ -373,6 +570,25 @@ describe('TavernBridgeService', () => {
 })
 
 describe('TavernHttpRelayPort', () => {
+  it('sends the local Tavern CSRF token on native relay requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const port = new TavernHttpRelayPort(LOCAL_TAVERN_RELAY_BASE, {
+      code: 'AB23CD45',
+      token: 'temporary-token',
+      csrfToken: 'local-csrf-token',
+    })
+
+    await port.postMessage(tavernEnvelope('file-start'))
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${LOCAL_TAVERN_RELAY_BASE}messages`,
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'local-csrf-token' }),
+      }),
+    )
+  })
+
   it('keeps control messages ordered but allows file chunks to fill the ACK window', async () => {
     let resolveControl: ((response: Response) => void) | undefined
     const fetchMock = vi

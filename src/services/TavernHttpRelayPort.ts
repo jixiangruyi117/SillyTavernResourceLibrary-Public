@@ -53,7 +53,12 @@ export class TavernHttpRelayPort {
   onerror: ((error: unknown) => void) | null = null
   onrecovery: ((recovering: boolean) => void) | null = null
   private readonly relayBase: string
-  private readonly session: { code: string; token: string; reliableDelivery?: boolean }
+  private readonly session: {
+    code: string
+    token: string
+    reliableDelivery?: boolean
+    csrfToken?: string
+  }
   private closed = false
   private sendChain = Promise.resolve()
   private readonly abort = new AbortController()
@@ -63,7 +68,7 @@ export class TavernHttpRelayPort {
 
   constructor(
     relayBase: string,
-    session: { code: string; token: string; reliableDelivery?: boolean },
+    session: { code: string; token: string; reliableDelivery?: boolean; csrfToken?: string },
   ) {
     this.relayBase = relayBase
     this.session = session
@@ -201,9 +206,13 @@ export class TavernHttpRelayPort {
     keepalive: boolean,
   ): Promise<unknown> {
     const endpoint = new URL(path, this.relayBase)
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (endpoint.origin === LOCAL_TAVERN_ORIGIN && this.session.csrfToken) {
+      headers['X-CSRF-Token'] = this.session.csrfToken
+    }
     const response = await tavernHttpFetch(endpoint.href, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       cache: 'no-store',
       mode: 'cors',

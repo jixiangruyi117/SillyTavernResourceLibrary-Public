@@ -13,6 +13,9 @@ import {
 const props = defineProps<FeatureHubProps>()
 const emit = defineEmits<FeatureHubEvents>()
 const controller = useFeatureHub(props, emit)
+function forwardImportFiles(files: File[], onComplete?: () => void): void {
+  emit('import-files', files, onComplete)
+}
 const {
   activePage,
   desktopFilterOpen,
@@ -215,7 +218,7 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
       :categories="categories"
       :initial-local-ids="bundleSendIds"
       @back="activePage = 'home'"
-      @import-files="emit('import-files', $event)"
+      @import-files="forwardImportFiles"
     />
     <PresetStitcherApp
       v-else-if="activePage === 'stitch'"

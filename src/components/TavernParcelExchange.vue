@@ -14,7 +14,7 @@ import { bridgeKindOfResource } from '../utils/TavernBridgeDiff'
 import type { ResourceSummary } from '../types/Resource'
 
 const props = defineProps<{ resources: ResourceSummary[]; initialIds?: string[] }>()
-const emit = defineEmits<{ 'import-files': [files: File[]] }>()
+const emit = defineEmits<{ 'import-files': [files: File[], onComplete?: () => void] }>()
 const selected = ref<string[]>(props.initialIds ?? [])
 const includeChatRegex = ref(false)
 const hasSelectedChat = computed(() =>
