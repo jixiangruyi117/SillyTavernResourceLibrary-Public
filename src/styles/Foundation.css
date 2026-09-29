@@ -2170,7 +2170,6 @@
 }
 
 html {
-  min-width: 320px;
   min-height: 100%;
   background: var(--color-canvas);
   /* 根层不预留滚动条槽，避免外层画布在窄屏右侧露出色差。 */
@@ -2179,7 +2178,6 @@ html {
 }
 
 body {
-  min-width: 320px;
   min-height: 100vh;
   min-height: 100svh;
   min-height: var(--app-viewport-height);
@@ -2197,7 +2195,6 @@ body {
 }
 
 #app {
-  min-width: 320px;
   min-height: var(--app-viewport-height);
 }
 
