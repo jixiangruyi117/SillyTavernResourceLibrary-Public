@@ -23,9 +23,6 @@
       },
       "DISCORD_BOT_TOKEN": {
         "description": "Discord Developer Portal → Bot → Reset Token。这个值应作为 Secret 保存。"
-      },
-      "SRL_WEB_URL": {
-        "description": "可选：你的 SRL 网页/PWA 地址。留空时仍可使用 Android 深链。"
       }
     }
   }

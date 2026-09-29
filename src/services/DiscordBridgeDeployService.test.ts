@@ -9,7 +9,7 @@ import {
 describe('DiscordBridgeDeployService', () => {
   it('targets the isolated public Bridge repository for one-click deploy', () => {
     expect(DISCORD_BRIDGE_PUBLIC_REPOSITORY_URL).toBe(
-      'https://github.com/jixiangruyi117/SillyTavern-SRL-Discord-Bridge',
+      'https://github.com/jixiangruyi117/SRL-Discord-Bridge',
     )
     expect(DISCORD_BRIDGE_DEPLOY_URL).toContain('https://deploy.workers.cloudflare.com/?url=')
   })

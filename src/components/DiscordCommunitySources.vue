@@ -393,6 +393,10 @@ const {
                     }}
                   </button>
                 </div>
+                <details v-if="attachment.textContent" class="discord-text-attachment">
+                  <summary>查看提取的文字</summary>
+                  <pre>{{ attachment.textContent }}</pre>
+                </details>
               </div>
             </div>
 

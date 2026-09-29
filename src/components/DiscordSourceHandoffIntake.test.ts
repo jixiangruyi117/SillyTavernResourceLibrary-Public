@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const runtime = vi.hoisted(() => ({
   bindSource: vi.fn(async () => undefined),
   clearHandoff: vi.fn(),
+  parseHandoffLink: vi.fn((value: string) =>
+    value === 'https://worker.example/open/pasted-token'
+      ? { workerUrl: 'https://worker.example', token: 'pasted-token' }
+      : undefined,
+  ),
   consumeHandoff: vi.fn(async () => ({
     channelId: 'channel-1',
     messageId: 'message-1',
@@ -25,7 +30,10 @@ const runtime = vi.hoisted(() => ({
       tags: [],
     },
   ]),
-  readHandoff: vi.fn(() => ({ workerUrl: 'https://worker.example', token: 'handoff-token' })),
+  readHandoff: vi.fn((): { workerUrl: string; token: string } | undefined => ({
+    workerUrl: 'https://worker.example',
+    token: 'handoff-token',
+  })),
   saveDiscordCapture: vi.fn(async () => ({
     source: {
       id: 'source-1',
@@ -70,6 +78,7 @@ vi.mock('../core/CommunitySourceRuntime', () => ({
 vi.mock('../services/DiscordHandoffService', () => ({
   clearDiscordHandoffFromLocation: runtime.clearHandoff,
   consumeDiscordHandoff: runtime.consumeHandoff,
+  parseDiscordHandoffLink: runtime.parseHandoffLink,
   readDiscordHandoffFromLocation: runtime.readHandoff,
 }))
 
@@ -79,6 +88,10 @@ describe('DiscordSourceHandoffIntake', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    runtime.readHandoff.mockReturnValue({
+      workerUrl: 'https://worker.example',
+      token: 'handoff-token',
+    })
     runtime.getSourceUsage.mockResolvedValue([])
   })
 
@@ -133,6 +146,36 @@ describe('DiscordSourceHandoffIntake', () => {
     expect(changed).toHaveBeenCalledOnce()
 
     window.removeEventListener('srl:community-sources-changed', changed)
+    wrapper.unmount()
+  })
+
+  it('从已安装 PWA 粘贴 Worker 链接并走现有本地保存流程', async () => {
+    runtime.readHandoff.mockReturnValue(undefined)
+    const wrapper = mount(DiscordSourceHandoffIntake, {
+      global: { stubs: { Teleport: true } },
+    })
+    await flushPromises()
+
+    window.dispatchEvent(new Event('srl:open-discord-handoff-paste'))
+    await flushPromises()
+    const textarea = wrapper.get('textarea[placeholder="粘贴 https://…/open/… 链接"]')
+    await textarea.setValue('https://worker.example/open/pasted-token')
+    const receiveButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('领取并保存到本机'))
+    expect(receiveButton).toBeDefined()
+    await receiveButton!.trigger('click')
+    await flushPromises()
+
+    expect(runtime.parseHandoffLink).toHaveBeenCalledWith(
+      'https://worker.example/open/pasted-token',
+    )
+    expect(runtime.consumeHandoff).toHaveBeenCalledWith({
+      workerUrl: 'https://worker.example',
+      token: 'pasted-token',
+    })
+    expect(runtime.saveDiscordCapture).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('保存 Discord 来源')
     wrapper.unmount()
   })
 })

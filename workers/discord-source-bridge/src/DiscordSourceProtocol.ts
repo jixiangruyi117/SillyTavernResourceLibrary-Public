@@ -4,11 +4,11 @@ export interface Env {
   DISCORD_PUBLIC_KEY: string
   DISCORD_BOT_TOKEN: string
   HANDOFF_TTL_SECONDS?: string
-  SRL_WEB_URL?: string
 }
 
 export interface DiscordInteraction {
   type: number
+  token?: string
   guild_id?: string
   channel_id?: string
   channel?: Record<string, unknown>

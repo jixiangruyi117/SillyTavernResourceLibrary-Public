@@ -71,6 +71,8 @@ export interface DiscordAttachmentMeta {
   url: string
   proxyUrl?: string
   contentType?: string
+  /** 小型纯文本附件的本地快照；只由用户自己的 Discord Bridge 提取。 */
+  textContent?: string
   width?: number
   height?: number
   /** 指向 SRL 通用 assets/assetFiles；有值时读取优先使用本机副本。 */

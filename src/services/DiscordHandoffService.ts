@@ -31,6 +31,7 @@ function readAttachment(value: unknown): DiscordAttachmentMeta | undefined {
     size,
     proxyUrl: readString(record, 'proxyUrl'),
     contentType: readString(record, 'contentType'),
+    textContent: typeof record.textContent === 'string' ? record.textContent : undefined,
     width:
       typeof record.width === 'number' && Number.isFinite(record.width) ? record.width : undefined,
     height:
@@ -113,6 +114,33 @@ export function readDiscordHandoffFromLocation(
   const workerUrl = params.get('discordWorker') ?? ''
   const token = params.get('discordHandoff') ?? ''
   return normalizeDiscordHandoffRequest({ workerUrl, token })
+}
+
+export function parseDiscordHandoffLink(value: string): DiscordHandoffRequest | undefined {
+  let url: URL
+  try {
+    url = new URL(value.trim())
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'https:') return undefined
+
+  const openRoute = /^\/open\/([A-Za-z0-9_-]{30,160})\/?$/u.exec(url.pathname)
+  if (openRoute) {
+    return normalizeDiscordHandoffRequest({ workerUrl: url.origin, token: openRoute[1]! })
+  }
+  const workerUrl = url.searchParams.get('discordWorker') ?? ''
+  let worker: URL
+  try {
+    worker = new URL(workerUrl)
+  } catch {
+    return undefined
+  }
+  if (worker.protocol !== 'https:') return undefined
+  return normalizeDiscordHandoffRequest({
+    workerUrl: worker.toString(),
+    token: url.searchParams.get('discordHandoff') ?? '',
+  })
 }
 
 export function clearDiscordHandoffFromLocation(): void {

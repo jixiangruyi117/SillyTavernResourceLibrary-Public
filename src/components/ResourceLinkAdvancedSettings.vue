@@ -77,6 +77,11 @@ function applyCachedStatus(): void {
   }
 }
 
+function openDiscordHandoffPaste(): void {
+  window.dispatchEvent(new Event('srl:open-discord-handoff-paste'))
+  emit('close')
+}
+
 onMounted(() => {
   const settings = loadDiscordSourceConnectionSettings()
   applicationId.value = settings.applicationId
@@ -390,6 +395,14 @@ async function clearBotToken(): Promise<void> {
             }}</strong>
           </span>
         </div>
+
+        <section class="resource-source-handoff">
+          <div>
+            <strong>从 Discord 领取分享</strong>
+            <p>iOS 桌面 PWA 请回到这里粘贴临时链接，确保保存到这份资源库。</p>
+          </div>
+          <button type="button" @click="openDiscordHandoffPaste">粘贴领取链接</button>
+        </section>
 
         <section class="resource-source-deploy" aria-labelledby="resource-source-deploy-title">
           <header>

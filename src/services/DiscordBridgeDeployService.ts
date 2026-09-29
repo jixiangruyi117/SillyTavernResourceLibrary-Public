@@ -1,5 +1,5 @@
 export const DISCORD_BRIDGE_PUBLIC_REPOSITORY_URL =
-  'https://github.com/jixiangruyi117/SillyTavern-SRL-Discord-Bridge'
+  'https://github.com/jixiangruyi117/SRL-Discord-Bridge'
 
 export const DISCORD_BRIDGE_DEPLOY_URL = `https://deploy.workers.cloudflare.com/?url=${encodeURIComponent(
   DISCORD_BRIDGE_PUBLIC_REPOSITORY_URL,

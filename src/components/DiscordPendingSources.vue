@@ -213,15 +213,15 @@ async function deletePending(view: PendingView): Promise<void> {
             <p v-if="message.content">{{ message.content }}</p>
             <p v-else class="discord-pending__empty-body">这条消息没有文字正文。</p>
             <div v-if="message.attachments.length" class="discord-pending__attachments">
-              <a
-                v-for="attachment in message.attachments"
-                :key="attachment.id"
-                :href="attachment.url"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {{ attachment.name }}
-              </a>
+              <div v-for="attachment in message.attachments" :key="attachment.id">
+                <a :href="attachment.url" target="_blank" rel="noopener noreferrer">
+                  {{ attachment.name }}
+                </a>
+                <details v-if="attachment.textContent" class="discord-text-attachment">
+                  <summary>查看提取的文字</summary>
+                  <pre>{{ attachment.textContent }}</pre>
+                </details>
+              </div>
             </div>
           </article>
         </div>

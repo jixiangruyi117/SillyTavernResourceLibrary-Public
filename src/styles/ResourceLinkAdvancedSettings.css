@@ -97,6 +97,42 @@
   background: #6b927d;
 }
 
+.resource-source-handoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--line-soft, #d7e2e4);
+  border-radius: 8px;
+}
+
+.resource-source-handoff strong {
+  color: var(--text-primary, #24434e);
+  font-size: 0.78rem;
+}
+
+.resource-source-handoff p {
+  margin: 4px 0 0;
+  color: var(--text-muted, #82949b);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.resource-source-handoff button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line-soft, #c5d4d7);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent-strong, #466b78);
+  font-size: 0.73rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .resource-source-deploy {
   margin-top: 23px;
   padding: 0 0 22px;

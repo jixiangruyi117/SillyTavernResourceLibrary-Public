@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 
 import manualWorkerSource from 'virtual:srl-discord-manual-worker-source'
 
@@ -12,11 +12,6 @@ defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const copyStatus = ref('')
-
-const suggestedSrlUrl = computed(() => {
-  if (typeof window === 'undefined') return ''
-  return `${window.location.origin}${window.location.pathname}`
-})
 
 async function copyText(value: string, message: string): Promise<void> {
   if (!value) return
@@ -168,28 +163,6 @@ async function copyText(value: string, message: string): Promise<void> {
 
           <section class="discord-manual-step">
             <span class="discord-manual-index">05</span>
-            <div>
-              <h4>网页 / PWA 用户再填一项</h4>
-              <p>
-                如果你会从浏览器或 PWA 打开 SRL，再增加普通变量 <strong>SRL_WEB_URL</strong>。
-                Android App 用户可以不填。
-              </p>
-              <div class="discord-manual-value">
-                <span>SRL_WEB_URL</span>
-                <strong>{{ suggestedSrlUrl || '你的 SRL 网页地址' }}</strong>
-                <button
-                  type="button"
-                  :disabled="!suggestedSrlUrl"
-                  @click="copyText(suggestedSrlUrl, 'SRL 网页地址已复制')"
-                >
-                  复制值
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section class="discord-manual-step">
-            <span class="discord-manual-index">06</span>
             <div>
               <h4>复制 Worker 链接回 SRL</h4>
               <p>部署完成后，Cloudflare 会给你类似：</p>

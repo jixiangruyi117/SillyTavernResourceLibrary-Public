@@ -64,6 +64,113 @@ function normalizeAttachments(value: unknown): Array<Record<string, unknown>> {
   })
 }
 
+const MAX_TEXT_ATTACHMENT_BYTES = 1_000_000
+const MAX_TEXT_ATTACHMENTS_PER_CAPTURE = 2
+const MAX_TEXT_ATTACHMENT_BYTES_PER_READ = 2_000_000
+
+export function hasTextAttachments(capture: Record<string, unknown>): boolean {
+  return Array.isArray(capture.attachments) && capture.attachments.some((item) => {
+    const attachment = asRecord(item)
+    return asString(attachment?.name).toLowerCase().endsWith('.txt')
+  })
+}
+
+function textAttachmentUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' &&
+      url.hostname === 'cdn.discordapp.com' &&
+      !url.port &&
+      !url.username &&
+      !url.password
+      ? url.toString()
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readTextAttachment(
+  url: string,
+  declaredSize: number,
+  maxBytes: number,
+): Promise<string | undefined> {
+  if (declaredSize > maxBytes) return undefined
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5_000)
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'error',
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) return undefined
+    const contentLength = Number(response.headers.get('content-length'))
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      await response.body.cancel()
+      return undefined
+    }
+
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let totalBytes = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maxBytes) {
+        await reader.cancel()
+        return undefined
+      }
+      chunks.push(value)
+    }
+
+    const bytes = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    let text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+    return text.includes('\0') ? undefined : text
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+export async function addTextAttachmentContent(
+  capture: Record<string, unknown>,
+  budget: { remainingBytes: number } = { remainingBytes: MAX_TEXT_ATTACHMENT_BYTES_PER_READ },
+): Promise<Record<string, unknown>> {
+  const attachments = Array.isArray(capture.attachments)
+    ? capture.attachments.map((value) => asRecord(value) ?? {})
+    : []
+  let extractedCount = 0
+  const enriched: Array<Record<string, unknown>> = []
+  for (const attachment of attachments) {
+    const name = asString(attachment.name)
+    const size = asNumber(attachment.size) ?? 0
+    const url = name.toLowerCase().endsWith('.txt') ? textAttachmentUrl(attachment.url) : undefined
+    const maxBytes = Math.min(MAX_TEXT_ATTACHMENT_BYTES, budget.remainingBytes)
+    if (url && maxBytes > 0 && extractedCount < MAX_TEXT_ATTACHMENTS_PER_CAPTURE) {
+      const textContent = await readTextAttachment(url, size, maxBytes)
+      if (textContent !== undefined) {
+        budget.remainingBytes -= new TextEncoder().encode(textContent).byteLength
+        enriched.push({ ...attachment, textContent })
+        extractedCount += 1
+        continue
+      }
+    }
+    enriched.push(attachment)
+  }
+  return { ...capture, attachments: enriched }
+}
+
 export function buildCapture(interaction: DiscordInteraction): Record<string, unknown> {
   const channelId = interaction.channel_id ?? ''
   const targetId = interaction.data?.target_id ?? ''

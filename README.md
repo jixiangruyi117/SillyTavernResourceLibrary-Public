@@ -210,7 +210,7 @@ Worker 模板提供静态资源、设备互传和 Koofr WebDAV 同源转发。�
    npx wrangler secret put DISCORD_BOT_TOKEN
    ```
 
-   在 `wrangler.jsonc` 的 `vars` 中按需设置 `SRL_WEB_URL` 为你部署的 SRL Origin。不要把 Bot Token 写入配置文件或源码。
+   无需设置 `SRL_WEB_URL`。Android / iOS 网页或 PWA 用户在 Worker 的 `/open/:token` 页面复制临时链接，再回到当前 SRL 网页 / PWA 粘贴领取，避免把内容保存到另一个浏览器存储空间。大 handoff 会拆分成多条临时 D1 记录，不设单条 handoff 大小上限；Cloudflare 账号和数据库总配额仍适用。Bridge 还会提取 Discord `.txt` 附件中的文字（每条消息最多 2 个文件、每个最多 1 MB、单次最多 2 MB）；其他附件仍按链接保存。不要把 Bot Token 写入配置文件或源码。
 
 4. 部署并应用数据库迁移：
 

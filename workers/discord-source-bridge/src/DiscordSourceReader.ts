@@ -2,6 +2,7 @@
 
 import {
   THREAD_CHANNEL_TYPES,
+  addTextAttachmentContent,
   asNumber,
   asRecord,
   asString,
@@ -410,10 +411,16 @@ async function readSourceMessages(
     if (message) messages.set(messageId, message)
   }
 
-  const captures = Array.from(messages.values()).flatMap((message) => {
+  const captures: Array<Record<string, unknown>> = []
+  const textAttachmentBudget = { remainingBytes: 2_000_000 }
+  for (const message of messages.values()) {
     const capture = buildCaptureFromMessage(message, context)
-    return capture ? [capture] : []
-  })
+    if (capture && textAttachmentBudget.remainingBytes > 0) {
+      captures.push(await addTextAttachmentContent(capture, textAttachmentBudget))
+    } else if (capture) {
+      captures.push(capture)
+    }
+  }
   captures.sort((left, right) => {
     const leftTimestamp = Date.parse(asString(left.timestamp))
     const rightTimestamp = Date.parse(asString(right.timestamp))
@@ -449,6 +456,7 @@ async function readSavedMessageHealth(
     forumTags: [],
   }
   const captures: Array<Record<string, unknown>> = []
+  const textAttachmentBudget = { remainingBytes: 2_000_000 }
   const missingMessageIds: string[] = []
   const checkedMessageIds: string[] = []
   let index = 0
@@ -488,7 +496,11 @@ async function readSavedMessageHealth(
       if (!message) throw new Error('Discord saved message response invalid')
       const capture = buildCaptureFromMessage(message, context)
       if (!capture) throw new Error('Discord saved message capture invalid')
-      captures.push(capture)
+      captures.push(
+        textAttachmentBudget.remainingBytes > 0
+          ? await addTextAttachmentContent(capture, textAttachmentBudget)
+          : capture,
+      )
       checkedMessageIds.push(messageId)
     }
   }

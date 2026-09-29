@@ -7,6 +7,7 @@ import { useTransientStatus } from '../composables/UseTransientStatus'
 import {
   clearDiscordHandoffFromLocation,
   consumeDiscordHandoff,
+  parseDiscordHandoffLink,
   readDiscordHandoffFromLocation,
   type DiscordHandoffRequest,
 } from '../services/DiscordHandoffService'
@@ -21,6 +22,8 @@ const selectedResourceId = ref('')
 const busy = ref(false)
 const receiving = ref(false)
 const errorMessage = ref('')
+const pasteDialogOpen = ref(false)
+const handoffLink = ref('')
 const { statusMessage, showTransientStatus } = useTransientStatus()
 let activeRequestKey = ''
 let deferredRequest: DiscordHandoffRequest | undefined
@@ -80,6 +83,22 @@ async function receive(request: DiscordHandoffRequest): Promise<void> {
   } finally {
     receiving.value = false
   }
+}
+
+function openPasteDialog(): void {
+  errorMessage.value = ''
+  handoffLink.value = ''
+  pasteDialogOpen.value = true
+}
+
+function submitPastedHandoff(): void {
+  const request = parseDiscordHandoffLink(handoffLink.value)
+  if (!request) {
+    errorMessage.value = '链接无效，请粘贴 Discord Bridge 提供的 HTTPS 领取链接。'
+    return
+  }
+  pasteDialogOpen.value = false
+  void receive(request)
 }
 
 function handleVaultUnlocked(): void {
@@ -149,6 +168,7 @@ function keepForLater(): void {
 onMounted(() => {
   window.addEventListener('srl:native-deep-link', handleNativeDeepLink)
   window.addEventListener('srl:vault-unlocked', handleVaultUnlocked)
+  window.addEventListener('srl:open-discord-handoff-paste', openPasteDialog)
   const fromLocation = readDiscordHandoffFromLocation()
   if (fromLocation) void receive(fromLocation)
   void loadResources()
@@ -157,12 +177,68 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('srl:native-deep-link', handleNativeDeepLink)
   window.removeEventListener('srl:vault-unlocked', handleVaultUnlocked)
+  window.removeEventListener('srl:open-discord-handoff-paste', openPasteDialog)
 })
 </script>
 
 <template>
   <Teleport to="body">
     <div v-if="receiving" class="discord-intake-status" role="status">正在领取 Discord 来源…</div>
+
+    <div
+      v-if="pasteDialogOpen"
+      class="discord-intake-overlay mobile-dialog-viewport"
+      role="presentation"
+      @click.self="pasteDialogOpen = false"
+    >
+      <section
+        class="discord-intake discord-intake--paste"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="discord-intake-paste-title"
+      >
+        <header>
+          <div>
+            <small>DISCORD SOURCE</small>
+            <h2 id="discord-intake-paste-title">领取 Discord 分享</h2>
+          </div>
+          <button type="button" aria-label="关闭" @click="pasteDialogOpen = false">×</button>
+        </header>
+        <p class="discord-intake__paste-help">
+          在 Discord Bridge 页面复制临时链接后，回到这个 PWA 粘贴。领取内容会保存到当前 PWA
+          的资源库。
+        </p>
+        <label class="discord-intake__paste-field">
+          <span>临时领取链接</span>
+          <textarea
+            v-model="handoffLink"
+            rows="3"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="粘贴 https://…/open/… 链接"
+          />
+        </label>
+        <p
+          v-if="errorMessage"
+          class="discord-intake__message discord-intake__message--error"
+          role="alert"
+        >
+          {{ errorMessage }}
+        </p>
+        <footer>
+          <button type="button" @click="pasteDialogOpen = false">取消</button>
+          <button
+            class="button button--primary"
+            type="button"
+            :disabled="!handoffLink.trim()"
+            @click="submitPastedHandoff"
+          >
+            领取并保存到本机
+          </button>
+        </footer>
+      </section>
+    </div>
 
     <div
       v-if="pending"

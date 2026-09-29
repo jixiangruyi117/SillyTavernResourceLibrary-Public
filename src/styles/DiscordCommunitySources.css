@@ -477,6 +477,23 @@
   border-bottom: 1px solid var(--line-soft, #e1e9eb);
 }
 
+.discord-text-attachment {
+  max-width: 100%;
+  margin: 0 0 10px;
+  padding: 0 10px;
+}
+
+.discord-text-attachment pre {
+  max-height: 24rem;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--surface-muted, #f3f7f8);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .discord-thread-file > a {
   min-height: 50px;
   display: flex;

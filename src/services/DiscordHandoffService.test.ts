@@ -1,8 +1,35 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseDiscordCapture } from './DiscordHandoffService'
+import { parseDiscordCapture, parseDiscordHandoffLink } from './DiscordHandoffService'
 
 describe('DiscordHandoffService', () => {
+  it('parses a Worker open link for pasting into the installed PWA', () => {
+    const token = 'A'.repeat(30)
+
+    expect(parseDiscordHandoffLink(`https://worker.example/open/${token}`)).toEqual({
+      workerUrl: 'https://worker.example',
+      token,
+    })
+  })
+
+  it('accepts existing SRL handoff URLs and rejects insecure or invalid links', () => {
+    const token = 'B'.repeat(30)
+    const legacyUrl = new URL('https://srl.example/app')
+    legacyUrl.searchParams.set('discordWorker', 'https://worker.example')
+    legacyUrl.searchParams.set('discordHandoff', token)
+
+    expect(parseDiscordHandoffLink(legacyUrl.toString())).toEqual({
+      workerUrl: 'https://worker.example',
+      token,
+    })
+    const insecureWorkerLink = new URL('https://srl.example/app')
+    insecureWorkerLink.searchParams.set('discordWorker', 'http://worker.example')
+    insecureWorkerLink.searchParams.set('discordHandoff', token)
+    expect(parseDiscordHandoffLink(insecureWorkerLink.toString())).toBeUndefined()
+    expect(parseDiscordHandoffLink(`http://worker.example/open/${token}`)).toBeUndefined()
+    expect(parseDiscordHandoffLink('https://worker.example/open/short')).toBeUndefined()
+  })
+
   it('preserves Bot/Webhook and community presentation metadata from the Worker capture', () => {
     const capture = parseDiscordCapture({
       guildId: '11111',

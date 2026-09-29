@@ -143,6 +143,7 @@ function attachmentSignature(attachment: DiscordAttachmentMeta): string {
     name: attachment.name,
     size: attachment.size,
     contentType: attachment.contentType ?? '',
+    textContent: attachment.textContent ?? '',
     width: attachment.width ?? null,
     height: attachment.height ?? null,
   })

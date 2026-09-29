@@ -64,6 +64,9 @@ export function normalizeAttachments(
         ...(clean(attachment.contentType, 200)
           ? { contentType: clean(attachment.contentType, 200) }
           : {}),
+        ...(typeof attachment.textContent === 'string'
+          ? { textContent: attachment.textContent }
+          : {}),
         ...(Number.isFinite(attachment.width) ? { width: attachment.width } : {}),
         ...(Number.isFinite(attachment.height) ? { height: attachment.height } : {}),
       },
