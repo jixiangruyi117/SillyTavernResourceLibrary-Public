@@ -230,7 +230,7 @@ export function scanGitIncremental(base, privateValues = [], directory = root) {
   const inspect = (path, bytes, text) => {
     paths.add(path)
     if (bytes.includes(0) || isArchive(bytes, path)) binaryReview.add(path)
-    findings.push(...scanBuffer(Buffer.from(text), path))
+    findings.push(...scanBuffer(isArchive(bytes, path) ? bytes : Buffer.from(text), path))
     for (const value of privateValues) {
       if (value && text.toLowerCase().includes(value.toLowerCase()))
         findings.push(`${path}: private value`)
@@ -259,7 +259,6 @@ export function scanGitIncremental(base, privateValues = [], directory = root) {
                 path,
               ]).toString(),
             )
-      if (isArchive(bytes, path)) findings.push(...scanBuffer(bytes, path))
       inspect(path, bytes, text)
     }
   }
@@ -280,7 +279,6 @@ export function scanGitIncremental(base, privateValues = [], directory = root) {
     .filter(Boolean)) {
     const bytes = readFileSync(resolve(directory, path))
     inspect(path, bytes, bytes.toString('utf8'))
-    if (isArchive(bytes, path)) findings.push(...scanBuffer(bytes, path))
   }
   return {
     base,

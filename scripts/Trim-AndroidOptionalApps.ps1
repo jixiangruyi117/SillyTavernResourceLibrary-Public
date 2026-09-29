@@ -21,10 +21,9 @@ if (Test-Path -LiteralPath $packageRoot) {
     if ((Get-Item -LiteralPath $packageRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Package directory must not be a link.' }
     foreach ($item in Get-ChildItem -LiteralPath $packageRoot -Recurse) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Package assets must not be links.' }
-        if (-not $item.PSIsContainer) { $candidates.Add($item.FullName) }
+        if (-not $item.PSIsContainer -and $item.Extension -eq '.srlapp') { $candidates.Add($item.FullName) }
     }
 }
-$candidates.Add($manifestPath)
 # Validate the complete generated-file list before deleting any file.
 foreach ($candidate in $candidates) {
     $resolved = [IO.Path]::GetFullPath($candidate)
@@ -39,4 +38,7 @@ foreach ($candidate in $candidates) {
     }
 }
 foreach ($candidate in $candidates) { Remove-Item -LiteralPath $candidate }
+if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Official APP build manifest was removed.' }
+$shellCatalog = Join-Path $packageRoot (Join-Path $manifest.shellVersion 'catalog.json')
+if (-not (Test-Path -LiteralPath $shellCatalog -PathType Leaf)) { throw 'Official APP shell catalog was removed.' }
 Write-Host "Excluded $($candidates.Count) optional APP files from the APK web assets."

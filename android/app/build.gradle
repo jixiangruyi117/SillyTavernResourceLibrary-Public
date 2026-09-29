@@ -3,6 +3,15 @@ apply plugin: 'com.android.application'
 import groovy.json.JsonSlurper
 
 def buildInfo = new JsonSlurper().parse(rootProject.file('../build-info.json'))
+def publicAssetOrigin = (System.getenv('SRL_PUBLIC_ASSET_ORIGIN') ?: '').trim()
+if (publicAssetOrigin) {
+    def assetUri = new URI(publicAssetOrigin)
+    if (assetUri.scheme != 'https' || !assetUri.host || assetUri.userInfo || assetUri.port != -1 ||
+        (assetUri.path && assetUri.path != '/') || assetUri.query || assetUri.fragment) {
+        throw new GradleException('SRL_PUBLIC_ASSET_ORIGIN 必须是无端口、路径、凭据或查询参数的 HTTPS 站点来源。')
+    }
+    publicAssetOrigin = assetUri.toString().replaceAll('/+$', '')
+}
 
 def releaseSigningValues = [
     storeFile: System.getenv('SRL_ANDROID_RELEASE_STORE_FILE'),
@@ -33,6 +42,7 @@ android {
         versionName buildInfo.androidVersionName as String
         buildConfigField 'int', 'SRL_NATIVE_API_VERSION', buildInfo.nativeApiVersion.toString()
         buildConfigField 'String', 'SRL_BUILD_ID', '"' + buildInfo.buildId + '"'
+        buildConfigField 'String', 'SRL_PUBLIC_ASSET_ORIGIN', groovy.json.JsonOutput.toJson(publicAssetOrigin)
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

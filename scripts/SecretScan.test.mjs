@@ -1,7 +1,11 @@
 import { TextEncoder } from 'node:util'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { zipSync } from 'fflate'
-import { addedDiffText, scanBuffer, scanText } from './SecretScan.mjs'
+import { addedDiffText, scanBuffer, scanGitIncremental, scanText } from './SecretScan.mjs'
 
 describe('SecretScan', () => {
   it('scans only added lines, preserving real lines beginning with plus', () => {
@@ -57,5 +61,43 @@ describe('SecretScan', () => {
     expect(scanBuffer(zip, 'release.srlapp')).toContain(
       'release.srlapp!/config/.dev.vars: Discord bot token',
     )
+  })
+
+  it('scans untracked archive bytes without decoding the zip before inspection', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'srl-secret-scan-'))
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: directory })
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=SecretScan Test',
+          '-c',
+          'user.email=secret-scan-test@users.noreply.github.com',
+          'commit',
+          '--allow-empty',
+          '--quiet',
+          '-m',
+          'baseline',
+        ],
+        { cwd: directory },
+      )
+      const baseline = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: directory,
+        encoding: 'utf8',
+      }).trim()
+      const archive = zipSync({
+        'config.json': new TextEncoder().encode(
+          `githubToken="ghp_${'Ab3dEf6hJk9mNp2qRs5uVw8xYz1aBc4d'}"`,
+        ),
+      })
+      writeFileSync(join(directory, 'release.srlapp'), archive)
+
+      const result = scanGitIncremental(baseline, [], directory)
+
+      expect(result.findings).toContain('release.srlapp!/config.json: GitHub token')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

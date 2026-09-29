@@ -235,9 +235,10 @@ pnpm install --frozen-lockfile
 $env:JAVA_HOME = 'X:\Android\jbr'
 $env:ANDROID_HOME = 'X:\Android\Sdk'
 $env:SRL_PUBLIC_ORIGIN = 'https://你的-worker.workers.dev'
+$env:SRL_PUBLIC_ASSET_ORIGIN = 'https://你的-worker.workers.dev'
 ```
 
-`SRL_PUBLIC_ORIGIN` 只设置 APK 本地 WebView 的来源，首页仍来自 APK 内置文件，不是在线网页套壳；可选功能包从自己的站点下载。不配置时使用本机 `localhost` 来源，仅能保证核心本地资源库，可选功能包没有有效下载站点。首次发行后保持应用 ID、此来源和签名不变，以保证覆盖升级继续读取原数据库。不要使用 `CAPACITOR_SERVER_URL` / Remote 模式制作离线发行包。
+`SRL_PUBLIC_ORIGIN` 只设置 APK 本地 WebView 的来源，首页仍来自 APK 内置文件，不是在线网页套壳。`SRL_PUBLIC_ASSET_ORIGIN` 单独设置缺少内置副本时下载 `.srlapp` 的 HTTPS 来源。首次发行后必须保持应用 ID、本地 WebView 来源和签名不变，以保证覆盖升级继续读取原数据库；升级时可以更新功能包下载来源。两项都不配置时使用本机 `localhost`，仅能保证核心本地资源库，缺少内置副本的可选功能包无法下载。不要使用 `CAPACITOR_SERVER_URL` / Remote 模式制作离线发行包。
 
 在 Android Studio 打开 `android/` 后可以自行构建签名；也可首次在仓库外生成专用密钥（不要与其他发行版本共用）：
 
