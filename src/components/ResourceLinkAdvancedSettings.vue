@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from 'vue'
 
 import { useTransientStatus } from '../composables/UseTransientStatus'
 import {
-  DISCORD_BRIDGE_DEPLOY_URL,
   DISCORD_BRIDGE_PUBLIC_REPOSITORY_URL,
 } from '../services/DiscordBridgeDeployService'
 import {
@@ -44,7 +43,8 @@ const botToken = ref('')
 const credentialPersistence = ref<'local' | 'session'>('local')
 const workerUrl = ref('')
 const showToken = ref(false)
-const guideOpen = ref(false)
+const oneClickDeployOpen = ref(false)
+const githubDeployOpen = ref(false)
 const manualDeployOpen = ref(false)
 const connectionState = ref<ConnectionState>('idle')
 const commandState = ref<CommandState>('idle')
@@ -58,6 +58,12 @@ const developerAppUrl = computed(() => {
   const id = applicationId.value.trim()
   return id
     ? `https://discord.com/developers/applications/${encodeURIComponent(id)}/information`
+    : 'https://discord.com/developers/applications'
+})
+const developerBotUrl = computed(() => {
+  const id = applicationId.value.trim()
+  return id
+    ? `https://discord.com/developers/applications/${encodeURIComponent(id)}/bot`
     : 'https://discord.com/developers/applications'
 })
 const installationUrl = computed(() => {
@@ -349,9 +355,6 @@ async function clearBotToken(): Promise<void> {
             <h2 id="resource-source-advanced-title">来源链接高级设置</h2>
             <p>配置你自己的 Discord App 与 Cloudflare Worker。配置只保存在本机。</p>
           </div>
-          <button class="resource-source-advanced__guide" type="button" @click="guideOpen = true">
-            配置教程
-          </button>
         </header>
 
         <div class="resource-source-status-strip" aria-label="Discord 来源状态">
@@ -407,17 +410,22 @@ async function clearBotToken(): Promise<void> {
         <section class="resource-source-deploy" aria-labelledby="resource-source-deploy-title">
           <header>
             <span id="resource-source-deploy-title">部署 Discord Bridge</span>
-            <p>两种方式都部署到你自己的 Cloudflare；SRL 不经过开发者公共 Worker。</p>
+            <p>三种方式都部署到你自己的 Cloudflare；SRL 不经过开发者公共 Worker。</p>
           </header>
           <div class="resource-source-deploy__choices">
-            <a :href="DISCORD_BRIDGE_DEPLOY_URL" target="_blank" rel="noopener noreferrer">
-              <strong>一键部署到 Cloudflare</strong>
-              <small>推荐 · 需要 GitHub 或 GitLab</small>
+            <button type="button" @click="githubDeployOpen = true">
+              <strong>GitHub 仓库部署</strong>
+              <small>推荐长期使用 · Fork 后可同步上游更新并自动部署</small>
               <span>›</span>
-            </a>
+            </button>
+            <button type="button" @click="oneClickDeployOpen = true">
+              <strong>Cloudflare 一键部署</strong>
+              <small>适合快速开始 · 上游版本需自己合并到副本</small>
+              <span>›</span>
+            </button>
             <button type="button" @click="manualDeployOpen = true">
-              <strong>只有 Cloudflare？浏览器手动部署</strong>
-              <small>不需要 GitHub / GitLab，也不需要终端</small>
+              <strong>浏览器手动部署</strong>
+              <small>打开逐步教程；不需要 GitHub / GitLab 或终端</small>
               <span>›</span>
             </button>
           </div>
@@ -555,9 +563,28 @@ async function clearBotToken(): Promise<void> {
   </Teleport>
 
   <DiscordSetupGuideDrawer
-    :open="guideOpen"
+    :open="oneClickDeployOpen"
+    :application-id="applicationId"
+    :public-key="publicKey"
+    :bot-token="botToken"
     :interactions-url="endpoints?.interactionsUrl"
-    @close="guideOpen = false"
+    :installation-url="installationUrl"
+    :developer-app-url="developerAppUrl"
+    :developer-bot-url="developerBotUrl"
+    @close="oneClickDeployOpen = false"
+  />
+
+  <DiscordSetupGuideDrawer
+    :open="githubDeployOpen"
+    deployment-mode="github"
+    :application-id="applicationId"
+    :public-key="publicKey"
+    :bot-token="botToken"
+    :interactions-url="endpoints?.interactionsUrl"
+    :installation-url="installationUrl"
+    :developer-app-url="developerAppUrl"
+    :developer-bot-url="developerBotUrl"
+    @close="githubDeployOpen = false"
   />
 
   <DiscordManualDeployDrawer
@@ -565,6 +592,10 @@ async function clearBotToken(): Promise<void> {
     :application-id="applicationId"
     :public-key="publicKey"
     :bot-token="botToken"
+    :interactions-url="endpoints?.interactionsUrl"
+    :installation-url="installationUrl"
+    :developer-app-url="developerAppUrl"
+    :developer-bot-url="developerBotUrl"
     @close="manualDeployOpen = false"
   />
 </template>

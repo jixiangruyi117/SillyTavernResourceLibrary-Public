@@ -50,19 +50,6 @@
   line-height: 1.6;
 }
 
-.resource-source-advanced__guide {
-  min-height: 38px;
-  padding: 0 12px;
-  border: 1px solid var(--line-soft, #c4d3d6);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--accent-strong, #476b78);
-  font-size: 0.78rem;
-  font-weight: 800;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
 .resource-source-status-strip {
   display: flex;
   flex-wrap: wrap;

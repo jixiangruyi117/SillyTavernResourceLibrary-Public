@@ -246,3 +246,22 @@
     transition: none;
   }
 }
+
+.discord-manual-screenshot {
+  margin: 11px 0 4px;
+}
+
+.discord-manual-screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-soft, #dce7e9);
+  border-radius: 7px;
+}
+
+.discord-manual-screenshot figcaption {
+  margin-top: 4px;
+  color: var(--text-muted, #789099);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
