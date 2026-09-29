@@ -3,7 +3,7 @@ import { secretPasswordRequest, resolveSecretPassword } from './UseSecretPasswor
 import { ref, type ComputedRef, type Ref, type ShallowRef } from 'vue'
 import { useBackStack } from '../composables/UseBackStack'
 import { useOverlayStack } from '../composables/UseOverlayStack'
-import type { ImportVersionCandidate } from '../types/Import'
+import type { ImportVersionCandidate, ImportVersionComparison } from '../types/Import'
 import { type Resource } from '../types/Resource'
 import type { VaultStatus } from '../types/Vault'
 
@@ -35,6 +35,8 @@ interface LibraryOverlayNavigationContext {
   >
   isNativeExportBusy: Ref<boolean, boolean>
   activeVersionImport: ComputedRef<ImportVersionCandidate | undefined>
+  versionImportComparison: ShallowRef<ImportVersionComparison | undefined>
+  closeVersionImportCompare: () => void
   isVersionImportBusy: Ref<boolean, boolean>
   pendingVersionImports: Ref<ImportVersionCandidate[]>
   isBatchMode: Ref<boolean, boolean>
@@ -156,6 +158,11 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
       isOpen: () => Boolean(context.pendingNativeExport.value),
       canClose: () => !context.isNativeExportBusy.value,
       close: () => (context.pendingNativeExport.value = undefined),
+    },
+    {
+      id: 'version-import-comparison',
+      isOpen: () => Boolean(context.versionImportComparison.value),
+      close: () => context.closeVersionImportCompare(),
     },
     {
       id: 'version-import',

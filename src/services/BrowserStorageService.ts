@@ -25,6 +25,10 @@ import {
   type LayoutMode,
   type UiFontScale,
   type CabinetColumns,
+  type MobileCardOrientation,
+  type MobileCardFitMode,
+  type ResourceCardHeightMode,
+  type NoImageResourceCoverMode,
   type PreviewPolicy,
   type CustomCssPreset,
   type PortableAppearanceSettings,
@@ -33,7 +37,15 @@ import {
   type PresetStitchDraft,
   type ProjectNoticeStoragePlugin,
 } from '../types/BrowserPreferences'
-import { LAYOUT_MODES, UI_FONT_SCALES, CABINET_COLUMN_OPTIONS } from '../types/BrowserPreferences'
+import {
+  LAYOUT_MODES,
+  UI_FONT_SCALES,
+  CABINET_COLUMN_OPTIONS,
+  MOBILE_CARD_ORIENTATIONS,
+  MOBILE_CARD_FIT_MODES,
+  RESOURCE_CARD_HEIGHT_MODES,
+  NO_IMAGE_RESOURCE_COVER_MODES,
+} from '../types/BrowserPreferences'
 import * as operationsBrowserPreferenceNormalization from './BrowserPreferenceNormalization'
 
 export {
@@ -44,6 +56,10 @@ export {
   type LayoutMode,
   type UiFontScale,
   type CabinetColumns,
+  type MobileCardOrientation,
+  type MobileCardFitMode,
+  type ResourceCardHeightMode,
+  type NoImageResourceCoverMode,
   type PreviewPolicy,
   type CustomCssScope,
   type CustomCssPreset,
@@ -54,7 +70,15 @@ export {
   type PresetStitchDraft,
 } from '../types/BrowserPreferences'
 
-export { LAYOUT_MODES, UI_FONT_SCALES, CABINET_COLUMN_OPTIONS } from '../types/BrowserPreferences'
+export {
+  LAYOUT_MODES,
+  UI_FONT_SCALES,
+  CABINET_COLUMN_OPTIONS,
+  MOBILE_CARD_ORIENTATIONS,
+  MOBILE_CARD_FIT_MODES,
+  RESOURCE_CARD_HEIGHT_MODES,
+  NO_IMAGE_RESOURCE_COVER_MODES,
+} from '../types/BrowserPreferences'
 
 export const PROJECT_NOTICE_VERSION = '2026-09-21-v2'
 
@@ -98,6 +122,11 @@ const HIDE_CHAT_DISPLAY_REGEX_KEY = 'srl.library.hideChatDisplayRegex'
 const HIDE_CHARACTER_ASSETS_KEY = 'srl.library.hideCharacterAssets'
 
 const BLUR_THUMBNAILS_KEY = 'srl.library.blurThumbnails'
+const MOBILE_CARD_ORIENTATION_KEY = 'srl.library.mobileCardOrientation'
+const MOBILE_CARD_FIT_MODE_KEY = 'srl.library.mobileCardFitMode'
+const RESOURCE_CARD_HEIGHT_MODE_KEY = 'srl.library.uniformResourceCardHeight'
+const NO_IMAGE_RESOURCE_COVER_MODE_KEY = 'srl.library.noImageResourceCoverMode'
+const LEGACY_MOBILE_LANDSCAPE_FIT_MODE_KEY = 'srl.library.mobileLandscapeFitMode'
 
 const DRAW_SHOW_NAMES_KEY = 'srl.draw.showNames'
 
@@ -200,6 +229,11 @@ export class BrowserStorageService {
       showManuallyBoundResources: this.getShowManuallyBoundResources(),
       searchHistory: this.getSearchHistory(),
       blurThumbnails: this.getBlurThumbnails(),
+      mobileCardOrientation: this.getMobileCardOrientation(),
+      mobileCardFitMode: this.getMobileCardFitMode(),
+      resourceCardHeightMode: this.getResourceCardHeightMode(),
+      noImageResourceCoverMode: this.getNoImageResourceCoverMode(),
+      uniformResourceCardHeight: this.getResourceCardHeightMode() === 'uniform',
       cabinetResourceIds: this.getCabinetResourceIds(),
       cabinetLayout: this.getCabinetLayout(),
       cabinetColumns: this.getCabinetColumns(),
@@ -222,6 +256,13 @@ export class BrowserStorageService {
     this.setHideChatDisplayRegex(value?.hideChatDisplayRegex !== false)
     this.setShowManuallyBoundResources(value?.showManuallyBoundResources !== false)
     this.setBlurThumbnails(value?.blurThumbnails !== false)
+    this.setMobileCardOrientation(value?.mobileCardOrientation)
+    this.setMobileCardFitMode(value?.mobileCardFitMode ?? value?.mobileLandscapeFitMode)
+    this.setResourceCardHeightMode(
+      value?.resourceCardHeightMode ??
+        (value?.uniformResourceCardHeight === true ? 'uniform' : 'natural'),
+    )
+    this.setNoImageResourceCoverMode(value?.noImageResourceCoverMode)
     this.setCabinetResourceIds(value?.cabinetResourceIds ?? [])
     this.setCabinetLayout(value?.cabinetLayout ?? [])
     this.setCabinetColumns(value?.cabinetColumns ?? 4)
@@ -513,6 +554,86 @@ export class BrowserStorageService {
     } catch {
       // 缩略图模糊偏好写入失败时，不影响当前会话继续使用。
     }
+  }
+
+  getMobileCardOrientation(): MobileCardOrientation {
+    try {
+      const value = localStorage.getItem(MOBILE_CARD_ORIENTATION_KEY)
+      return MOBILE_CARD_ORIENTATIONS.find((option) => option === value) ?? 'mixed'
+    } catch {
+      return 'mixed'
+    }
+  }
+
+  setMobileCardOrientation(value: unknown): MobileCardOrientation {
+    const orientation = MOBILE_CARD_ORIENTATIONS.find((option) => option === value) ?? 'mixed'
+    try {
+      localStorage.setItem(MOBILE_CARD_ORIENTATION_KEY, orientation)
+    } catch {
+      // 比例偏好写入失败时仍在当前会话生效。
+    }
+    return orientation
+  }
+
+  getMobileCardFitMode(): MobileCardFitMode {
+    try {
+      const value =
+        localStorage.getItem(MOBILE_CARD_FIT_MODE_KEY) ??
+        localStorage.getItem(LEGACY_MOBILE_LANDSCAPE_FIT_MODE_KEY)
+      return MOBILE_CARD_FIT_MODES.find((option) => option === value) ?? 'contain'
+    } catch {
+      return 'contain'
+    }
+  }
+
+  setMobileCardFitMode(value: unknown): MobileCardFitMode {
+    const mode = MOBILE_CARD_FIT_MODES.find((option) => option === value) ?? 'contain'
+    try {
+      localStorage.setItem(MOBILE_CARD_FIT_MODE_KEY, mode)
+    } catch {
+      // 卡片图片显示偏好写入失败时仍在当前会话生效。
+    }
+    return mode
+  }
+
+  getResourceCardHeightMode(): ResourceCardHeightMode {
+    try {
+      const stored = localStorage.getItem(RESOURCE_CARD_HEIGHT_MODE_KEY)
+      if (stored === 'true') return 'uniform'
+      if (stored === 'false' || stored === null) return 'natural'
+      return RESOURCE_CARD_HEIGHT_MODES.find((option) => option === stored) ?? 'natural'
+    } catch {
+      return 'natural'
+    }
+  }
+
+  setResourceCardHeightMode(value: unknown): ResourceCardHeightMode {
+    const mode = RESOURCE_CARD_HEIGHT_MODES.find((option) => option === value) ?? 'natural'
+    try {
+      localStorage.setItem(RESOURCE_CARD_HEIGHT_MODE_KEY, mode)
+    } catch {
+      // 卡片高度偏好写入失败时仍在当前会话生效。
+    }
+    return mode
+  }
+
+  getNoImageResourceCoverMode(): NoImageResourceCoverMode {
+    try {
+      const stored = localStorage.getItem(NO_IMAGE_RESOURCE_COVER_MODE_KEY)
+      return NO_IMAGE_RESOURCE_COVER_MODES.find((option) => option === stored) ?? 'cover'
+    } catch {
+      return 'cover'
+    }
+  }
+
+  setNoImageResourceCoverMode(value: unknown): NoImageResourceCoverMode {
+    const mode = NO_IMAGE_RESOURCE_COVER_MODES.find((option) => option === value) ?? 'cover'
+    try {
+      localStorage.setItem(NO_IMAGE_RESOURCE_COVER_MODE_KEY, mode)
+    } catch {
+      // 无图资源封面偏好写入失败时仍在当前会话生效。
+    }
+    return mode
   }
 
   getExtractCharacterAssets(): boolean {

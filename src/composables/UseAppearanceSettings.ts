@@ -8,7 +8,15 @@ import {
 import { browserStorageService } from '../core/AppContainer'
 import { appearanceTransaction, recoverInterruptedAppearance } from '../core/AppearanceSafety'
 import { isSafeModeActive } from '../core/SafeStartup'
-import type { LayoutMode, PreviewPolicy, UiFontScale } from '../services/BrowserStorageService'
+import type {
+  LayoutMode,
+  MobileCardOrientation,
+  MobileCardFitMode,
+  ResourceCardHeightMode,
+  NoImageResourceCoverMode,
+  PreviewPolicy,
+  UiFontScale,
+} from '../services/BrowserStorageService'
 import { sanitizeCssForPreview } from '../utils/PreviewSafety'
 import { confirmAction } from './UseConfirmDialog'
 import { readStoredTheme, writeStoredTheme, type ThemeValue } from '../utils/LibraryFormatting'
@@ -30,6 +38,14 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   const safeMode = isSafeModeActive()
   const theme = ref<ThemeValue>(readStoredTheme())
   const layoutMode = ref<LayoutMode>(browserStorageService.getLayoutMode())
+  const mobileCardOrientation = ref(browserStorageService.getMobileCardOrientation())
+  document.documentElement.dataset.mobileCardOrientation = mobileCardOrientation.value
+  const mobileCardFitMode = ref(browserStorageService.getMobileCardFitMode())
+  document.documentElement.dataset.mobileCardFitMode = mobileCardFitMode.value
+  const resourceCardHeightMode = ref(browserStorageService.getResourceCardHeightMode())
+  document.documentElement.dataset.resourceCardHeight = resourceCardHeightMode.value
+  const noImageResourceCoverMode = ref(browserStorageService.getNoImageResourceCoverMode())
+  document.documentElement.dataset.noImageResourceCover = noImageResourceCoverMode.value
   const uiFontScale = ref<UiFontScale>(browserStorageService.getUiFontScale())
   const storedPreviewPolicy = browserStorageService.getPreviewPolicy()
   const previewPolicy = ref<PreviewPolicy>(
@@ -74,6 +90,26 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   function applyLayoutMode(value: LayoutMode): void {
     layoutMode.value = value
     browserStorageService.setLayoutMode(value)
+  }
+
+  function applyMobileCardOrientation(value: MobileCardOrientation): void {
+    mobileCardOrientation.value = browserStorageService.setMobileCardOrientation(value)
+    document.documentElement.dataset.mobileCardOrientation = mobileCardOrientation.value
+  }
+
+  function applyMobileCardFitMode(value: MobileCardFitMode): void {
+    mobileCardFitMode.value = browserStorageService.setMobileCardFitMode(value)
+    document.documentElement.dataset.mobileCardFitMode = mobileCardFitMode.value
+  }
+
+  function applyResourceCardHeightMode(value: ResourceCardHeightMode): void {
+    resourceCardHeightMode.value = browserStorageService.setResourceCardHeightMode(value)
+    document.documentElement.dataset.resourceCardHeight = resourceCardHeightMode.value
+  }
+
+  function applyNoImageResourceCoverMode(value: NoImageResourceCoverMode): void {
+    noImageResourceCoverMode.value = browserStorageService.setNoImageResourceCoverMode(value)
+    document.documentElement.dataset.noImageResourceCover = noImageResourceCoverMode.value
   }
 
   function applyUiFontScale(value: UiFontScale): void {
@@ -188,6 +224,14 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     theme.value = readStoredTheme()
     document.documentElement.dataset.theme = theme.value
     layoutMode.value = browserStorageService.getLayoutMode()
+    mobileCardOrientation.value = browserStorageService.getMobileCardOrientation()
+    document.documentElement.dataset.mobileCardOrientation = mobileCardOrientation.value
+    mobileCardFitMode.value = browserStorageService.getMobileCardFitMode()
+    document.documentElement.dataset.mobileCardFitMode = mobileCardFitMode.value
+    resourceCardHeightMode.value = browserStorageService.getResourceCardHeightMode()
+    document.documentElement.dataset.resourceCardHeight = resourceCardHeightMode.value
+    noImageResourceCoverMode.value = browserStorageService.getNoImageResourceCoverMode()
+    document.documentElement.dataset.noImageResourceCover = noImageResourceCoverMode.value
     uiFontScale.value = browserStorageService.getUiFontScale()
     document.documentElement.dataset.fontScale = uiFontScale.value
     previewPolicy.value = isSafeModeActive()
@@ -209,6 +253,10 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   return {
     theme,
     layoutMode,
+    mobileCardOrientation,
+    mobileCardFitMode,
+    resourceCardHeightMode,
+    noImageResourceCoverMode,
     uiFontScale,
     previewPolicy,
     customUiCss,
@@ -220,6 +268,10 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     settingsPanelKey,
     applyTheme,
     applyLayoutMode,
+    applyMobileCardOrientation,
+    applyMobileCardFitMode,
+    applyResourceCardHeightMode,
+    applyNoImageResourceCoverMode,
     applyUiFontScale,
     syncCustomUiCss,
     saveCustomUiCss,

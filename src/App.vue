@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import './Styles.css'
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { secretResourceService } from './services/SecretResourceService'
 onBeforeUnmount(() => secretResourceService.lock())
 import { secretPasswordRequest } from './composables/UseSecretPasswordPrompt'
@@ -75,6 +75,7 @@ watch(controller.isBatchMode, (active) => {
   if (active) void loadAiTaggingPanel().catch(() => undefined)
 })
 const panelModel = proxyRefs(controller)
+const resourceGridElement = useTemplateRef<HTMLElement>('resourceGrid')
 const personalEditor = useTemplateRef<{ requestBack: () => void }>('personalEditor')
 const personalOrganizer = useTemplateRef<{ requestClose: () => void }>('personalOrganizer')
 const { newPersonalKind, personalSaved, createPersonal, closePersonal } =
@@ -82,6 +83,10 @@ const { newPersonalKind, personalSaved, createPersonal, closePersonal } =
 
 const {
   layoutMode,
+  mobileCardOrientation,
+  mobileCardFitMode,
+  resourceCardHeightMode,
+  noImageResourceCoverMode,
   isBatchMode,
   vaultStatus,
   isSystemFileDropActive,
@@ -176,6 +181,10 @@ const {
   handleCabinetPin,
   handleCabinetUnpin,
   applyLayoutMode,
+  applyMobileCardOrientation,
+  applyMobileCardFitMode,
+  applyResourceCardHeightMode,
+  applyNoImageResourceCoverMode,
   applyUiFontScale,
   saveCustomUiCss,
   handleLibraryChanged,
@@ -222,6 +231,10 @@ const {
   activeVersionImport,
   pendingVersionImports,
   isVersionImportBusy,
+  versionImportComparison,
+  versionImportComparingId,
+  handleVersionImportCompare,
+  closeVersionImportCompare,
   handleVersionImportDecision,
   settingsPanelKey,
   previewPolicy,
@@ -276,6 +289,51 @@ const {
   isVersionRecognitionOpen,
   refreshLibraryAndOpenVersions,
 } = controller
+
+let uniformCardHeightFrame: number | undefined
+function syncUniformResourceCardHeight(): void {
+  if (uniformCardHeightFrame !== undefined) cancelAnimationFrame(uniformCardHeightFrame)
+
+  uniformCardHeightFrame = requestAnimationFrame(() => {
+    uniformCardHeightFrame = undefined
+    const grid = resourceGridElement.value
+    if (!grid) return
+
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.resource-card'))
+    cards.forEach((card) => card.style.removeProperty('min-height'))
+    if (resourceCardHeightMode.value !== 'uniform' || layoutMode.value !== 'grid') return
+
+    const tallestCard = Math.max(...cards.map((card) => card.getBoundingClientRect().height), 0)
+    if (tallestCard > 0) {
+      const uniformHeight = `${Math.ceil(tallestCard)}px`
+      cards.forEach((card) => card.style.setProperty('min-height', uniformHeight))
+    }
+  })
+}
+
+watch(
+  [
+    paginatedResources,
+    resourceCardHeightMode,
+    noImageResourceCoverMode,
+    layoutMode,
+    mobileCardOrientation,
+    mobileCardFitMode,
+    uiFontScale,
+    isFeatureHubOpen,
+  ],
+  syncUniformResourceCardHeight,
+  { flush: 'post', immediate: true },
+)
+watch(resourceGridElement, syncUniformResourceCardHeight, { flush: 'post' })
+onMounted(() => {
+  window.addEventListener('resize', syncUniformResourceCardHeight)
+  syncUniformResourceCardHeight()
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncUniformResourceCardHeight)
+  if (uniformCardHeightFrame !== undefined) cancelAnimationFrame(uniformCardHeightFrame)
+})
 
 const isBatchBarVisible = computed(
   () =>
@@ -630,6 +688,7 @@ const isBatchBarVisible = computed(
 
       <section
         v-if="filteredResources.length && layoutMode === 'grid'"
+        ref="resourceGrid"
         class="resource-grid"
         aria-live="polite"
       >
@@ -641,6 +700,8 @@ const isBatchBarVisible = computed(
           :selectable="isBatchMode"
           :selected="selectedResourceIds.has(resource.id)"
           :blur-thumbnails="blurThumbnails"
+          :resource-card-height-mode="resourceCardHeightMode"
+          :no-image-resource-cover-mode="noImageResourceCoverMode"
           @favorite="handleFavorite"
           @edit="openResourceFromLayout"
           @select="toggleResourceSelection"
@@ -762,6 +823,10 @@ const isBatchBarVisible = computed(
       :categories="categories"
       :theme="theme"
       :layout-mode="layoutMode"
+      :mobile-card-orientation="mobileCardOrientation"
+      :mobile-card-fit-mode="mobileCardFitMode"
+      :resource-card-height-mode="resourceCardHeightMode"
+      :no-image-resource-cover-mode="noImageResourceCoverMode"
       :ui-font-scale="uiFontScale"
       :custom-css="customUiCss"
       :folder-busy="isFolderViewBusy"
@@ -780,6 +845,10 @@ const isBatchBarVisible = computed(
       @cabinet-unpin="handleCabinetUnpin"
       @update:theme="applyTheme"
       @update:layout-mode="applyLayoutMode"
+      @update:mobile-card-orientation="applyMobileCardOrientation"
+      @update:mobile-card-fit-mode="applyMobileCardFitMode"
+      @update:resource-card-height-mode="applyResourceCardHeightMode"
+      @update:no-image-resource-cover-mode="applyNoImageResourceCoverMode"
       @update:ui-font-scale="applyUiFontScale"
       @save-css="saveCustomUiCss"
       @library-changed="handleLibraryChanged"
@@ -958,6 +1027,10 @@ const isBatchBarVisible = computed(
       :candidate="activeVersionImport"
       :remaining="pendingVersionImports.length"
       :busy="isVersionImportBusy"
+      :comparison="versionImportComparison"
+      :comparing-id="versionImportComparingId"
+      @compare="handleVersionImportCompare"
+      @close-comparison="closeVersionImportCompare"
       @resolve="handleVersionImportDecision"
     />
 

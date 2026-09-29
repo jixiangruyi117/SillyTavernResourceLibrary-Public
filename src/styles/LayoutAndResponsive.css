@@ -1923,7 +1923,57 @@
     gap: 0.75rem;
   }
 
-  .resource-grid > .resource-card--compact {
+  :root[data-mobile-card-orientation='mixed']
+    .resource-grid
+    .resource-card--mixed-portrait
+    :is(.resource-card__preview, .resource-card__name-cover) {
+    aspect-ratio: 2 / 3;
+  }
+
+  :root[data-mobile-card-orientation='mixed']
+    .resource-grid
+    .resource-card--mixed-landscape
+    :is(.resource-card__preview, .resource-card__name-cover) {
+    aspect-ratio: 3 / 2;
+  }
+
+  :root[data-mobile-card-orientation='portrait']
+    .resource-grid
+    :is(.resource-card__preview, .resource-card__name-cover, .resource-card__beauty-preview) {
+    aspect-ratio: 2 / 3;
+  }
+
+  :root[data-mobile-card-orientation='landscape']
+    .resource-grid
+    :is(.resource-card__preview, .resource-card__name-cover, .resource-card__beauty-preview) {
+    aspect-ratio: 3 / 2;
+  }
+
+  :root[data-mobile-card-fit-mode='contain'] .resource-grid .resource-card__image {
+    object-fit: contain;
+  }
+
+  :root[data-mobile-card-fit-mode='cover'] .resource-grid .resource-card__image {
+    object-fit: cover;
+  }
+
+  :root[data-mobile-card-orientation='portrait'] .resource-grid > .resource-card {
+    grid-column: auto;
+  }
+
+  :root[data-mobile-card-orientation='landscape'] .resource-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-mobile-card-orientation='landscape'] .resource-grid > .resource-card {
+    grid-column: auto;
+  }
+
+  :root[data-mobile-card-orientation='mixed'] .resource-grid > .resource-card--mixed-portrait {
+    grid-column: auto;
+  }
+
+  :root[data-mobile-card-orientation='mixed'] .resource-grid > .resource-card--mixed-landscape {
     grid-column: 1 / -1;
   }
 

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import type { Resource } from '../types/Resource'
+import type { ImportVersionComparison } from '../types/Import'
+import { RESOURCE_TYPE, RESOURCE_TYPE_LABELS, type Resource } from '../types/Resource'
 import { diffResources, type LineDiffOp, type ResourceDiffResult } from '../utils/ResourceDiff'
 
 const props = defineProps<{
@@ -9,6 +10,8 @@ const props = defineProps<{
   current: Resource
   /** 被对比的历史版本。 */
   other: Resource
+  mode?: 'history' | 'import-candidate'
+  matchDetails?: Pick<ImportVersionComparison, 'score' | 'reasons' | 'matchedHistorical'>
 }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -20,10 +23,40 @@ const otherLabel = computed(() => props.other.versionLabel || props.other.fileNa
 const currentLabel = computed(
   () => props.current.versionLabel || props.current.fileName || '当前版本',
 )
+const oldSideLabel = computed(() =>
+  props.mode === 'import-candidate' ? '接近的已有资源' : '历史版本',
+)
+const newSideLabel = computed(() => (props.mode === 'import-candidate' ? '待导入版本' : '当前版本'))
+const sourceDiffTitle = computed(() => `${RESOURCE_TYPE_LABELS[props.other.type]}内容变化`)
+const sourceDiffIntro = computed(() => {
+  if (result.value?.regexRules?.length || props.other.type === RESOURCE_TYPE.REGEX)
+    return '识别到的规则会按名称、启用状态、作用位置、匹配效果等信息整理；原始表达式默认收起。'
+  if (result.value?.scriptItems?.length || props.other.type === RESOURCE_TYPE.SCRIPT)
+    return '若文件中包含可识别的脚本配置，会列出名称、文件夹、启用状态、按钮等变化；源码默认收起。'
+  return '检测到原始文本内容有变化。详细文本默认收起，展开后可查看逐行差异。'
+})
+const regexRuleCounts = computed(() => {
+  const rules = result.value?.regexRules ?? []
+  return {
+    added: rules.filter((rule) => rule.status === 'added').length,
+    removed: rules.filter((rule) => rule.status === 'removed').length,
+    changed: rules.filter((rule) => rule.status === 'changed').length,
+  }
+})
+const scriptItemCounts = computed(() => {
+  const items = result.value?.scriptItems ?? []
+  return {
+    added: items.filter((item) => item.status === 'added').length,
+    removed: items.filter((item) => item.status === 'removed').length,
+    changed: items.filter((item) => item.status === 'changed').length,
+  }
+})
 function changedLines(lines: LineDiffOp[], side: 'old' | 'new'): LineDiffOp[] {
   return lines.filter((line) => line.type === (side === 'old' ? 'removed' : 'added'))
 }
 const kindLabel = computed(() => {
+  if (result.value?.regexRules?.length) return '正则规则对比'
+  if (result.value?.scriptItems?.length) return '脚本配置对比'
   switch (result.value?.kind) {
     case 'identical':
       return '内容完全一致'
@@ -63,19 +96,37 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
-  <div class="editor-overlay" role="presentation" @click.self="emit('close')">
+  <div
+    class="editor-overlay version-diff-overlay"
+    :class="{ 'version-diff-overlay--import': mode === 'import-candidate' }"
+    role="presentation"
+    @click.self="emit('close')"
+  >
     <section class="version-diff" role="dialog" aria-modal="true" aria-label="版本对比">
       <header class="version-diff__header">
         <div>
           <small>VERSION DIFF</small>
           <h3>版本对比</h3>
           <p>
-            「{{ otherLabel }}」 → 当前版本。<span v-if="kindLabel">{{ kindLabel }}。</span>
-            左栏为历史版本，右栏为当前版本；只列出实际变化的内容。
+            「{{ otherLabel }}」 → 「{{ currentLabel }}」。<span v-if="kindLabel"
+              >{{ kindLabel }}。</span
+            >
+            左栏为{{ oldSideLabel }}，右栏为{{ newSideLabel }}；只列出实际变化的内容。
           </p>
         </div>
         <button type="button" aria-label="关闭版本对比" @click="emit('close')">×</button>
       </header>
+
+      <p v-if="matchDetails" class="version-diff__match">
+        <strong>系统匹配 {{ matchDetails.score }}%</strong>
+        <span>{{ matchDetails.reasons.join('、') }}</span>
+        <span v-if="matchDetails.matchedHistorical">匹配依据来自已有资源的历史版本</span>
+      </p>
+
+      <div class="version-diff__legend" aria-label="差异颜色说明">
+        <span><i data-tone="added"></i>绿色：{{ newSideLabel }}新增</span>
+        <span><i data-tone="removed"></i>红色：{{ oldSideLabel }}移除</span>
+      </div>
 
       <p v-if="isComputing" class="version-diff__status">正在对比两个版本……</p>
       <p v-else-if="failure" class="version-diff__status version-diff__status--error">
@@ -120,7 +171,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <div class="version-diff__columns">
                   <section data-side="old">
                     <header>
-                      <small>历史版本</small><strong>{{ otherLabel }}</strong>
+                      <small>{{ oldSideLabel }}</small
+                      ><strong>{{ otherLabel }}</strong>
                     </header>
                     <div v-if="field.lines" class="version-diff__lines">
                       <p
@@ -137,7 +189,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                   </section>
                   <section data-side="new">
                     <header>
-                      <small>当前版本</small><strong>{{ currentLabel }}</strong>
+                      <small>{{ newSideLabel }}</small
+                      ><strong>{{ currentLabel }}</strong>
                     </header>
                     <div v-if="field.lines" class="version-diff__lines">
                       <p
@@ -170,73 +223,172 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                     entry.status === 'added' ? '新增' : entry.status === 'removed' ? '移除' : '修改'
                   }}</em>
                 </header>
-                <div v-if="entry.lines" class="version-diff__columns">
-                  <section data-side="old">
-                    <header>
-                      <small>历史版本</small><strong>{{ otherLabel }}</strong>
-                    </header>
-                    <div class="version-diff__lines">
-                      <p
-                        v-for="(op, index) in changedLines(entry.lines, 'old')"
-                        :key="index"
-                        data-op="removed"
-                      >
-                        {{ op.text || ' ' }}
-                      </p>
-                      <p v-if="!changedLines(entry.lines, 'old').length" class="is-empty">无</p>
+                <div v-if="entry.details?.length" class="version-diff__entry-details">
+                  <article
+                    v-for="detail in entry.details"
+                    :key="detail.label"
+                    class="version-diff__entry-detail"
+                    :data-status="detail.status"
+                  >
+                    <strong>{{ detail.label }}</strong>
+                    <div class="version-diff__columns">
+                      <section data-side="old">
+                        <header>
+                          <small>{{ oldSideLabel }}</small
+                          ><strong>{{ otherLabel }}</strong>
+                        </header>
+                        <div v-if="detail.lines" class="version-diff__lines">
+                          <p
+                            v-for="(op, index) in changedLines(detail.lines, 'old')"
+                            :key="index"
+                            data-op="removed"
+                          >
+                            {{ op.text || ' ' }}
+                          </p>
+                          <p v-if="!changedLines(detail.lines, 'old').length" class="is-empty">
+                            无
+                          </p>
+                        </div>
+                        <p v-else-if="detail.oldText" data-op="removed">{{ detail.oldText }}</p>
+                        <p v-else class="is-empty">无</p>
+                      </section>
+                      <section data-side="new">
+                        <header>
+                          <small>{{ newSideLabel }}</small
+                          ><strong>{{ currentLabel }}</strong>
+                        </header>
+                        <div v-if="detail.lines" class="version-diff__lines">
+                          <p
+                            v-for="(op, index) in changedLines(detail.lines, 'new')"
+                            :key="index"
+                            data-op="added"
+                          >
+                            {{ op.text || ' ' }}
+                          </p>
+                          <p v-if="!changedLines(detail.lines, 'new').length" class="is-empty">
+                            无
+                          </p>
+                        </div>
+                        <p v-else-if="detail.newText" data-op="added">{{ detail.newText }}</p>
+                        <p v-else class="is-empty">无</p>
+                      </section>
                     </div>
-                  </section>
-                  <section data-side="new">
-                    <header>
-                      <small>当前版本</small><strong>{{ currentLabel }}</strong>
-                    </header>
-                    <div class="version-diff__lines">
-                      <p
-                        v-for="(op, index) in changedLines(entry.lines, 'new')"
-                        :key="index"
-                        data-op="added"
-                      >
-                        {{ op.text || ' ' }}
-                      </p>
-                      <p v-if="!changedLines(entry.lines, 'new').length" class="is-empty">无</p>
+                  </article>
+                </div>
+                <p v-else class="version-diff__entry-note">其他高级配置有变化。</p>
+              </article>
+            </section>
+
+            <section v-if="result.regexRules?.length" class="version-diff__section">
+              <h4>正则规则变化</h4>
+              <p class="version-diff__status">
+                新增 {{ regexRuleCounts.added }} 条 · 移除 {{ regexRuleCounts.removed }} 条 · 修改
+                {{ regexRuleCounts.changed }} 条。下面用易读说明展示规则变化。
+              </p>
+              <article
+                v-for="rule in result.regexRules"
+                :key="rule.key"
+                class="version-diff__field version-diff__rule"
+                :data-status="rule.status"
+              >
+                <header>
+                  <strong>{{ rule.label }}</strong>
+                  <em>{{
+                    rule.status === 'added' ? '新增' : rule.status === 'removed' ? '移除' : '修改'
+                  }}</em>
+                </header>
+                <div v-if="rule.details?.length" class="version-diff__entry-details">
+                  <div
+                    v-for="detail in rule.details"
+                    :key="detail.label"
+                    class="version-diff__readable-change"
+                    :data-status="detail.status"
+                  >
+                    <strong>{{ detail.label }}</strong>
+                    <div>
+                      <span>{{ detail.oldText || '无' }}</span>
+                      <i aria-hidden="true">→</i>
+                      <span>{{ detail.newText || '无' }}</span>
                     </div>
-                  </section>
+                  </div>
+                </div>
+              </article>
+            </section>
+
+            <section v-if="result.scriptItems?.length" class="version-diff__section">
+              <h4>脚本配置变化</h4>
+              <p class="version-diff__status">
+                新增 {{ scriptItemCounts.added }} 个 · 移除 {{ scriptItemCounts.removed }} 个 · 修改
+                {{ scriptItemCounts.changed }} 个。脚本代码只标注是否变化，不自动推断代码行为。
+              </p>
+              <article
+                v-for="item in result.scriptItems"
+                :key="item.key"
+                class="version-diff__field version-diff__rule"
+                :data-status="item.status"
+              >
+                <header>
+                  <strong>{{ item.label }}</strong>
+                  <em>{{
+                    item.status === 'added' ? '新增' : item.status === 'removed' ? '移除' : '修改'
+                  }}</em>
+                </header>
+                <div v-if="item.details?.length" class="version-diff__entry-details">
+                  <div
+                    v-for="detail in item.details"
+                    :key="detail.label"
+                    class="version-diff__readable-change"
+                    :data-status="detail.status"
+                  >
+                    <strong>{{ detail.label }}</strong>
+                    <div>
+                      <span>{{ detail.oldText || '无' }}</span>
+                      <i aria-hidden="true">→</i>
+                      <span>{{ detail.newText || '无' }}</span>
+                    </div>
+                  </div>
                 </div>
               </article>
             </section>
 
             <section v-if="result.kind === 'text'" class="version-diff__section">
-              <h4>文本差异</h4>
-              <div class="version-diff__columns">
-                <section data-side="old">
-                  <header>
-                    <small>历史版本</small><strong>{{ otherLabel }}</strong>
-                  </header>
-                  <div class="version-diff__lines">
-                    <p
-                      v-for="(op, index) in changedLines(result.lines, 'old')"
-                      :key="index"
-                      data-op="removed"
-                    >
-                      {{ op.text || ' ' }}
-                    </p>
-                  </div>
-                </section>
-                <section data-side="new">
-                  <header>
-                    <small>当前版本</small><strong>{{ currentLabel }}</strong>
-                  </header>
-                  <div class="version-diff__lines">
-                    <p
-                      v-for="(op, index) in changedLines(result.lines, 'new')"
-                      :key="index"
-                      data-op="added"
-                    >
-                      {{ op.text || ' ' }}
-                    </p>
-                  </div>
-                </section>
-              </div>
+              <h4>{{ sourceDiffTitle }}</h4>
+              <p class="version-diff__status">{{ sourceDiffIntro }}</p>
+              <details class="version-diff__raw">
+                <summary>查看原始代码 / 文本差异（技术细节）</summary>
+                <div class="version-diff__columns">
+                  <section data-side="old">
+                    <header>
+                      <small>{{ oldSideLabel }}</small
+                      ><strong>{{ otherLabel }}</strong>
+                    </header>
+                    <div class="version-diff__lines">
+                      <p
+                        v-for="(op, index) in changedLines(result.lines, 'old')"
+                        :key="index"
+                        data-op="removed"
+                      >
+                        {{ op.text || ' ' }}
+                      </p>
+                    </div>
+                  </section>
+                  <section data-side="new">
+                    <header>
+                      <small>{{ newSideLabel }}</small
+                      ><strong>{{ currentLabel }}</strong>
+                    </header>
+                    <div class="version-diff__lines">
+                      <p
+                        v-for="(op, index) in changedLines(result.lines, 'new')"
+                        :key="index"
+                        data-op="added"
+                      >
+                        {{ op.text || ' ' }}
+                      </p>
+                    </div>
+                  </section>
+                </div>
+              </details>
             </section>
 
             <p

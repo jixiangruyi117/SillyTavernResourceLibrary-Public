@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import type { ImportVersionCandidate } from '../types/Import'
+import type { ImportVersionCandidate, ImportVersionComparison } from '../types/Import'
 import { RESOURCE_TYPE_LABELS } from '../types/Resource'
+import VersionDiffDialog from './VersionDiffDialog.vue'
 
-const props = defineProps<{ candidate: ImportVersionCandidate; remaining: number; busy: boolean }>()
+const props = defineProps<{
+  candidate: ImportVersionCandidate
+  remaining: number
+  busy: boolean
+  comparingId?: string
+  comparison?: ImportVersionComparison
+}>()
 const emit = defineEmits<{
+  compare: [matchedResourceId: string]
+  'close-comparison': []
   resolve: [
     decision: {
       action: 'activate' | 'archive' | 'replace' | 'independent' | 'skip'
@@ -17,6 +26,9 @@ const emit = defineEmits<{
 
 const selectedId = ref('')
 const versionNote = ref('')
+const isActionBusy = computed(
+  () => props.busy || Boolean(props.comparingId) || Boolean(props.comparison),
+)
 const selectedCandidate = computed(() =>
   props.candidate.candidates.find((item) => item.resource.id === selectedId.value),
 )
@@ -72,7 +84,12 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
               }}
             </h2>
           </div>
-          <button type="button" :disabled="busy" aria-label="跳过这个文件" @click="decide('skip')">
+          <button
+            type="button"
+            :disabled="isActionBusy"
+            aria-label="跳过这个文件"
+            @click="decide('skip')"
+          >
             ×
           </button>
         </header>
@@ -90,27 +107,49 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
         </div>
 
         <fieldset>
-          <legend>选择最接近的已有资源</legend>
-          <label
+          <legend>选择最接近的已有资源 <small>点右侧“比”查看差异</small></legend>
+          <div
             v-for="item in candidate.candidates"
             :key="item.resource.id"
+            class="version-import-dialog__candidate"
             :class="{ 'is-selected': selectedId === item.resource.id }"
           >
-            <input v-model="selectedId" type="radio" :value="item.resource.id" />
-            <span class="version-import-dialog__score">{{ item.score }}%</span>
-            <span>
-              <strong>{{ item.resource.name }}</strong>
-              <small
-                >{{ RESOURCE_TYPE_LABELS[item.resource.type] }} ·
-                {{ item.reasons.join('、') }}</small
-              >
-              <small v-if="item.matchedHistorical">
-                命中历史版本：{{
-                  item.matchedResource.versionLabel || item.matchedResource.fileName
-                }}
-              </small>
-            </span>
-          </label>
+            <label class="version-import-dialog__candidate-choice">
+              <input
+                v-model="selectedId"
+                type="radio"
+                :value="item.resource.id"
+                :disabled="isActionBusy"
+              />
+              <span class="version-import-dialog__score">{{ item.score }}%</span>
+              <span>
+                <strong>{{ item.resource.name }}</strong>
+                <small
+                  >{{ RESOURCE_TYPE_LABELS[item.resource.type] }} ·
+                  {{ item.reasons.join('、') }}</small
+                >
+                <small v-if="item.matchedHistorical">
+                  命中历史版本：{{
+                    item.matchedResource.versionLabel || item.matchedResource.fileName
+                  }}
+                </small>
+              </span>
+            </label>
+            <button
+              type="button"
+              class="version-import-dialog__compare"
+              :class="{ 'is-loading': comparingId === item.matchedResource.id }"
+              :disabled="isActionBusy"
+              :aria-label="`对比待导入文件与${item.matchedResource.name || item.matchedResource.fileName}`"
+              :title="`对比待导入文件与${item.matchedResource.name || item.matchedResource.fileName}`"
+              @click="emit('compare', item.matchedResource.id)"
+            >
+              <svg viewBox="0 0 32 32" role="img" aria-hidden="true">
+                <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" />
+                <text x="16" y="20" text-anchor="middle">比</text>
+              </svg>
+            </button>
+          </div>
         </fieldset>
 
         <label class="version-import-dialog__note">
@@ -128,13 +167,13 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
         </label>
 
         <div class="version-import-dialog__actions">
-          <button type="button" :disabled="busy" @click="decide('independent')">
+          <button type="button" :disabled="isActionBusy" @click="decide('independent')">
             作为独立资源
           </button>
           <button
             v-if="!isExistingContent"
             type="button"
-            :disabled="busy"
+            :disabled="isActionBusy"
             @click="decide('archive')"
           >
             {{ isContainerVariant ? '绑定封装，不切换' : '加入历史，不切换' }}
@@ -143,7 +182,7 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
             v-if="!isExistingContent"
             type="button"
             class="version-import-dialog__replace"
-            :disabled="busy"
+            :disabled="isActionBusy"
             @click="decide('replace')"
           >
             {{ isContainerVariant ? '覆盖当前封装' : '覆盖当前版本' }}
@@ -152,7 +191,7 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
             v-if="!isExistingContent"
             class="button--primary"
             type="button"
-            :disabled="busy"
+            :disabled="isActionBusy"
             @click="decide('activate')"
           >
             {{ busy ? '正在保存…' : isContainerVariant ? '绑定并设为当前封装' : '设为当前版本' }}
@@ -161,7 +200,7 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
             v-else
             class="button--primary"
             type="button"
-            :disabled="busy"
+            :disabled="isActionBusy"
             @click="decide('skip')"
           >
             跳过，不重复保存
@@ -176,4 +215,13 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
       </section>
     </div>
   </Teleport>
+
+  <VersionDiffDialog
+    v-if="comparison"
+    :current="comparison.incoming"
+    :other="comparison.existing"
+    mode="import-candidate"
+    :match-details="comparison"
+    @close="emit('close-comparison')"
+  />
 </template>

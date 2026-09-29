@@ -1170,6 +1170,114 @@
   border-color: rgba(143, 183, 168, 0.35);
 }
 
+.appearance-card-orientation {
+  width: min(100%, 30rem);
+}
+
+.appearance-card-orientation > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.appearance-card-orientation > header small {
+  color: var(--color-accent);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.appearance-card-orientation > header h2 {
+  margin: 0.25rem 0 0;
+  font-size: 1.2rem;
+}
+
+.appearance-card-orientation > header button {
+  width: var(--size-touch);
+  min-height: var(--size-touch);
+  border: 1px solid var(--color-line);
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 1.25rem;
+}
+
+.appearance-card-orientation > p {
+  margin: 0.75rem 0;
+  color: var(--color-ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.appearance-card-setting {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+}
+
+.appearance-card-setting h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.appearance-card-setting > p {
+  margin: 0 0 0.75rem;
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.appearance-card-orientation [role='radiogroup'] {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.appearance-card-orientation__fit {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--color-line);
+}
+
+.appearance-card-orientation__fit > strong {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.appearance-card-orientation [role='radio'] {
+  display: flex;
+  min-height: var(--size-touch);
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  text-align: left;
+}
+
+.appearance-card-orientation [role='radio'].is-active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.appearance-card-orientation [role='radio'] span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.appearance-card-orientation [role='radio'] small {
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+}
+
+.appearance-card-orientation [role='radio'] b {
+  color: var(--color-accent);
+}
+
 @media (max-width: 640px) {
   .duplicate-cleaner-sheet {
     width: calc(100vw - 1rem);

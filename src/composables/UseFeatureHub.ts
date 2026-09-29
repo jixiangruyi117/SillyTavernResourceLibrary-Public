@@ -27,7 +27,14 @@ import { getFeatureAppLoader } from '../core/FeatureAppLoaders'
 import { officialAppService } from '../core/OfficialAppRuntime'
 import { isOfficialAppId } from '../types/OfficialApp'
 import { featureAppUsageStore } from '../core/FeatureAppUsageStore'
-import type { LayoutMode, UiFontScale } from '../services/BrowserStorageService'
+import type {
+  LayoutMode,
+  MobileCardOrientation,
+  MobileCardFitMode,
+  ResourceCardHeightMode,
+  NoImageResourceCoverMode,
+  UiFontScale,
+} from '../services/BrowserStorageService'
 import {
   createEmptyCharacterDrawState,
   type CharacterDrawState,
@@ -52,6 +59,10 @@ export type FeatureHubProps = {
   categories: Category[]
   theme: 'light' | 'dark'
   layoutMode: LayoutMode
+  mobileCardOrientation?: MobileCardOrientation
+  mobileCardFitMode?: MobileCardFitMode
+  resourceCardHeightMode?: ResourceCardHeightMode
+  noImageResourceCoverMode?: NoImageResourceCoverMode
   uiFontScale: UiFontScale
   customCss: string
   folderBusy: boolean
@@ -80,6 +91,10 @@ export type FeatureHubEvents = {
   cabinetUnpin: [resourceId: string]
   'update:theme': [value: 'light' | 'dark']
   'update:layoutMode': [value: LayoutMode]
+  'update:mobileCardOrientation': [value: MobileCardOrientation]
+  'update:mobileCardFitMode': [value: MobileCardFitMode]
+  'update:resourceCardHeightMode': [value: ResourceCardHeightMode]
+  'update:noImageResourceCoverMode': [value: NoImageResourceCoverMode]
   'update:uiFontScale': [value: UiFontScale]
   'save-css': [value: string]
   'library-changed': []

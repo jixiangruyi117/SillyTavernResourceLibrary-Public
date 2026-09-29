@@ -47,4 +47,12 @@ export interface ImportVersionCandidate {
   }>
 }
 
+export interface ImportVersionComparison {
+  incoming: Resource
+  existing: Resource
+  score: number
+  reasons: string[]
+  matchedHistorical: boolean
+}
+
 export type ImportResult = ImportSuccess | ImportDuplicate | ImportFailure | ImportVersionCandidate

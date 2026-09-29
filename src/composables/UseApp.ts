@@ -7,7 +7,7 @@ import { useRecycleBin } from '../composables/UseRecycleBin'
 import { useResourceVersions } from '../composables/UseResourceVersions'
 import { useSearchIndex } from '../composables/UseSearchIndex'
 import { isAndroidApk } from '../utils/CapacitorDetection'
-import { browserStorageService } from '../core/AppContainer'
+import { browserStorageService, resourceService } from '../core/AppContainer'
 import { noticeCenter, type NoticeType } from '../core/NoticeCenter'
 import { getPerformanceMonitorVisible } from '../core/PerformanceMonitor'
 import type { StorageHealth } from '../services/BrowserStorageService'
@@ -16,7 +16,7 @@ import type { ResourceVersionView } from '../services/ResourceService'
 import { type NativeResourceStorageInfo } from '../storage/NativeResourceFileMirror'
 import type { FilterValue, SortValue } from '../types/AppView'
 import type { PreparedRestore, RestoreMode, RestoreReport } from '../types/Backup'
-import type { ImportVersionCandidate } from '../types/Import'
+import type { ImportVersionCandidate, ImportVersionComparison } from '../types/Import'
 import type { BackupRecord } from '../types/Resource'
 import {
   isExtractedCharacterAsset,
@@ -459,10 +459,52 @@ export function useApp() {
   }
 
   const isVersionImportBusy = ref(false)
+  const versionImportComparison = shallowRef<ImportVersionComparison>()
+  const versionImportComparingId = ref('')
 
   const activeVersionImport = computed<ImportVersionCandidate | undefined>(
     () => pendingVersionImports.value[0],
   )
+
+  watch(activeVersionImport, () => {
+    versionImportComparison.value = undefined
+  })
+
+  async function handleVersionImportCompare(matchedResourceId: string): Promise<void> {
+    const pending = activeVersionImport.value
+    if (!pending || isVersionImportBusy.value || versionImportComparingId.value) return
+    const candidate = pending.candidates.find(
+      (item) => item.matchedResource.id === matchedResourceId,
+    )
+    if (!candidate) return
+
+    versionImportComparingId.value = matchedResourceId
+    try {
+      const [incoming, existing] = await Promise.all([
+        resourceService.previewImportFile(pending.file),
+        candidate.matchedHistorical
+          ? resourceService.getVersion(candidate.matchedResource.id)
+          : resourceService.get(candidate.matchedResource.id),
+      ])
+      if (activeVersionImport.value?.file !== pending.file) return
+      if (!existing) throw new Error('被比较的已有资源已不存在')
+      versionImportComparison.value = {
+        incoming,
+        existing,
+        score: candidate.score,
+        reasons: candidate.reasons,
+        matchedHistorical: candidate.matchedHistorical,
+      }
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '无法生成资源对比')
+    } finally {
+      versionImportComparingId.value = ''
+    }
+  }
+
+  function closeVersionImportCompare(): void {
+    versionImportComparison.value = undefined
+  }
 
   const isOrganizing = ref(false)
 
@@ -601,6 +643,10 @@ export function useApp() {
   const {
     theme,
     layoutMode,
+    mobileCardOrientation,
+    mobileCardFitMode,
+    resourceCardHeightMode,
+    noImageResourceCoverMode,
     uiFontScale,
     previewPolicy,
     customUiCss,
@@ -612,6 +658,10 @@ export function useApp() {
     settingsPanelKey,
     applyTheme,
     applyLayoutMode,
+    applyMobileCardOrientation,
+    applyResourceCardHeightMode,
+    applyNoImageResourceCoverMode,
+    applyMobileCardFitMode,
     applyUiFontScale,
     syncCustomUiCss,
     saveCustomUiCss,
@@ -668,6 +718,8 @@ export function useApp() {
     pendingNativeExport,
     isNativeExportBusy,
     activeVersionImport,
+    versionImportComparison,
+    closeVersionImportCompare,
     isVersionImportBusy,
     pendingVersionImports,
     get isBatchMode() {
@@ -892,6 +944,10 @@ export function useApp() {
   })
   return {
     layoutMode,
+    mobileCardOrientation,
+    mobileCardFitMode,
+    resourceCardHeightMode,
+    noImageResourceCoverMode,
     isBatchMode,
     vaultStatus,
     isSystemFileDropActive,
@@ -1028,6 +1084,10 @@ export function useApp() {
     handleCabinetPin,
     handleCabinetUnpin,
     applyLayoutMode,
+    applyMobileCardOrientation,
+    applyMobileCardFitMode,
+    applyResourceCardHeightMode,
+    applyNoImageResourceCoverMode,
     applyUiFontScale,
     saveCustomUiCss,
     handleLibraryChanged,
@@ -1075,6 +1135,10 @@ export function useApp() {
     activeVersionImport,
     pendingVersionImports,
     isVersionImportBusy,
+    versionImportComparison,
+    versionImportComparingId,
+    handleVersionImportCompare,
+    closeVersionImportCompare,
     handleVersionImportDecision,
     settingsPanelKey,
     previewPolicy,

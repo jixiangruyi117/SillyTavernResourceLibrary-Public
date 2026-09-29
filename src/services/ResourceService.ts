@@ -206,6 +206,14 @@ export class ResourceService {
     }
   }
 
+  /** Parse an incoming file into an in-memory Resource for preview-only comparisons. */
+  async previewImportFile(file: File): Promise<Resource> {
+    const context = importPipeline.intake<ParsedResource>(file)
+    return this.createImportedResource(file, undefined, undefined, context, {
+      createThumbnail: false,
+    })
+  }
+
   /** 角色卡写入与封装无关的内容指纹，供版本匹配与「同卡不同封装」查重使用。 */
   private async ensureParsedFingerprints(parsed: ParsedResource): Promise<void> {
     if (parsed.type !== RESOURCE_TYPE.CHARACTER_CARD) return
@@ -259,6 +267,7 @@ export class ResourceService {
     parsedResource?: ParsedResource,
     knownHash?: string,
     context?: ImportFileContext<ParsedResource>,
+    options: { createThumbnail?: boolean } = {},
   ): Promise<Resource> {
     const importContext = context ?? importPipeline.intake<ParsedResource>(file)
     const parsed =
@@ -267,11 +276,14 @@ export class ResourceService {
     const now = Date.now()
     const isAvatarAttachment = isUserPersonaAvatarAttachment(parsed)
     const thumbnailBlob =
-      (parsed.type === RESOURCE_TYPE.CHARACTER_CARD || isAvatarAttachment) &&
-      (file.type === 'image/png' || /\.png$/i.test(file.name))
-        ? ((await importContext.remember('thumbnail:preview', () => createImageThumbnail(file))) ??
-          (isAvatarAttachment ? file : undefined))
-        : parsed.thumbnailBlob
+      options.createThumbnail === false
+        ? parsed.thumbnailBlob
+        : (parsed.type === RESOURCE_TYPE.CHARACTER_CARD || isAvatarAttachment) &&
+            (file.type === 'image/png' || /\.png$/i.test(file.name))
+          ? ((await importContext.remember('thumbnail:preview', () =>
+              createImageThumbnail(file),
+            )) ?? (isAvatarAttachment ? file : undefined))
+          : parsed.thumbnailBlob
     const resource: Resource = {
       id: crypto.randomUUID(),
       ...parsed,

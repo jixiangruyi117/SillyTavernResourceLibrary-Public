@@ -454,6 +454,10 @@
   background: color-mix(in srgb, var(--color-ink) 76%, transparent);
 }
 
+.editor-overlay.version-diff-overlay--import {
+  z-index: 210;
+}
+
 .version-import-dialog {
   width: min(42rem, 100%);
   max-height: min(48rem, 100%);
@@ -528,31 +532,89 @@
   font-weight: 700;
 }
 
-.version-import-dialog fieldset > label {
+.version-import-dialog legend small {
+  margin-left: 0.35rem;
+  color: var(--color-ink-soft);
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
+.version-import-dialog__candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--size-touch);
+  min-height: var(--size-touch);
+  align-items: center;
+  border: 1px solid var(--color-line);
+}
+
+.version-import-dialog__candidate.is-selected {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
+.version-import-dialog__candidate-choice {
   display: grid;
   grid-template-columns: auto 3rem minmax(0, 1fr);
   min-height: var(--size-touch);
   align-items: center;
   gap: 0.65rem;
   padding: 0.75rem;
-  border: 1px solid var(--color-line);
   cursor: pointer;
 }
 
-.version-import-dialog fieldset > label.is-selected {
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+.version-import-dialog__candidate-choice input {
+  margin: 0;
 }
 
-.version-import-dialog fieldset label > span:last-child {
+.version-import-dialog__candidate-choice > span:last-child {
   display: grid;
   min-width: 0;
   gap: 0.15rem;
 }
 
-.version-import-dialog fieldset small {
+.version-import-dialog__candidate-choice small {
   color: var(--color-ink-soft);
   font-size: 0.65rem;
+}
+
+.version-import-dialog__compare {
+  display: grid;
+  width: var(--size-touch);
+  min-height: var(--size-touch);
+  place-items: center;
+  border: 0;
+  border-left: 1px solid var(--color-line);
+  color: var(--color-accent);
+  background: transparent;
+  cursor: pointer;
+}
+
+.version-import-dialog__compare:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.version-import-dialog__compare.is-loading svg {
+  animation: version-import-compare-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes version-import-compare-pulse {
+  to {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
+.version-import-dialog__compare svg {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.version-import-dialog__compare text {
+  fill: currentColor;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .version-import-dialog__score {
@@ -1116,9 +1178,13 @@
 }
 
 /* 版本对比对话框 */
+.editor-overlay.version-diff-overlay {
+  z-index: 25;
+}
+
 .version-diff {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   width: min(920px, calc(100vw - 2rem));
   max-height: min(86svh, 60rem);
   padding: 1.25rem 1.5rem calc(1.25rem + var(--safe-bottom));
@@ -1151,6 +1217,52 @@
   font-size: 0.8125rem;
   line-height: 1.6;
   opacity: 0.75;
+}
+
+.version-diff__match,
+.version-diff__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  margin: 0 0 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: var(--color-ink-soft);
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.version-diff__match strong {
+  color: var(--color-accent);
+  white-space: nowrap;
+}
+
+.version-diff__legend {
+  gap: 0.45rem 1rem;
+  padding: 0 0 0.65rem;
+  border: 0;
+  background: transparent;
+}
+
+.version-diff__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.version-diff__legend i {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 0.2rem;
+}
+
+.version-diff__legend i[data-tone='added'] {
+  background: rgba(31, 106, 84, 0.24);
+}
+
+.version-diff__legend i[data-tone='removed'] {
+  background: rgba(179, 38, 30, 0.24);
 }
 
 .version-diff__header > button {
@@ -1197,6 +1309,7 @@
 }
 
 .version-diff__scroll {
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
   display: grid;
@@ -1238,6 +1351,102 @@
 
 .version-diff__field[data-status='removed'] > header {
   background: rgba(179, 38, 30, 0.1);
+}
+
+.version-diff__entry-details {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.version-diff__entry-detail > strong {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.version-diff__entry-detail .version-diff__columns {
+  border: 1px solid rgba(32, 42, 38, 0.1);
+  border-radius: 0.45rem;
+  overflow: hidden;
+}
+
+.version-diff__entry-detail .version-diff__columns > section > p {
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.version-diff__entry-detail[data-status='added'] > strong {
+  color: #1f6a54;
+}
+
+.version-diff__entry-detail[data-status='removed'] > strong {
+  color: #b3261e;
+}
+
+.version-diff__entry-note {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  color: var(--color-ink-soft);
+  font-size: 0.8125rem;
+}
+
+.version-diff__readable-change {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.65fr) minmax(0, 1.35fr);
+  gap: 0.5rem;
+  align-items: start;
+  padding: 0.35rem 0;
+}
+
+.version-diff__readable-change + .version-diff__readable-change {
+  border-top: 1px solid rgba(32, 42, 38, 0.1);
+}
+
+.version-diff__readable-change > strong {
+  font-size: 0.78rem;
+}
+
+.version-diff__readable-change > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: start;
+  font-size: 0.8125rem;
+}
+
+.version-diff__readable-change span {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.version-diff__readable-change i {
+  color: var(--color-ink-soft);
+  font-style: normal;
+}
+
+.version-diff__readable-change[data-status='added'] > strong {
+  color: #1f6a54;
+}
+
+.version-diff__readable-change[data-status='removed'] > strong {
+  color: #b3261e;
+}
+
+.version-diff__raw {
+  border: 1px solid rgba(32, 42, 38, 0.14);
+  border-radius: 0.55rem;
+  overflow: hidden;
+}
+
+.version-diff__raw > summary {
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .version-diff__field > dl {
@@ -1344,15 +1553,33 @@
 .version-diff__lines p[data-op='added'],
 .version-diff__field dd[data-op='added'],
 .version-diff__columns > section > p[data-op='added'] {
-  background: rgba(31, 106, 84, 0.14);
+  border-left: 3px solid #1f6a54;
+  color: #15563f;
+  background: rgba(31, 106, 84, 0.22);
 }
 
 .version-diff__lines p[data-op='removed'],
 .version-diff__field dd[data-op='removed'],
 .version-diff__columns > section > p[data-op='removed'] {
-  background: rgba(179, 38, 30, 0.12);
+  border-left: 3px solid #b3261e;
+  color: #92251f;
+  background: rgba(179, 38, 30, 0.2);
   text-decoration: line-through;
   text-decoration-color: rgba(179, 38, 30, 0.45);
+}
+
+:root[data-theme='dark'] .version-diff__lines p[data-op='added'],
+:root[data-theme='dark'] .version-diff__field dd[data-op='added'],
+:root[data-theme='dark'] .version-diff__columns > section > p[data-op='added'] {
+  color: #a4e0c6;
+  background: rgba(61, 163, 120, 0.28);
+}
+
+:root[data-theme='dark'] .version-diff__lines p[data-op='removed'],
+:root[data-theme='dark'] .version-diff__field dd[data-op='removed'],
+:root[data-theme='dark'] .version-diff__columns > section > p[data-op='removed'] {
+  color: #f0a7a2;
+  background: rgba(194, 65, 57, 0.28);
 }
 
 :root[data-theme='dark'] .version-diff {
@@ -1369,5 +1596,9 @@
     width: calc(100vw - 1rem);
     max-height: calc(var(--app-viewport-height) - 1rem);
     padding: 1rem 0.9rem calc(1rem + var(--safe-bottom));
+  }
+
+  .version-diff__readable-change {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

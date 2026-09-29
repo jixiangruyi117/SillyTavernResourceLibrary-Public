@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { useLoadedObjectUrl } from '../composables/UseLoadedObjectUrl'
 import { useResourceThumbnail } from '../composables/UseResourceThumbnail'
 import { resourceCoverId } from '../types/ResourceGallery'
+import type { NoImageResourceCoverMode, ResourceCardHeightMode } from '../types/BrowserPreferences'
 
 import {
   getRelatedResourceIds,
@@ -22,6 +23,8 @@ const props = defineProps<{
   selectable?: boolean
   selected?: boolean
   blurThumbnails?: boolean
+  resourceCardHeightMode?: ResourceCardHeightMode
+  noImageResourceCoverMode?: NoImageResourceCoverMode
 }>()
 const emit = defineEmits<{
   favorite: [resource: ResourceSummary, favorite: boolean]
@@ -52,19 +55,35 @@ const hasThumbnailCover = computed(
         (props.resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
           (props.resource.mimeType === 'image/png' || /\.png$/i.test(props.resource.fileName))))),
 )
-const isJsonCharacterCover = computed(
-  () =>
+const isNameCover = computed(() => {
+  const coverMode = props.noImageResourceCoverMode ?? 'cover'
+  const shouldShowCover =
+    coverMode === 'cover' ||
+    (coverMode === 'character-only' && props.resource.type === RESOURCE_TYPE.CHARACTER_CARD)
+
+  return (
     !previewUrl.value &&
     !hasThumbnailCover.value &&
-    props.resource.type === RESOURCE_TYPE.CHARACTER_CARD,
-)
+    shouldShowCover &&
+    props.resource.type !== RESOURCE_TYPE.POCKET_PHONE &&
+    props.resource.type !== RESOURCE_TYPE.BEAUTIFICATION
+  )
+})
+const isCharacterCard = computed(() => props.resource.type === RESOURCE_TYPE.CHARACTER_CARD)
 const previewKindLabel = computed(() =>
   props.resource.type === RESOURCE_TYPE.USER_PERSONA ? '用户头像封面' : '角色卡原图',
 )
 const isCompact = computed(
   () =>
     props.resource.type === RESOURCE_TYPE.POCKET_PHONE ||
-    (!previewUrl.value && !hasThumbnailCover.value && !isJsonCharacterCover.value),
+    (!previewUrl.value && !hasThumbnailCover.value && !isNameCover.value),
+)
+const isNoCoverCard = computed(
+  () =>
+    props.resource.type === RESOURCE_TYPE.POCKET_PHONE ||
+    (props.resource.type !== RESOURCE_TYPE.BEAUTIFICATION &&
+      !previewUrl.value &&
+      !hasThumbnailCover.value),
 )
 const beautificationPreviewStyle = computed(() => {
   const preview = props.resource.metadata.beautificationPreview
@@ -153,7 +172,9 @@ watch(
     class="resource-card"
     :class="{
       'resource-card--compact': isCompact,
-      'resource-card--character-name': isJsonCharacterCover,
+      'resource-card--no-cover': isNoCoverCard,
+      'resource-card--mixed-portrait': isCharacterCard,
+      'resource-card--mixed-landscape': !isCharacterCard,
       'resource-card--selectable': selectable,
       'resource-card--selected': selected,
     }"
@@ -171,7 +192,9 @@ watch(
     <button
       v-if="(previewUrl || hasThumbnailCover) && resource.type !== RESOURCE_TYPE.POCKET_PHONE"
       class="resource-card__preview"
-      :class="{ 'resource-card__preview--revealed': isRevealed }"
+      :class="{
+        'resource-card__preview--revealed': isRevealed,
+      }"
       type="button"
       :aria-label="
         selectable
@@ -198,7 +221,7 @@ watch(
       <span class="resource-card__privacy">{{ isRevealed ? '再次点击隐藏' : '点击查看原图' }}</span>
     </button>
     <button
-      v-else-if="isJsonCharacterCover"
+      v-else-if="isNameCover"
       class="resource-card__name-cover"
       type="button"
       :aria-label="
@@ -206,13 +229,20 @@ watch(
           ? selected
             ? `取消选择 ${resource.name}`
             : `选择 ${resource.name}`
-          : `查看 ${resource.name} 角色档案`
+          : `查看 ${resource.name} ${RESOURCE_TYPE_LABELS[resource.type]}详情`
       "
       @click="selectable ? emit('select', resource) : emit('edit', resource)"
     >
-      <span class="resource-card__name-cover-type">JSON CHARACTER</span>
+      <span class="resource-card__name-cover-type">{{ RESOURCE_TYPE_LABELS[resource.type] }}</span>
       <strong :title="resource.name">{{ resource.name }}</strong>
-      <small>无图片角色卡 · 查看完整档案 <i>→</i></small>
+      <small>
+        {{
+          resource.type === RESOURCE_TYPE.CHARACTER_CARD
+            ? '无图片角色卡 · 查看完整档案'
+            : '无封面资源 · 查看详情'
+        }}
+        <i>→</i>
+      </small>
     </button>
     <button
       v-else-if="resource.type === RESOURCE_TYPE.BEAUTIFICATION"
@@ -258,7 +288,11 @@ watch(
         <span class="resource-card__title" :title="resource.name">{{ resource.name }}</span>
         <small>查看详情 <i>→</i></small>
       </button>
-      <h2 v-else-if="previewUrl" class="resource-card__title" :title="resource.name">
+      <h2
+        v-else-if="previewUrl || !isNameCover"
+        class="resource-card__title"
+        :title="resource.name"
+      >
         {{ resource.name }}
       </h2>
       <p v-if="isCompact && resource.description" class="resource-card__description">
@@ -280,12 +314,19 @@ watch(
         <span v-for="category in categories" :key="category.id" class="resource-card__category">
           <i :style="{ backgroundColor: category.color }"></i>{{ category.name }}
         </span>
-        <span v-for="tag in resource.tags.slice(0, 2)" :key="tag" class="resource-card__tag">
-          {{ tag }}
-        </span>
-        <span v-if="resource.tags.length > 2" class="resource-card__tag">
-          +{{ resource.tags.length - 2 }}
-        </span>
+        <template v-if="resourceCardHeightMode === 'uniform'">
+          <span v-for="tag in resource.tags" :key="tag" class="resource-card__tag">
+            {{ tag }}
+          </span>
+        </template>
+        <template v-else>
+          <span v-for="tag in resource.tags.slice(0, 2)" :key="tag" class="resource-card__tag">
+            {{ tag }}
+          </span>
+          <span v-if="resource.tags.length > 2" class="resource-card__tag">
+            +{{ resource.tags.length - 2 }}
+          </span>
+        </template>
         <span v-if="getRelatedResourceIds(resource).length" class="resource-card__relation">
           关联 {{ getRelatedResourceIds(resource).length }}
         </span>

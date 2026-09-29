@@ -20,21 +20,41 @@ import {
   type CustomCssPreset,
   type CustomCssScope,
   type LayoutMode,
+  type MobileCardOrientation,
+  type MobileCardFitMode,
+  type ResourceCardHeightMode,
+  type NoImageResourceCoverMode,
   type UiFontScale,
 } from '../services/BrowserStorageService'
 import { downloadBlob } from '../utils/LibraryFormatting'
 import { sanitizeCssForPreview } from '../utils/PreviewSafety'
 
-const props = defineProps<{
-  theme: 'light' | 'dark'
-  layoutMode: LayoutMode
-  uiFontScale: UiFontScale
-  customCss: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    theme: 'light' | 'dark'
+    layoutMode: LayoutMode
+    mobileCardOrientation?: MobileCardOrientation
+    mobileCardFitMode?: MobileCardFitMode
+    resourceCardHeightMode?: ResourceCardHeightMode
+    noImageResourceCoverMode?: NoImageResourceCoverMode
+    uiFontScale: UiFontScale
+    customCss: string
+  }>(),
+  {
+    mobileCardOrientation: 'mixed',
+    mobileCardFitMode: 'contain',
+    resourceCardHeightMode: 'natural',
+    noImageResourceCoverMode: 'cover',
+  },
+)
 const emit = defineEmits<{
   back: []
   'update:theme': [value: 'light' | 'dark']
   'update:layoutMode': [value: LayoutMode]
+  'update:mobileCardOrientation': [value: MobileCardOrientation]
+  'update:mobileCardFitMode': [value: MobileCardFitMode]
+  'update:resourceCardHeightMode': [value: ResourceCardHeightMode]
+  'update:noImageResourceCoverMode': [value: NoImageResourceCoverMode]
   'update:uiFontScale': [value: UiFontScale]
   'save-css': [value: string]
 }>()
@@ -47,6 +67,7 @@ const previewHost = ref<HTMLElement>()
 const { previewEnabled } = usePreviewBudget('appearance-preview', isPreviewOpen, previewHost)
 const importInput = ref<HTMLInputElement>()
 const cabinetColumns = ref<CabinetColumns>(storage.getCabinetColumns())
+const isCardOrientationDialogOpen = ref(false)
 
 const cabinetDensities: Array<{
   value: CabinetColumns
@@ -94,11 +115,75 @@ const layouts: Array<{
   },
 ]
 
+const cardOrientations: Array<{
+  value: MobileCardOrientation
+  title: string
+  description: string
+}> = [
+  { value: 'portrait', title: '全部竖版', description: '封面统一为 2:3' },
+  { value: 'landscape', title: '全部横版', description: '封面统一为 3:2' },
+  { value: 'mixed', title: '混合比例', description: '角色卡竖版，其它资源横版' },
+]
+
+const cardFitModes: Array<{
+  value: MobileCardFitMode
+  title: string
+  description: string
+}> = [
+  { value: 'contain', title: '完整显示', description: '图片完整保留，空白处留边' },
+  { value: 'cover', title: '填满预览框', description: '空白处铺满，边缘可能被裁切' },
+]
+
+const cardHeightModes: Array<{
+  value: ResourceCardHeightMode
+  title: string
+  description: string
+}> = [
+  { value: 'natural', title: '各自高度', description: '保留当前紧凑显示' },
+  {
+    value: 'uniform',
+    title: '统一按最长内容',
+    description: '按当前页最长内容等高；名称、文件名、作者、简介、分类和标签完整显示',
+  },
+  {
+    value: 'fixed',
+    title: '统一按固定长度',
+    description: '有封面按设定长度；无封面至少竖版 14rem、横版 12rem，内容多时延长以免裁字',
+  },
+]
+
+const noImageResourceCoverModes: Array<{
+  value: NoImageResourceCoverMode
+  title: string
+  description: string
+}> = [
+  {
+    value: 'cover',
+    title: '全部资源固定占位封面',
+    description: '所有无图资源都保留封面区域和所选比例',
+  },
+  {
+    value: 'character-only',
+    title: '仅角色卡固定占位封面',
+    description: '无图角色卡保留封面，其它无图资源紧凑显示',
+  },
+  { value: 'compact', title: '全部紧凑显示', description: '无图资源不显示占位封面，节省列表空间' },
+]
+
 const scopes = appearanceScopes()
 
 function selectCabinetColumns(value: CabinetColumns): void {
   if (!CABINET_COLUMN_OPTIONS.includes(value)) return
   cabinetColumns.value = storage.setCabinetColumns(value)
+}
+
+function selectLayout(value: LayoutMode): void {
+  emit('update:layoutMode', value)
+  if (value === 'grid') isCardOrientationDialogOpen.value = true
+}
+
+function selectCardOrientation(value: MobileCardOrientation): void {
+  emit('update:mobileCardOrientation', value)
 }
 
 function createPreset(name = '我的样式', css = ''): CustomCssPreset {
@@ -493,7 +578,7 @@ const previewDocument = computed(() => {
             :class="{ 'layout-option--active': layoutMode === layout.value }"
             role="radio"
             :aria-checked="layoutMode === layout.value"
-            @click="emit('update:layoutMode', layout.value)"
+            @click="selectLayout(layout.value)"
           >
             <span
               class="layout-option__preview"
@@ -705,5 +790,120 @@ const previewDocument = computed(() => {
         <p v-else role="status">预览资源已暂停，回到当前区域后恢复。</p>
       </section>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="isCardOrientationDialogOpen"
+        class="editor-overlay appearance-card-orientation-overlay"
+        role="presentation"
+        @click.self="isCardOrientationDialogOpen = false"
+      >
+        <section
+          class="editor-sheet appearance-card-orientation"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="appearance-card-orientation-title"
+        >
+          <header>
+            <div>
+              <small>CARD BROWSING</small>
+              <h2 id="appearance-card-orientation-title">卡片浏览外观</h2>
+            </div>
+            <button
+              type="button"
+              aria-label="关闭卡片方向选择"
+              @click="isCardOrientationDialogOpen = false"
+            >
+              ×
+            </button>
+          </header>
+          <section class="appearance-card-setting">
+            <h3>资源卡片高度 · 全部资源</h3>
+            <p>最长模式按当前页内容等高；固定模式按比例设置长度并收起超出内容。</p>
+            <div role="radiogroup" aria-label="资源卡片高度">
+              <button
+                v-for="mode in cardHeightModes"
+                :key="String(mode.value)"
+                type="button"
+                role="radio"
+                :aria-checked="resourceCardHeightMode === mode.value"
+                :class="{ 'is-active': resourceCardHeightMode === mode.value }"
+                @click="emit('update:resourceCardHeightMode', mode.value)"
+              >
+                <span
+                  ><strong>{{ mode.title }}</strong
+                  ><small>{{ mode.description }}</small></span
+                >
+                <b aria-hidden="true">{{ resourceCardHeightMode === mode.value ? '✓' : '' }}</b>
+              </button>
+            </div>
+          </section>
+          <section class="appearance-card-setting">
+            <h3>无图资源封面</h3>
+            <div role="radiogroup" aria-label="无图资源封面显示方式">
+              <button
+                v-for="mode in noImageResourceCoverModes"
+                :key="mode.value"
+                type="button"
+                role="radio"
+                :aria-checked="noImageResourceCoverMode === mode.value"
+                :class="{ 'is-active': noImageResourceCoverMode === mode.value }"
+                @click="emit('update:noImageResourceCoverMode', mode.value)"
+              >
+                <span
+                  ><strong>{{ mode.title }}</strong
+                  ><small>{{ mode.description }}</small></span
+                >
+                <b aria-hidden="true">{{ noImageResourceCoverMode === mode.value ? '✓' : '' }}</b>
+              </button>
+            </div>
+          </section>
+          <section class="appearance-card-setting">
+            <h3>手机端封面方向</h3>
+            <div role="radiogroup" aria-label="手机卡片封面比例">
+              <button
+                v-for="orientation in cardOrientations"
+                :key="orientation.value"
+                type="button"
+                role="radio"
+                :aria-checked="mobileCardOrientation === orientation.value"
+                :class="{ 'is-active': mobileCardOrientation === orientation.value }"
+                @click="selectCardOrientation(orientation.value)"
+              >
+                <span
+                  ><strong>{{ orientation.title }}</strong
+                  ><small>{{ orientation.description }}</small></span
+                >
+                <b aria-hidden="true">{{
+                  mobileCardOrientation === orientation.value ? '✓' : ''
+                }}</b>
+              </button>
+            </div>
+            <div
+              class="appearance-card-orientation__fit"
+              role="radiogroup"
+              aria-label="卡片图片显示方式"
+            >
+              <strong>图片显示方式</strong>
+              <button
+                v-for="mode in cardFitModes"
+                :key="mode.value"
+                type="button"
+                role="radio"
+                :aria-checked="mobileCardFitMode === mode.value"
+                :class="{ 'is-active': mobileCardFitMode === mode.value }"
+                @click="emit('update:mobileCardFitMode', mode.value)"
+              >
+                <span
+                  ><strong>{{ mode.title }}</strong
+                  ><small>{{ mode.description }}</small></span
+                >
+                <b aria-hidden="true">{{ mobileCardFitMode === mode.value ? '✓' : '' }}</b>
+              </button>
+            </div>
+          </section>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>

@@ -6,6 +6,22 @@ export const UI_FONT_SCALES = ['small', 'standard', 'large'] as const
 
 export const CABINET_COLUMN_OPTIONS = [2, 3, 4] as const
 
+export const MOBILE_CARD_ORIENTATIONS = ['mixed', 'portrait', 'landscape'] as const
+
+export type MobileCardOrientation = (typeof MOBILE_CARD_ORIENTATIONS)[number]
+
+export const MOBILE_CARD_FIT_MODES = ['contain', 'cover'] as const
+
+export type MobileCardFitMode = (typeof MOBILE_CARD_FIT_MODES)[number]
+
+export const RESOURCE_CARD_HEIGHT_MODES = ['natural', 'uniform', 'fixed'] as const
+
+export type ResourceCardHeightMode = (typeof RESOURCE_CARD_HEIGHT_MODES)[number]
+
+export const NO_IMAGE_RESOURCE_COVER_MODES = ['cover', 'character-only', 'compact'] as const
+
+export type NoImageResourceCoverMode = (typeof NO_IMAGE_RESOURCE_COVER_MODES)[number]
+
 export interface PresetStitchTemplate {
   id: string
   name: string
@@ -86,6 +102,14 @@ export interface PortableGeneralPreferences {
   showManuallyBoundResources?: boolean
   searchHistory: string[]
   blurThumbnails?: boolean
+  mobileCardOrientation?: MobileCardOrientation
+  mobileCardFitMode?: MobileCardFitMode
+  resourceCardHeightMode?: ResourceCardHeightMode
+  noImageResourceCoverMode?: NoImageResourceCoverMode
+  /** @deprecated Legacy setting; use resourceCardHeightMode. */
+  uniformResourceCardHeight?: boolean
+  /** @deprecated Legacy backup field; retained for importing older exports. */
+  mobileLandscapeFitMode?: MobileCardFitMode
   historySnapshotLimit?: number
   cabinetResourceIds?: string[]
   cabinetLayout?: CabinetLayoutEntry[]
