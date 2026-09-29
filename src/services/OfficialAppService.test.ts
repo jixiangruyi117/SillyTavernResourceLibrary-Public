@@ -36,6 +36,11 @@ describe('official APP package lifecycle', () => {
         records.delete(id)
       },
       hasFile: async (path, size) => files.get(path)?.length === size,
+      hasFileHash: async (path, size, sha256, bundled) => {
+        if (bundled) return true
+        const data = files.get(path)
+        return Boolean(data && data.length === size && (await hashBytes(data)) === sha256)
+      },
       writeFile: async (path, data) => {
         files.set(path, data)
       },
@@ -44,11 +49,15 @@ describe('official APP package lifecycle', () => {
       },
     }
   })
-  async function fixture(id: OfficialAppId = 'draw', mutate?: (app: OfficialAppPackage) => void) {
+  async function fixture(
+    id: OfficialAppId = 'draw',
+    mutate?: (app: OfficialAppPackage) => void,
+    shellVersion = 'test-shell',
+  ) {
     const payload = new TextEncoder().encode('export default {}')
     const app: OfficialAppPackage = {
       schemaVersion: 1,
-      shellVersion: 'test-shell',
+      shellVersion,
       id,
       entry: `/assets/${id}-123.js`,
       styles: [],
@@ -61,17 +70,17 @@ describe('official APP package lifecycle', () => {
     archive['manifest.json'] = new TextEncoder().encode(JSON.stringify(app))
     const bytes = zipSync(archive)
     const descriptor = {
-      url: `/official-apps/test-shell/${id}.srlapp`,
+      url: `/official-apps/${shellVersion}/${id}.srlapp`,
       sha256: await hashBytes(bytes),
       downloadBytes: bytes.length,
-      entry: `/assets/${id}-123.js`,
+      entry: app.entry,
     }
     const fetcher = vi.fn<typeof fetch>(async (input) =>
       String(input).endsWith('catalog.json')
         ? new Response(
             JSON.stringify({
               schemaVersion: 1,
-              shellVersion: 'test-shell',
+              shellVersion,
               apps: { [id]: descriptor },
             }),
           )
@@ -79,8 +88,8 @@ describe('official APP package lifecycle', () => {
     )
     const service = new OfficialAppService(
       storage,
-      'test-shell',
-      { [id]: descriptor.entry },
+      shellVersion,
+      { [id]: app.entry },
       fetcher,
       'https://library.test',
       clearData,
@@ -100,6 +109,83 @@ describe('official APP package lifecycle', () => {
     expect(clearStyles).not.toHaveBeenCalled()
     await service.install('draw')
     expect(await service.ready('draw')).toBe(true)
+  })
+  it('repairs same-sized corrupted files on update without hashing in readiness checks', async () => {
+    const { service, app } = await fixture()
+    await service.install('draw')
+    const entryBytes = files.get(app.entry)!
+    files.set(app.entry, new Uint8Array(entryBytes.length).fill(0))
+
+    expect(await service.ready('draw')).toBe(true)
+    await service.install('draw')
+    expect(await hashBytes(files.get(app.entry)!)).toBe(app.files[0]!.sha256)
+  })
+  it('keeps the installed version usable when staging a newer package fails', async () => {
+    const older = await fixture()
+    await older.service.install('draw')
+    const oldEntry = records.get('draw')!.entry
+    const newer = await fixture(
+      'draw',
+      (app) => {
+        app.entry = '/assets/draw-456.js'
+        app.files[0]!.path = app.entry
+        app.files[1]!.path = '/assets/shared-456.js'
+      },
+      'new-shell',
+    )
+    const writeFile = storage.writeFile.bind(storage)
+    const deleteFile = storage.deleteFile.bind(storage)
+    let failedStageCleanup = false
+    storage.writeFile = async (path, data) => {
+      if (path === '/assets/shared-456.js') throw new Error('quota')
+      await writeFile(path, data)
+    }
+    storage.deleteFile = async (path, bundled) => {
+      if (path === '/assets/draw-456.js' && !failedStageCleanup) {
+        failedStageCleanup = true
+        throw new Error('temporary filesystem failure')
+      }
+      await deleteFile(path, bundled)
+    }
+
+    await expect(newer.service.install('draw')).rejects.toThrow('quota')
+
+    expect(records.get('draw')?.entry).toBe(oldEntry)
+    expect(await older.service.ready('draw')).toBe(true)
+    expect(records.get('draw')?.pendingCleanupFiles?.map((file) => file.path)).toContain(
+      '/assets/draw-456.js',
+    )
+    expect(files.has('/assets/draw-456.js')).toBe(true)
+    expect(files.has(oldEntry)).toBe(true)
+  })
+  it('persists and retries old-file cleanup after the new version is committed', async () => {
+    const older = await fixture()
+    await older.service.install('draw')
+    const oldEntry = records.get('draw')!.entry
+    const newer = await fixture(
+      'draw',
+      (app) => {
+        app.entry = '/assets/draw-456.js'
+        app.files[0]!.path = app.entry
+        app.files[1]!.path = '/assets/shared-456.js'
+      },
+      'new-shell',
+    )
+    const deleteFile = storage.deleteFile.bind(storage)
+    storage.deleteFile = async (path, bundled) => {
+      if (path === oldEntry) throw new Error('temporary filesystem failure')
+      await deleteFile(path, bundled)
+    }
+
+    await newer.service.install('draw')
+    expect(records.get('draw')?.entry).toBe('/assets/draw-456.js')
+    expect(records.get('draw')?.pendingCleanupFiles?.map((file) => file.path)).toContain(oldEntry)
+    expect(files.has(oldEntry)).toBe(true)
+
+    storage.deleteFile = deleteFile
+    await newer.service.install('draw')
+    expect(records.get('draw')?.pendingCleanupFiles).toBeUndefined()
+    expect(files.has(oldEntry)).toBe(false)
   })
   it('deletes styles only with a separate explicit choice, including an already uninstalled APP', async () => {
     const { service } = await fixture()

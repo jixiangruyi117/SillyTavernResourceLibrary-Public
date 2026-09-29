@@ -29,6 +29,8 @@ export interface OfficialAppPackage {
 }
 export interface InstalledOfficialApp extends OfficialAppPackage {
   installedAt: number
+  /** Files left for retry when post-install cleanup could not remove old package assets. */
+  pendingCleanupFiles?: OfficialAppFile[]
 }
 export interface OfficialAppDownload {
   url: string

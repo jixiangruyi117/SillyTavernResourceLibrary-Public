@@ -6,5 +6,6 @@ export interface OfficialAppPackageStorage {
   remove(id: OfficialAppId): Promise<void>
   writeFile(path: string, bytes: Uint8Array): Promise<void>
   hasFile(path: string, size: number, bundled?: boolean): Promise<boolean>
+  hasFileHash(path: string, size: number, sha256: string, bundled?: boolean): Promise<boolean>
   deleteFile(path: string, bundled?: boolean): Promise<void>
 }

@@ -6,6 +6,7 @@ import {
 } from '../types/OfficialApp'
 import type { OfficialAppPackageStorage } from './OfficialAppPackageStorage'
 import { isCapacitorApp } from '../utils/CapacitorDetection'
+import { hashBlob } from '../services/HashService'
 
 const PREFIX = 'official-app:'
 function requirePath(path: string): string {
@@ -19,6 +20,15 @@ function mimeType(path: string): string {
   if (path.endsWith('.wasm')) return 'application/wasm'
   if (path.endsWith('.woff2')) return 'font/woff2'
   return 'application/octet-stream'
+}
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+async function sha256(bytes: Uint8Array): Promise<string> {
+  return hashBlob(new Blob([new Uint8Array(bytes).buffer]))
 }
 
 export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
@@ -86,6 +96,33 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
     }
     const response = await (await caches.open(OFFICIAL_APP_ASSET_CACHE)).match(path)
     return Boolean(response && Number(response.headers.get('Content-Length')) === size)
+  }
+  async hasFileHash(
+    path: string,
+    size: number,
+    expectedHash: string,
+    bundled = false,
+  ): Promise<boolean> {
+    const nativePath = requirePath(path)
+    if (bundled) return true
+    try {
+      let bytes: Uint8Array
+      if (isCapacitorApp()) {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem')
+        const result = await Filesystem.readFile({ path: nativePath, directory: Directory.Data })
+        bytes =
+          typeof result.data === 'string'
+            ? decodeBase64(result.data)
+            : new Uint8Array(await result.data.arrayBuffer())
+      } else {
+        const response = await (await caches.open(OFFICIAL_APP_ASSET_CACHE)).match(path)
+        if (!response) return false
+        bytes = new Uint8Array(await response.arrayBuffer())
+      }
+      return bytes.byteLength === size && (await sha256(bytes)) === expectedHash
+    } catch {
+      return false
+    }
   }
   async deleteFile(path: string, bundled = false): Promise<void> {
     const nativePath = requirePath(path)

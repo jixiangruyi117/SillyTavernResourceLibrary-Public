@@ -11,6 +11,7 @@ import {
   isOfficialAppId,
   type InstalledOfficialApp,
   type OfficialAppCatalog,
+  type OfficialAppFile,
   type OfficialAppId,
   type OfficialAppPackage,
 } from '../types/OfficialApp'
@@ -19,6 +20,12 @@ const safeAsset = (value: unknown): value is string =>
   typeof value === 'string' && /^\/assets\/[A-Za-z0-9_.-]+$/u.test(value) && !value.includes('..')
 const safeHash = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+
+function withoutPendingCleanupFiles(app: InstalledOfficialApp): InstalledOfficialApp {
+  const result = { ...app }
+  delete result.pendingCleanupFiles
+  return result
+}
 
 export class OfficialAppService {
   private readonly storage: OfficialAppPackageStorage
@@ -178,30 +185,92 @@ export class OfficialAppService {
           throw new Error('APP 文件校验失败')
       }
       const previous = await this.list()
+      const previousFilesByPath = new Map(
+        previous.flatMap((installed) => installed.files.map((file) => [file.path, file] as const)),
+      )
+      for (const file of app.files) {
+        const old = previousFilesByPath.get(file.path)
+        if (old && (old.size !== file.size || old.sha256 !== file.sha256))
+          throw new Error('APP 更新包复用了不同内容的文件路径，已保留当前版本')
+      }
       const protectedPaths = new Set(previous.flatMap((app) => app.files.map((file) => file.path)))
       const written: string[] = []
+      const installed: InstalledOfficialApp = { ...app, installedAt: Date.now() }
       try {
         for (const file of app.files) {
-          if (await this.storage.hasFile(file.path, file.size, file.bundled)) continue
+          if (await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled))
+            continue
           written.push(file.path)
           await this.storage.writeFile(file.path, files[file.path.slice(1)]!)
+          if (!(await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled)))
+            throw new Error('APP 文件写入后的校验失败，当前版本未切换')
         }
-        await this.storage.save({ ...app, installedAt: Date.now() })
+        const currentPaths = new Set([
+          ...app.files.map((file) => file.path),
+          ...previous
+            .filter((installedApp) => installedApp.id !== id)
+            .flatMap((installedApp) => installedApp.files.map((file) => file.path)),
+        ])
+        const cleanupByPath = new Map<string, OfficialAppFile>()
+        for (const old of previous.filter((installedApp) => installedApp.id === id)) {
+          for (const file of [...old.files, ...(old.pendingCleanupFiles ?? [])])
+            if (!currentPaths.has(file.path)) cleanupByPath.set(file.path, file)
+        }
+        const cleanupFiles = [...cleanupByPath.values()]
+        const nextRecord = cleanupFiles.length
+          ? { ...installed, pendingCleanupFiles: cleanupFiles }
+          : installed
+        await this.storage.save(nextRecord)
+
+        const pendingCleanupFiles: OfficialAppFile[] = []
+        for (const file of cleanupFiles) {
+          try {
+            await this.storage.deleteFile(file.path, file.bundled)
+          } catch {
+            pendingCleanupFiles.push(file)
+          }
+        }
+        if (cleanupFiles.length) {
+          const cleanupRecord = pendingCleanupFiles.length
+            ? { ...installed, pendingCleanupFiles }
+            : withoutPendingCleanupFiles(nextRecord)
+          // The committed record already contains a retry list, so a failed cleanup
+          // metadata write is safe and the next install can retry idempotently.
+          try {
+            await this.storage.save(cleanupRecord)
+          } catch {
+            // Keep the original persisted retry list.
+          }
+        }
       } catch (error) {
-        for (const path of written)
-          if (!protectedPaths.has(path))
-            await this.storage.deleteFile(
-              path,
-              app.files.find((file) => file.path === path)?.bundled,
-            )
+        const rollbackCleanup = new Map<string, OfficialAppFile>()
+        for (const path of written) {
+          if (protectedPaths.has(path)) continue
+          const file = app.files.find((candidate) => candidate.path === path)
+          try {
+            await this.storage.deleteFile(path, file?.bundled)
+          } catch {
+            if (file) rollbackCleanup.set(path, file)
+          }
+        }
+        const previousApp = previous.find((installedApp) => installedApp.id === id)
+        if (previousApp && rollbackCleanup.size) {
+          const pendingByPath = new Map(
+            (previousApp.pendingCleanupFiles ?? []).map((file) => [file.path, file] as const),
+          )
+          for (const [path, file] of rollbackCleanup) pendingByPath.set(path, file)
+          try {
+            await this.storage.save({
+              ...previousApp,
+              pendingCleanupFiles: [...pendingByPath.values()],
+            })
+          } catch {
+            // Preserve the original update error; untracked staging files are harmless
+            // and the installed record continues to identify the usable old package.
+          }
+        }
         throw error
       }
-      const retained = new Set(
-        (await this.list()).flatMap((app) => app.files.map((file) => file.path)),
-      )
-      for (const old of previous.filter((app) => app.id === id))
-        for (const file of old.files)
-          if (!retained.has(file.path)) await this.storage.deleteFile(file.path, file.bundled)
     })
   }
 
@@ -224,7 +293,10 @@ export class OfficialAppService {
               .flatMap((other) => other.files.map((file) => file.path)),
           )
           let freed = 0
-          for (const file of app.files)
+          const uninstallFiles = new Map(
+            [...app.files, ...(app.pendingCleanupFiles ?? [])].map((file) => [file.path, file]),
+          )
+          for (const file of uninstallFiles.values())
             if (!retained.has(file.path)) {
               await this.storage.deleteFile(file.path, file.bundled)
               if (!file.bundled) freed += file.size
