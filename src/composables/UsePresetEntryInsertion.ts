@@ -94,6 +94,36 @@ export function usePresetEntryInsertion(getContext: () => PresetEntryInsertionCo
     insertEntry(buildFavoriteEntry(favorite), index)
   }
 
+  function insertManualEntry(value: { name: string; role: string; content: string }): void {
+    const identifier = crypto.randomUUID()
+    const prompt = {
+      identifier,
+      name: value.name.trim(),
+      role: value.role,
+      content: value.content,
+      enabled: true,
+      marker: false,
+    }
+    insertEntry({
+      key: `pick:manual:${identifier}`,
+      origin: 'pick',
+      identifier,
+      name: value.name.trim(),
+      role: value.role,
+      content: value.content,
+      charCount: value.content.length,
+      marker: false,
+      enabled: true,
+      prompt,
+      original: {
+        name: value.name.trim(),
+        role: value.role,
+        content: value.content,
+        enabled: true,
+      },
+    })
+  }
+
   function selectInsertionIndex(index: number): void {
     const context = getContext()
 
@@ -202,6 +232,7 @@ export function usePresetEntryInsertion(getContext: () => PresetEntryInsertionCo
     insertEntry,
     toggleSegment,
     insertFavorite,
+    insertManualEntry,
     selectInsertionIndex,
     toggleRegexGroup,
     toggleExpanded,

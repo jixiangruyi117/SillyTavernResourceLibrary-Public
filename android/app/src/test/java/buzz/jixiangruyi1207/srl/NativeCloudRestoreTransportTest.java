@@ -136,4 +136,86 @@ public class NativeCloudRestoreTransportTest {
         assertEquals(2, root.listFiles().length);
         assertArrayEquals(old, Files.readAllBytes(file(root, hash(old)).toPath()));
     }
+
+    @Test public void durableRetryKeepsVerifiedChunksAndDownloadsOnlyTheInterruptedChunk() throws Exception {
+        File root = temporary.newFolder(); File pending = new File(root, "pending");
+        byte[] aBytes = bytes("aaa"), bBytes = bytes("bbb"), full = bytes("aaabbb");
+        RestoreObject a = object(aBytes), b = object(bBytes);
+        List<RestoreResource> plans = Collections.singletonList(resource(full,
+            new RestoreSegment(a.hash, 0, 3), new RestoreSegment(b.hash, 0, 3)));
+        AtomicInteger firstDownloads = new AtomicInteger();
+        try {
+            restoreFiles(pending, Arrays.asList(a, b), plans, h -> file(root, h), (o, target) -> {
+                firstDownloads.incrementAndGet();
+                Files.write(target.toPath(), o.hash.equals(a.hash) ? aBytes : bytes("b"));
+                if (o.hash.equals(b.hash)) throw new IOException("offline");
+            }, true, (completed, total) -> {});
+            fail("network must interrupt the first invocation");
+        } catch (IOException expected) { assertEquals("offline", expected.getMessage()); }
+        assertEquals(2, firstDownloads.get());
+        AtomicInteger resumedDownloads = new AtomicInteger();
+        restoreFiles(pending, Arrays.asList(a, b), plans, h -> file(root, h), (o, target) -> {
+            resumedDownloads.incrementAndGet();
+            assertEquals(b.hash, o.hash);
+            assertArrayEquals(bytes("b"), Files.readAllBytes(target.toPath()));
+            Files.write(target.toPath(), bBytes);
+        }, true, (completed, total) -> {});
+        assertEquals(1, resumedDownloads.get());
+        assertArrayEquals(full, Files.readAllBytes(file(root, hash(full)).toPath()));
+        assertFalse(pending.exists());
+    }
+
+    @Test public void byteResumeAcceptsOnlyAnExactRangeAndRestartsSafelyWhenTheServerIgnoresRange() {
+        assertEquals(4, restoreResponseOffset(206, "bytes 4-9/10", 4, 10));
+        assertEquals(0, restoreResponseOffset(200, null, 4, 10));
+        for (String range : Arrays.asList("bytes 0-9/10", "bytes 4-8/10", "bytes 4-9/11", "bytes 4-9/*", null)) {
+            try { restoreResponseOffset(206, range, 4, 10); fail("must reject mismatched suffix"); }
+            catch (IllegalStateException expected) {}
+        }
+    }
+
+    private static final class HttpFixture implements AutoCloseable {
+        final java.net.ServerSocket server = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress());
+        final java.util.concurrent.CompletableFuture<Void> response;
+        volatile String range;
+        HttpFixture(int status, String contentRange, byte[] body) throws Exception {
+            response = java.util.concurrent.CompletableFuture.runAsync(() -> {
+                try (java.net.Socket client = server.accept()) {
+                    java.io.BufferedReader input = new java.io.BufferedReader(new java.io.InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
+                    String line;
+                    while ((line = input.readLine()) != null && !line.isEmpty()) {
+                        if (line.startsWith("Range: ")) range = line.substring(7);
+                    }
+                    String headers = "HTTP/1.1 " + status + " OK\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n"
+                        + (contentRange == null ? "" : "Content-Range: " + contentRange + "\r\n") + "\r\n";
+                    client.getOutputStream().write(headers.getBytes(StandardCharsets.UTF_8));
+                    client.getOutputStream().write(body);
+                    client.getOutputStream().flush();
+                } catch (IOException error) { throw new java.util.concurrent.CompletionException(error); }
+            });
+        }
+        String url() { return "http://127.0.0.1:" + server.getLocalPort() + "/object"; }
+        @Override public void close() throws Exception {
+            try { response.get(5, java.util.concurrent.TimeUnit.SECONDS); } finally { server.close(); }
+        }
+    }
+
+    @Test public void realHttpResumeAppendsOnlyTheMissingSuffixAndVerifiesTheWholeFile() throws Exception {
+        byte[] full = bytes("firstsecond"); File target = temporary.newFile();
+        Files.write(target.toPath(), bytes("first"));
+        try (HttpFixture server = new HttpFixture(206, "bytes 5-10/11", bytes("second"))) {
+            downloadRestoreObject("github", server.url(), "test-token", "", hash(full), full.length, target);
+            assertEquals("bytes=5-", server.range);
+            assertArrayEquals(full, Files.readAllBytes(target.toPath()));
+        }
+    }
+
+    @Test public void realHttpIgnoredRangeReplacesThePrefixWithoutDuplicatingBytes() throws Exception {
+        byte[] full = bytes("firstsecond"); File target = temporary.newFile();
+        Files.write(target.toPath(), bytes("first"));
+        try (HttpFixture server = new HttpFixture(200, null, full)) {
+            downloadRestoreObject("github", server.url(), "test-token", "", hash(full), full.length, target);
+            assertArrayEquals(full, Files.readAllBytes(target.toPath()));
+        }
+    }
 }

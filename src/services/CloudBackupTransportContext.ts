@@ -23,6 +23,7 @@ export interface GitHubAsset {
   id: number
   name: string
   size: number
+  state?: string
   created_at: string
   url: string
   label?: string | null

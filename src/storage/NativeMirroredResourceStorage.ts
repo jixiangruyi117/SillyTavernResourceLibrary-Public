@@ -7,7 +7,11 @@ import {
   stageNativeResourceFile,
   type NativeMirrorHandle,
 } from './NativeResourceFileMirror'
-import type { ResourceStorageAdapter, ResourceMetadataPatch } from './ResourceStorageAdapter'
+import type {
+  ResourceStorageAdapter,
+  ResourceMetadataPatch,
+  ResourceVersionMatchFingerprintCache,
+} from './ResourceStorageAdapter'
 
 /**
  * 保留 IndexedDB 的既有事务/索引语义，同时把未加密资源原件镜像到 Android 文件目录。
@@ -18,10 +22,25 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
   private readonly delegate: ResourceStorageAdapter
   private readonly vault: VaultService
   private mutationQueue: Promise<void> = Promise.resolve()
+  readonly listGalleryListSummaries?: ResourceStorageAdapter['listGalleryListSummaries']
 
   constructor(delegate: ResourceStorageAdapter, vault: VaultService) {
     this.delegate = delegate
     this.vault = vault
+    // Keep this optional so older delegates retain the service's summary fallback.
+    this.listGalleryListSummaries = delegate.listGalleryListSummaries?.bind(delegate)
+  }
+
+  getVersionMatchFingerprintCache(): Promise<ResourceVersionMatchFingerprintCache | undefined> {
+    return this.delegate.getVersionMatchFingerprintCache?.() ?? Promise.resolve(undefined)
+  }
+
+  setVersionMatchFingerprintCache(cache: ResourceVersionMatchFingerprintCache): Promise<void> {
+    return this.delegate.setVersionMatchFingerprintCache?.(cache) ?? Promise.resolve()
+  }
+
+  clearVersionMatchFingerprintCache(): Promise<void> {
+    return this.delegate.clearVersionMatchFingerprintCache?.() ?? Promise.resolve()
   }
 
   list(): Promise<Resource[]> {

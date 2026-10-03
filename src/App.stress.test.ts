@@ -17,6 +17,7 @@ mountConfig.global.stubs = {
   LibrarySidebar: false,
   LibraryProtectionPanel: false,
   LibraryLinkImportPanel: false,
+  FeatureBackButton: false,
 }
 afterAll(() => {
   mountConfig.global.stubs = previousStubs
@@ -31,12 +32,15 @@ const stressApi = vi.hoisted(() => ({
     .mockResolvedValue(0),
   backfillCardFingerprints: vi.fn(async () => 0),
   get: vi.fn(),
-  historyList: vi.fn(async () => []),
   initializeVaultOnce: vi.fn(async () => ({ enabled: false, locked: false })),
 }))
 
 vi.mock('./core/ServiceWorkerUpdate', () => ({
   manualCheckForUpdate: vi.fn(async () => undefined),
+}))
+
+vi.mock('./core/OfficialAppRuntime', () => ({
+  officialAppService: { list: vi.fn(async () => []) },
 }))
 
 vi.mock('./core/AppContainer', async (importOriginal) => {
@@ -57,10 +61,6 @@ vi.mock('./core/AppContainer', async (importOriginal) => {
       initialize: vi.fn(async () => ({ enabled: false, locked: false })),
     },
     initializeVaultOnce: stressApi.initializeVaultOnce,
-    historyService: {
-      list: stressApi.historyList,
-      getSnapshotLimit: vi.fn(async () => 5),
-    },
     recycleBinService: {
       list: vi.fn(async () => []),
     },
@@ -153,14 +153,7 @@ describe('App 资源量压力回归', () => {
     expect(stressApi.upgradeLegacyJsonResources).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
-  it('历史记录和存储统计未返回时资源列表已就绪', async () => {
-    let releaseHistory!: (value: never[]) => void
-    stressApi.historyList.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseHistory = resolve
-        }),
-    )
+  it('存储统计未返回时资源列表已就绪', async () => {
     let releaseStorage!: (value: object) => void
     vi.spyOn(navigator.storage, 'estimate').mockImplementationOnce(
       () =>
@@ -173,8 +166,6 @@ describe('App 资源量压力回归', () => {
     await vi.waitFor(() => expect(wrapper.findAll('resource-card-stub')).toHaveLength(24))
     expect(JSON.parse(sessionStorage.getItem('srl.startup.state.v1') ?? '{}').pending).toBe(false)
     await wrapper.get('.mobile-bottom-nav > button:nth-child(2)').trigger('click')
-    await vi.waitFor(() => expect(stressApi.historyList).toHaveBeenCalled())
-    releaseHistory([])
     releaseStorage({ usage: 0, quota: 1000000 })
     wrapper.unmount()
   })
@@ -208,6 +199,31 @@ describe('App 资源量压力回归', () => {
     expect(wrapper.get('[role="dialog"][aria-label="链接导入"]').isVisible()).toBe(true)
     await wrapper.get('[aria-label="返回导入方式"]').trigger('click')
     expect(wrapper.get('[role="dialog"][aria-label="选择导入方式"]').isVisible()).toBe(true)
+    const resourceRoot = wrapper
+      .findAll('.import-choice-card')
+      .find(
+        (button) => button.text().includes('本地文件') && button.text().includes('单个资源文件'),
+      )
+    expect(resourceRoot).toBeDefined()
+    await resourceRoot!.trigger('click')
+    expect(wrapper.text()).toContain('单个资源文件')
+    expect(wrapper.text()).toContain('资源合集压缩包')
+    expect(wrapper.text()).not.toContain('酒馆备份')
+    await wrapper.get('[aria-label="返回导入方式"]').trigger('click')
+    const backupRoot = wrapper
+      .findAll('.import-choice-card')
+      .find((button) => button.text().includes('备份文件'))
+    await backupRoot!.trigger('click')
+    expect(wrapper.text()).toContain('资源库备份')
+    expect(wrapper.text()).toContain('酒馆备份')
+    await wrapper.get('[aria-label="返回导入方式"]').trigger('click')
+    const otherRoot = wrapper
+      .findAll('.import-choice-card')
+      .find((button) => button.text().includes('个人资料'))
+    await otherRoot!.trigger('click')
+    expect(wrapper.text()).toContain('添加番外指令')
+    expect(wrapper.text()).toContain('收纳小手机')
+    expect(wrapper.text()).toContain('保存密钥资料')
     await wrapper.get('[aria-label="关闭导入"]').trigger('click')
     expect(wrapper.find('.import-choice-overlay').exists()).toBe(false)
     expect(document.body.classList.contains('modal-open')).toBe(false)

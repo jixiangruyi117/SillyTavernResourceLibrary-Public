@@ -57,8 +57,10 @@ const {
   handleExternalAppsChanged,
   handleExternalAppInstalled,
   activeExternalAppId,
+  openExternalApp,
   ExternalAppHost,
   CloudBackupCenter,
+  DiscordInboxCenter,
 } = controller
 const desktopPointerStart = toRef(controller, 'desktopPointerStart')
 </script>
@@ -174,6 +176,7 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
       />
     </template>
 
+    <DiscordInboxCenter v-else-if="activePage === 'inbox'" @back="activePage = 'home'" />
     <OfficialAppManager v-else-if="activePage === 'officialApps'" @back="activePage = 'home'" />
     <DrawApp
       v-else-if="activePage === 'draw'"
@@ -269,6 +272,7 @@ const desktopPointerStart = toRef(controller, 'desktopPointerStart')
       @back="activePage = 'home'"
       @changed="handleExternalAppsChanged"
       @installed="handleExternalAppInstalled"
+      @open="openExternalApp"
       @shared-files-consumed="emit('shared-app-files-consumed')"
     />
     <ExternalAppHost

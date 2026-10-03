@@ -96,8 +96,8 @@ export function usePresetAssemblyAnalysis(context: PresetAssemblyAnalysisContext
 
   const reviewGroups = computed(() => ({
     added: reviewItems.value.filter((item) => item.kind === 'add' || item.kind === 'regex'),
-    changed: reviewItems.value.filter((item) => item.kind === 'edit' || item.kind === 'toggle'),
-    moved: reviewItems.value.filter((item) => item.kind === 'move'),
+    removed: reviewItems.value.filter((item) => item.kind === 'remove'),
+    changed: reviewItems.value.filter((item) => item.kind === 'edit'),
   }))
 
   const modifiedEntryKeys = computed(
@@ -181,14 +181,6 @@ export function usePresetAssemblyAnalysis(context: PresetAssemblyAnalysisContext
     promptAudit.value.issues.filter((issue) => issue.severity === 'error'),
   )
 
-  const reviewAddedLines = computed(() => [
-    ...new Set(reviewItems.value.flatMap((item) => item.addedLines ?? [])),
-  ])
-
-  const reviewRemovedLines = computed(() => [
-    ...new Set(reviewItems.value.flatMap((item) => item.removedLines ?? [])),
-  ])
-
   const reviewAddedMacros = computed(() => [
     ...new Set(reviewItems.value.flatMap((item) => item.addedMacros ?? [])),
   ])
@@ -197,13 +189,6 @@ export function usePresetAssemblyAnalysis(context: PresetAssemblyAnalysisContext
     ...new Set(reviewItems.value.flatMap((item) => item.removedMacros ?? [])),
   ])
 
-  const reviewVariableReads = computed(() => [
-    ...new Set(reviewItems.value.flatMap((item) => item.addedVariableReads ?? [])),
-  ])
-
-  const reviewVariableWrites = computed(() => [
-    ...new Set(reviewItems.value.flatMap((item) => item.addedVariableWrites ?? [])),
-  ])
   return {
     candidateConflicts,
     baseIsStitched,
@@ -220,11 +205,7 @@ export function usePresetAssemblyAnalysis(context: PresetAssemblyAnalysisContext
     targetPageItems,
     promptAudit,
     blockingPromptIssues,
-    reviewAddedLines,
-    reviewRemovedLines,
     reviewAddedMacros,
     reviewRemovedMacros,
-    reviewVariableReads,
-    reviewVariableWrites,
   }
 }

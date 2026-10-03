@@ -1,7 +1,12 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
 interface NativeImportKeepAlivePlugin {
-  start(options: { title: string; phase: string; progress?: number }): Promise<void>
+  start(options: {
+    title: string
+    phase: string
+    progress?: number
+    destination?: 'import' | 'resume'
+  }): Promise<void>
   update(options: { title: string; phase: string; progress?: number }): Promise<void>
   stop(options: {
     title: string
@@ -9,7 +14,11 @@ interface NativeImportKeepAlivePlugin {
     successful: boolean
     notify?: boolean
   }): Promise<void>
-  notifyAwaitingChoice(options: { title: string; message: string }): Promise<void>
+  notifyAwaitingChoice(options: {
+    title: string
+    message: string
+    destination: 'restore' | 'resume'
+  }): Promise<void>
 }
 
 const nativeImport = registerPlugin<NativeImportKeepAlivePlugin>('NativeImportKeepAlive')
@@ -30,11 +39,15 @@ export function isNativeImportKeepAliveAvailable(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
 }
 
-export async function startNativeImportKeepAlive(title: string, phase: string): Promise<boolean> {
+export async function startNativeImportKeepAlive(
+  title: string,
+  phase: string,
+  destination: 'import' | 'resume' = 'import',
+): Promise<boolean> {
   if (!isNativeImportKeepAliveAvailable()) return false
   return serializeLifecycle(async () => {
     try {
-      await nativeImport.start({ title, phase })
+      await nativeImport.start({ title, phase, destination })
       activeTasks += 1
       lastNotificationUpdate = Date.now()
       return true
@@ -98,10 +111,11 @@ export async function stopNativeImportKeepAlive(result: {
 export async function notifyNativeImportAwaitingChoice(
   title: string,
   message: string,
+  destination: 'restore' | 'resume' = 'restore',
 ): Promise<void> {
   if (!isNativeImportKeepAliveAvailable()) return
   try {
-    await nativeImport.notifyAwaitingChoice({ title, message })
+    await nativeImport.notifyAwaitingChoice({ title, message, destination })
   } catch {
     // The prepared restore stays available in the open panel if the OS rejects notifications.
   }

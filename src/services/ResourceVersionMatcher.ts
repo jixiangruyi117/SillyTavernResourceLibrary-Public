@@ -20,7 +20,7 @@ export interface VersionCandidate {
 export interface StoredVersionRecognitionGroup {
   id: string
   resources: ResourceSummary[]
-  matchKind: 'containerVariant' | 'version'
+  matchKind: 'containerVariant' | 'version' | 'sameName'
   reasons: string[]
   recommendedKeeperId: string
 }
@@ -58,6 +58,86 @@ function normalizeText(value: string): string {
     .normalize('NFKC')
     .toLocaleLowerCase()
     .replace(/[\s·・_\-—–()[\]【】（）.]+/g, '')
+}
+
+function sameNameKey(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
+}
+
+export interface VersionMatchOptions {
+  sameNameVersionCandidates?: boolean
+}
+
+interface PreparedVersionEntry {
+  entry: VersionMatchEntry
+  name: string
+  sameName: string
+  creator: string
+  stableIds: string[]
+  fileBase: string
+  fingerprints: ReturnType<typeof readStoredFingerprints>
+  descriptionTokens?: Set<string>
+}
+
+export interface VersionCandidateIndex {
+  add(entry: VersionMatchEntry): void
+  select(parsed: ParsedResource): PreparedVersionEntry[]
+}
+
+/** 单次导入复用摘要索引；未同名又没有强证据的条目最多得 58 分，无法成为候选。 */
+export function createVersionCandidateIndex(entries: VersionMatchEntry[]): VersionCandidateIndex {
+  const buckets = new Map<string, PreparedVersionEntry[]>()
+  const key = (type: string, kind: string, value: string): string =>
+    JSON.stringify([type, kind, value])
+  const keysFor = (
+    type: string,
+    name: string,
+    fingerprints: ReturnType<typeof readStoredFingerprints>,
+    ids: string[],
+  ): string[] => [
+    ...(name ? [key(type, 'name', name)] : []),
+    ...(fingerprints.full ? [key(type, 'full', fingerprints.full)] : []),
+    ...(fingerprints.core ? [key(type, 'core', fingerprints.core)] : []),
+    ...ids.map((id) => key(type, 'id', id)),
+  ]
+  const index: VersionCandidateIndex = {
+    add(entry) {
+      const resource = entry.resource
+      const prepared: PreparedVersionEntry = {
+        entry,
+        name: normalizeText(resource.name),
+        sameName: sameNameKey(resource.name),
+        creator: normalizeText(readCreator(resource.metadata)),
+        stableIds: stableIdentity(resource.metadata),
+        fileBase: baseFileName(resource.fileName),
+        fingerprints: readStoredFingerprints(resource.metadata),
+      }
+      for (const bucketKey of keysFor(
+        resource.type,
+        prepared.name,
+        prepared.fingerprints,
+        prepared.stableIds,
+      )) {
+        const bucket = buckets.get(bucketKey)
+        if (bucket) bucket.push(prepared)
+        else buckets.set(bucketKey, [prepared])
+      }
+    },
+    select(parsed) {
+      const candidates = new Set<PreparedVersionEntry>()
+      for (const bucketKey of keysFor(
+        parsed.type,
+        normalizeText(parsed.name),
+        readStoredFingerprints(parsed.metadata),
+        stableIdentity(parsed.metadata),
+      )) {
+        for (const candidate of buckets.get(bucketKey) ?? []) candidates.add(candidate)
+      }
+      return [...candidates]
+    },
+  }
+  entries.forEach((entry) => index.add(entry))
+  return index
 }
 
 function baseFileName(value: string): string {
@@ -258,9 +338,7 @@ function tokens(value: string): Set<string> {
   return new Set(words.slice(0, 300))
 }
 
-function jaccard(left: string, right: string): number {
-  const leftTokens = tokens(left)
-  const rightTokens = tokens(right)
+function jaccard(leftTokens: Set<string>, rightTokens: Set<string>): number {
   if (!leftTokens.size || !rightTokens.size) return 0
   let intersection = 0
   for (const token of leftTokens) if (rightTokens.has(token)) intersection += 1
@@ -306,24 +384,29 @@ export function createVersionMatchEntries(
 export function findVersionCandidates(
   parsed: ParsedResource,
   fileName: string,
-  entries: VersionMatchEntry[],
+  entries: VersionMatchEntry[] | VersionCandidateIndex,
+  options: VersionMatchOptions = {},
 ): VersionCandidate[] {
   const incomingName = normalizeText(parsed.name)
   const incomingCreator = normalizeText(readCreator(parsed.metadata))
   const incomingStableIds = new Set(stableIdentity(parsed.metadata))
   const incomingFileBase = baseFileName(fileName)
   const incomingFingerprints = readStoredFingerprints(parsed.metadata)
+  const incomingSameName = sameNameKey(parsed.name)
+  let incomingDescriptionTokens: Set<string> | undefined
   const candidatesByGroup = new Map<string, VersionCandidate>()
 
-  for (const entry of entries) {
+  const index = Array.isArray(entries) ? createVersionCandidateIndex(entries) : entries
+  for (const prepared of index.select(parsed)) {
+    const { entry } = prepared
     const existing = entry.resource
     if (existing.type !== parsed.type) continue
 
     const reasons: string[] = []
     let score = 0
     let matchKind: VersionMatchKind = 'heuristic'
-    const existingStableIds = stableIdentity(existing.metadata)
-    const existingFingerprints = readStoredFingerprints(existing.metadata)
+    const existingStableIds = prepared.stableIds
+    const existingFingerprints = prepared.fingerprints
 
     if (incomingFingerprints.full && incomingFingerprints.full === existingFingerprints.full) {
       score = 100
@@ -345,26 +428,31 @@ export function findVersionCandidates(
     ) {
       score = 90
       matchKind = 'version'
-      reasons.push(entry.historical ? '与历史版本核心内容一致' : '核心内容一致，附加字段不同')
+      reasons.push(
+        entry.historical ? '与历史版本核心设定一致' : '核心设定一致，开场白或附加内容不同',
+      )
     } else if (existingStableIds.some((value) => incomingStableIds.has(value))) {
       score = 100
       matchKind = 'version'
       reasons.push(entry.historical ? '与历史版本的稳定来源 ID 相同' : '稳定来源 ID 相同')
     } else {
-      if (incomingName && incomingName === normalizeText(existing.name)) {
+      if (incomingName && incomingName === prepared.name) {
         score += 45
         reasons.push('名称相同')
       }
-      const existingCreator = normalizeText(readCreator(existing.metadata))
+      const existingCreator = prepared.creator
       if (incomingCreator && incomingCreator === existingCreator) {
         score += 25
         reasons.push('作者相同')
       }
-      if (incomingFileBase && incomingFileBase === baseFileName(existing.fileName)) {
+      if (incomingFileBase && incomingFileBase === prepared.fileBase) {
         score += 15
         reasons.push('文件名主体相同')
       }
-      const descriptionSimilarity = jaccard(parsed.description, existing.description)
+      const descriptionSimilarity = jaccard(
+        (incomingDescriptionTokens ??= tokens(parsed.description)),
+        (prepared.descriptionTokens ??= tokens(existing.description)),
+      )
       if (descriptionSimilarity >= 0.35) {
         const points = Math.round(descriptionSimilarity * 18)
         score += points
@@ -372,6 +460,18 @@ export function findVersionCandidates(
       }
     }
 
+    if (
+      score < 60 &&
+      options.sameNameVersionCandidates &&
+      incomingSameName &&
+      incomingSameName === prepared.sameName
+    ) {
+      score = 60
+      matchKind = 'sameName'
+      reasons.push('仅名称相同，内容可能差异较大，请人工确认')
+      if (incomingCreator && prepared.creator && incomingCreator !== prepared.creator)
+        reasons.push('作者不同')
+    }
     if (score < 60) continue
     const candidate: VersionCandidate = {
       resource: entry.groupResource,
@@ -395,12 +495,13 @@ export function findVersionCandidates(
         matchPriority(right.matchKind) - matchPriority(left.matchKind) ||
         right.resource.updatedAt - left.resource.updatedAt,
     )
-    .slice(0, 3)
+    .slice(0, options.sameNameVersionCandidates ? undefined : 3)
 }
 
 export function findStoredVersionGroups(
   resources: ResourceSummary[],
   versions: ResourceSummary[] = [],
+  options: VersionMatchOptions = {},
 ): StoredVersionRecognitionGroup[] {
   interface StoredEvidence {
     resource: ResourceSummary
@@ -420,14 +521,14 @@ export function findStoredVersionGroups(
     const rightRoot = find(right)
     if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot
   }
-  const edgeKinds = new Map<string, 'containerVariant' | 'version'>()
+  const edgeKinds = new Map<string, StoredVersionRecognitionGroup['matchKind']>()
   const edgeReasons = new Map<string, string>()
   const edgeKey = (left: number, right: number): string =>
     left < right ? `${left}:${right}` : `${right}:${left}`
   const connect = (
     left: StoredEvidence,
     right: StoredEvidence,
-    kind: 'containerVariant' | 'version',
+    kind: StoredVersionRecognitionGroup['matchKind'],
     reason: string,
   ): void => {
     if (left.ownerIndex === right.ownerIndex) return
@@ -439,7 +540,12 @@ export function findStoredVersionGroups(
       return
     union(left.ownerIndex, right.ownerIndex)
     const key = edgeKey(left.ownerIndex, right.ownerIndex)
-    if (edgeKinds.get(key) !== 'version') edgeKinds.set(key, kind)
+    if (
+      kind === 'sameName' ||
+      !edgeKinds.has(key) ||
+      (kind === 'version' && edgeKinds.get(key) !== 'sameName')
+    )
+      edgeKinds.set(key, kind)
     edgeReasons.set(key, left.historical || right.historical ? `${reason}（命中历史版本）` : reason)
   }
   const fullBuckets = new Map<string, StoredEvidence[]>()
@@ -532,7 +638,7 @@ export function findStoredVersionGroups(
           leftFingerprints.full === rightFingerprints.full
         )
           continue
-        connect(leftEvidence, rightEvidence, 'version', '核心内容一致，附加字段或版本内容不同')
+        connect(leftEvidence, rightEvidence, 'version', '核心设定一致，开场白或附加内容不同')
       }
     }
   }
@@ -546,25 +652,52 @@ export function findStoredVersionGroups(
   }
 
   const components = new Map<number, number[]>()
+  if (options.sameNameVersionCandidates) {
+    const nameBuckets = new Map<string, StoredEvidence[]>()
+    resources.forEach((resource, ownerIndex) => {
+      const name = sameNameKey(resource.name)
+      if (!name) return
+      const key = JSON.stringify([resource.type, name])
+      const evidence = { resource, ownerIndex, historical: false }
+      const bucket = nameBuckets.get(key)
+      if (bucket) bucket.push(evidence)
+      else nameBuckets.set(key, [evidence])
+    })
+    for (const bucket of nameBuckets.values()) {
+      const anchor = bucket[0]!
+      for (const evidence of bucket.slice(1)) {
+        // 已经存在强证据的分组不降级，只有新连接才标记为仅同名候选。
+        if (find(anchor.ownerIndex) === find(evidence.ownerIndex)) continue
+        connect(anchor, evidence, 'sameName', '仅名称相同，内容可能差异较大，请人工确认')
+      }
+    }
+  }
   resources.forEach((_resource, index) => {
     const root = find(index)
     components.set(root, [...(components.get(root) ?? []), index])
   })
 
+  const evidenceByComponent = new Map<
+    number,
+    { matchKind: StoredVersionRecognitionGroup['matchKind']; reasons: Set<string> }
+  >()
+  for (const [key, kind] of edgeKinds) {
+    const root = find(Number(key.split(':')[0]))
+    const evidence = evidenceByComponent.get(root) ?? {
+      matchKind: 'containerVariant' as const,
+      reasons: new Set<string>(),
+    }
+    if (kind === 'sameName' || (kind === 'version' && evidence.matchKind !== 'sameName'))
+      evidence.matchKind = kind
+    const reason = edgeReasons.get(key)
+    if (reason) evidence.reasons.add(reason)
+    evidenceByComponent.set(root, evidence)
+  }
+
   return Array.from(components.values())
     .filter((indices) => indices.length > 1)
     .map((indices): StoredVersionRecognitionGroup => {
-      const reasons = new Set<string>()
-      let matchKind: 'containerVariant' | 'version' = 'containerVariant'
-      for (let left = 0; left < indices.length; left += 1) {
-        for (let right = left + 1; right < indices.length; right += 1) {
-          const key = edgeKey(indices[left]!, indices[right]!)
-          const kind = edgeKinds.get(key)
-          if (kind === 'version') matchKind = 'version'
-          const reason = edgeReasons.get(key)
-          if (reason) reasons.add(reason)
-        }
-      }
+      const { reasons, matchKind } = evidenceByComponent.get(find(indices[0]!))!
       const membersByContentHash = new Map<string, ResourceSummary>()
       for (const index of indices) {
         const resource = resources[index]!

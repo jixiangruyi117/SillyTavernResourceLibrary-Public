@@ -2,11 +2,13 @@ import type { AppDatabase } from '../database/AppDatabase'
 import {
   OFFICIAL_APP_ASSET_CACHE,
   type InstalledOfficialApp,
+  type OfficialAppFile,
   type OfficialAppId,
 } from '../types/OfficialApp'
 import type { OfficialAppPackageStorage } from './OfficialAppPackageStorage'
 import { isCapacitorApp } from '../utils/CapacitorDetection'
 import { hashBlob } from '../services/HashService'
+import { Capacitor } from '@capacitor/core'
 
 const PREFIX = 'official-app:'
 function requirePath(path: string): string {
@@ -21,16 +23,6 @@ function mimeType(path: string): string {
   if (path.endsWith('.woff2')) return 'font/woff2'
   return 'application/octet-stream'
 }
-function decodeBase64(value: string): Uint8Array {
-  const binary = atob(value)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
-  return bytes
-}
-async function sha256(bytes: Uint8Array): Promise<string> {
-  return hashBlob(new Blob([new Uint8Array(bytes).buffer]))
-}
-
 export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
   private readonly database: AppDatabase
   constructor(database: AppDatabase) {
@@ -84,7 +76,6 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
   async hasFile(path: string, size: number, bundled = false): Promise<boolean> {
     const nativePath = requirePath(path)
     if (isCapacitorApp()) {
-      if (bundled) return true
       const { Filesystem, Directory } = await import('@capacitor/filesystem')
       try {
         return (
@@ -94,8 +85,37 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
         return false
       }
     }
-    const response = await (await caches.open(OFFICIAL_APP_ASSET_CACHE)).match(path)
-    return Boolean(response && Number(response.headers.get('Content-Length')) === size)
+    const cacheNames = bundled
+      ? [OFFICIAL_APP_ASSET_CACHE, 'srl-feature-assets']
+      : [OFFICIAL_APP_ASSET_CACHE]
+    for (const name of cacheNames) {
+      if (!(await caches.has(name))) continue
+      const response = await (await caches.open(name)).match(path)
+      if (response && Number(response.headers.get('Content-Length')) === size) return true
+    }
+    return false
+  }
+  async hasFiles(files: readonly Pick<OfficialAppFile, 'path' | 'size'>[]): Promise<boolean> {
+    for (const file of files) requirePath(file.path)
+    if (!files.length) return true
+    if (isCapacitorApp()) {
+      // Keep native stat and bridge costs on the existing sequential path.
+      for (const file of files) if (!(await this.hasFile(file.path, file.size))) return false
+      return true
+    }
+    if (!(await caches.has(OFFICIAL_APP_ASSET_CACHE))) return false
+    // Scope this handle to one readiness check: deletion/recreation must be seen next time.
+    const cache = await caches.open(OFFICIAL_APP_ASSET_CACHE)
+    for (let offset = 0; offset < files.length; offset += 4) {
+      const present = await Promise.all(
+        files.slice(offset, offset + 4).map(async (file) => {
+          const response = await cache.match(file.path)
+          return Boolean(response && Number(response.headers.get('Content-Length')) === file.size)
+        }),
+      )
+      if (present.some((value) => !value)) return false
+    }
+    return true
   }
   async hasFileHash(
     path: string,
@@ -104,22 +124,32 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
     bundled = false,
   ): Promise<boolean> {
     const nativePath = requirePath(path)
-    if (bundled) return true
     try {
-      let bytes: Uint8Array
+      let blob: Blob
       if (isCapacitorApp()) {
         const { Filesystem, Directory } = await import('@capacitor/filesystem')
-        const result = await Filesystem.readFile({ path: nativePath, directory: Directory.Data })
-        bytes =
-          typeof result.data === 'string'
-            ? decodeBase64(result.data)
-            : new Uint8Array(await result.data.arrayBuffer())
+        const options = { path: nativePath, directory: Directory.Data }
+        if ((await Filesystem.stat(options)).size !== size) return false
+        const { uri } = await Filesystem.getUri(options)
+        // The native file server reads the validated asset path without sending
+        // the whole file as base64 through the JS bridge. Large hashes use the existing Worker.
+        const response = await fetch(Capacitor.convertFileSrc(uri), { cache: 'no-store' })
+        if (!response.ok) return false
+        blob = await response.blob()
       } else {
-        const response = await (await caches.open(OFFICIAL_APP_ASSET_CACHE)).match(path)
+        const cacheNames = bundled
+          ? [OFFICIAL_APP_ASSET_CACHE, 'srl-feature-assets']
+          : [OFFICIAL_APP_ASSET_CACHE]
+        let response: Response | undefined
+        for (const name of cacheNames) {
+          if (!(await caches.has(name))) continue
+          response = await (await caches.open(name)).match(path)
+          if (response) break
+        }
         if (!response) return false
-        bytes = new Uint8Array(await response.arrayBuffer())
+        blob = await response.blob()
       }
-      return bytes.byteLength === size && (await sha256(bytes)) === expectedHash
+      return blob.size === size && (await hashBlob(blob)) === expectedHash
     } catch {
       return false
     }
@@ -140,9 +170,10 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
         if (exists) await Filesystem.deleteFile({ path: target, directory: Directory.Data })
       }
     } else {
-      // Older releases may have cached the same hashed file in the general offline cache.
-      for (const name of bundled ? [OFFICIAL_APP_ASSET_CACHE] : await caches.keys())
-        await (await caches.open(name)).delete(path)
+      // APP uninstall/update must not evict shared shell chunks from the Service
+      // Worker's general runtime cache. Only remove assets owned by this cache.
+      if (await caches.has(OFFICIAL_APP_ASSET_CACHE))
+        await (await caches.open(OFFICIAL_APP_ASSET_CACHE)).delete(path)
     }
   }
 }

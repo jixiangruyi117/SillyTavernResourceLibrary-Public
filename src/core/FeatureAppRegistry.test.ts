@@ -15,6 +15,7 @@ describe('FeatureAppRegistry', () => {
       'chatReader',
       'appearance',
       'folders',
+      'inbox',
       'cloud',
       'tavernBridge',
       'stitch',
@@ -33,6 +34,7 @@ describe('FeatureAppRegistry', () => {
   it('resolves component entrypoints separately from registry metadata', () => {
     expect(getFeatureAppLoader('tavernBridge')).toBeTypeOf('function')
     expect(getFeatureAppLoader('draw')).toBeTypeOf('function')
+    expect(getFeatureAppLoader('inbox')).toBeTypeOf('function')
     expect(
       getFeatureAppBadge(getFeatureAppDescriptor('extensions'), {
         drawCount: 3,

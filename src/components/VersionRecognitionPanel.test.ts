@@ -61,25 +61,15 @@ const resourceApi = {
   deleteVersions: vi.fn(async (_resourceId: string, versionIds: string[]) => versionIds.length),
   mergeExistingResourceAsVersion: vi.fn(async () => current),
 }
-const categoryApi = { list: vi.fn(async () => []) }
-const historyApi = { capture: vi.fn(async () => undefined) }
 const confirmApi = vi.fn(async (_options: unknown) => true)
-const chooseApi = vi.fn(async (_options: unknown) => 'confirm')
 
 vi.mock('../core/AppContainer', () => ({
   get resourceService() {
     return resourceApi
   },
-  get categoryService() {
-    return categoryApi
-  },
-  get historyService() {
-    return historyApi
-  },
 }))
 vi.mock('../composables/UseConfirmDialog', () => ({
   confirmAction: (options: unknown) => confirmApi(options),
-  chooseAction: (options: unknown) => chooseApi(options),
 }))
 
 import VersionRecognitionPanel from './VersionRecognitionPanel.vue'
@@ -90,7 +80,57 @@ describe('VersionRecognitionPanel', () => {
     resourceApi.listSummaries.mockResolvedValue([current])
     resourceApi.listVersionSummaries.mockResolvedValue([archived])
     confirmApi.mockResolvedValue(true)
-    chooseApi.mockResolvedValue('confirm')
+  })
+
+  it('同名弱候选需人工选择，合并确认明确其依据且支持搜索保留项', async () => {
+    const first = summary({
+      id: 'same-a',
+      name: '同名角色',
+      contentHash: 'hash-a',
+      fileName: '原版.json',
+      metadata: {},
+    })
+    const second = summary({
+      id: 'same-b',
+      name: '同名角色',
+      contentHash: 'hash-b',
+      fileName: '改版.json',
+      metadata: {},
+    })
+    resourceApi.listSummaries.mockResolvedValue([first, second])
+    resourceApi.listVersionSummaries.mockResolvedValue([])
+    const wrapper = mount(VersionRecognitionPanel, {
+      props: { resources: [first, second], sameNameVersionCandidates: true },
+    })
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('并入历史版本'))!
+      .trigger('click')
+    expect(wrapper.get('.version-recognition__workflow-pane').text()).toContain(
+      '仅同名，待人工确认',
+    )
+    await wrapper.get('input[aria-label="搜索候选组"]').setValue('改版')
+    expect(wrapper.findAll('.version-recognition__groups > article')).toHaveLength(1)
+    await wrapper.get('.resource-picker input[type="search"]').setValue('原版')
+    await wrapper.get('.resource-picker [role="option"]').trigger('click')
+    await wrapper
+      .get('.version-recognition__groups article > header input[type="checkbox"]')
+      .setValue(true)
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '并入所选版本')!
+      .trigger('click')
+    await flushPromises()
+    expect(confirmApi.mock.calls[0]?.[0]).toMatchObject({
+      message: expect.stringContaining('包含仅同名的候选组'),
+    })
+    expect(resourceApi.mergeExistingResourceAsVersion).toHaveBeenCalledWith(
+      first.id,
+      second.id,
+      expect.any(String),
+    )
+    wrapper.unmount()
   })
 
   it('直接从资源时间线读取已存历史项，不依赖跨资源合并候选', async () => {
@@ -111,7 +151,7 @@ describe('VersionRecognitionPanel', () => {
     expect((wrapper.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
   })
 
-  it('删除历史项时只在用户选择后创建快照，当前版本保留', async () => {
+  it('确认后删除所选历史项，当前版本保留', async () => {
     resourceApi.listVersionSummaries
       .mockResolvedValueOnce([archived, otherArchived])
       .mockResolvedValueOnce([otherArchived])
@@ -129,10 +169,12 @@ describe('VersionRecognitionPanel', () => {
     await deleteButton.trigger('click')
     await flushPromises()
 
-    expect(historyApi.capture).toHaveBeenCalledTimes(1)
+    expect(confirmApi).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '删除已存历史版本', danger: true }),
+    )
     expect(resourceApi.deleteVersions).toHaveBeenCalledWith(current.id, [archived.id])
     expect(resourceApi.mergeExistingResourceAsVersion).not.toHaveBeenCalled()
-    expect(historyApi.capture.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(confirmApi.mock.invocationCallOrder[0]).toBeLessThan(
       resourceApi.deleteVersions.mock.invocationCallOrder[0],
     )
     expect(wrapper.text()).toContain('清理完成：已从 1 条时间线删除 1 个历史版本；当前版本保留。')
@@ -155,6 +197,31 @@ describe('VersionRecognitionPanel', () => {
     expect(resourceApi.listVersionSummaries).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('1 项')
     expect(wrapper.text()).toContain('第二版')
+  })
+  it('等待删除确认时阻止重复提交，取消后可以重新选择', async () => {
+    let resolve!: (confirmed: boolean) => void
+    confirmApi.mockReturnValue(
+      new Promise<boolean>((done) => {
+        resolve = done
+      }),
+    )
+    const wrapper = mount(VersionRecognitionPanel, { props: { resources: [current] } })
+    await flushPromises()
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    const button = wrapper.findAll('button').find((item) => item.text() === '删除选中的历史版本')!
+    await button.trigger('click')
+    await button.trigger('click')
+    const count = confirmApi.mock.calls.length
+    resolve(false)
+    await flushPromises()
+    expect(count).toBe(1)
+    expect(resourceApi.deleteVersions).not.toHaveBeenCalled()
+    expect(button.attributes('disabled')).toBeUndefined()
+    confirmApi.mockResolvedValue(true)
+    await button.trigger('click')
+    await flushPromises()
+    expect(resourceApi.deleteVersions).toHaveBeenCalledExactlyOnceWith(current.id, [archived.id])
+    wrapper.unmount()
   })
 
   it('并入历史版本只在切换后展示跨资源候选，与历史项清理分开', async () => {

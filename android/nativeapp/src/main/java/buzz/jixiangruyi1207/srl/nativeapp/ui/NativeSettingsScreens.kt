@@ -36,8 +36,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import buzz.jixiangruyi1207.srl.nativeapp.BuildConfig
-import buzz.jixiangruyi1207.srl.nativeapp.model.NativeSnapshot
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeBackupSelection
+import buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryCleanup
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeCloudBackup
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeCredentialState
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeGitHubConfig
@@ -214,10 +214,10 @@ internal fun TransferScreen(
     restoreTarget?.let { backup ->
         AlertDialog(onDismissRequest = { restoreTarget = null }, title = { Text("恢复云端备份") },
             text = {
-                Text("“合并”会保留本机已有资源；“替换”会先创建本机快照，再用云端内容替换。请选择恢复方式。")
+                Text("“合并”会保留本机已有资源；“替换”会用云端内容覆盖当前库，成功后无法自动撤销，建议先导出当前库。请选择恢复方式。")
             },
             confirmButton = { TextButton(onClick = { onRestoreCloudBackup(backup, false); restoreTarget = null }) { Text("安全合并") } },
-            dismissButton = { Row { TextButton(onClick = { restoreTarget = null }) { Text("取消") }; TextButton(onClick = { onRestoreCloudBackup(backup, true); restoreTarget = null }) { Text("快照后替换") } } })
+            dismissButton = { Row { TextButton(onClick = { restoreTarget = null }) { Text("取消") }; TextButton(onClick = { onRestoreCloudBackup(backup, true); restoreTarget = null }) { Text("替换资源库") } } })
     }
     deleteTarget?.let { backup ->
         AlertDialog(onDismissRequest = { deleteTarget = null }, title = { Text("删除云端备份清单") },
@@ -228,51 +228,12 @@ internal fun TransferScreen(
 }
 
 @Composable
-internal fun DataProtectionScreen(
-    snapshots: List<NativeSnapshot>, busy: Boolean,
-    onCapture: (String) -> Unit, onRestore: (String) -> Unit, onDelete: (String) -> Unit,
-) {
-    var reason by remember { mutableStateOf("") }
-    var restoreTarget by remember { mutableStateOf<NativeSnapshot?>(null) }
-    var deleteTarget by remember { mutableStateOf<NativeSnapshot?>(null) }
-    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            InfoCard("本机完整快照", "最多保留 8 份完整 SRL ZIP。恢复前会再自动保存当前状态；本机快照不能代替异地备份。") {
-                OutlinedTextField(reason, { reason = it.take(80) }, label = { Text("快照说明（可选）") }, singleLine = true)
-                Button(onClick = { onCapture(reason); reason = "" }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("创建完整快照") }
-            }
-        }
-        if (snapshots.isEmpty()) item { Text("还没有本机快照", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.titleMedium) }
-        items(snapshots, key = { it.id }) { snapshot ->
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(snapshot.reason, fontWeight = FontWeight.Bold)
-                    Text("${DateFormat.getDateTimeInstance().format(Date(snapshot.createdAt))} · ${snapshot.resourceCount} 项 · ${formatBytes(snapshot.size)}", style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { restoreTarget = snapshot }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("恢复") }
-                        TextButton(onClick = { deleteTarget = snapshot }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("删除", color = Color(0xFF9B2C2C)) }
-                    }
-                }
-            }
-        }
-    }
-    restoreTarget?.let { snapshot ->
-        AlertDialog(onDismissRequest = { restoreTarget = null }, title = { Text("恢复完整快照") }, text = { Text("当前资源库会先自动保存，再替换为“${snapshot.reason}”。确定继续？") },
-            confirmButton = { TextButton(onClick = { onRestore(snapshot.id); restoreTarget = null }) { Text("恢复") } }, dismissButton = { TextButton(onClick = { restoreTarget = null }) { Text("取消") } })
-    }
-    deleteTarget?.let { snapshot ->
-        AlertDialog(onDismissRequest = { deleteTarget = null }, title = { Text("删除本机快照") }, text = { Text("“${snapshot.reason}”删除后无法恢复，确定删除？") },
-            confirmButton = { TextButton(onClick = { onDelete(snapshot.id); deleteTarget = null }) { Text("删除", color = Color(0xFF9B2C2C)) } }, dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } })
-    }
-}
-
-@Composable
 internal fun SettingsScreen(
     resourceCount: Int,
     storagePath: String,
-    snapshotCount: Int,
     busy: Boolean,
-    onOpenProtection: () -> Unit,
+    legacyLibraryHistory: LegacyLibraryHistoryCleanup,
+    onClearLegacyLibraryHistory: (LegacyLibraryHistoryCleanup) -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { InfoCard("原生运行状态", "当前界面、SQLite 查询索引、资源原件、文件导入、分享接收、搜索、收藏和 ZIP 导出均在 Android 本机运行，未创建 WebView，也不加载远程网页。") {} }
@@ -280,12 +241,12 @@ internal fun SettingsScreen(
             InfoCard("版本", "${BuildConfig.VERSION_NAME}\n本机资源：$resourceCount 项") {}
         }
         item {
-            InfoCard("本地数据", "资源原件和 library-index.json 保存到手机的 SRL 本地目录；SQLite 仅作为查询索引。\n\n位置：$storagePath\n\n卸载或更换手机前，请先导出 ZIP 备份。") {}
-        }
-        item {
-            InfoCard("数据保护与历史版本", "管理本机完整快照、删除前保护和安全回退。当前共有 $snapshotCount 份本机快照。") {
-                OutlinedButton(onClick = onOpenProtection, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                    Text("打开本地保险库")
+            InfoCard("本地数据", "资源原件和 library-index.json 保存到手机的 SRL 本地目录；SQLite 仅作为查询索引。\n\n位置：$storagePath\n\n卸载或更换手机前，请先导出 ZIP 备份。") {
+                if (legacyLibraryHistory.files.isNotEmpty()) {
+                    Text("旧整库快照：${legacyLibraryHistory.files.size} 份 · ${formatBytes(legacyLibraryHistory.bytes)}")
+                    OutlinedButton(onClick = { onClearLegacyLibraryHistory(legacyLibraryHistory) }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text("清理旧整库快照")
+                    }
                 }
             }
         }

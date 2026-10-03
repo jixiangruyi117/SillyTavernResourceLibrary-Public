@@ -102,6 +102,10 @@ export interface PortableGeneralPreferences {
   showManuallyBoundResources?: boolean
   searchHistory: string[]
   blurThumbnails?: boolean
+  autoDownloadDiscordShareLinks?: boolean
+  persistResourceVersionMatchCache?: boolean
+  skipVersionComparisonOnImport?: boolean
+  sameNameVersionCandidates?: boolean
   mobileCardOrientation?: MobileCardOrientation
   mobileCardFitMode?: MobileCardFitMode
   resourceCardHeightMode?: ResourceCardHeightMode
@@ -110,7 +114,6 @@ export interface PortableGeneralPreferences {
   uniformResourceCardHeight?: boolean
   /** @deprecated Legacy backup field; retained for importing older exports. */
   mobileLandscapeFitMode?: MobileCardFitMode
-  historySnapshotLimit?: number
   cabinetResourceIds?: string[]
   cabinetLayout?: CabinetLayoutEntry[]
   cabinetColumns?: CabinetColumns

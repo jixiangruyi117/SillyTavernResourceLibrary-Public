@@ -1205,13 +1205,26 @@
   }
 
   body input:not([type='checkbox']):not([type='radio']):not([type='color']),
-  body select,
+  body
+    select:not(
+      :where(
+        .resource-picker__toolbar select,
+        .version-import-dialog__filters select,
+        .resource-relations__search select
+      )
+    ),
   body textarea,
   /* Teleported dialogs live outside #app and need the same mobile input typography. */
   :is(#app, [role='dialog'])
     :where(
       input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']),
-      select,
+      select:not(
+        :where(
+          .resource-picker__toolbar select,
+          .version-import-dialog__filters select,
+          .resource-relations__search select
+        )
+      ),
       textarea
     ) {
     font-size: 16px;
@@ -2164,19 +2177,6 @@
     font-size: 1.125rem;
   }
 
-  .resource-detail-sheet--character .resource-detail__header .editor-sheet__close {
-    order: -1;
-  }
-
-  .resource-detail-sheet .resource-detail__close-desktop {
-    display: none;
-  }
-
-  .resource-detail-sheet .resource-detail__close-mobile {
-    display: inline;
-    font-size: 1.25rem;
-  }
-
   .resource-detail-sheet--character .resource-detail__layout {
     margin-top: 0;
   }
@@ -2420,16 +2420,6 @@
 
   .vault-state {
     align-self: flex-start;
-  }
-
-  .vault-history__item {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .vault-history__actions {
-    justify-content: flex-end;
-    border-top: 1px solid var(--color-line);
   }
 
   .resource-detail__field-pair {

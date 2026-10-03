@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { platform } from '../core/PlatformService'
 import { resetPerformanceMonitorPosition } from '../core/PerformanceMonitor'
 import { forceRefresh, manualCheckForUpdate } from '../core/ServiceWorkerUpdate'
@@ -18,7 +18,7 @@ import MainApiSettings from './MainApiSettings.vue'
 import SecretProtectionSettings from './SecretProtectionSettings.vue'
 import ResourceHealthCenter from './ResourceHealthCenter.vue'
 
-const props = defineProps<{
+defineProps<{
   vaultEnabled: boolean
   allowRemotePreviews: boolean
   allowScriptPreviews: boolean
@@ -29,10 +29,12 @@ const props = defineProps<{
   hideChatDisplayRegex: boolean
   showManuallyBoundResources: boolean
   blurThumbnails: boolean
+  autoDownloadDiscordShareLinks: boolean
+  persistResourceVersionMatchCache: boolean
+  skipVersionComparisonOnImport: boolean
+  sameNameVersionCandidates?: boolean
   showPerformanceMonitor: boolean
   hiddenCharacterAssetCount: number
-  historySnapshotLimit: number
-  historySnapshotCount: number
 }>()
 
 const emit = defineEmits<{
@@ -46,8 +48,11 @@ const emit = defineEmits<{
   'update:hideChatDisplayRegex': [value: boolean]
   'update:showManuallyBoundResources': [value: boolean]
   'update:blurThumbnails': [value: boolean]
+  'update:autoDownloadDiscordShareLinks': [value: boolean]
+  'update:persistResourceVersionMatchCache': [value: boolean]
+  'update:skipVersionComparisonOnImport': [value: boolean]
+  'update:sameNameVersionCandidates': [value: boolean]
   'update:showPerformanceMonitor': [value: boolean]
-  'update:historySnapshotLimit': [value: number]
   'manage-folders': []
   'open-vault': []
   'open-version-recognition': []
@@ -55,7 +60,6 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const snapshotLimitDraft = ref(props.historySnapshotLimit)
 const updateCheckResult = ref('')
 const isNativeApk = platform.update.isAndroidApk()
 const nativeStorageInfo = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
@@ -85,24 +89,11 @@ onMounted(async () => {
   offlineResourceStatus.value = offline
 })
 onBeforeUnmount(() => offlineDownloadController?.abort())
-watch(
-  () => props.historySnapshotLimit,
-  (value) => {
-    snapshotLimitDraft.value = value
-  },
-)
-
-function saveSnapshotLimit(): void {
-  const value = Number(snapshotLimitDraft.value)
-  if (!Number.isFinite(value)) return
-  emit('update:historySnapshotLimit', value)
-}
-
 async function handleCheckUpdate(): Promise<void> {
   updateCheckResult.value = '正在检查…'
   try {
     updateCheckResult.value = isNativeApk
-      ? 'APK 由部署者自行构建和安装更新。'
+      ? '此 Public APK 由部署者自行维护，请从原发行渠道获取更新'
       : await manualCheckForUpdate()
   } catch (error) {
     updateCheckResult.value = `检查失败：${error instanceof Error ? error.message : '未知错误'}`
@@ -228,6 +219,100 @@ async function clearOfflineResources(): Promise<void> {
       <div class="settings-sections">
         <SecretProtectionSettings />
         <MainApiSettings />
+        <section v-if="isNativeApk" class="settings-section">
+          <header>
+            <div>
+              <h3>系统分享导入</h3>
+            </div>
+            <span>仅此设备</span>
+          </header>
+          <label class="settings-switch-row">
+            <span>
+              <strong>DC 分享直链默认下载</strong>
+              <small
+                >从其他应用分享 Discord
+                附件直链后，自动下载并按资源导入；下载或解析失败时会提示并保留重试入口。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="autoDownloadDiscordShareLinks"
+              @change="
+                emit(
+                  'update:autoDownloadDiscordShareLinks',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+        </section>
+        <section class="settings-section">
+          <header>
+            <div>
+              <h3>导入与版本识别</h3>
+            </div>
+            <span>本机</span>
+          </header>
+          <label class="settings-switch-row">
+            <span>
+              <strong>保留版本匹配缓存</strong>
+              <small
+                >保存在本机资源库数据库中，不随 APK
+                临时缓存清理；只存角色卡比对指纹，不含资源原件。缓存记录丢失后会在下次导入自动重建。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="persistResourceVersionMatchCache"
+              @change="
+                emit(
+                  'update:persistResourceVersionMatchCache',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+          <label class="settings-switch-row">
+            <span>
+              <strong>同名资源默认识别为版本候选</strong>
+              <small
+                >仅限同类型、名称相同的资源，内容差异很大也会提示；只列为候选，由你确认归组。默认关闭。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="sameNameVersionCandidates"
+              @change="
+                emit(
+                  'update:sameNameVersionCandidates',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+          <label class="settings-switch-row">
+            <span>
+              <strong>跳过新资源版本对比</strong>
+              <small
+                >开启后只检查文件内容是否完全重复，不再扫描相似角色卡版本或弹出版本归属确认；默认关闭。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="skipVersionComparisonOnImport"
+              @change="
+                emit(
+                  'update:skipVersionComparisonOnImport',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+        </section>
         <section class="settings-section settings-section--preview-safety">
           <header>
             <div>
@@ -504,29 +589,6 @@ async function clearOfflineResources(): Promise<void> {
             </div>
           </header>
           <ResourceHealthCenter @library-changed="emit('library-changed')" />
-          <form class="settings-number-row" @submit.prevent="saveSnapshotLimit">
-            <span>
-              <strong>历史快照保留数量</strong>
-              <small>
-                当前已有 {{ historySnapshotCount }} 个，最多可保留 30
-                个。调小后会删除最旧快照；接近浏览器容量上限时会自动减少或停止创建。
-              </small>
-            </span>
-            <span class="settings-number-row__control">
-              <input
-                v-model.number="snapshotLimitDraft"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                max="30"
-                step="1"
-                aria-label="历史快照保留数量"
-              />
-              <button type="submit" :disabled="snapshotLimitDraft === historySnapshotLimit">
-                保存
-              </button>
-            </span>
-          </form>
           <button type="button" @click="emit('manage-folders')">
             <span>
               <strong>资源文件夹</strong>
@@ -536,8 +598,8 @@ async function clearOfflineResources(): Promise<void> {
           </button>
           <button type="button" @click="emit('open-vault')">
             <span>
-              <strong>数据保护与历史版本</strong>
-              <small>{{ vaultEnabled ? '本地加密已开启' : '备份、恢复与本地加密' }}</small>
+              <strong>本地保险库</strong>
+              <small>{{ vaultEnabled ? '本地加密已开启' : '密码保护本机资源' }}</small>
             </span>
             <i>→</i>
           </button>

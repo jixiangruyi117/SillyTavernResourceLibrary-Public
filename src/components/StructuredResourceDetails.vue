@@ -3,6 +3,7 @@ import BeautificationPreview from './BeautificationPreview.vue'
 import GreetingResourceDetails from './GreetingResourceDetails.vue'
 import GreetingPreviewDialog from './GreetingPreviewDialog.vue'
 import RichContentPreview from './RichContentPreview.vue'
+import UserPersonaResourceDetails from './UserPersonaResourceDetails.vue'
 import {
   useStructuredResourceDetails,
   type StructuredResourceDetailsProps,
@@ -81,6 +82,11 @@ const {
   <BeautificationPreview
     v-else-if="resource.type === RESOURCE_TYPE.BEAUTIFICATION"
     :resource="resource"
+  />
+  <UserPersonaResourceDetails
+    v-else-if="resource.type === RESOURCE_TYPE.USER_PERSONA"
+    :resource="resource"
+    :related-resources="relatedResources"
   />
 
   <section

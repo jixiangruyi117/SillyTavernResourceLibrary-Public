@@ -67,7 +67,10 @@ async function copyText(value: string, message: string): Promise<void> {
             <span class="discord-manual-index">01</span>
             <div>
               <h4>准备 Discord App 的三个值</h4>
-              <p>打开自己的 Discord App，按路径复制 Application ID、Public Key 和 Bot Token，并填入 SRL 的配置框。</p>
+              <p>
+                打开自己的 Discord App，按路径复制 Application ID、Public Key 和 Bot Token，并填入
+                SRL 的配置框。
+              </p>
               <p class="discord-manual-note discord-manual-note--soft">
                 如果侧栏挡住配置框，先关掉教程填完三个值，再重新打开手动部署教程。
               </p>
@@ -80,23 +83,28 @@ async function copyText(value: string, message: string): Promise<void> {
               <code>Application ID：General Information → APPLICATION ID</code>
               <figure class="discord-manual-screenshot">
                 <img
-                  src="/tutorials/discord-application-id-redacted.png"
+                  :src="'/tutorials/discord-application-id-redacted.png'"
                   alt="Discord General Information 页面，绿色圈出已遮挡的 Application ID 和 Public Key"
                   loading="lazy"
-                >
-                <figcaption>绿色圈出 Application ID 和 Public Key；两个值都已遮挡。中文界面把公钥一项显示为“客户端”。</figcaption>
+                />
+                <figcaption>
+                  绿色圈出 Application ID 和 Public
+                  Key；两个值都已遮挡。中文界面把公钥一项显示为“客户端”。
+                </figcaption>
               </figure>
               <code>Public Key：General Information → PUBLIC KEY（中文界面显示为“客户端”）</code>
               <code>Bot Token：Bot → Reset Token</code>
               <figure class="discord-manual-screenshot">
                 <img
-                  src="/tutorials/discord-bot-token-redacted.png"
+                  :src="'/tutorials/discord-bot-token-redacted.png'"
                   alt="Discord Bot 页面，绿色圈出 Reset Token 按钮"
                   loading="lazy"
-                >
+                />
                 <figcaption>绿色圈线标出生成 Bot Token 的按钮；截图没有显示令牌。</figcaption>
               </figure>
-              <p class="discord-manual-note">不要把 Application Secret 当成 Public Key。Bot Token 是密码。</p>
+              <p class="discord-manual-note">
+                不要把 Application Secret 当成 Public Key。Bot Token 是密码。
+              </p>
             </div>
           </section>
 
@@ -105,7 +113,8 @@ async function copyText(value: string, message: string): Promise<void> {
             <div>
               <h4>在 Cloudflare 创建 Worker</h4>
               <p>
-                打开 Cloudflare 并登录 → Workers &amp; Pages → Create application → Hello World → Deploy。
+                打开 Cloudflare 并登录 → Workers &amp; Pages → Create application → Hello World →
+                Deploy。
               </p>
               <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">
                 打开 Cloudflare Dashboard
@@ -120,7 +129,10 @@ async function copyText(value: string, message: string): Promise<void> {
             <span class="discord-manual-index">03</span>
             <div>
               <h4>把 SRL 生成的代码放进 Worker</h4>
-              <p>打开刚创建的 Worker → Edit Code。全选并删除示例代码，粘贴下面复制的 Bridge 代码，然后 Deploy。</p>
+              <p>
+                打开刚创建的 Worker → Edit Code。全选并删除示例代码，粘贴下面复制的 Bridge
+                代码，然后 Deploy。
+              </p>
               <button
                 class="discord-manual-copy"
                 type="button"
@@ -152,7 +164,8 @@ async function copyText(value: string, message: string): Promise<void> {
               <code>Variable name：DB</code>
               <p>数据库下拉框选择刚创建的那一个，再保存。</p>
               <p class="discord-manual-note discord-manual-note--soft">
-                名称可以不同，但变量名必须准确填 <strong>DB</strong>。第一次访问 Worker 时会自动建表。
+                名称可以不同，但变量名必须准确填 <strong>DB</strong>。第一次访问 Worker
+                时会自动建表。
               </p>
             </div>
           </section>
@@ -161,7 +174,9 @@ async function copyText(value: string, message: string): Promise<void> {
             <span class="discord-manual-index">05</span>
             <div>
               <h4>添加三个 Discord 配置值</h4>
-              <p>Worker → Settings → Variables and Secrets → Add。每项填入 SRL 配置框中对应的值：</p>
+              <p>
+                Worker → Settings → Variables and Secrets → Add。每项填入 SRL 配置框中对应的值：
+              </p>
               <div class="discord-manual-value">
                 <span>DISCORD_APPLICATION_ID</span>
                 <strong>{{ applicationId || '请先在 SRL 填写 Application ID' }}</strong>
@@ -195,9 +210,9 @@ async function copyText(value: string, message: string): Promise<void> {
                   复制值
                 </button>
               </div>
-              <code>Application ID：Type = Text</code>
-              <code>Public Key：Type = Text</code>
-              <code>Bot Token：Type = Secret</code>
+              <code>Application ID：Type 选 Text；没有 Type 时不要勾选 Secret</code>
+              <code>Public Key：Type 选 Text；没有 Type 时不要勾选 Secret</code>
+              <code>Bot Token：Type 选 Secret；没有 Type 时勾选 Secret</code>
               <a
                 href="https://developers.cloudflare.com/workers/configuration/secrets/"
                 target="_blank"
@@ -205,7 +220,21 @@ async function copyText(value: string, message: string): Promise<void> {
               >
                 查看添加 Secret 的官方步骤
               </a>
-              <p class="discord-manual-note">三项添加后保存并 Deploy。Bot Token 必须选 Secret，不要发给别人。</p>
+              <p class="discord-manual-note">
+                Cloudflare 界面可能显示 Type 选择器，也可能在 Value 旁显示 Secret
+                勾选框；按上面对应方式设置。三项添加后保存并 Deploy。Bot Token 必须保存为
+                Secret，不要发给别人。
+              </p>
+              <figure class="discord-manual-screenshot">
+                <img
+                  :src="'/tutorials/discord-github/cloudflare-production-variable-fields.jpg'"
+                  alt="Cloudflare 新增环境变量表单中环境、Key、Value 和 Secret 的位置"
+                  loading="lazy"
+                />
+                <figcaption>
+                  截图展示 Secret 勾选框界面；有 Type 选择器时按上方说明选择类型。
+                </figcaption>
+              </figure>
             </div>
           </section>
 
@@ -213,9 +242,28 @@ async function copyText(value: string, message: string): Promise<void> {
             <span class="discord-manual-index">06</span>
             <div>
               <h4>复制 Worker 根链接回 SRL</h4>
-              <p>部署成功后，在 Cloudflare 复制 Worker 地址，格式类似：</p>
+              <p>
+                部署成功后，在 Worker 的 Domains 页面复制 Production 的 workers.dev 地址，格式类似：
+              </p>
+              <figure class="discord-manual-screenshot">
+                <img
+                  :src="'/tutorials/discord-github/workers-dev-enable-redacted.jpg'"
+                  alt="Cloudflare Worker Domains 页面，遮挡账户子域名并标出 Production workers.dev 开关"
+                  loading="lazy"
+                />
+                <figcaption>
+                  如果没有 Production URL，先开启 workers.dev；Preview URL 不用开启。
+                </figcaption>
+              </figure>
+              <p class="discord-manual-note discord-manual-note--soft">
+                如果 Overview 显示 <strong>No URLs enabled</strong>，在 Domains 页面启用 Production
+                的 <code>workers.dev</code> 开关，再复制生产地址。
+              </p>
               <code>https://你的-worker.workers.dev</code>
-              <p>粘贴到 SRL 的“Cloudflare 部署链接”，然后点“保存并测试连接”。不要自己添加路径。</p>
+              <p>
+                粘贴到 SRL 的“Cloudflare 部署链接”，然后点“检查部署配置”。SRL 会检查 Worker
+                /health、D1 和 Discord 凭证；状态条会提示失败项。不要自己给根链接添加路径。
+              </p>
             </div>
           </section>
 
@@ -225,10 +273,11 @@ async function copyText(value: string, message: string): Promise<void> {
               <h4>把交互地址填到 Discord</h4>
               <p>
                 SRL 测试成功后会生成这条地址。复制后打开 Discord → General Information →
-                Interactions Endpoint URL，粘贴并保存。
+                Interactions Endpoint URL，粘贴并保存。地址必须以 <code>/interactions</code> 结尾，
+                Public Key 必须来自同一个 Discord App。
               </p>
               <code v-if="interactionsUrl">{{ interactionsUrl }}</code>
-              <code v-else>先在 SRL 填入 Worker 根链接，再点“保存并测试连接”</code>
+              <code v-else>先在 SRL 填入 Worker 根链接，再点“检查部署配置”</code>
               <button
                 class="discord-manual-copy"
                 type="button"
@@ -240,6 +289,21 @@ async function copyText(value: string, message: string): Promise<void> {
               <a :href="developerAppUrl" target="_blank" rel="noopener noreferrer">
                 打开 Discord General Information
               </a>
+              <p class="discord-manual-note discord-manual-note--soft">
+                如果出现“无法验证指定的交互端点 URL”，依次核对：地址是否以
+                <code>/interactions</code> 结尾、Worker 的 Production
+                <code>DISCORD_PUBLIC_KEY</code> 是否与当前 App 一致、最新配置是否已 Deploy，以及
+                workers.dev 地址是否已启用。初次验证发送 PING，只依赖 Public Key 验签；Application
+                ID 和 Bot Token 不参与这一步。
+              </p>
+              <figure class="discord-manual-screenshot">
+                <img
+                  :src="'/tutorials/discord-github/discord-endpoint-validation-error.jpg'"
+                  alt="Discord 交互端点 URL 验证失败示例，并标出应检查的路径和 Public Key"
+                  loading="lazy"
+                />
+                <figcaption>先核对 `/interactions` 路径和同一个 App 的 Public Key。</figcaption>
+              </figure>
             </div>
           </section>
 
@@ -247,16 +311,34 @@ async function copyText(value: string, message: string): Promise<void> {
             <span class="discord-manual-index">08</span>
             <div>
               <h4>安装并测试消息命令</h4>
-              <p>
-                在 Discord App 的 Installation 页面开启 User Install，并启用 applications.commands，然后选择
-                Add to my apps。
-              </p>
+              <p>先完成个人账号安装，再注册命令。下面的按钮只会打开设置页，不会自动安装 App：</p>
               <a :href="installationUrl" target="_blank" rel="noopener noreferrer">
                 打开 Discord Installation 页面
               </a>
-              <p>回到 SRL，点“注册消息命令”。然后在 Discord 里右键一条消息 → Apps → 保存到资源库。</p>
+              <ol>
+                <li>在 Installation Contexts 中开启 <strong>User Install</strong>。</li>
+                <li>在 Install Link 中选择 <strong>Discord Provided Link</strong>。</li>
+                <li>
+                  在 Default Install Settings → User Install 中添加
+                  <code>applications.commands</code>，然后点 <strong>Save Changes</strong>。
+                </li>
+                <li>
+                  回到 Install Link 区域复制生成的安装链接；用准备操作消息的 Discord 账号打开链接，
+                  并在授权页点 <strong>Add to my apps</strong>。
+                </li>
+              </ol>
+              <p>
+                完成 Add to my apps 后，回到 SRL 点“注册消息命令”，再在 Discord 里右键一条消息 →
+                Apps → 保存到资源库。
+              </p>
               <p class="discord-manual-note discord-manual-note--soft">
-                自动检查帖子更新需要额外把 Bot 加入对应服务器，并允许它查看来源频道；保存消息本身不要求这一点。
+                “注册成功”只表示 Discord 已登记命令，不代表当前账号已安装 App。若 Apps
+                菜单里找不到命令，先确认当前账号已完成 Add to my apps，且安装的是 SRL 中配置的同一个
+                Discord App。
+              </p>
+              <p class="discord-manual-note discord-manual-note--soft">
+                自动检查帖子更新需要额外把 Bot
+                加入对应服务器，并允许它查看来源频道；保存消息本身不要求这一点。
               </p>
             </div>
           </section>

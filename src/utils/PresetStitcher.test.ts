@@ -7,6 +7,7 @@ import {
   buildFavoriteEntry,
   buildPickEntry,
   buildStitchReview,
+  createPresetPromptSlotMacro,
   defaultStitchName,
   estimatePromptSimilarity,
   getPromptDisplayTokens,
@@ -15,6 +16,7 @@ import {
   listPromptSetVariables,
   listPresetSegments,
   parsePresetText,
+  readPresetPromptSlots,
   serializeStitchedPreset,
   stitchPreset,
 } from './PresetStitcher'
@@ -244,6 +246,33 @@ describe('stitchPreset', () => {
     expect(buildPickEntry('res-b', '来源预设', makeSource(), 'srcMarker')).toBeUndefined()
   })
 
+  it('导出占位项清单与最终 prompt identifier 对齐，并声明空值隐藏整条', () => {
+    const base = makeBase()
+    const assembly = buildBaseAssembly(base)
+    const macro = createPresetPromptSlotMacro('文风', 'slot-0001')
+    applyEntryEdit(assembly[0]!, {
+      name: '角色文风',
+      role: 'system',
+      content: `写作风格：${macro}`,
+    })
+
+    const { preset } = stitchPreset(base, assembly)
+    expect((preset.prompts as Record<string, unknown>[])[0]?.content).toBe(`写作风格：${macro}`)
+    expect(preset.extensions).toMatchObject({
+      srl_prompt_slots: {
+        schemaVersion: 1,
+        entries: [
+          {
+            identifier: 'main',
+            name: '角色文风',
+            emptyBehavior: 'hide-entry',
+            slots: [{ id: 'slot-0001', label: '文风' }],
+          },
+        ],
+      },
+    })
+  })
+
   it('装配区停用底板段只改 prompt_order 的 enabled', () => {
     const base = makeBase()
     const assembly = buildBaseAssembly(base)
@@ -280,7 +309,7 @@ describe('stitchPreset', () => {
     expect((base.prompts as Record<string, unknown>[])[0].name).toBe('主提示')
   })
 
-  it('评审清楚列出新增、编辑、启停、顺序与正则变化', () => {
+  it('评审归为新增、删除、修改三类，修改项合并正文、启停和顺序变化', () => {
     const base = makeBase()
     const assembly = buildBaseAssembly(base)
     applyEntryEdit(assembly[0], { name: '主提示', role: 'system', content: '已编辑' })
@@ -294,13 +323,36 @@ describe('stitchPreset', () => {
         scripts: listPresetRegexScripts(makeSource()),
       },
     ])
-    expect(review.map((item) => item.kind)).toEqual(
-      expect.arrayContaining(['add', 'edit', 'toggle', 'move', 'regex']),
-    )
+    expect(review.map((item) => item.kind)).toEqual(['add', 'edit', 'edit', 'regex'])
     expect(review.find((item) => item.kind === 'add')?.detail).toContain('最前面')
-    expect(review.find((item) => item.kind === 'add')?.addedLines).toContain('用轻小说文风。')
-    expect(review.find((item) => item.kind === 'edit')?.removedLines).toContain('你是一个助手。')
-    expect(review.find((item) => item.kind === 'edit')?.addedLines).toContain('已编辑')
+    expect(review.find((item) => item.kind === 'add')?.afterContent).toBe('用轻小说文风。')
+    const mainEdit = review.find((item) => item.beforeContent === '你是一个助手。')
+    expect(mainEdit?.afterContent).toBe('已编辑')
+    expect(mainEdit?.detail).toContain('状态：启用 → 停用')
+    expect(mainEdit?.detail).toContain('顺序：第 1 位 → 第 2 位')
+  })
+
+  it('修改新加入的来源条目仍只算新增，并展示最终正文', () => {
+    const base = makeBase()
+    const assembly = buildBaseAssembly(base)
+    const pick = buildPickEntry('res-b', '来源预设', makeSource(), 'style-1')!
+    applyEntryEdit(pick, { name: '专属文风', role: 'system', content: '最终写作规则' })
+    assembly.push(pick)
+
+    const review = buildStitchReview(base, assembly)
+    expect(review.map((item) => item.kind)).toEqual(['add'])
+    expect(review[0]?.afterContent).toBe('最终写作规则')
+  })
+
+  it('被移出装配的底板条目列为删除并保留被删正文', () => {
+    const base = makeBase()
+    const assembly = buildBaseAssembly(base).filter((entry) => entry.identifier !== 'main')
+
+    const removed = buildStitchReview(base, assembly).find((item) => item.kind === 'remove')
+    expect(removed).toMatchObject({
+      title: '删除「主提示」',
+      beforeContent: '你是一个助手。',
+    })
   })
 
   it('收藏快照可独立构建挑选行，不依赖来源资源仍保留完整 prompt', () => {
@@ -377,6 +429,15 @@ describe('stitchPreset', () => {
 })
 
 describe('辅助函数', () => {
+  it('创建并识别命名占位宏，拒绝会破坏语法的名称', () => {
+    const macro = createPresetPromptSlotMacro('状态栏', 'slot-0002')
+    expect(macro).toBe('{{srl_slot::slot-0002::状态栏}}')
+    expect(readPresetPromptSlots(`状态：${macro} ${macro}`)).toEqual([
+      { id: 'slot-0002', label: '状态栏' },
+    ])
+    expect(() => createPresetPromptSlotMacro('状态:栏', 'slot-0003')).toThrow(/不能包含/)
+  })
+
   it('parsePresetText 拒绝非对象顶层', () => {
     expect(parsePresetText('[1,2]')).toBeUndefined()
     expect(parsePresetText('not json')).toBeUndefined()

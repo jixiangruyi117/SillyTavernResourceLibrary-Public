@@ -52,10 +52,11 @@ function mountSettings() {
       hideChatDisplayRegex: true,
       showManuallyBoundResources: true,
       blurThumbnails: false,
+      autoDownloadDiscordShareLinks: false,
+      persistResourceVersionMatchCache: true,
+      skipVersionComparisonOnImport: false,
       showPerformanceMonitor: false,
       hiddenCharacterAssetCount: 0,
-      historySnapshotLimit: 8,
-      historySnapshotCount: 0,
     },
   })
   wrappers.push(wrapper)
@@ -63,6 +64,16 @@ function mountSettings() {
 }
 
 describe('LayoutSettingsPanel platform-specific preview options', () => {
+  it('exposes the same-name candidate switch without enabling it by default', async () => {
+    const wrapper = mountSettings()
+    const label = wrapper
+      .findAll('label')
+      .find((node) => node.text().includes('同名资源默认识别为版本候选'))!
+    const checkbox = label.get('input[type="checkbox"]')
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false)
+    await checkbox.setValue(true)
+    expect(wrapper.emitted('update:sameNameVersionCandidates')?.[0]).toEqual([true])
+  })
   it('keeps remote-resource permission but hides Android-only cache switches on Web/PWA', () => {
     runtime.android = false
     const wrapper = mountSettings()
@@ -76,5 +87,12 @@ describe('LayoutSettingsPanel platform-specific preview options', () => {
     const wrapper = mountSettings()
     expect(wrapper.text()).toContain('开场白：Android 后台缓存')
     expect(wrapper.text()).toContain('美化：Android 后台缓存')
+    expect(wrapper.text()).toContain('DC 分享直链默认下载')
+  })
+
+  it('hides the Discord direct-link option outside Android APK', () => {
+    runtime.android = false
+    const wrapper = mountSettings()
+    expect(wrapper.text()).not.toContain('DC 分享直链默认下载')
   })
 })

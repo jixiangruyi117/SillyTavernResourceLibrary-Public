@@ -25,7 +25,7 @@ interface BatchOperationsContext {
  * 多选模式与批量操作。
  *
  * 选择集合以资源 ID 保存，切换筛选不会丢失其他分类中已选中的项；
- * 批量删除前先落一次历史快照，保证误操作可回退。
+ * 批量删除进入回收站，支持恢复本次删除的资源。
  */
 export function useBatchOperations(context: BatchOperationsContext) {
   const isBatchMode = ref(false)

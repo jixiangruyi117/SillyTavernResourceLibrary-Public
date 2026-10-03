@@ -25,7 +25,12 @@ export function useLibraryRefresh(getContext: () => LibraryRefreshContext) {
     const current = ++generation
     try {
       const storedResources = await resourceService.listResourceListSummaries()
-      if (current === generation) context.resources.value = storedResources
+      if (current === generation) {
+        context.resources.value = storedResources
+        window.dispatchEvent(
+          new CustomEvent('srl:library-resources-changed', { detail: storedResources }),
+        )
+      }
     } catch (error) {
       context.showNotice('资源列表读取失败，已保留上次显示的资源')
       throw error
@@ -43,6 +48,9 @@ export function useLibraryRefresh(getContext: () => LibraryRefreshContext) {
     ])
     if (current !== generation) return
     context.resources.value = storedResources
+    window.dispatchEvent(
+      new CustomEvent('srl:library-resources-changed', { detail: storedResources }),
+    )
     rebuildResourceReferenceIndex(
       storedResources,
       browserStorageService.getChatLoadouts(),

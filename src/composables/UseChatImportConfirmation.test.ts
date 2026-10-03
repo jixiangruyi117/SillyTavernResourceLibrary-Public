@@ -4,6 +4,7 @@ import { chooseAction } from './UseConfirmDialog'
 import { createChatArchive } from '../services/TavernChatArchiveCodec.mjs'
 import { hashBlob } from '../services/HashService'
 import type { ResourceService } from '../services/ResourceService'
+import * as nativeFiles from '../core/NativeFileSource'
 
 vi.mock('./UseConfirmDialog', () => ({ chooseAction: vi.fn() }))
 const card = new File(['card'], 'role.png')
@@ -12,6 +13,20 @@ const findByContentHash = vi.fn()
 const resources = { findByContentHash } as unknown as ResourceService
 
 describe('chat import confirmation', () => {
+  it('reads the native placeholder before confirming the associated chat character', async () => {
+    const placeholder = new File([], archive.name)
+    const read = vi.spyOn(nativeFiles, 'materializeNativeFile').mockResolvedValue(archive)
+    findByContentHash.mockResolvedValue(undefined)
+    vi.mocked(chooseAction).mockResolvedValue('confirm')
+    const controller = new AbortController()
+    try {
+      const result = await confirmChatImports([placeholder], resources, controller.signal)
+      expect(result?.chatCharacterBindings).toHaveProperty(await hashBlob(card), null)
+      expect(read).toHaveBeenCalledWith(placeholder, { signal: controller.signal })
+    } finally {
+      read.mockRestore()
+    }
+  })
   it('shows the exact existing card centered and records only the confirmed identity', async () => {
     const hash = await hashBlob(card)
     findByContentHash.mockResolvedValue({

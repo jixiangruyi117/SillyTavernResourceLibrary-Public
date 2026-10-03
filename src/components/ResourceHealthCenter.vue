@@ -440,7 +440,7 @@ async function exportDiagnostics(): Promise<void> {
         </p>
         <p>
           数据库逻辑载荷：当前原件 {{ formatBytes(accounting.currentOriginalBytes) }}；历史原件
-          {{ formatBytes(accounting.versionOriginalBytes) }}；本地安全快照
+          {{ formatBytes(accounting.versionOriginalBytes) }}；本地恢复副本
           {{ formatBytes(accounting.localSnapshotBytes) }}；恢复暂存
           {{ formatBytes(accounting.restoreStagingBytes) }}。
         </p>
@@ -460,7 +460,7 @@ async function exportDiagnostics(): Promise<void> {
           {{ formatBytes(accounting.recoveredPlaceholderBytes) }}。这是引用量，不与磁盘总量相加。
         </p>
         <p>
-          逻辑载荷不等于磁盘文件大小，也不应与原生总量相加。历史快照是恢复点，不会作为重复原件自动清理。
+          逻辑载荷不等于磁盘文件大小，也不应与原生总量相加。旧本地恢复副本不会作为重复原件自动清理。
         </p>
       </details>
     </section>

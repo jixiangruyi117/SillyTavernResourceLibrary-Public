@@ -32,9 +32,12 @@ export function applyUserPersonaTemplate(
 ): UserPersonaDraft {
   const template = templates.find((item) => item.id === templateId)
   if (!template) return { ...draft, connections: draft.connections.map((item) => ({ ...item })) }
+  const profile = JSON.parse(JSON.stringify(draft.profile)) as UserPersonaDraft['profile']
+  if (profile.sections[0]) profile.sections[0].text = template.description
   return {
     ...draft,
     description: template.description,
+    profile,
     connections: draft.connections.map((item) => ({ ...item })),
   }
 }

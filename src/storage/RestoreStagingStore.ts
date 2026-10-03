@@ -9,6 +9,7 @@ export interface RestoreStagingStore {
     file: File,
     selectedPaths?: string[],
     onProgress?: (progress: import('../services/ArchiveExtraction').ArchiveStageProgress) => void,
+    signal?: AbortSignal,
   ): Promise<string | undefined>
   listNativeArchiveEntries?(file: File): Promise<string[] | undefined>
   putChunk(chunk: RestoreStagingChunk): Promise<void>

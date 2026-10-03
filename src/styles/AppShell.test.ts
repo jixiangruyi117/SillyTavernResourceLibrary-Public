@@ -27,7 +27,7 @@ describe('AppShell 导入方式弹层', () => {
   })
 
   it('关闭按钮保持至少 44px 的移动端触控尺寸', () => {
-    const closeRule = readRule('.import-choice-sheet header button')
+    const closeRule = readRule('.import-choice-sheet header button:not(.feature-back-button)')
 
     expect(closeRule).toContain('width: var(--size-touch)')
     expect(closeRule).toContain('height: var(--size-touch)')

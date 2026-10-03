@@ -1,8 +1,9 @@
-import { isResourceGalleryImage } from '../types/ResourceGallery'
+import { galleryOwnerId, isResourceGalleryImage } from '../types/ResourceGallery'
 import Dexie from 'dexie'
 import type { AppDatabase } from '../database/AppDatabase'
 import type { VaultService } from '../services/VaultService'
 import {
+  RESOURCE_TYPE,
   normalizeResource,
   toResourceListSummary,
   toResourceSummary,
@@ -18,7 +19,11 @@ import {
   type StoredResource,
   type StoredResourceSummary,
 } from '../types/Vault'
-import type { ResourceStorageAdapter, ResourceMetadataPatch } from './ResourceStorageAdapter'
+import type {
+  ResourceStorageAdapter,
+  ResourceMetadataPatch,
+  ResourceVersionMatchFingerprintCache,
+} from './ResourceStorageAdapter'
 import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 import { readNativeResourceObject } from './NativeResourceFileMirror'
 import {
@@ -32,6 +37,7 @@ import {
 const SUMMARY_READ_BATCH_SIZE = 250
 
 const LIST_SUMMARY_INDEX_SETTING_ID = 'index.resourceListSummaries.v20'
+const VERSION_MATCH_FINGERPRINT_CACHE_SETTING_ID = 'cache.resourceVersionMatchFingerprints.v1'
 
 const THUMBNAIL_ASSET_MIGRATION_SETTING_ID = 'migration.resourceThumbnails.asset.v23'
 
@@ -83,6 +89,28 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     this.database = database
     this.vault = vault
     this.assets = assets
+  }
+
+  async getVersionMatchFingerprintCache(): Promise<
+    ResourceVersionMatchFingerprintCache | undefined
+  > {
+    const setting = await this.database.settings.get(VERSION_MATCH_FINGERPRINT_CACHE_SETTING_ID)
+    const value = setting?.value as ResourceVersionMatchFingerprintCache | undefined
+    return value?.schemaVersion === 1 && value.resources && value.versions ? value : undefined
+  }
+
+  async setVersionMatchFingerprintCache(
+    cache: ResourceVersionMatchFingerprintCache,
+  ): Promise<void> {
+    await this.database.settings.put({
+      id: VERSION_MATCH_FINGERPRINT_CACHE_SETTING_ID,
+      value: cache,
+      updatedAt: Date.now(),
+    })
+  }
+
+  async clearVersionMatchFingerprintCache(): Promise<void> {
+    await this.database.settings.delete(VERSION_MATCH_FINGERPRINT_CACHE_SETTING_ID)
   }
 
   repairThumbnailAssets(): Promise<number> {
@@ -536,6 +564,58 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     }
     resources.sort((left, right) => right.updatedAt - left.updatedAt)
     return resources
+  }
+
+  async listGalleryListSummaries(
+    ownerId: string,
+    includeSameType = false,
+  ): Promise<ResourceListSummary[]> {
+    // Vault encrypts type and ownership. Keep its existing decode path rather than
+    // publishing those private fields in a new plaintext index.
+    if (this.vault?.isEnabled()) {
+      const summaries = await this.listResourceListSummaries()
+      const owner = summaries.find((r) => r.id === ownerId && !isResourceGalleryImage(r))
+      const ownerIds = includeSameType
+        ? new Set(
+            summaries
+              .filter((r) => owner && r.type === owner.type && !isResourceGalleryImage(r))
+              .map((r) => r.id),
+          )
+        : new Set([ownerId])
+      return summaries.filter((r) => isResourceGalleryImage(r) && ownerIds.has(galleryOwnerId(r)))
+    }
+
+    return this.database.transaction('r', this.database.resourceSummaries, async () => {
+      const table = this.database.resourceSummaries
+      let ownerIds = new Set([ownerId])
+      if (includeSameType) {
+        const owner = await table.get(ownerId)
+        if (!owner || isEncryptedResourceSummary(owner) || isResourceGalleryImage(owner)) return []
+        const owners = table.where('type').equals(owner.type)
+        // Gallery images are OTHER and encrypted rows have no type index. For
+        // ordinary types keep this a keys-only query, avoiding their heavy metadata.
+        ownerIds = new Set(
+          await (
+            owner.type === RESOURCE_TYPE.OTHER
+              ? owners.filter((r) => !isEncryptedResourceSummary(r) && !isResourceGalleryImage(r))
+              : owners
+          ).primaryKeys(),
+        )
+      }
+      // All gallery attachments are OTHER. Read only that existing type index and
+      // retain matching rows; no global list repair, binary hydration or cache.
+      const stored = await table
+        .where('type')
+        .equals(RESOURCE_TYPE.OTHER)
+        .filter(
+          (r) =>
+            !isEncryptedResourceSummary(r) &&
+            isResourceGalleryImage(r) &&
+            ownerIds.has(galleryOwnerId(r)),
+        )
+        .toArray()
+      return stored.map((r) => toResourceListSummary(r as ResourceSummary))
+    })
   }
 
   private async repairResourceListSummaryIndex(force = false): Promise<void> {

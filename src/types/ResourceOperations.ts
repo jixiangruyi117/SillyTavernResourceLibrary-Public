@@ -1,4 +1,5 @@
 import { type Resource } from './Resource'
+import type { ImportResult } from './Import'
 
 export interface ImportOptions {
   saveChatCharacter?: boolean
@@ -6,12 +7,21 @@ export interface ImportOptions {
   chatCharacterBindings?: Record<string, string | null>
   extractCharacterAssets?: boolean
   detectVersions?: boolean
+  skipVersionComparison?: boolean
+  persistVersionMatchCache?: boolean
+  sameNameVersionCandidates?: boolean
   onProgress?: (progress: {
     completed: number
     total: number
     fileName: string
     phase: string
   }) => void
+  signal?: AbortSignal
+  completedContentHashes?: string[]
+  originalContentHashes?: ReadonlyMap<File, string>
+  completedImportAliases?: Readonly<Record<string, string>>
+  discardCompletedResults?: boolean
+  onItemComplete?: (result: ImportResult) => void | Promise<void>
 }
 
 export interface PreparedFileImportOptions {

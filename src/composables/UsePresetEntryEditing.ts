@@ -6,8 +6,10 @@ import { type ResourceSummary } from '../types/Resource'
 import {
   applyEntryEdit,
   type AssemblyEntry,
+  createPresetPromptSlotMacro,
   type PresetFavoriteSnapshot,
   type PresetSegmentView,
+  readPresetPromptSlots,
 } from '../utils/PresetStitcher'
 
 interface PresetEntryEditingContext {
@@ -30,6 +32,10 @@ interface PresetEntryEditingContext {
   variableName: Ref<string, string>
   variableValue: Ref<string, string>
   variableWriterOpen: Ref<boolean, boolean>
+  slotName: Ref<string, string>
+  slotId: Ref<string, string>
+  slotWriterError: Ref<string, string>
+  slotWriterOpen: Ref<boolean, boolean>
   unreadWrittenVariables: ComputedRef<{ scope: 'chat' | 'global'; name: string; label: string }[]>
   notice: Ref<string, string>
   errorMessage: Ref<string, string>
@@ -38,9 +44,16 @@ interface PresetEntryEditingContext {
   favorites: Ref<PresetFavoriteSnapshot[]>
   sourceSummary: Ref<ResourceSummary | undefined>
   buildCurrentSourceEntry: (identifier: string) => AssemblyEntry | undefined
+  insertNewEntry: (value: { name: string; role: string; content: string }) => void
 }
 
 export function usePresetEntryEditing(getContext: () => PresetEntryEditingContext) {
+  function beginNewEntry(): void {
+    const context = getContext()
+    context.editor.value = { scope: 'new', key: '', name: '', role: 'system', content: '' }
+    context.editorSelection.value = { start: 0, end: 0 }
+  }
+
   function beginSourceEdit(segment: PresetSegmentView): void {
     const context = getContext()
 
@@ -124,6 +137,45 @@ export function usePresetEntryEditing(getContext: () => PresetEntryEditingContex
     context.variableWriterOpen.value = true
   }
 
+  function openSlotWriter(event?: Event): void {
+    const context = getContext()
+    const editorPanel = (event?.currentTarget as HTMLElement | undefined)?.closest('.stitch-editor')
+    const textarea = editorPanel?.querySelector<HTMLTextAreaElement>('textarea')
+    if (textarea) {
+      context.editorSelection.value = {
+        start: textarea.selectionStart ?? textarea.value.length,
+        end: textarea.selectionEnd ?? textarea.value.length,
+      }
+    }
+    const selectedText = textarea
+      ? textarea.value.slice(context.editorSelection.value.start, context.editorSelection.value.end)
+      : ''
+    const selectedSlot = readPresetPromptSlots(selectedText)[0]
+    context.slotId.value = selectedSlot?.id ?? ''
+    context.slotName.value = selectedSlot?.label ?? ''
+    context.slotWriterError.value = ''
+    context.slotWriterOpen.value = true
+  }
+
+  function insertPromptSlot(event?: Event): void {
+    const context = getContext()
+    const panel = (event?.currentTarget as HTMLElement | undefined)?.closest('.stitch-slot-writer')
+    const name = (
+      panel?.querySelector<HTMLInputElement>('input')?.value ?? context.slotName.value
+    ).trim()
+    try {
+      const macro = createPresetPromptSlotMacro(name, context.slotId.value || crypto.randomUUID())
+      const editor = context.editor.value
+      if (editor?.scope === 'new' && !editor.name.trim()) editor.name = name
+      context.slotWriterOpen.value = false
+      context.slotWriterError.value = ''
+      context.slotId.value = ''
+      insertVariable(macro)
+    } catch (error) {
+      context.slotWriterError.value = error instanceof Error ? error.message : '占位名无效'
+    }
+  }
+
   function insertVariableWrite(event?: Event): void {
     const context = getContext()
 
@@ -188,7 +240,9 @@ export function usePresetEntryEditing(getContext: () => PresetEntryEditingContex
       context.errorMessage.value = '条目名称不能为空'
       return
     }
-    if (value.scope === 'target') {
+    if (value.scope === 'new') {
+      context.insertNewEntry({ name: value.name.trim(), role: value.role, content: value.content })
+    } else if (value.scope === 'target') {
       const entry = context.assembly.value.find((item) => item.key === value.key)
       if (entry) applyEntryEdit(entry, value)
     } else if (value.scope === 'source') {
@@ -297,11 +351,14 @@ export function usePresetEntryEditing(getContext: () => PresetEntryEditingContex
   }
   return {
     beginSourceEdit,
+    beginNewEntry,
     beginTargetEdit,
     beginFavoriteEdit,
     rememberEditorSelection,
     insertVariable,
     openVariableWriter,
+    openSlotWriter,
+    insertPromptSlot,
     insertVariableWrite,
     insertUnreadWrittenVariable,
     copyEntryContent,

@@ -20,6 +20,10 @@ public class NativeImportKeepAlivePlugin extends Plugin {
         intent.putExtra(NativeImportKeepAliveService.EXTRA_TITLE, call.getString("title", "SRL 正在导入资源"));
         intent.putExtra(NativeImportKeepAliveService.EXTRA_PHASE, call.getString("phase", "正在处理所选资源"));
         intent.putExtra(NativeImportKeepAliveService.EXTRA_PROGRESS, call.getInt("progress", -1));
+        intent.putExtra(
+            NativeImportKeepAliveService.EXTRA_DESTINATION,
+            "resume".equals(call.getString("destination")) ? "resume" : "import"
+        );
         try {
             ContextCompat.startForegroundService(getContext(), intent);
             call.resolve(new JSObject());
@@ -58,7 +62,8 @@ public class NativeImportKeepAlivePlugin extends Plugin {
         NativeImportKeepAliveService.notifyAwaitingChoice(
             getContext(),
             call.getString("title", "备份预检已完成"),
-            call.getString("message", "请返回应用选择恢复方式")
+            call.getString("message", "请返回应用选择恢复方式"),
+            call.getString("destination", "restore")
         );
         call.resolve(new JSObject());
     }

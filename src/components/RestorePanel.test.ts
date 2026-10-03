@@ -63,6 +63,22 @@ it('shows live restore progress inside the open panel without another floating n
   }
 })
 
+it('offers a manual stop and cleanup action during backup recognition', async () => {
+  const wrapper = mount(RestorePanel, {
+    props: { busy: true, preflightBusy: true },
+    global: { stubs: { teleport: true } },
+  })
+  try {
+    const stop = wrapper.findAll('button').find((button) => button.text() === '停止识别并清理')!
+    expect(stop.exists()).toBe(true)
+    await stop.trigger('click')
+    expect(wrapper.emitted('stop')).toHaveLength(1)
+    expect(wrapper.text()).toContain('正在停止并清理…')
+  } finally {
+    wrapper.unmount()
+  }
+})
+
 it('allows portable-data merge and full replacement when all originals already exist', async () => {
   const prepared = {
     resources: [],
@@ -89,6 +105,8 @@ it('allows portable-data merge and full replacement when all originals already e
     const confirm = wrapper.findAll('button').find((button) => button.text() === '确认新增')!
     expect(confirm.attributes('disabled')).toBeUndefined()
     expect(wrapper.get('input[value="replace"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('成功后无法自动撤销，建议先导出当前库')
+    expect(wrapper.text()).not.toContain('创建完整快照')
     await confirm.trigger('click')
     expect(wrapper.emitted('confirm')).toEqual([['merge', [], false]])
     await wrapper.get('input[value="replace"]').setValue(true)

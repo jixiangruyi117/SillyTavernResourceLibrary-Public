@@ -28,6 +28,11 @@ export interface NativeRecoveryInput {
   fileName?: string
 }
 
+export interface LegacyLibraryHistoryCleanup {
+  records: Array<{ id: string; size: number; createdAt: number }>
+  bytes: number
+}
+
 export interface RecoveredNativeResource {
   link: NativeResourceLinkRecord
   outcome: 'created' | 'updated' | 'existing'
@@ -615,6 +620,44 @@ export class IndexedDbResourceHealthStorage {
   }
 
   /** Logical payload bytes only. These are not disk usage and must not be added to native totals. */
+  async legacyLibraryHistoryCleanup(): Promise<LegacyLibraryHistoryCleanup> {
+    const records: LegacyLibraryHistoryCleanup['records'] = []
+    let bytes = 0
+    // Read metadata one record at a time; never decrypt or materialize a ZIP.
+    await this.database.backupRecords
+      .where('adapter')
+      .equals('local-history')
+      .each((record) => {
+        const size = record.blob?.size ?? record.size ?? 0
+        records.push({ id: record.id, size, createdAt: record.createdAt })
+        bytes += size
+      })
+    records.sort((left, right) => left.id.localeCompare(right.id))
+    return { records, bytes }
+  }
+
+  async clearLegacyLibraryHistory(plan: LegacyLibraryHistoryCleanup): Promise<number> {
+    return this.database.transaction(
+      'rw',
+      this.database.backupRecords,
+      this.database.settings,
+      async () => {
+        // Vault migration reads ZIPs outside its commit transaction. Its durable checkpoint
+        // must be checked inside this transaction to prevent a converted record being put back.
+        if ((await this.database.settings.get('local-vault-migration'))?.value) {
+          throw new Error('保险库转换尚未完成，请完成转换后再清理旧整库快照')
+        }
+        const current = await this.legacyLibraryHistoryCleanup()
+        if (JSON.stringify(current) !== JSON.stringify(plan)) {
+          throw new Error('旧整库快照范围已变化，请重新确认清理')
+        }
+        await this.database.backupRecords.bulkDelete(current.records.map(({ id }) => id))
+        await this.database.settings.delete('history.snapshotLimit')
+        return current.bytes
+      },
+    )
+  }
+
   async storageAccounting(): Promise<ResourceStorageAccounting> {
     const result: ResourceStorageAccounting = {
       currentOriginalBytes: 0,

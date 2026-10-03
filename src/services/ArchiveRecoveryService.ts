@@ -5,12 +5,12 @@ import type { PreparedRestore, RestoreMode, ArchiveOptions } from '../types/Back
 import type { ArchiveSource } from './ExportService'
 import type { ResourceSummary, Category } from '../types/Resource'
 import { hashBlob } from './HashService'
+import { hashNativeFile, nativeFileSize } from '../core/NativeFileSource'
 
 export interface RestoreRecoveryPayload {
   source?: { uri: string; name: string; size: number; hash: string }
   prepared?: PreparedRestore
   mode?: RestoreMode
-  snapshot?: boolean
   baseline?: string
   vaultEnabled: boolean
   completed: string[]
@@ -84,6 +84,7 @@ export class ArchiveRecoveryService {
   async createRestore(
     file: File | undefined,
     vaultEnabled: boolean,
+    signal?: AbortSignal,
   ): Promise<RestoreRecoveryTask | undefined> {
     if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') return undefined
     const uri = file && nativeFileSource(file)
@@ -98,7 +99,12 @@ export class ArchiveRecoveryService {
         vaultEnabled,
         completed: [],
         source: file
-          ? { uri: uri ?? '', name: file.name, size: file.size, hash: await hashBlob(file) }
+          ? {
+              uri: uri ?? '',
+              name: file.name,
+              size: nativeFileSize(file),
+              hash: (await hashNativeFile(file, signal)) ?? (await hashBlob(file)),
+            }
           : undefined,
       },
     }
@@ -122,25 +128,25 @@ export class ArchiveRecoveryService {
       }
       await this.store.save(task)
     }
-    const response = await fetch(Capacitor.convertFileSrc(source.uri), { cache: 'no-store' })
-    if (!response.ok) throw new Error('备份原件已不可读取，请重新选择原文件')
-    const file = rememberNativeFile(new File([await response.blob()], source.name), source.uri)
-    if (file.size !== source.size || (await hashBlob(file)) !== source.hash)
+    // Recovery only needs a stable native source handle here. Do not pull a
+    // multi-GB retained archive back into WebView memory just to recreate File.
+    const file = rememberNativeFile(new File([], source.name), source.uri, source.size)
+    if (((await hashNativeFile(file)) ?? (await hashBlob(file))) !== source.hash)
       throw new Error('备份原件已变化，不能继续旧任务')
     return file
   }
 
-  async ensureSource(task: RestoreRecoveryTask, file: File): Promise<void> {
+  async ensureSource(task: RestoreRecoveryTask, file: File, signal?: AbortSignal): Promise<void> {
     if (task.payload.source?.uri) return
     if (
       !task.payload.source ||
-      file.size !== task.payload.source.size ||
-      (await hashBlob(file)) !== task.payload.source.hash
+      nativeFileSize(file) !== task.payload.source.size ||
+      ((await hashNativeFile(file, signal)) ?? (await hashBlob(file))) !== task.payload.source.hash
     )
       throw new Error('所选文件与原恢复任务不一致')
     task.phase = '保留备份原件'
     await this.store.save(task)
-    const uri = await this.store.retainSource(task.id, file, task.payload.source.hash)
+    const uri = await this.store.retainSource(task.id, file, task.payload.source.hash, signal)
     task.payload.source.uri = uri
     rememberNativeFile(file, uri)
     task.phase = '预检'
@@ -149,7 +155,11 @@ export class ArchiveRecoveryService {
 
   async reselectSource(task: RestoreRecoveryTask, file: File): Promise<void> {
     const source = task.payload.source
-    if (!source || file.size !== source.size || (await hashBlob(file)) !== source.hash)
+    if (
+      !source ||
+      nativeFileSize(file) !== source.size ||
+      ((await hashNativeFile(file)) ?? (await hashBlob(file))) !== source.hash
+    )
       throw new Error('所选文件与原恢复任务不一致')
     source.uri = nativeFileSource(file) ?? ''
     await this.store.save(task)

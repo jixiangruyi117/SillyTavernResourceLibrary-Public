@@ -23,6 +23,18 @@ export interface OfficialAppPackage {
   schemaVersion: 1
   id: OfficialAppId
   shellVersion: string
+  /** Packages own their bytes, but components must share the shell's Vue runtime. */
+  assetMode?: 'host' | 'self-contained'
+  /** Singleton runtime chunks that must also belong to the currently running shell. */
+  hostFiles?: OfficialAppFile[]
+  /** Content-addressed Vue entry used by both the APP and the shell renderer. */
+  runtimeEntry?: string
+  /** Bump only when installed APPs must be rebuilt for an incompatible host API change. */
+  hostApiVersion?: number
+  /** Integrity fingerprint of APP-owned files; this does not determine update notifications. */
+  appContentHash?: string
+  /** Explicit update revision; bump only when this APP's behavior or owned resources change. */
+  appContentRevision?: number
   entry: string
   styles: string[]
   files: OfficialAppFile[]
@@ -33,6 +45,13 @@ export interface InstalledOfficialApp extends OfficialAppPackage {
   pendingCleanupFiles?: OfficialAppFile[]
 }
 export interface OfficialAppDownload {
+  runtimeEntry?: string
+  shellVersion: string
+  hostApiVersion: number
+  assetMode?: 'host' | 'self-contained'
+  appContentHash: string
+  appContentRevision: number
+  hostFiles: OfficialAppFile[]
   url: string
   sha256: string
   downloadBytes: number
@@ -41,8 +60,22 @@ export interface OfficialAppDownload {
 }
 export interface OfficialAppCatalog {
   schemaVersion: 1
+  hostApiVersion: number
+  apps: Record<OfficialAppId, OfficialAppDownload[]>
+}
+/** Build-specific catalog embedded in packaged APKs; each APP has one package, not a list. */
+export interface OfficialAppBuildCatalog {
+  schemaVersion: 1
   shellVersion: string
-  apps: Record<OfficialAppId, OfficialAppDownload>
+  hostApiVersion: number
+  apps: Partial<Record<OfficialAppId, OfficialAppDownload>>
+}
+export interface OfficialAppUpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  latestShellVersion: string
+  requiresHostUpdate: boolean
+  requiresAssetRepair?: boolean
 }
 export const OFFICIAL_APP_ASSET_CACHE = 'srl-official-app-assets-v1'
 

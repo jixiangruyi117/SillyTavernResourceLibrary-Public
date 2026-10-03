@@ -7,6 +7,14 @@ let policy: PreviewPolicy = { allowRemoteResources: false, allowScripts: false }
 
 const storage = {
   getLayoutMode: vi.fn(() => 'grid' as const),
+  getMobileCardOrientation: vi.fn(() => 'mixed' as const),
+  setMobileCardOrientation: vi.fn((value: 'mixed' | 'portrait' | 'landscape') => value),
+  getMobileCardFitMode: vi.fn(() => 'contain' as const),
+  setMobileCardFitMode: vi.fn((value: 'contain' | 'cover') => value),
+  getResourceCardHeightMode: vi.fn(() => 'natural' as const),
+  setResourceCardHeightMode: vi.fn((value: 'natural' | 'uniform') => value),
+  getNoImageResourceCoverMode: vi.fn(() => 'cover' as const),
+  setNoImageResourceCoverMode: vi.fn((value: 'cover' | 'character-only') => value),
   getUiFontScale: vi.fn(() => 'standard' as const),
   getPreviewPolicy: vi.fn(() => policy),
   setPreviewPolicy: vi.fn((next: PreviewPolicy) => {
@@ -23,6 +31,14 @@ const storage = {
   getHideChatDisplayRegex: vi.fn(() => true),
   getBlurThumbnails: vi.fn(() => true),
   setBlurThumbnails: vi.fn(),
+  getAutoDownloadDiscordShareLinks: vi.fn(() => false),
+  setAutoDownloadDiscordShareLinks: vi.fn(),
+  getPersistResourceVersionMatchCache: vi.fn(() => false),
+  setPersistResourceVersionMatchCache: vi.fn(),
+  getSkipVersionComparisonOnImport: vi.fn(() => false),
+  getSameNameVersionCandidates: vi.fn(() => false),
+  setSameNameVersionCandidates: vi.fn(),
+  setSkipVersionComparisonOnImport: vi.fn(),
   setLayoutMode: vi.fn(),
   setUiFontScale: vi.fn((value: 'small' | 'standard' | 'large') => value),
 }

@@ -11,7 +11,7 @@ import {
   includeResourceGalleryIds,
   normalizeGalleryUrl,
 } from '../types/ResourceGallery'
-import { ResourceGalleryService } from './ResourceGalleryService'
+import { moveResourceGallery, ResourceGalleryService } from './ResourceGalleryService'
 import { createImageThumbnail } from '../utils/createImageThumbnail'
 import { VaultService } from './VaultService'
 import { hashBlob } from './HashService'
@@ -41,8 +41,9 @@ afterEach(async () => {
     await db.delete()
   }
 })
-async function fixture() {
+async function fixture(onDatabase?: (db: AppDatabase) => void) {
   const db = new AppDatabase(`gallery-${crypto.randomUUID()}`)
+  onDatabase?.(db)
   databases.push(db)
   const storage = new IndexedDbResourceStorage(db)
   const gallery = new ResourceGalleryService(
@@ -89,6 +90,137 @@ async function fixture() {
 }
 const file = () => new File(['pixels'], '同人图.png', { type: 'image/png' })
 describe('resource gallery lifecycle and backup', () => {
+  it('queries only the required types in a mixed library and keeps gallery pages fresh', async () => {
+    const keyQueries: Array<{ values: boolean | undefined; index: string | null; type: unknown }> =
+      []
+    const cursorTypes: unknown[] = []
+    const { db, gallery, storage, create } = await fixture((db) => {
+      db.use({
+        stack: 'dbcore',
+        name: 'gallery-query-evidence',
+        create: (core) => ({
+          ...core,
+          table: (name) => {
+            const table = core.table(name)
+            if (name !== 'resourceSummaries') return table
+            return {
+              ...table,
+              query: (request) => {
+                keyQueries.push({
+                  values: request.values,
+                  index: request.query.index.name,
+                  type: request.query.range.lower,
+                })
+                return table.query(request)
+              },
+              openCursor: (request) => {
+                cursorTypes.push(request.query.range.lower)
+                expect(request.query.index.name).toBe('type')
+                return table.openCursor(request)
+              },
+            }
+          },
+        }),
+      })
+    })
+    const owner = await create('card-1', RESOURCE_TYPE.CHARACTER_CARD)
+    await create('card-2', RESOURCE_TYPE.CHARACTER_CARD)
+    await create('theme', RESOURCE_TYPE.BEAUTIFICATION)
+    await storage.saveMany(
+      Array.from({ length: 1_000 }, (_, index) => ({
+        ...owner,
+        id: `unrelated-${index}`,
+        type:
+          index % 4 === 0
+            ? RESOURCE_TYPE.CHARACTER_CARD
+            : index % 2
+              ? RESOURCE_TYPE.CHAT
+              : RESOURCE_TYPE.WORLD_BOOK,
+        metadata: { nested: { body: 'unrelated body'.repeat(200) } },
+      })),
+    )
+    const first = await gallery.addUrl('card-1', 'https://example.com/first.png', false, ['本页'])
+    const second = await gallery.addUrl('card-1', 'https://example.com/second.png', false, ['次页'])
+    await gallery.addUrl('card-2', 'https://example.com/shared.png', false, ['同类型分类'])
+    await gallery.addUrl('theme', 'https://example.com/theme.png', false, ['其它类型分类'])
+
+    const globalList = vi
+      .spyOn(storage, 'listResourceListSummaries')
+      .mockRejectedValue(new Error('全库读取'))
+    const fullSummaries = vi
+      .spyOn(storage, 'listSummaries')
+      .mockRejectedValue(new Error('全库摘要'))
+    const fullResources = vi.spyOn(storage, 'list').mockRejectedValue(new Error('原件读取'))
+    const globalKeys = vi.spyOn(db.resources, 'toCollection')
+    const readIds = new Set<string>()
+    const recordRead = (r: { id: string }) => {
+      readIds.add(r.id)
+      return r
+    }
+    db.resourceSummaries.hook('reading', recordRead)
+    keyQueries.length = 0
+    cursorTypes.length = 0
+    const page = await gallery.list('card-1', { pageSize: 1, page: 2, sort: 'name' })
+    expect(page.total).toBe(2)
+    expect(page.items).toHaveLength(1)
+    expect(page.availableCategories).toEqual(['本页', '次页', '同类型分类'])
+    expect([...readIds].some((id) => id.startsWith('unrelated-'))).toBe(false)
+    expect(readIds.has(first.id)).toBe(true)
+    expect(readIds.has(second.id)).toBe(true)
+    expect(await db.resourceSummaries.count()).toBe(1_009)
+    expect(readIds.size).toBeLessThan(10)
+    expect(keyQueries).toContainEqual({
+      values: false,
+      index: 'type',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+    })
+    expect(cursorTypes).toEqual([RESOURCE_TYPE.OTHER])
+    expect(globalList).not.toHaveBeenCalled()
+    expect(fullSummaries).not.toHaveBeenCalled()
+    expect(fullResources).not.toHaveBeenCalled()
+    expect(globalKeys).not.toHaveBeenCalled()
+    db.resourceSummaries.hook('reading').unsubscribe(recordRead)
+
+    await gallery.edit('card-2', (await gallery.list('card-2')).items[0]!.id, {
+      name: '共享图片',
+      description: '',
+      tags: ['刚修改的分类'],
+    })
+    expect((await gallery.list('card-1')).availableCategories).toContain('刚修改的分类')
+    await gallery.remove('card-1', [first.id])
+    expect((await gallery.list('card-1', { pageSize: 1, page: 2 })).page).toBe(1)
+    await moveResourceGallery(storage, 'card-1', 'card-2')
+    expect((await gallery.list('card-1')).total).toBe(0)
+    expect((await gallery.list('card-2')).items.map((r) => r.id)).toContain(second.id)
+    await storage.updateMetadata('card-2', { type: RESOURCE_TYPE.BEAUTIFICATION })
+    expect((await gallery.list('card-1')).availableCategories).not.toContain('刚修改的分类')
+    expect((await gallery.list('theme')).availableCategories).toContain('刚修改的分类')
+    await storage.delete('card-2')
+    expect((await gallery.list('theme')).availableCategories).not.toContain('刚修改的分类')
+    expect(globalList).not.toHaveBeenCalled()
+  })
+
+  it('keeps the existing summary fallback for adapters without the indexed gallery query', async () => {
+    const { gallery, storage } = await fixture()
+    const image = await gallery.addUrl('a', 'https://example.com/fallback.png', false, ['分类'])
+    Object.defineProperty(storage, 'listGalleryListSummaries', { value: undefined })
+    const fallback = vi.spyOn(storage, 'listResourceListSummaries')
+    expect((await gallery.list('a')).items.map((r) => r.id)).toEqual([image.id])
+    await moveResourceGallery(storage, 'a', 'b')
+    expect((await gallery.list('b')).items.map((r) => r.id)).toEqual([image.id])
+    expect(fallback).toHaveBeenCalled()
+  })
+
+  it('reads the maintained gallery summaries even when the separate library list index needs repair', async () => {
+    const { db, gallery, storage } = await fixture()
+    const image = await gallery.addUrl('a', 'https://example.com/repair.png', false)
+    await db.resourceListSummaries.clear()
+    expect((await gallery.list('a')).items.map((r) => r.id)).toEqual([image.id])
+    expect(await db.resourceListSummaries.count()).toBe(0)
+    expect((await storage.listResourceListSummaries()).map((r) => r.id)).toContain(image.id)
+    expect(await db.resourceListSummaries.count()).toBe(3)
+  })
+
   it('deleting a shared category retains images, unrelated categories, originals and covers', async () => {
     const { gallery, storage } = await fixture()
     const a = await gallery.addFile('a', file(), ['误填分类', '同人图'])
@@ -306,7 +438,12 @@ describe('resource gallery lifecycle and backup', () => {
     vault.lock()
     await expect(gallery.list('a')).rejects.toThrow()
     await vault.unlock('gallery-test-password')
+    const encryptedFallback = vi.spyOn(encryptedStorage, 'listResourceListSummaries')
     expect((await gallery.list('a')).items[0]?.tags).toEqual(['私人截图'])
+    expect(encryptedFallback).toHaveBeenCalled()
+    const storedSummary = await db.resourceSummaries.get(image.id)
+    expect(storedSummary).not.toHaveProperty('type')
+    expect(storedSummary).not.toHaveProperty('metadata')
     expect(await (await gallery.getImage('a', image.id)).originalBlob.text()).toBe('pixels')
   })
   it('restores new gallery images onto an existing owner and is idempotent on repeated restores', async () => {

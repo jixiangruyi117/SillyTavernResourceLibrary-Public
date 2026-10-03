@@ -46,6 +46,78 @@ export interface AssemblyEntry {
   }
 }
 
+export interface PresetPromptSlot {
+  id: string
+  label: string
+}
+
+export interface PresetPromptSlotEntry {
+  identifier: string
+  name: string
+  emptyBehavior: 'hide-entry'
+  slots: PresetPromptSlot[]
+}
+
+export const PRESET_PROMPT_SLOT_SCHEMA_VERSION = 1
+
+/** 酒馆扩展读取的命名占位宏；id 稳定，label 仅用于显示。 */
+export function createPresetPromptSlotMacro(
+  label: string,
+  id: string = crypto.randomUUID(),
+): string {
+  const normalized = label.trim()
+  if (!normalized || normalized.length > 80 || /[{}:\r\n]/u.test(normalized))
+    throw new Error('占位名需为 1–80 个字符，且不能包含花括号、冒号或换行')
+  return `{{srl_slot::${id}::${normalized}}}`
+}
+
+export function readPresetPromptSlots(content: string): PresetPromptSlot[] {
+  const slots = new Map<string, PresetPromptSlot>()
+  const pattern = /\{\{\s*srl_slot::([a-z\d-]{8,64})::([^:{}\r\n]{1,80})\s*\}\}/giu
+  for (const match of content.matchAll(pattern)) {
+    const id = match[1]?.trim()
+    const label = match[2]?.trim()
+    if (id && label && !slots.has(id)) slots.set(id, { id, label })
+  }
+  return [...slots.values()]
+}
+
+/** Runtime macros are represented as placeholders when reviewing preset content changes. */
+export function renderPromptReviewContent(content: string, label = '', marker = false): string {
+  const markerName = label.toLocaleLowerCase()
+  if (marker && /world.?info|lorebook|world.?book/u.test(markerName)) return '【这是世界书内容】'
+  if (marker && /user.?persona|persona|user.?description|用户人设/u.test(markerName))
+    return '【这是用户人设】'
+  if (
+    marker &&
+    /char.?description|char.?personality|character|description|personality|角色人设|角色描述/u.test(
+      markerName,
+    )
+  )
+    return '【这是角色人设内容】'
+  if (marker && /chat.?history|conversation|message.?history|聊天记录|对话历史/u.test(markerName))
+    return '【这是聊天记录内容】'
+  const withPromptSlots = content.replace(
+    /\{\{\s*srl_slot::[a-z\d-]{8,64}::([^:{}\r\n]{1,80})\s*\}\}/giu,
+    '【填写：$1】',
+  )
+  return withPromptSlots.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (_macro, rawName: string) => {
+    const name = rawName.trim()
+    const normalized = name.toLocaleLowerCase()
+    if (/world.?info|lorebook|world.?book|wi::/u.test(normalized)) return '【这是世界书内容】'
+    if (/persona|user.?description|user.?persona/u.test(normalized)) return '【这是用户人设】'
+    if (
+      /char.?description|char.?personality|description|personality|scenario|mes.?examples/u.test(
+        normalized,
+      )
+    )
+      return '【这是角色人设内容】'
+    if (/^char$/u.test(normalized)) return '【角色名】'
+    if (/^user$/u.test(normalized)) return '【用户名】'
+    return `【运行时变量：${name}】`
+  })
+}
+
 export interface PresetFavoriteSnapshot {
   id: string
   sourceResourceId?: string
@@ -112,17 +184,15 @@ export interface StitchOutput {
 }
 
 export interface StitchReviewItem {
-  kind: 'add' | 'edit' | 'move' | 'toggle' | 'regex'
+  kind: 'add' | 'remove' | 'edit' | 'regex'
   key: string
   title: string
   detail: string
   sourceName?: string
-  addedLines?: string[]
-  removedLines?: string[]
+  beforeContent?: string
+  afterContent?: string
   addedMacros?: string[]
   removedMacros?: string[]
-  addedVariableReads?: string[]
-  addedVariableWrites?: string[]
 }
 
 export interface PromptVariableReference {
@@ -162,10 +232,6 @@ function subtractOccurrences(values: string[], baseline: string[]): string[] {
     counts.set(value, count - 1)
     return false
   })
-}
-
-function contentLines(value: string): string[] {
-  return value.split(/\r?\n/).filter((line) => line.length > 0)
 }
 
 export function listPromptMacros(content: string): string[] {
@@ -265,44 +331,9 @@ export function listPromptVariables(content: string): PromptVariableReference[] 
 function buildContentDiff(before: string, after: string) {
   const beforeMacros = listPromptMacros(before)
   const afterMacros = listPromptMacros(after)
-  const beforeVariables = listPromptVariables(before)
-  const afterVariables = listPromptVariables(after)
-  const beforeVariableKeys = beforeVariables.map(
-    (item) => `${item.operation}:${item.scope}:${item.name}`,
-  )
-  const addedVariables = subtractOccurrences(
-    afterVariables.map((item) => `${item.operation}:${item.scope}:${item.name}`),
-    beforeVariableKeys,
-  )
   return {
-    addedLines: subtractOccurrences(contentLines(after), contentLines(before)),
-    removedLines: subtractOccurrences(contentLines(before), contentLines(after)),
     addedMacros: subtractOccurrences(afterMacros, beforeMacros),
     removedMacros: subtractOccurrences(beforeMacros, afterMacros),
-    addedVariableReads: unique(
-      addedVariables
-        .filter((item) => item.startsWith('read:'))
-        .map((item) => {
-          const [, scope, ...name] = item.split(':')
-          return variableLabel({
-            scope: scope as 'chat' | 'global',
-            operation: 'read',
-            name: name.join(':'),
-          })
-        }),
-    ),
-    addedVariableWrites: unique(
-      addedVariables
-        .filter((item) => item.startsWith('write:'))
-        .map((item) => {
-          const [, scope, ...name] = item.split(':')
-          return variableLabel({
-            scope: scope as 'chat' | 'global',
-            operation: 'write',
-            name: name.join(':'),
-          })
-        }),
-    ),
   }
 }
 
@@ -745,6 +776,31 @@ export function stitchPreset(
     }
   }
 
+  const promptSlotEntries: PresetPromptSlotEntry[] = assembly.flatMap((entry) => {
+    if (entry.marker) return []
+    const slots = readPresetPromptSlots(entry.content)
+    if (!slots.length) return []
+    return [
+      {
+        identifier: finalIdentifiers.get(entry.key) ?? entry.identifier,
+        name: entry.name,
+        emptyBehavior: 'hide-entry',
+        slots,
+      },
+    ]
+  })
+  const extensions = isRecord(preset.extensions) ? preset.extensions : {}
+  if (promptSlotEntries.length) {
+    extensions.srl_prompt_slots = {
+      schemaVersion: PRESET_PROMPT_SLOT_SCHEMA_VERSION,
+      entries: promptSlotEntries,
+    }
+    preset.extensions = extensions
+  } else if (isRecord(extensions.srl_prompt_slots)) {
+    delete extensions.srl_prompt_slots
+    preset.extensions = extensions
+  }
+
   return { preset, provenance }
 }
 
@@ -765,67 +821,61 @@ export function buildStitchReview(
   assembly.forEach((entry, index) => {
     if (entry.origin === 'pick') {
       const previous = assembly[index - 1]
-      const contentDiff = buildContentDiff('', entry.content)
       items.push({
         kind: 'add',
         key: `add:${entry.key}`,
         title: `新增「${entry.name}」`,
         detail: previous ? `插入在「${previous.name}」之后` : '插入到主预设最前面',
         sourceName: entry.sourceName,
-        ...contentDiff,
+        afterContent: entry.content,
+        ...buildContentDiff('', entry.content),
       })
-      if (
-        entry.name !== entry.original.name ||
-        entry.role !== entry.original.role ||
-        entry.content !== entry.original.content
-      ) {
-        const contentDiff = buildContentDiff(entry.original.content, entry.content)
-        items.push({
-          kind: 'edit',
-          key: `edit:${entry.key}`,
-          title: `修改新增条目「${entry.name}」`,
-          detail: `${entry.original.content.length} 字 → ${entry.content.length} 字`,
-          sourceName: entry.sourceName,
-          ...contentDiff,
-        })
-      }
       return
     }
 
     const oldIndex = originalIndex.get(entry.identifier)
     const newIndex = currentBaseIndex.get(entry.identifier)
-    if (oldIndex !== undefined && newIndex !== undefined && oldIndex !== newIndex) {
-      items.push({
-        kind: 'move',
-        key: `move:${entry.key}`,
-        title: `调整「${entry.name}」顺序`,
-        detail: `主预设内第 ${oldIndex + 1} 位 → 第 ${newIndex + 1} 位`,
-      })
-    }
-    const changedFields = [
-      entry.name !== entry.original.name ? '名称' : '',
-      entry.role !== entry.original.role ? '角色' : '',
-      entry.content !== entry.original.content ? '正文' : '',
-    ].filter(Boolean)
-    if (changedFields.length) {
-      const contentDiff = buildContentDiff(entry.original.content, entry.content)
+    const details: string[] = []
+    const contentChanged = entry.content !== entry.original.content
+    if (entry.name !== entry.original.name)
+      details.push(`名称：${entry.original.name} → ${entry.name}`)
+    if (entry.role !== entry.original.role)
+      details.push(`角色：${entry.original.role || '未标注'} → ${entry.role || '未标注'}`)
+    if (oldIndex !== undefined && newIndex !== undefined && oldIndex !== newIndex)
+      details.push(`顺序：第 ${oldIndex + 1} 位 → 第 ${newIndex + 1} 位`)
+    if (entry.enabled !== entry.original.enabled)
+      details.push(
+        `状态：${entry.original.enabled ? '启用' : '停用'} → ${entry.enabled ? '启用' : '停用'}`,
+      )
+
+    if (details.length || contentChanged) {
       items.push({
         kind: 'edit',
         key: `edit:${entry.key}`,
-        title: `编辑「${entry.name}」`,
-        detail: `${changedFields.join('、')}已修改；正文 ${entry.original.content.length} 字 → ${entry.content.length} 字`,
-        ...contentDiff,
-      })
-    }
-    if (entry.enabled !== entry.original.enabled) {
-      items.push({
-        kind: 'toggle',
-        key: `toggle:${entry.key}`,
-        title: `${entry.enabled ? '启用' : '停用'}「${entry.name}」`,
-        detail: '只改变 prompt_order 启用状态，不删除底板条目',
+        title: `修改「${entry.name}」`,
+        detail: details.join('；'),
+        ...(contentChanged
+          ? {
+              beforeContent: entry.original.content,
+              afterContent: entry.content,
+              ...buildContentDiff(entry.original.content, entry.content),
+            }
+          : {}),
       })
     }
   })
+
+  for (const entry of original) {
+    if (currentBaseIndex.has(entry.identifier)) continue
+    items.push({
+      kind: 'remove',
+      key: `remove:${entry.key}`,
+      title: `删除「${entry.name}」`,
+      detail: '从主预设中移除',
+      beforeContent: entry.content,
+      ...buildContentDiff(entry.content, ''),
+    })
+  }
 
   regexPicks.forEach((pick) => {
     items.push({

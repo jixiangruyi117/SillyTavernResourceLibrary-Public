@@ -69,11 +69,11 @@ function fileMimeType(name: string): string {
     ? 'application/x-ndjson'
     : /\.json$/i.test(name)
       ? 'application/json'
-    : /\.png$/i.test(name)
-      ? 'image/png'
-      : /\.css$/i.test(name)
-        ? 'text/css'
-        : 'text/plain'
+      : /\.png$/i.test(name)
+        ? 'image/png'
+        : /\.css$/i.test(name)
+          ? 'text/css'
+          : 'text/plain'
 }
 
 /** Uses the restore staging owner; files are decoded in bounded chunks and read one at a time. */

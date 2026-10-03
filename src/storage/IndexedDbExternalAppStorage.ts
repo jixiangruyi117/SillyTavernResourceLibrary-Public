@@ -101,9 +101,13 @@ export class IndexedDbExternalAppStorage implements ExternalAppStorageAdapter {
   }
 
   async listDataAppIds(): Promise<string[]> {
-    return (await this.database.externalAppData.orderBy('appId').uniqueKeys()).filter(
-      (key): key is string => typeof key === 'string',
-    )
+    // Some WebKit engines reject nextunique index cursors. A normal key cursor
+    // keeps the same result without materializing APP data bodies.
+    const ids = new Set<string>()
+    await this.database.externalAppData.orderBy('appId').eachKey((key) => {
+      if (typeof key === 'string') ids.add(key)
+    })
+    return [...ids]
   }
 
   async setData(record: ExternalAppDataRecord): Promise<void> {

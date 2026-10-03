@@ -49,7 +49,11 @@ const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
           <circle cx="11" cy="11" r="7"></circle>
           <path d="m16 16 4 4"></path>
         </svg>
-        <select v-model="searchScope" aria-label="搜索范围">
+        <select
+          v-model="searchScope"
+          aria-label="搜索范围"
+          data-assistant-focus="library-search-scope"
+        >
           <option value="name">名称</option>
           <option value="author">作者</option>
           <option value="content">全部内容</option>
@@ -59,6 +63,7 @@ const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
         </span>
         <input
           v-model="searchQuery"
+          data-assistant-focus="library-search"
           type="search"
           enterkeyhint="search"
           :placeholder="
@@ -106,7 +111,7 @@ const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
           <option value="size">文件大小</option>
         </select>
       </label>
-      <span class="toolbar__result">显示 {{ filteredResources.length }} 项</span>
+      <span class="toolbar__result"> 显示 {{ filteredResources.length }} 项 </span>
       <div class="toolbar__actions">
         <button
           class="batch-toggle toolbar__similar-names"

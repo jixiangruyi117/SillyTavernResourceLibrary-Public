@@ -3,7 +3,55 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { BrowserStorageService } from './BrowserStorageService'
 
+it('keeps same-name candidates opt-in and restores them through portable preferences', () => {
+  localStorage.clear()
+  const service = new BrowserStorageService()
+  expect(service.getSameNameVersionCandidates()).toBe(false)
+  service.setSameNameVersionCandidates(true)
+  const preferences = service.exportGeneralPreferences()
+  expect(preferences.sameNameVersionCandidates).toBe(true)
+  localStorage.clear()
+  service.importGeneralPreferences(preferences)
+  expect(new BrowserStorageService().getSameNameVersionCandidates()).toBe(true)
+  service.importGeneralPreferences({ ...preferences, sameNameVersionCandidates: undefined })
+  expect(service.getSameNameVersionCandidates()).toBe(false)
+})
+
 describe('BrowserStorageService cabinet desktop resources', () => {
+  it('keeps Discord direct-link auto-download off by default and portable when enabled', () => {
+    const service = new BrowserStorageService()
+    expect(service.getAutoDownloadDiscordShareLinks()).toBe(false)
+    service.setAutoDownloadDiscordShareLinks(true)
+    const saved = service.exportGeneralPreferences()
+    expect(saved.autoDownloadDiscordShareLinks).toBe(true)
+    localStorage.clear()
+    service.importGeneralPreferences(saved)
+    expect(service.getAutoDownloadDiscordShareLinks()).toBe(true)
+  })
+
+  it('imports older preferences while dropping the retired history retention field on export', () => {
+    const service = new BrowserStorageService()
+    const legacyPreferences = {
+      ...service.exportGeneralPreferences(),
+      historySnapshotLimit: 2,
+      hideChatDisplayRegex: false,
+    }
+    service.importGeneralPreferences(legacyPreferences)
+    expect(service.getHideChatDisplayRegex()).toBe(false)
+    expect(service.exportGeneralPreferences()).not.toHaveProperty('historySnapshotLimit')
+  })
+  it('keeps same-name candidates opt-in and restores them through portable preferences', () => {
+    const service = new BrowserStorageService()
+    expect(service.getSameNameVersionCandidates()).toBe(false)
+    service.setSameNameVersionCandidates(true)
+    const preferences = service.exportGeneralPreferences()
+    expect(preferences.sameNameVersionCandidates).toBe(true)
+    localStorage.clear()
+    service.importGeneralPreferences(preferences)
+    expect(new BrowserStorageService().getSameNameVersionCandidates()).toBe(true)
+    service.importGeneralPreferences({ ...preferences, sameNameVersionCandidates: undefined })
+    expect(service.getSameNameVersionCandidates()).toBe(false)
+  })
   beforeEach(() => {
     localStorage.clear()
     document.cookie = 'srl_project_notice=; Max-Age=0; Path=/'

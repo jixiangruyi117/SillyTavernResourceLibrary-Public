@@ -28,10 +28,11 @@ const plugin = registerPlugin<ArchiveTasksPlugin>('NativeArchive')
 
 /** Native private files, encrypted by the existing Android Keystore owner. */
 export class NativeArchiveTaskStore {
-  async retainSource(id: string, file: File, hash: string): Promise<string> {
+  async retainSource(id: string, file: File, hash: string, signal?: AbortSignal): Promise<string> {
     await plugin.beginArchiveSource({ id })
     let offset = 0
     await transferNativeStream(file, {
+      signal,
       append: async (data) => {
         await plugin.appendArchiveSource({ id, offset, data })
         offset +=

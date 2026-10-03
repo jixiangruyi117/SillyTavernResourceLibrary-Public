@@ -58,7 +58,6 @@ internal fun ResourceLibrary(
     layoutMode: String,
     filtersOpen: Boolean,
     onImport: () -> Unit,
-    onOpenProtection: () -> Unit,
     onOpenAiTagging: (List<String>) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onUpdateResourceDetails: (String, String, String, List<String>) -> Unit,
@@ -91,7 +90,6 @@ internal fun ResourceLibrary(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(onClick = onOpenProtection, modifier = Modifier.weight(1f).height(44.dp)) { Text("数据保护") }
             OutlinedButton(
                 onClick = {
                     batchMode = !batchMode
@@ -339,7 +337,7 @@ private fun ResourceDialog(
     }
     if (confirmDeleteResource) AlertDialog(
         onDismissRequest = { confirmDeleteResource = false }, title = { Text("删除资源") },
-        text = { Text("删除前会自动创建完整快照；资源及其历史版本随后从本机移除。确定删除？") },
+        text = { Text("资源及其历史版本将从本机永久删除，无法自动撤销。建议先导出备份。确定删除？") },
         confirmButton = { TextButton(onClick = { confirmDeleteResource = false; onDeleteResource() }) { Text("删除", color = Color(0xFF9B2C2C)) } },
         dismissButton = { TextButton(onClick = { confirmDeleteResource = false }) { Text("取消") } },
     )
@@ -422,7 +420,7 @@ private fun CategoryManagerDialog(
     )
     deleteTarget?.let { category ->
         AlertDialog(onDismissRequest = { deleteTarget = null }, title = { Text("删除文件夹") },
-            text = { Text("删除前会自动创建完整快照；其中资源会移到“未放入文件夹”。确定删除“${category.name}”？") },
+            text = { Text("其中资源会移到“未放入文件夹”，资源文件不会删除。确定删除“${category.name}”？") },
             confirmButton = { TextButton(onClick = { onDelete(category); deleteTarget = null }) { Text("删除", color = Color(0xFF9B2C2C)) } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } })
     }

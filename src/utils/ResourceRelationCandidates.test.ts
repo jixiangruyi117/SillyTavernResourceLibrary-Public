@@ -27,6 +27,56 @@ function resource(id: string, name: string, relatedResourceIds: string[] = []): 
 }
 
 describe('ResourceRelationCandidates', () => {
+  it('combines resource type with folders without changing selected IDs', () => {
+    const resources = [
+      { ...resource('book', '世界书'), categoryId: 'a' },
+      { ...resource('card', '角色卡'), type: RESOURCE_TYPE.CHARACTER_CARD, categoryId: 'a' },
+      { ...resource('other-card', '未分类角色卡'), type: RESOURCE_TYPE.CHARACTER_CARD },
+    ]
+    const selectedResourceIds = new Set(['book'])
+    expect(
+      filterResourceRelationCandidates(resources, {
+        currentResourceId: 'current',
+        selectedResourceIds,
+        query: '',
+        hideBoundElsewhere: false,
+        categoryId: 'a',
+        resourceType: RESOURCE_TYPE.CHARACTER_CARD,
+      }).map((resource) => resource.id),
+    ).toEqual(['card'])
+    expect([...selectedResourceIds]).toEqual(['book'])
+  })
+  it('filters legacy and multiple folder assignments while keeping selection independent', () => {
+    const resources = [
+      resource('current', '当前'),
+      { ...resource('legacy', '旧分类'), categoryId: 'a' },
+      { ...resource('multi', '多分类'), categoryIds: ['a', 'b'] },
+      resource('none', '未分类'),
+    ]
+    const options = {
+      currentResourceId: 'current',
+      selectedResourceIds: new Set(['multi']),
+      query: '',
+      hideBoundElsewhere: false,
+    }
+    expect(
+      filterResourceRelationCandidates(resources, { ...options, categoryId: 'a' }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['multi', 'legacy'])
+    expect(
+      filterResourceRelationCandidates(resources, { ...options, categoryId: 'b' }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['multi'])
+    expect(
+      filterResourceRelationCandidates(resources, { ...options, categoryId: null }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['none'])
+    expect(options.selectedResourceIds.has('multi')).toBe(true)
+    expect(filterResourceRelationCandidates(resources, options)).toHaveLength(3)
+  })
   it('隐藏已关联到其他资源的候选，但保留当前已选项以便解除关联', () => {
     const resources = [
       resource('current', '当前资源'),

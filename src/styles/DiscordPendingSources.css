@@ -1,7 +1,26 @@
 .discord-pending {
+  color: var(--color-ink);
   margin-top: 26px;
   padding-top: 20px;
-  border-top: 1px solid var(--line-soft, #dbe5e7);
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-pending--inbox {
+  margin-top: 0;
+  padding: 16px 0;
+}
+
+.discord-pending--inbox .discord-pending__header strong {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.discord-pending--inbox .discord-pending__actions button,
+.discord-pending--inbox .discord-pending__actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 12px;
 }
 
 .discord-pending__header,
@@ -24,7 +43,7 @@
 }
 
 .discord-pending__header strong {
-  color: var(--text-primary, #24434e);
+  color: var(--color-ink);
   font-size: 0.88rem;
 }
 
@@ -32,7 +51,7 @@
 .discord-pending__state,
 .discord-pending__summary small,
 .discord-pending__summary > span {
-  color: var(--text-muted, #83969d);
+  color: var(--color-ink-soft);
   font-size: 0.7rem;
 }
 
@@ -48,20 +67,20 @@
   justify-content: center;
   padding: 0 7px;
   border-radius: 999px;
-  background: var(--surface-soft, #edf3f4);
-  color: var(--text-muted, #70858d);
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
   font-size: 0.66rem;
   font-weight: 800;
 }
 
 .discord-pending__list {
   margin-top: 12px;
-  border-top: 1px solid var(--line-soft, #e1e9eb);
+  border-top: 1px solid var(--color-line);
 }
 
 .discord-pending__item {
   padding: 15px 0;
-  border-bottom: 1px solid var(--line-soft, #e1e9eb);
+  border-bottom: 1px solid var(--color-line);
 }
 
 .discord-pending__summary {
@@ -87,7 +106,7 @@
 .discord-pending__summary p {
   max-width: 600px;
   margin: 8px 0 0;
-  color: var(--text-secondary, #5f767e);
+  color: var(--color-ink-soft);
   font-size: 0.74rem;
   line-height: 1.6;
 }
@@ -104,7 +123,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--accent-strong, #496f7c);
+  color: var(--color-accent);
   font-size: 0.7rem;
   font-weight: 800;
   text-decoration: none;
@@ -112,7 +131,7 @@
 }
 
 .discord-pending__actions .discord-pending__delete {
-  color: var(--danger, #a65858);
+  color: var(--color-danger);
 }
 
 .discord-pending__messages {
@@ -120,25 +139,25 @@
   gap: 14px;
   margin-top: 13px;
   padding: 10px 0 2px 14px;
-  border-left: 2px solid var(--accent-soft, #a4bac2);
+  border-left: 2px solid var(--color-accent-soft);
 }
 
 .discord-pending__messages article + article {
   padding-top: 12px;
-  border-top: 1px solid var(--line-soft, #e4ecee);
+  border-top: 1px solid var(--color-line);
 }
 
 .discord-pending__messages header {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  color: var(--text-muted, #789098);
+  color: var(--color-ink-soft);
   font-size: 0.68rem;
 }
 
 .discord-pending__messages p {
   margin: 8px 0 0;
-  color: var(--text-primary, #294750);
+  color: var(--color-ink);
   font-size: 0.76rem;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -146,7 +165,7 @@
 }
 
 .discord-pending__messages .discord-pending__empty-body {
-  color: var(--text-muted, #82959c);
+  color: var(--color-ink-soft);
 }
 
 .discord-pending__attachments {
@@ -158,9 +177,9 @@
 
 .discord-pending__attachments a {
   padding: 4px 7px;
-  border: 1px solid var(--line-soft, #d7e3e5);
+  border: 1px solid var(--color-line);
   border-radius: 6px;
-  color: var(--accent-strong, #496f7c);
+  color: var(--color-accent);
   font-size: 0.68rem;
   text-decoration: none;
 }
@@ -181,52 +200,7 @@
   gap: 9px;
   margin-top: 13px;
   padding: 12px 0 0;
-  border-top: 1px solid var(--line-soft, #e4ecee);
-}
-
-.discord-pending__bind > input {
-  width: 100%;
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid var(--line-soft, #c7d5d8);
-  border-radius: 7px;
-  background: var(--surface, #fbfdfd);
-  color: inherit;
-}
-
-.discord-pending__resources {
-  display: grid;
-  max-height: 210px;
-  overflow: auto;
-}
-
-.discord-pending__resources label {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 44px;
-  padding: 5px 2px;
-  border-bottom: 1px solid var(--line-soft, #e8eff0);
-}
-
-.discord-pending__resources span,
-.discord-pending__resources strong,
-.discord-pending__resources small {
-  min-width: 0;
-  display: block;
-}
-
-.discord-pending__resources strong {
-  font-size: 0.74rem;
-}
-
-.discord-pending__resources small {
-  margin-top: 2px;
-  color: var(--text-muted, #85969c);
-  font-size: 0.66rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-top: 1px solid var(--color-line);
 }
 
 .discord-pending__state {
@@ -240,11 +214,11 @@
 }
 
 .discord-pending__status {
-  color: var(--text-secondary, #627a83);
+  color: var(--color-ink-soft);
 }
 
 .discord-pending__error {
-  color: var(--danger, #a65858);
+  color: var(--color-danger);
 }
 
 @media (max-width: 640px) {

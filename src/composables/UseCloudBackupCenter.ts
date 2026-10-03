@@ -12,6 +12,7 @@ import type { EmitFn } from 'vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { confirmAction } from '../composables/UseConfirmDialog'
 import { cloudBackupService } from '../core/AppContainer'
+import { noticeCenter } from '../core/NoticeCenter'
 import type { ArchivePortableData } from '../types/Backup'
 import type {
   CloudBackupConfig,
@@ -36,6 +37,7 @@ import {
 } from '../services/BackupScopeRegistry'
 import { downloadBlob } from '../utils/LibraryFormatting'
 import { taskCenter } from '../core/TaskCenter'
+import { summarizeRestoreSelection } from '../utils/RestoreIdentity'
 import { requestNativeNotifications } from '../core/NativeSecurity'
 
 export type CloudBackupCenterProps = {
@@ -48,8 +50,9 @@ export type CloudBackupCenterEvents = { back: []; 'library-changed': [] }
 
 export function useCloudBackupCenter(
   emit: EmitFn<CloudBackupCenterEvents>,
-  resources: readonly ResourceSummary[] = [],
+  resources: readonly ResourceSummary[] | (() => readonly ResourceSummary[]) = [],
 ) {
+  const currentResources = () => (typeof resources === 'function' ? resources() : resources)
   const KOOFR_URL = 'https://app.koofr.net/dav/Koofr'
 
   const DEFAULT_SCHEDULE: CloudBackupSchedule = { mode: 'interval', value: 1, unit: 'days' }
@@ -183,8 +186,67 @@ export function useCloudBackupCenter(
       selectedRestoreScopes.value = value.scopeIds
     },
   })
+  const restorePreview = computed(() =>
+    summarizeRestoreSelection(
+      [...currentResources()],
+      (restorePicker.value?.resources ?? []).filter((resource) =>
+        selectedRestoreKeys.value.has(resource.id),
+      ),
+    ),
+  )
+  const pendingRestores = ref<Awaited<ReturnType<typeof cloudBackupService.pendingNativeRestores>>>(
+    [],
+  )
 
   const busyAction = ref('')
+  let disposed = false
+  let nativeStateGeneration = 0
+
+  async function runCloudAction<T>(name: string, run: () => Promise<T>): Promise<T | undefined> {
+    if (busyAction.value) return
+    if (nativeBackupActive.value && name.startsWith('restore:')) {
+      message.value = '后台备份仍在进行，请完成后再恢复。'
+      return
+    }
+    busyAction.value = name
+    try {
+      return await run()
+    } finally {
+      busyAction.value = ''
+    }
+  }
+
+  async function resumePendingRestore(id: string): Promise<void> {
+    if (disposed) {
+      window.dispatchEvent(new CustomEvent('srl:native-deep-link', { detail: { kind: 'backup' } }))
+      return
+    }
+    await runCloudAction('restore:' + id, async () => {
+      try {
+        const records = await cloudBackupService.pendingNativeRestores()
+        if (disposed) return
+        const record = records.find((pending) => pending.id === id && pending.restore)
+        pendingRestores.value = records.filter((pending) => pending.restore)
+        if (!record) {
+          noticeCenter.dismiss('cloud-restore:' + id)
+          message.value = '此恢复任务已完成或已不存在。'
+          return
+        }
+        const count = await cloudBackupService.resumeNativeRestore(
+          record,
+          confirmPortableCredentialImport,
+        )
+        if (!disposed) {
+          emit('library-changed')
+          message.value = '云恢复已继续完成，加入 ' + count + ' 项新资源'
+          pendingRestores.value = pendingRestores.value.filter((pending) => pending.id !== id)
+        }
+        noticeCenter.dismiss('cloud-restore:' + id)
+      } catch (error) {
+        if (!disposed) message.value = error instanceof Error ? error.message : '继续云恢复失败'
+      }
+    })
+  }
 
   const nativeBackupActive = ref(false)
 
@@ -246,7 +308,7 @@ export function useCloudBackupCenter(
   )
 
   function selectionModelForConfig(config: CloudBackupConfig): BackupSelectionTreeState {
-    const defaults = createDefaultBackupSelection(resources, 'cloud')
+    const defaults = createDefaultBackupSelection(currentResources(), 'cloud')
     const configured = config.contentSelection ?? {}
     const scopes = new Set(defaults.scopes)
     const setScope = (id: BackupScopeId, enabled: boolean | undefined, fallback: boolean) => {
@@ -288,7 +350,8 @@ export function useCloudBackupCenter(
     cloudScopeModel.value = next
     const selectedIds = new Set(next.resourceIds)
     const allResourcesSelected =
-      resources.length > 0 && resources.every((resource) => selectedIds.has(resource.id))
+      currentResources().length > 0 &&
+      currentResources().every((resource) => selectedIds.has(resource.id))
     activeConfig.value.contentSelection = {
       ...activeContentSelection.value,
       ...toCloudContentSelection({
@@ -566,7 +629,8 @@ export function useCloudBackupCenter(
   async function createBackup(): Promise<void> {
     if (androidNativeTransport && (await cloudBackupService.hasActiveNativeBackup())) {
       nativeBackupActive.value = true
-      message.value = 'Android 已有同一后台备份任务在继续传输；已恢复前台状态显示，不会重复创建上传任务。'
+      message.value =
+        'Android 已有同一后台备份任务在继续传输；已恢复前台状态显示，不会重复创建上传任务。'
       return
     }
     if (!(await saveConfig(true))) return
@@ -613,7 +677,8 @@ export function useCloudBackupCenter(
   async function cancelNativeBackup(): Promise<void> {
     const result = await cloudBackupService.cancelActiveNativeBackup()
     if (result === 'committing') {
-      message.value = '最终清单已开始提交，任务将完成后再更新状态；为避免产生不完整快照，当前不能撤销此提交。'
+      message.value =
+        '最终清单已开始提交，任务将完成后再更新状态；为避免产生不完整快照，当前不能撤销此提交。'
       return
     }
     if (result !== 'cancelled') return
@@ -622,9 +687,18 @@ export function useCloudBackupCenter(
   }
 
   async function refreshNativeBackupState(): Promise<void> {
-    if (!nativeTransport) return
+    if (!nativeTransport || busyAction.value || disposed) return
+    const generation = ++nativeStateGeneration
     const active = await cloudBackupService.getActiveNativeBackupProgress()
+    if (generation !== nativeStateGeneration || busyAction.value || disposed) return
     nativeBackupActive.value = Boolean(active)
+    if (!active && !busyAction.value) {
+      const restore = await cloudBackupService.getNativeRestoreProgress()
+      if (generation !== nativeStateGeneration || busyAction.value || disposed) return
+      if (restore && ['queued', 'running'].includes(restore.status)) {
+        message.value = `Android 正在继续同一云恢复任务：${restore.completed}/${restore.total}；切回前台不会重新下载已完成的对象。`
+      }
+    }
     if (active) {
       const percent = active.total
         ? Math.min(100, Math.round((active.completed / active.total) * 100))
@@ -646,6 +720,7 @@ export function useCloudBackupCenter(
       return
     }
     await cloudBackupService.reconcileNativeJob()
+    if (generation !== nativeStateGeneration || busyAction.value || disposed) return
     refreshSnapshot()
   }
 
@@ -733,7 +808,7 @@ export function useCloudBackupCenter(
     if (
       !(await confirmAction({
         title: '从云端导入',
-        message: `将从“${item.objectKey}”导入选中的 ${selectedKeys.length} 项资源吗？历史版本会随所属资源一起导入；重复文件会跳过，不会清空现有资源。${activeContentSelection.value.credentials ? '该备份可能包含你明确选择迁移的 API 凭据，恢复后会写入本机受保护存储。' : ''}`,
+        message: `将从“${item.objectKey}”导入选中的 ${selectedKeys.length} 项资源吗？预计新增 ${restorePreview.value.added} 项，已有内容 ${restorePreview.value.skipped} 项；${restorePreview.value.conflicts} 项 ID 冲突将保留两份。历史另行合并，实际以导入结果为准；不会清空现有资源。${activeContentSelection.value.credentials ? '该备份可能包含你明确选择迁移的 API 凭据，恢复后会写入本机受保护存储。' : ''}`,
         confirmLabel: '导入',
       }))
     )
@@ -767,6 +842,7 @@ export function useCloudBackupCenter(
       data.credentials?.imageGeneration?.length ? '生图 API 密钥' : '',
       data.credentials?.imageHosting ? '自建图床 Token' : '',
       data.credentials?.legacyFrontendWorkshopApi?.apiKey ? '旧状态项目专用 API 密钥' : '',
+      data.credentials?.productAssistantApi ? 'AI 助手独立 API 配置与密钥' : '',
       data.credentials?.discordSource?.botToken ? 'Discord Bot Token' : '',
       data.credentials?.cloudBackup && Object.keys(data.credentials.cloudBackup).length
         ? '云备份凭据'
@@ -915,13 +991,42 @@ export function useCloudBackupCenter(
       nativeJobPoll = window.setInterval(() => void refreshNativeBackupState(), 5_000)
     }
     void cloudBackupService.initializeCredentials().then(() => {
+      if (disposed) return
       refreshSnapshot()
       editingCredential.value.github = snapshot.value.credentials.github !== 'valid'
       editingCredential.value.webdav = snapshot.value.credentials.webdav !== 'valid'
+      if (nativeTransport)
+        void cloudBackupService
+          .pendingNativeRestores()
+          .then((records) => {
+            if (disposed) return
+            pendingRestores.value = records.filter((record) => record.restore)
+            for (const record of records) {
+              if (!record.restore) continue
+              noticeCenter.push({
+                id: `cloud-restore:${record.id}`,
+                type: 'warning',
+                persistent: true,
+                message: '上次云恢复尚未完成本机导入',
+                details: record.restore.item.objectKey,
+                actions: [
+                  {
+                    label: '继续导入',
+                    run: () => resumePendingRestore(record.id),
+                  },
+                ],
+              })
+            }
+          })
+          .catch(() => {
+            if (!disposed) message.value = '暂时无法读取云恢复检查点，请保留原备份后重试'
+          })
     })
   })
 
   onUnmounted(() => {
+    disposed = true
+    nativeStateGeneration += 1
     if (clock !== undefined) window.clearInterval(clock)
     if (nativeJobPoll !== undefined) window.clearInterval(nativeJobPoll)
     window.removeEventListener('keydown', handleTutorialKeydown, true)
@@ -934,11 +1039,11 @@ export function useCloudBackupCenter(
     activeProvider,
     selectProvider,
     busyAction,
-    createBackup,
+    createBackup: () => runCloudAction('backup', createBackup),
     nativeTransport,
     nativeBackupActive,
-    cancelNativeBackup,
-    loadBackups,
+    cancelNativeBackup: () => runCloudAction('cancel', cancelNativeBackup),
+    loadBackups: () => runCloudAction('list', loadBackups),
     message,
     lastMetrics,
     metricSpeed,
@@ -946,18 +1051,22 @@ export function useCloudBackupCenter(
     formatMetricBytes,
     excessBackupCount,
     excessBackupBytes,
-    cleanupRetention,
+    cleanupRetention: () => runCloudAction('prune', cleanupRetention),
     activeConfig,
     backups,
     restorePicker,
     selectedRestoreKeys,
     restoreScopeIds,
     restoreScopeModel,
+    restorePreview,
+    pendingRestores,
     restoreResourceCount,
     formatBytes,
-    download,
-    restore,
-    saveConfig,
+    download: (item: CloudBackupItem) =>
+      runCloudAction('download:' + item.id, () => download(item)),
+    restore: (item: CloudBackupItem) => runCloudAction('restore:' + item.id, () => restore(item)),
+    saveConfig: (quiet = false) => runCloudAction('save', () => saveConfig(quiet)),
+    resumePendingRestore,
     github,
     openTutorialPreview,
     editingCredential,
@@ -977,10 +1086,10 @@ export function useCloudBackupCenter(
     setCloudScopeModel,
     communitySourcesEnabled,
     communitySourcesDisabledReason,
-    backupScopeResources: resources,
+    backupScopeResources: computed(() => currentResources()),
     personalBackupSelection,
     backupContentSummary,
-    testConnection,
+    testConnection: () => runCloudAction('test', testConnection),
     tutorialPreview,
     closeTutorialPreview,
   }

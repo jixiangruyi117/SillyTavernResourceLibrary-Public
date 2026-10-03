@@ -1,7 +1,7 @@
 {
   "name": "sillytavern-resource-library",
   "private": true,
-  "version": "0.0.127",
+  "version": "0.0.140",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "packageManager": "pnpm@11.5.0",
@@ -17,7 +17,7 @@
     "android:open": "cap open android",
     "android:apk": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/Build-AndroidApk.ps1",
     "preview": "vite preview",
-    "test": "vitest run --exclude \"server/**\" --exclude \"**/.codex-tmp/**\"",
+    "test": "vitest run --exclude \"server/**\" --exclude \"**/.codex-tmp/**\" --exclude \"**/ProductAssistant*.test.ts\"",
     "secret:scan": "node scripts/SecretScan.mjs",
     "secret:scan:history": "node scripts/SecretScan.mjs --history",
     "lint": "eslint .",

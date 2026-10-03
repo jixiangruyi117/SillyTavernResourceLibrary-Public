@@ -69,7 +69,7 @@ export function usePresetSourceDrag(context: PresetSourceDragContext) {
     if (!state || state.picked) return
     window.clearTimeout(state.timer)
     state.picked = true
-    notice.value = '拖到主预设条目之间，出现高亮后松手'
+    // 浮动拖动提示已说明落点；这里插入页内提示会推移列表，让原落点失效。
     context.onPickup?.()
   }
 

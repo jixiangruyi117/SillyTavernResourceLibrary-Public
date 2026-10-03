@@ -292,8 +292,9 @@ export class RestoreService {
     existingCategories: Category[],
     deferFiles = false,
     onProgress?: (progress: ArchiveStageProgress) => void,
+    signal?: AbortSignal,
   ): Promise<PreparedRestore> {
-    const jobId = await stageArchive(file, this.staging, undefined, onProgress)
+    const jobId = await stageArchive(file, this.staging, undefined, onProgress, signal)
     let retainedStaging = false
     try {
       const manifestEntry = await this.staging.get(jobId, 'manifest.json')

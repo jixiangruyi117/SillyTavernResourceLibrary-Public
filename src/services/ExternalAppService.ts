@@ -18,6 +18,7 @@ import {
   type ExternalAppHealth,
   type InstalledExternalAppSummary,
   type InstalledExternalApp,
+  type RetainedExternalAppData,
 } from '../types/ExternalApp'
 import type { ExternalAppStorageAdapter } from '../storage/ExternalAppStorageAdapter'
 import {
@@ -165,10 +166,54 @@ export class ExternalAppService {
 
   async inspect(input: File | readonly File[]): Promise<ExternalAppPreview> {
     const packageFiles = await filesFromInput(input)
+    return this.preparePreview({
+      ...packageFiles,
+      packageFingerprint: packageFiles.fingerprint ?? (await fingerprintFiles(packageFiles.files)),
+      generatedManifest: !packageFiles.files['manifest.json'],
+    })
+  }
+
+  /** Reuse inspected bytes when changing a quick-import target or HTML entry. */
+  async configurePreview(
+    preview: ExternalAppPreview,
+    options: { updateAppId?: string; entry?: string },
+  ): Promise<ExternalAppPreview> {
+    if (!preview.generatedManifest) throw new Error('带清单的安装包按作者声明的 APP 身份与入口安装')
+    const target = options.updateAppId
+      ? await this.storage.getSummary(options.updateAppId)
+      : undefined
+    if (options.updateAppId && (!target || target.id === CHAT_READER_APP_ID))
+      throw new Error('更新目标不存在或不属于第三方 APP')
+    const entry = options.entry ?? preview.manifest.entry
+    if (!/\.html?$/i.test(entry) || !preview.packageFiles[entry])
+      throw new Error('请选择包内 HTML 入口')
+    return this.preparePreview({
+      files: preview.packageFiles,
+      manifest: { ...preview.manifest, ...(target ? { id: target.id } : {}), entry },
+      sourceKind: preview.sourceKind,
+      packageFingerprint: preview.packageFingerprint,
+      generatedManifest: true,
+    })
+  }
+
+  private async preparePreview(packageFiles: {
+    files: Record<string, Uint8Array>
+    manifest: ExternalAppManifest
+    sourceKind: ExternalAppPreview['sourceKind']
+    packageFingerprint: string
+    generatedManifest: boolean
+  }): Promise<ExternalAppPreview> {
     const previous = await this.storage.getSummary(packageFiles.manifest.id)
     const requestedPermissions = packageFiles.manifest.permissions ?? []
-    const packageFingerprint =
-      packageFiles.fingerprint ?? (await fingerprintFiles(packageFiles.files))
+    const packageFingerprint = packageFiles.packageFingerprint
+    const contentChanged = Boolean(
+      previous &&
+      (previous.packageFingerprint !== packageFingerprint ||
+        previous.manifest.entry !== packageFiles.manifest.entry),
+    )
+    const addedPermissions = requestedPermissions.filter(
+      (permission) => previous && !getGrantedExternalAppPermissions(previous).includes(permission),
+    )
     // Keep only the requested runtime mode, releasing the previous large string on switches.
     let cachedMode: ExternalAppRuntimeMode | undefined
     let cachedHtml = ''
@@ -196,16 +241,24 @@ export class ExternalAppService {
         return runtime(EXTERNAL_APP_RUNTIME_MODE.TRUSTED_COMPATIBLE)
       },
       sourceKind: packageFiles.sourceKind,
+      generatedManifest: packageFiles.generatedManifest,
+      ...(previous
+        ? {
+            previousInstallation: {
+              id: previous.id,
+              name: previous.manifest.name,
+              version: previous.manifest.version,
+              enabled: previous.enabled,
+              runtimeMode: previous.runtimeMode ?? EXTERNAL_APP_RUNTIME_MODE.ISOLATED,
+            },
+          }
+        : {}),
+      contentChanged,
+      addedPermissions,
       packageFingerprint,
       requestedPermissions,
       permissionLevel: getExternalAppPermissionLevel(requestedPermissions),
-      requiresReauthorization: Boolean(
-        previous &&
-        (previous.packageFingerprint !== packageFingerprint ||
-          requestedPermissions.some(
-            (permission) => !getGrantedExternalAppPermissions(previous).includes(permission),
-          )),
-      ),
+      requiresReauthorization: contentChanged || addedPermissions.length > 0,
       compatibility,
       packageBytes: Object.values(packageFiles.files).reduce(
         (total, bytes) => total + bytes.byteLength,
@@ -224,7 +277,13 @@ export class ExternalAppService {
     const manifest = normalizeManifest(preview.manifest)
     const now = Date.now()
     const previous = await this.storage.getSummary(manifest.id)
-    const packageUnchanged = previous?.packageFingerprint === preview.packageFingerprint
+    const packageUnchanged =
+      previous?.packageFingerprint === preview.packageFingerprint &&
+      previous?.manifest.entry === manifest.entry &&
+      (previous?.runtimeMode ?? EXTERNAL_APP_RUNTIME_MODE.ISOLATED) === runtimeMode
+    const allowedPermissions = Array.from(
+      new Set(preview.allowedPermissions ?? preview.requestedPermissions),
+    ).filter((permission) => preview.requestedPermissions.includes(permission))
     const installed: InstalledExternalApp = {
       id: manifest.id,
       // 安装预览会经过 Vue 的响应式状态；写入 IndexedDB 前必须还原为可结构化克隆的普通对象。
@@ -243,15 +302,15 @@ export class ExternalAppService {
             ),
           }
         : {}),
-      ...(preview.iconDataUrl ? { iconDataUrl: preview.iconDataUrl } : {}),
-      allowedPermissions: Array.from(
-        new Set(preview.allowedPermissions ?? preview.requestedPermissions),
-      ),
+      ...(preview.iconDataUrl !== undefined ? { iconDataUrl: preview.iconDataUrl } : {}),
+      allowedPermissions,
       grantedPermissions: [],
       packageFingerprint: preview.packageFingerprint,
       runtimeMode,
       persistentPermissionGrants: packageUnchanged
-        ? (previous?.persistentPermissionGrants ?? [])
+        ? (previous?.persistentPermissionGrants ?? []).filter((permission) =>
+            allowedPermissions.includes(permission),
+          )
         : [],
       permissionAudit: packageUnchanged ? (previous?.permissionAudit ?? []) : [],
       health: {
@@ -342,7 +401,61 @@ export class ExternalAppService {
 
   async setEnabled(id: string, enabled: boolean): Promise<void> {
     if (!(await this.storage.getSummary(id))) throw new Error('未找到该 APP')
-    await this.storage.setEnabled(id, enabled)
+    await this.storage.mutateMetadata(id, (app) => ({
+      enabled,
+      updatedAt: Date.now(),
+      ...(enabled && app.health?.disabledByWatchdog
+        ? { health: { ...app.health, consecutiveFailures: 0, disabledByWatchdog: false } }
+        : {}),
+    }))
+  }
+
+  async setRuntimeMode(id: string, mode: ExternalAppRuntimeMode): Promise<void> {
+    if (!Object.values(EXTERNAL_APP_RUNTIME_MODE).includes(mode)) throw new Error('运行模式无效')
+    const app = await this.storage.get(id)
+    if (!app?.packageFiles) throw new Error('缺少原始文件，请重新导入安装包后切换运行模式')
+    if ((app.runtimeMode ?? EXTERNAL_APP_RUNTIME_MODE.ISOLATED) === mode) return
+    const runtimeHtml = buildRuntimeHtml(app.packageFiles, app.manifest, mode)
+    await this.storage.save({
+      ...app,
+      runtimeHtml,
+      runtimeMode: mode,
+      persistentPermissionGrants: [],
+      permissionAudit: [],
+      updatedAt: Date.now(),
+    })
+  }
+
+  async listRetainedData(): Promise<RetainedExternalAppData[]> {
+    if (!this.storage.listDataAppIds) return []
+    const installed = new Set((await this.storage.list()).map((app) => app.id))
+    const result: RetainedExternalAppData[] = []
+    for (const appId of await this.storage.listDataAppIds()) {
+      if (appId === CHAT_READER_APP_ID || installed.has(appId)) continue
+      const records = await this.storage.listData(appId)
+      result.push({
+        appId,
+        dataEntries: records.length,
+        dataBytes: records.reduce((total, record) => total + byteLength(record.value), 0),
+      })
+    }
+    return result
+  }
+
+  async clearRetainedData(appId: string): Promise<void> {
+    if (appId === CHAT_READER_APP_ID || (await this.storage.getSummary(appId)))
+      throw new Error('请在对应 APP 的管理页清除数据')
+    await this.storage.clearData(appId)
+  }
+
+  async exportData(appId: string): Promise<File> {
+    if (appId === CHAT_READER_APP_ID) throw new Error('请通过读了么备份阅读数据')
+    const records = await this.storage.listData(appId)
+    return new File(
+      [JSON.stringify({ schemaVersion: 1, appId, records }, null, 2)],
+      `${appId}-data.json`,
+      { type: 'application/json' },
+    )
   }
 
   async uninstall(id: string): Promise<void> {
@@ -413,11 +526,16 @@ export class ExternalAppService {
   async exportPackage(appId: string): Promise<File> {
     const app = await this.storage.get(appId)
     if (!app) throw new Error('APP 不存在或已卸载')
-    return this.packageFile(app.manifest, app.packageFiles, app.runtimeHtml)
+    return this.packageFile(app.manifest, app.packageFiles, app.runtimeHtml, app.iconDataUrl)
   }
 
   async exportPreviewPackage(preview: ExternalAppPreview): Promise<File> {
-    return this.packageFile(preview.manifest, preview.packageFiles, preview.runtimeHtml)
+    return this.packageFile(
+      preview.manifest,
+      preview.packageFiles,
+      preview.runtimeHtml,
+      preview.iconDataUrl,
+    )
   }
 
   createTemplatePackage(): File {
@@ -460,10 +578,35 @@ export class ExternalAppService {
     manifestValue: ExternalAppManifest,
     packageFiles: Record<string, Uint8Array> | undefined,
     fallbackHtml: string,
+    presentationIcon?: string,
   ): File {
-    const manifest = JSON.stringify(manifestValue, null, 2)
+    const exportedManifest = { ...manifestValue }
+    const iconFiles: Record<string, Uint8Array> = {}
+    if (presentationIcon === '') delete exportedManifest.icon
+    else if (
+      presentationIcon &&
+      presentationIcon !== iconDataUrl(packageFiles ?? {}, manifestValue)
+    ) {
+      const match = /^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,([a-z0-9+/=]+)$/i.exec(
+        presentationIcon,
+      )
+      if (!match)
+        throw new Error(
+          '导出安装包需要本机图片图标，请先上传 PNG、JPEG、WebP、GIF 或 SVG 图片；链接图标仅用于本机显示',
+        )
+      const extension = match[1]!.toLowerCase().replace('svg+xml', 'svg')
+      const bytes = Uint8Array.from(atob(match[2]!), (character) => character.charCodeAt(0))
+      let iconPath = `srl-presentation-icon.${extension}`
+      for (let index = 1; packageFiles?.[iconPath]; index++) {
+        iconPath = `srl-presentation-icon-${index}.${extension}`
+      }
+      exportedManifest.icon = iconPath
+      iconFiles[iconPath] = bytes
+    }
+    const manifest = JSON.stringify(exportedManifest, null, 2)
     const archive = zipSync({
       ...(packageFiles ?? {}),
+      ...iconFiles,
       'manifest.json': strToU8(manifest),
       ...(packageFiles?.[manifestValue.entry]
         ? {}
@@ -539,6 +682,7 @@ export class ExternalAppService {
       lastErrorAt: app.health?.lastErrorAt,
       lastError: app.health?.lastError,
       consecutiveFailures: app.health?.consecutiveFailures ?? 0,
+      disabledByWatchdog: app.health?.disabledByWatchdog,
     }
     await this.updateHealth(appId, derived)
     return derived

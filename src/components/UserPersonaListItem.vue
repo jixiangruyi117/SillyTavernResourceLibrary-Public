@@ -1,12 +1,19 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useResourceThumbnail } from '../composables/UseResourceThumbnail'
 import type { ResourceSummary } from '../types/Resource'
-const props = defineProps<{ resource: ResourceSummary; disabled?: boolean }>()
+const props = defineProps<{
+  resource: ResourceSummary
+  nativeCharacterNames?: string[]
+  profileCharacterNames?: string[]
+  disabled?: boolean
+}>()
 const emit = defineEmits<{ open: [] }>()
 const thumbnail = useResourceThumbnail(() => props.resource)
 const imageUrl = ref('')
 const failed = ref(false)
+const nativeNames = computed(() => props.nativeCharacterNames ?? [])
+const profileNames = computed(() => props.profileCharacterNames ?? [])
 function release() {
   if (imageUrl.value) URL.revokeObjectURL(imageUrl.value)
 }
@@ -38,6 +45,10 @@ onBeforeUnmount(release)
             ? resource.metadata.personaNames.join('、')
             : resource.fileName
         }}</small
+      ><small v-if="nativeNames.length">酒馆原生绑定：{{ nativeNames.join('、') }}</small
+      ><small v-if="profileNames.length">角色专属人设：{{ profileNames.join('、') }}</small
+      ><small v-if="!nativeNames.length && !profileNames.length"
+        >没有角色卡关联或专属人设</small
       ></span
     >
     <span aria-hidden="true">›</span>

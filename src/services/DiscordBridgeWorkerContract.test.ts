@@ -39,6 +39,7 @@ describe('Discord Bridge Worker contract', () => {
     const databases = config.d1_databases as Array<Record<string, unknown>>
 
     expect(config.main).toBe('src/index.ts')
+    expect(config.triggers).toEqual({ crons: ['0 * * * *'] })
     expect(databases).toHaveLength(1)
     expect(databases[0]).toMatchObject({
       binding: 'DB',

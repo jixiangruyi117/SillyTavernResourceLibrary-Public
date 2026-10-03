@@ -4,14 +4,14 @@ import { canRestoreOnlyPortableData } from '../services/BackupRestoreSelection'
 import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { includePersonalResource, plaintextSecretCopies } from '../services/PersonalResourceBackup'
 import { requestSecretPassword } from './UseSecretPasswordPrompt'
-import { onMounted, onScopeDispose, type Ref } from 'vue'
+import { onMounted, onScopeDispose, ref, type Ref } from 'vue'
 import type { RestoreRecoveryTask, ExportRecoveryTask } from '../services/ArchiveRecoveryService'
 import { openCheckpointArchiveWriter, discardCheckpointArchive } from '../core/NativeArchiveExport'
 import type { ArchiveTransferOptions } from '../services/ArchiveZipWriter'
 import { hashBlob } from '../services/HashService'
 import { hashNativeFile, nativeFileSize } from '../core/NativeFileSource'
 import { noticeCenter } from '../core/NoticeCenter'
-import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
+import { confirmAction } from '../composables/UseConfirmDialog'
 import {
   aiTaggingDraftService,
   archiveRecoveryService,
@@ -24,7 +24,6 @@ import {
   exportPortableCredentialBundle,
   exportService,
   externalAppService,
-  historyService,
   importPortableCredentialBundle,
   mainApiService,
   resourceGalleryService,
@@ -59,6 +58,12 @@ import type {
 import { type Category, type ResourceSummary } from '../types/Resource'
 import { downloadBlob, formatBytes } from '../utils/LibraryFormatting'
 
+function restoreInspectionCancelledError(): Error {
+  const error = new Error('已停止备份识别')
+  error.name = 'AbortError'
+  return error
+}
+
 interface LibraryArchiveContext {
   isExporting: Ref<boolean, boolean>
   categories: Ref<Category[]>
@@ -67,7 +72,6 @@ interface LibraryArchiveContext {
   backupRecommended: Ref<boolean, boolean>
   isExportPanelOpen: Ref<boolean, boolean>
   refreshStorageHealth: () => Promise<void>
-  historySnapshotLimit: Ref<number, number>
   reloadAppearanceSettings: () => void
   searchHistory: Ref<string[], string[]>
   cabinetResourceIds: Ref<string[], string[]>
@@ -81,14 +85,17 @@ interface LibraryArchiveContext {
   storageHealth: Ref<StorageHealth>
   LARGE_ARCHIVE_BYTES: number
   isRestoring: Ref<boolean, boolean>
+  onRestoreImportCancelled?: () => Promise<void>
   resources: Ref<ResourceSummary[]>
-  captureHistory: (reason: string) => Promise<void>
   loadLibrary: () => Promise<void>
   onRestoreImportComplete: () => Promise<void>
 }
 
 export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
   let restoreRecovery: RestoreRecoveryTask | undefined
+  const isRestorePreflighting = ref(false)
+  let activeRestoreInspection:
+    { operationId: string; controller: AbortController; settled: Promise<void> } | undefined
   const recovering = new Set<string>()
 
   function offerExportRecovery(task: ExportRecoveryTask): void {
@@ -169,21 +176,27 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         {
           label: '放弃任务',
           run: async () => {
-            if (recovering.has(task.id) || getContext().isRestoring.value) return
-            if (
-              !(await confirmAction({
-                title: '放弃恢复任务',
-                message: '删除此任务的临时文件和检查点，已写入的资源和原始备份不会删除。',
-                confirmLabel: '放弃任务',
-              }))
-            )
-              return
-            if (task.payload.prepared)
-              await restoreService.revivePrepared(task.payload.prepared).dispose?.()
-            await restoreService.clearRestoreCheckpoint(task.id)
-            await archiveRecoveryService.store.remove(task.id)
-            if (restoreRecovery?.id === task.id) restoreRecovery = undefined
-            noticeCenter.dismiss(`archive:${task.id}`)
+            const context = getContext()
+            if (recovering.size || context.isRestoring.value) return
+            context.isRestoring.value = true
+            try {
+              if (
+                !(await confirmAction({
+                  title: '放弃恢复任务',
+                  message: '删除此任务的临时文件和检查点，已写入的资源和原始备份不会删除。',
+                  confirmLabel: '放弃任务',
+                }))
+              )
+                return
+              if (task.payload.prepared)
+                await restoreService.revivePrepared(task.payload.prepared).dispose?.()
+              await restoreService.clearRestoreCheckpoint(task.id)
+              await archiveRecoveryService.store.remove(task.id)
+              if (restoreRecovery?.id === task.id) restoreRecovery = undefined
+              noticeCenter.dismiss(`archive:${task.id}`)
+            } finally {
+              context.isRestoring.value = false
+            }
           },
         },
       ],
@@ -191,8 +204,10 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
   }
 
   async function resumeRestoreTask(id: string): Promise<void> {
-    if (recovering.has(id) || getContext().isRestoring.value) return
+    const context = getContext()
+    if (recovering.size || context.isRestoring.value) return
     recovering.add(id)
+    let ownsRestoreBusy = false
     try {
       await initializeVaultOnce()
       const task = (await archiveRecoveryService.store.read(id)) as RestoreRecoveryTask | undefined
@@ -200,7 +215,6 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       if (vaultService.getStatus().locked) throw new Error('请先解锁资源库，再继续恢复任务')
       if (task.payload.vaultEnabled !== vaultService.isEnabled())
         throw new Error('资源库加密状态已变化，请放弃旧任务并重新预检')
-      const context = getContext()
       if (task.phase === '完成') {
         if (task.payload.prepared)
           await restoreService.revivePrepared(task.payload.prepared).dispose?.()
@@ -219,6 +233,8 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         await handleRestoreInspect(await archiveRecoveryService.readSource(task), task)
         return
       }
+      context.isRestoring.value = true
+      ownsRestoreBusy = true
       const prepared = await restoreService.resumePrepared(task.payload.prepared)
       context.preparedRestore.value = prepared
       await context.loadLibrary()
@@ -240,11 +256,12 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         return
       noticeCenter.dismiss(`archive:${id}`)
       await mutationGuard.run(`archive:restore:${task.payload.mode}`, () =>
-        performRestoreConfirm(prepared, task.payload.mode!, task.payload.snapshot, task),
+        performRestoreConfirm(prepared, task.payload.mode!, task),
       )
     } catch (error) {
       getContext().showNotice(error instanceof Error ? error.message : '恢复任务无法继续')
     } finally {
+      if (ownsRestoreBusy) context.isRestoring.value = false
       recovering.delete(id)
     }
   }
@@ -285,7 +302,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       const task = taskCenter.list().find((item) => item.operationId === active.operationId)
       if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return
       const starting = (async () => {
-        const started = await startNativeImportKeepAlive(active.title, task.phase)
+        const started = await startNativeImportKeepAlive(active.title, task.phase, 'resume')
         if (!started) return
         if (
           activeArchiveProtection?.operationId !== active.operationId ||
@@ -430,10 +447,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           }
         }
         if (details.portableSelection.generalPreferences) {
-          portableData.generalPreferences = {
-            ...browserStorageService.exportGeneralPreferences(),
-            historySnapshotLimit: await historyService.getSnapshotLimit(),
-          }
+          portableData.generalPreferences = browserStorageService.exportGeneralPreferences()
         }
         if (details.portableSelection.mainApiProfiles) {
           portableData.mainApiProfiles = mainApiService.getProfilesState()
@@ -621,6 +635,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       data.credentials?.imageGeneration?.length ? '生图 API 密钥' : '',
       data.credentials?.imageHosting ? '自建图床 Token' : '',
       data.credentials?.legacyFrontendWorkshopApi?.apiKey ? '旧状态项目专用 API 密钥' : '',
+      data.credentials?.productAssistantApi ? 'AI 助手独立 API 配置与密钥' : '',
       data.credentials?.discordSource?.botToken ? 'Discord Bot Token' : '',
       data.credentials?.cloudBackup && Object.keys(data.credentials.cloudBackup).length
         ? '云备份凭据'
@@ -651,11 +666,6 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     if (data.generalPreferences) {
       await apply('常用偏好', async () => {
         browserStorageService.importGeneralPreferences(data.generalPreferences!)
-        if (typeof data.generalPreferences!.historySnapshotLimit === 'number') {
-          context.historySnapshotLimit.value = await historyService.setSnapshotLimit(
-            data.generalPreferences!.historySnapshotLimit,
-          )
-        }
       })
     }
     if (data.mainApiProfiles && importCredentials) {
@@ -695,8 +705,14 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     context.syncCustomUiCss()
   }
 
-  function openRestorePanel(entry: 'import' | 'export' = 'export'): void {
+  function openRestorePanel(entry: 'import' | 'export' = 'export', resume = false): void {
     const context = getContext()
+    if (resume) {
+      context.isExportPanelOpen.value = false
+      context.isRestorePanelOpen.value = true
+      waitingForRestoreChoiceInBackground = false
+      return
+    }
     if (context.isRestoring.value) return
     if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
     restoreRecovery = undefined
@@ -757,15 +773,35 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     context.preparedRestore.value = undefined
     waitingForRestoreChoiceInBackground = false
     context.isRestoring.value = true
-    const operationId = taskCenter.start({ name: '备份预检', phase: '读取 ZIP 并校验' })
+    const controller = new AbortController()
+    let finishInspection!: () => void
+    const settled = new Promise<void>((resolve) => {
+      finishInspection = resolve
+    })
+    const operationId = taskCenter.start({
+      name: '备份预检',
+      phase: '读取 ZIP 并校验',
+      cancelable: true,
+      cancel: () => controller.abort(),
+    })
+    activeRestoreInspection = { operationId, controller, settled }
+    isRestorePreflighting.value = true
     context.restoreSourceFile.value = file
     context.preparedRestore.value = undefined
     context.restoreReport.value = undefined
-    await beginArchiveProtection(operationId, '备份预检')
     try {
+      await beginArchiveProtection(operationId, '备份预检')
+      if (controller.signal.aborted) throw restoreInspectionCancelledError()
       restoreRecovery =
-        recovery ?? (await archiveRecoveryService.createRestore(file, vaultService.isEnabled()))
-      if (restoreRecovery) await archiveRecoveryService.ensureSource(restoreRecovery, file)
+        recovery ??
+        (await archiveRecoveryService.createRestore(
+          file,
+          vaultService.isEnabled(),
+          controller.signal,
+        ))
+      if (restoreRecovery)
+        await archiveRecoveryService.ensureSource(restoreRecovery, file, controller.signal)
+      if (controller.signal.aborted) throw restoreInspectionCancelledError()
       context.preparedRestore.value = await restoreService.prepare(
         file,
         context.resources.value,
@@ -803,7 +839,9 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
                 : undefined,
             )
         },
+        controller.signal,
       )
+      if (controller.signal.aborted) throw restoreInspectionCancelledError()
       if (restoreRecovery) {
         restoreRecovery.phase = '等待选择恢复方式'
         await archiveRecoveryService.savePrepared(restoreRecovery, context.preparedRestore.value)
@@ -817,13 +855,42 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
         )
       }
     } catch (error) {
-      taskCenter.fail(operationId, error)
-      if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
-      context.showNotice(error instanceof Error ? error.message : '备份预检失败')
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        taskCenter.cancelled(operationId)
+        await context.preparedRestore.value?.dispose?.()
+        context.preparedRestore.value = undefined
+        context.restoreSourceFile.value = undefined
+        if (restoreRecovery) {
+          const cancelledRecovery = restoreRecovery
+          await restoreService.clearRestoreCheckpoint(cancelledRecovery.id)
+          await archiveRecoveryService.store.remove(cancelledRecovery.id)
+          noticeCenter.dismiss(`archive:${cancelledRecovery.id}`)
+          restoreRecovery = undefined
+        }
+        context.isRestorePanelOpen.value = false
+        waitingForRestoreChoiceInBackground = false
+        await context.onRestoreImportCancelled?.()
+        context.showNotice('已停止识别，并清理分享暂存文件与恢复检查点。', 7000)
+      } else {
+        taskCenter.fail(operationId, error)
+        if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
+        context.showNotice(error instanceof Error ? error.message : '备份预检失败')
+      }
     } finally {
       context.isRestoring.value = false
+      isRestorePreflighting.value = false
       await endArchiveProtection(operationId)
+      if (activeRestoreInspection?.operationId === operationId) activeRestoreInspection = undefined
+      finishInspection()
     }
+  }
+
+  async function stopRestoreInspection(): Promise<boolean> {
+    const active = activeRestoreInspection
+    if (!active) return false
+    if (!active.controller.signal.aborted) taskCenter.cancel(active.operationId)
+    await active.settled
+    return true
   }
 
   async function handleRestoreConfirm(
@@ -832,6 +899,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     includeGallery = true,
   ): Promise<void> {
     const context = getContext()
+    if (context.isRestoring.value || recovering.size) return
     if (restoreRecovery?.payload.mode) return resumeRestoreTask(restoreRecovery.id)
 
     const prepared = context.preparedRestore.value
@@ -853,53 +921,51 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       context.showNotice('只有完整备份可以覆盖整个资源库')
       return
     }
-    let createSafetySnapshot = false
-    if (mode === 'replace') {
-      const estimatedCurrentBytes = context.resources.value.reduce(
-        (total, resource) => total + Math.max(0, resource.fileSize || 0),
-        0,
-      )
-      const choice = await chooseAction({
-        title: '整库覆盖',
-        message: `确定用“${prepared.preview.fileName}”完整覆盖当前资源库吗？当前资源原件至少约 ${formatBytes(estimatedCurrentBytes)}，另有历史版本；完整安全快照可能超出本机 IndexedDB 的单份快照上限。写入失败会由数据库事务回滚。`,
-        confirmLabel: '先创建完整快照',
-        alternativeLabel: '不建快照，继续覆盖',
-        cancelLabel: '取消',
-        danger: true,
-      })
-      if (choice === 'cancel') return
-      createSafetySnapshot = choice === 'confirm'
-    }
+    context.isRestoring.value = true
+    try {
+      if (mode === 'replace') {
+        const estimatedCurrentBytes = context.resources.value.reduce(
+          (total, resource) => total + Math.max(0, resource.fileSize || 0),
+          0,
+        )
+        const confirmed = await confirmAction({
+          title: '整库覆盖',
+          message: `确定用“${prepared.preview.fileName}”完整覆盖当前资源库吗？当前资源原件至少约 ${formatBytes(estimatedCurrentBytes)}，另有历史版本；覆盖成功后无法自动撤销，建议先导出当前资源库。资源写入失败会由数据库事务回滚。`,
+          confirmLabel: '覆盖资源库',
+          danger: true,
+        })
+        if (!confirmed) return
+      }
 
-    const selected =
-      mode === 'replace' ? prepared : selectPreparedRestore(prepared, selectedIds, includeGallery)
-    return mutationGuard.run(`archive:restore:${mode}`, () =>
-      performRestoreConfirm(selected, mode, createSafetySnapshot),
-    )
+      const selected =
+        mode === 'replace' ? prepared : selectPreparedRestore(prepared, selectedIds, includeGallery)
+      await mutationGuard.run(`archive:restore:${mode}`, () =>
+        performRestoreConfirm(selected, mode),
+      )
+    } finally {
+      context.isRestoring.value = false
+    }
   }
 
   async function performRestoreConfirm(
     prepared: PreparedRestore,
     mode: RestoreMode,
-    createSafetySnapshot = false,
     resumed?: RestoreRecoveryTask,
   ): Promise<void> {
     const context = getContext()
 
-    context.isRestoring.value = true
     const operationId = taskCenter.start({
       name: '恢复备份',
-      phase: createSafetySnapshot ? '创建用户选择的安全快照' : '准备恢复数据',
+      phase: '准备恢复数据',
     })
     waitingForRestoreChoiceInBackground = false
-    await beginArchiveProtection(operationId, '恢复备份')
     try {
+      await beginArchiveProtection(operationId, '恢复备份')
       const recovery = resumed ?? restoreRecovery
       if (!resumed && mode === 'replace') prepared = (await prepared.forReplacement?.()) ?? prepared
       if (recovery) {
         if (!resumed) {
           recovery.payload.mode = mode
-          recovery.payload.snapshot = createSafetySnapshot
           recovery.payload.baseline = await archiveRecoveryService.baseline(
             context.resources.value,
             context.categories.value,
@@ -907,11 +973,7 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
           prepared = { ...prepared, checkpointId: recovery.id, forReplacement: undefined }
           await archiveRecoveryService.savePrepared(recovery, prepared)
         }
-        if (createSafetySnapshot)
-          await archiveRecoveryService.step(recovery, '安全快照', () =>
-            context.captureHistory('整库覆盖前用户选择的安全快照'),
-          )
-      } else if (createSafetySnapshot) await context.captureHistory('整库覆盖前用户选择的安全快照')
+      }
       taskCenter.update(operationId, {
         phase: mode === 'replace' ? '覆盖写入资源库' : '合并写入资源库',
         progress: undefined,
@@ -971,20 +1033,32 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
       const reason = error instanceof Error ? `：${error.message}` : ''
       context.showNotice(`恢复未全部完成，请核对资源列表与设置后重试${reason}`)
     } finally {
-      context.isRestoring.value = false
       await endArchiveProtection(operationId)
     }
   }
 
   async function closeRestorePanel(): Promise<void> {
     const context = getContext()
-    if (context.isRestoring.value) return
-    if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
-    else await context.preparedRestore.value?.dispose?.()
-    context.preparedRestore.value = undefined
-    context.restoreSourceFile.value = undefined
-    context.isRestorePanelOpen.value = false
-    waitingForRestoreChoiceInBackground = false
+    if (context.isRestoring.value || recovering.size) return
+    context.isRestoring.value = true
+    try {
+      if (restoreRecovery && !restoreRecovery.payload.mode) {
+        if (restoreRecovery.payload.prepared)
+          await restoreService.revivePrepared(restoreRecovery.payload.prepared).dispose?.()
+        else await context.preparedRestore.value?.dispose?.()
+        await restoreService.clearRestoreCheckpoint(restoreRecovery.id)
+        await archiveRecoveryService.store.remove(restoreRecovery.id)
+        noticeCenter.dismiss(`archive:${restoreRecovery.id}`)
+        restoreRecovery = undefined
+      } else if (restoreRecovery) offerRestoreRecovery(restoreRecovery)
+      else await context.preparedRestore.value?.dispose?.()
+      context.preparedRestore.value = undefined
+      context.restoreSourceFile.value = undefined
+      context.isRestorePanelOpen.value = false
+      waitingForRestoreChoiceInBackground = false
+    } finally {
+      context.isRestoring.value = false
+    }
   }
   return {
     handleExport,
@@ -992,8 +1066,9 @@ export function useLibraryArchive(getContext: () => LibraryArchiveContext) {
     restorePortableData,
     openRestorePanel,
     handleRestoreInspect,
+    isRestorePreflighting,
+    stopRestoreInspection,
     handleRestoreConfirm,
-    performRestoreConfirm,
     closeRestorePanel,
   }
 }

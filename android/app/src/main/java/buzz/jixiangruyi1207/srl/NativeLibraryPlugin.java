@@ -34,20 +34,37 @@ public class NativeLibraryPlugin extends Plugin {
     private static final long MAX_FILE_BYTES = 8L * 1024L * 1024L * 1024L * 1024L;
     private static final int MAX_CHUNK_BYTES = 1024 * 1024;
     private static final long STALE_PENDING_MS = 24L * 60L * 60L * 1000L;
+    private static final Set<String> CANCELLED_HASHES = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, PendingWrite> pendingWrites = new ConcurrentHashMap<>();
 
     @PluginMethod
     public void hashFile(PluginCall call) {
         runIo(call, () -> {
-            File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
-            NativeBridgeNumber.matchingFileSize(
-                call.getData().opt("size"), file.length(), MAX_FILE_BYTES,
-                "原生文件大小无效", "原生文件大小已变化"
-            );
-            JSObject result = new JSObject();
-            result.put("hash", NativeFileAccess.hash(file));
-            call.resolve(result);
+            String requestId = call.getString("requestId", "");
+            if (!requestId.matches("[a-f0-9-]{36}")) throw new IllegalArgumentException("原生文件校验请求无效");
+            try {
+                if (CANCELLED_HASHES.contains(requestId)) throw new java.io.IOException("已停止备份识别");
+                File file = NativeFileAccess.resolve(getContext(), call.getString("uri"));
+                NativeBridgeNumber.matchingFileSize(
+                    call.getData().opt("size"), file.length(), MAX_FILE_BYTES,
+                    "原生文件大小无效", "原生文件大小已变化"
+                );
+                JSObject result = new JSObject();
+                result.put("hash", NativeFileAccess.hash(file, (readBytes, totalBytes) -> {
+                    if (CANCELLED_HASHES.contains(requestId)) throw new java.io.IOException("已停止备份识别");
+                }));
+                call.resolve(result);
+            } finally {
+                CANCELLED_HASHES.remove(requestId);
+            }
         });
+    }
+
+    @PluginMethod
+    public void cancelHashFile(PluginCall call) {
+        String requestId = call.getString("requestId", "");
+        if (requestId.matches("[a-f0-9-]{36}")) CANCELLED_HASHES.add(requestId);
+        call.resolve();
     }
 
     @PluginMethod

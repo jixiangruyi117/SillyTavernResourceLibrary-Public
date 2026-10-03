@@ -13,7 +13,7 @@ export type Step = 'base' | 'workbench' | 'review' | 'done'
 
 export type SourceMode = 'preset' | 'favorites'
 
-export type EditScope = 'source' | 'target' | 'favorite'
+export type EditScope = 'source' | 'target' | 'favorite' | 'new'
 
 export interface WorkbenchSnapshot {
   assembly: AssemblyEntry[]

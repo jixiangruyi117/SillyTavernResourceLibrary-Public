@@ -11,6 +11,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.espresso.action.ViewActions.click
 import buzz.jixiangruyi1207.srl.nativeapp.data.NativeResourceStore
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeCloudSnapshotCodec
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeStructuredSnapshotBuilder
@@ -163,37 +166,114 @@ class NativeAppSmokeTest {
     }
 
     @Test
-    fun snapshotRestoreReplacesLibraryOnlyAfterValidatedArchive() {
+    fun deletingCategoryAndResourcePreservesOldHistoryWithoutCreatingArchives() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val seed = UUID.randomUUID().toString()
-        val beforeName = "快照前-${seed.take(6)}"
-        val afterName = "快照后-${seed.take(6)}"
-        NativeResourceStore(context).use { store ->
-            store.importUris(listOf(createArchive(context.cacheDir, UUID.randomUUID().toString(), beforeName, "#123456")))
-            val snapshot = store.captureSnapshot("设备测试快照")
-            store.importUris(listOf(createArchive(context.cacheDir, UUID.randomUUID().toString(), afterName, "#654321")))
-            assertTrue(store.loadResources().any { it.name == afterName })
-            store.restoreSnapshot(snapshot.id)
-            val restored = store.loadResources()
-            assertTrue("快照前资源必须恢复", restored.any { it.name == beforeName })
-            assertTrue("快照后资源必须从替换结果移除", restored.none { it.name == afterName })
+        val name = "无快照删除-${UUID.randomUUID()}"
+        val root = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "SRL")
+        val history = File(root, "history")
+        history.mkdirs()
+        val oldArchive = File(history, "legacy-fixture-${UUID.randomUUID()}.zip")
+        ZipOutputStream(oldArchive.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("legacy-fixture.txt"))
+            zip.write("旧整库快照保留验收".toByteArray())
+            zip.closeEntry()
+        }
+        fun historyFiles() = history.listFiles().orEmpty().associate { it.name to it.length() }
+        fun fixtureDigest() = MessageDigest.getInstance("SHA-256").digest(oldArchive.readBytes()).toList()
+        try {
+            NativeResourceStore(context).use { store ->
+                store.importUris(listOf(createArchive(context.cacheDir, UUID.randomUUID().toString(), name, "#235766")))
+                val resource = store.loadResources().single { it.name == name }
+                val before = historyFiles()
+                val originalDigest = fixtureDigest()
+                assertTrue("必须有旧快照文件才能证明保留行为", oldArchive.name in before)
+                store.deleteCategory(resource.categoryIds.single())
+                assertTrue("删除文件夹必须保留资源并移除分类", store.loadResources().single { it.id == resource.id }.categoryIds.isEmpty())
+                store.deleteResource(resource.id)
+                assertTrue("所选资源必须删除", store.loadResources().none { it.id == resource.id })
+                assertTrue("不应创建或裁剪旧快照文件", historyFiles() == before)
+                assertTrue("旧快照文件内容必须保持不变", fixtureDigest() == originalDigest)
+            }
+        } finally {
+            oldArchive.delete()
         }
     }
 
     @Test
-    fun restoringOldestOfEightSnapshotsKeepsTargetProtectedDuringAutoCapture() {
+    fun legacyHistoryCleanupConfirmsAndPreservesResourcesVersionsAndUnknownFiles() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val seed = UUID.randomUUID().toString()
-        val targetName = "第八份边界-${seed.take(6)}"
+        val fixture = createVersionArchive(context.cacheDir)
         NativeResourceStore(context).use { store ->
-            store.listSnapshots().forEach { store.deleteSnapshot(it.id) }
-            store.importUris(listOf(createArchive(context.cacheDir, UUID.randomUUID().toString(), targetName, "#235766")))
-            val target = store.captureSnapshot("将成为最旧的一份")
-            repeat(7) { store.captureSnapshot("填满快照-${it + 1}") }
-            assertTrue(store.listSnapshots().any { it.id == target.id })
-            store.restoreSnapshot(target.id)
-            assertTrue("恢复目标在自动快照裁剪前必须先受保护", store.loadResources().any { it.name == targetName })
+            store.importUris(listOf(fixture.uri))
+            val id = UUID.randomUUID().toString()
+            val history = File(store.storageDirectory(), "history").apply { mkdirs() }
+            val archive = File(history, "$id.zip").apply { writeText("old whole-library archive") }
+            val unknown = File(history, "unknown-${UUID.randomUUID()}.zip").apply { writeText("keep unknown") }
+            val outside = File(context.cacheDir, "outside-${UUID.randomUUID()}.zip").apply { writeText("keep outside") }
+            val records = JSONArray().put(JSONObject().put("id", id).put("filePath", archive.absolutePath))
+                .put(JSONObject().put("id", UUID.randomUUID().toString()).put("filePath", outside.absolutePath))
+            store.writableDatabase.execSQL("INSERT OR REPLACE INTO app_state (state_key, state_value) VALUES (?, ?)", arrayOf("historySnapshots", records.toString()))
+            val resources = store.loadResources()
+            val versions = store.loadAllVersions()
+            try {
+                val preview = store.legacyLibraryHistoryCleanup()
+                assertTrue(preview.files.size == 1 && preview.bytes == archive.length())
+                archive.appendText("changed")
+                assertTrue(runCatching { store.clearLegacyLibraryHistory(preview) }.isFailure)
+                assertTrue(archive.exists())
+                composeRule.activityRule.scenario.recreate()
+                composeRule.onNodeWithText("设置").performClick()
+                val action = hasText("清理旧整库快照") and hasClickAction()
+                composeRule.onNode(hasScrollAction()).performScrollToNode(action)
+                composeRule.onNode(action).performClick()
+                onView(withText("取消")).perform(click())
+                assertTrue(archive.exists())
+                composeRule.onNode(action).performClick()
+                onView(withText("永久清理")).perform(click())
+                composeRule.waitUntil { !archive.exists() }
+                composeRule.waitForIdle()
+                assertTrue(store.legacyLibraryHistoryCleanup().files.isEmpty())
+                assertTrue(unknown.readText() == "keep unknown" && outside.readText() == "keep outside")
+                assertTrue(store.loadResources() == resources && store.loadAllVersions() == versions)
+                store.readableDatabase.rawQuery("SELECT state_value FROM app_state WHERE state_key = ?", arrayOf("historySnapshots")).use { cursor ->
+                    assertTrue(cursor.moveToFirst() && JSONArray(cursor.getString(0)).length() == 1)
+                }
+            } finally {
+                archive.delete(); unknown.delete(); outside.delete()
+                store.writableDatabase.delete("app_state", "state_key = ?", arrayOf("historySnapshots"))
+            }
         }
+    }
+
+    @Test
+    fun concurrentLegacyHistoryCleanupAcrossStoresDoesNotRestoreDeletedIndex() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        NativeResourceStore(context).use { first -> NativeResourceStore(context).use { second ->
+            val id = UUID.randomUUID().toString()
+            val history = File(first.storageDirectory(), "history").apply { mkdirs() }
+            val archive = File(history, "$id.zip").apply { writeText("concurrent cleanup fixture") }
+            val records = JSONArray().put(JSONObject().put("id", id).put("filePath", archive.absolutePath))
+            first.writableDatabase.execSQL("INSERT OR REPLACE INTO app_state (state_key, state_value) VALUES (?, ?)", arrayOf("historySnapshots", records.toString()))
+            val plan = first.legacyLibraryHistoryCleanup()
+            val start = java.util.concurrent.CountDownLatch(1)
+            val worker = java.util.concurrent.Executors.newFixedThreadPool(2)
+            try {
+                val jobs = listOf(first, second).map { store -> worker.submit<Boolean> {
+                    start.await()
+                    runCatching { store.clearLegacyLibraryHistory(plan) }.isSuccess
+                } }
+                start.countDown()
+                assertTrue(jobs.count { it.get() } == 1)
+                assertTrue(!archive.exists() && first.legacyLibraryHistoryCleanup().files.isEmpty())
+                first.readableDatabase.rawQuery("SELECT state_value FROM app_state WHERE state_key = ?", arrayOf("historySnapshots")).use { cursor ->
+                    assertTrue(cursor.moveToFirst() && JSONArray(cursor.getString(0)).length() == 0)
+                }
+            } finally {
+                worker.shutdownNow()
+                archive.delete()
+                first.writableDatabase.delete("app_state", "state_key = ?", arrayOf("historySnapshots"))
+            }
+        } }
     }
 
     @Test

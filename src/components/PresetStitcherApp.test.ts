@@ -226,6 +226,185 @@ describe('PresetStitcherApp', () => {
     })
   })
 
+  it('可以新建主预设条目，并将其加入当前装配', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    await wrapper.find('.stitch-pane__add-entry').trigger('click')
+    const editor = wrapper.find('.stitch-editor')
+    await editor.find('input').setValue('自定义规则')
+    await editor.find('textarea').setValue('只按当前主预设执行')
+    await editor.find('.button--primary').trigger('click')
+    expect(wrapper.find('.stitch-pane--target').text()).toContain('自定义规则')
+    await targetRow(wrapper, '自定义规则').find('.stitch-entry__copy').trigger('click')
+    expect(wrapper.find('.stitch-pane--target').text()).toContain('只按当前主预设执行')
+  })
+
+  it('新建与修改共用宏工具，新条目按光标替换选区并可写入聊天变量', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    const main = targetRow(wrapper, '主提示')
+    await main.find('.stitch-entry__copy').trigger('click')
+    await main.find('.stitch-entry__actions button').trigger('click')
+    const editTools = wrapper.findAll('.stitch-editor__macros button').map((item) => item.text())
+    await wrapper.findAll('.stitch-editor__actions button')[1].trigger('click')
+    await wrapper.find('.stitch-pane__add-entry').trigger('click')
+    expect(wrapper.findAll('.stitch-editor__macros button').map((item) => item.text())).toEqual(
+      editTools,
+    )
+    const panel = wrapper.find('.stitch-editor')
+    await panel.find('input').setValue('变量规则')
+    const textarea = panel.find('textarea')
+    await textarea.setValue('前文待替换后文')
+    textarea.element.setSelectionRange(2, 5)
+    await textarea.trigger('select')
+    await panel
+      .findAll('.stitch-editor__macros button')
+      .find((item) => item.text() === '用户名')!
+      .trigger('click')
+    expect(textarea.element.value).toBe('前文{{user}}后文')
+    await panel
+      .findAll('.stitch-editor__macros button')
+      .find((item) => item.text() === '写入聊天变量')!
+      .trigger('click')
+    const writer = wrapper.find('.stitch-variable-writer')
+    await writer.find('input').setValue('mood')
+    await writer.find('textarea').setValue('warm')
+    await writer.find('.button--primary').trigger('click')
+    await panel.find('.button--primary').trigger('click')
+    const newRow = targetRow(wrapper, '变量规则')
+    await newRow.find('.stitch-entry__copy').trigger('click')
+    expect(newRow.find('pre').text()).toBe('前文{{user}}{{setvar::mood::warm}}后文')
+    wrapper.unmount()
+  })
+
+  it('新建条目可读取已写变量、选择变量名占位，取消后不加入装配', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    const main = targetRow(wrapper, '主提示')
+    await main.find('.stitch-entry__copy').trigger('click')
+    await main.find('.stitch-entry__actions button').trigger('click')
+    await main.find('textarea').setValue('{{setvar::mood::warm}}')
+    await main.find('.stitch-editor__actions .button--primary').trigger('click')
+    const names = wrapper.findAll('.stitch-entry--target strong').map((row) => row.text())
+    await wrapper.find('.stitch-pane__add-entry').trigger('click')
+    const panel = wrapper.find('.stitch-editor')
+    await panel.find('.stitch-editor__macros select').setValue('chat:mood')
+    expect(panel.find('textarea').element.value).toBe('{{getvar::mood}}')
+    await panel
+      .findAll('.stitch-editor__macros button')
+      .find((button) => button.text() === '读取聊天变量')!
+      .trigger('click')
+    await flushPromises()
+    const textarea = panel.find('textarea').element
+    expect(textarea.value).toBe('{{getvar::mood}}{{getvar::变量名}}')
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe('变量名')
+    await panel.findAll('.stitch-editor__actions button')[1].trigger('click')
+    expect(wrapper.find('.stitch-editor').exists()).toBe(false)
+    expect(wrapper.findAll('.stitch-entry--target strong').map((row) => row.text())).toEqual(names)
+    wrapper.unmount()
+  })
+
+  it('可以在新条目中用名称插入酒馆填写占位，不要求手写宏', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    await wrapper.find('.stitch-pane__add-entry').trigger('click')
+    await wrapper
+      .findAll('.stitch-editor__macros button')
+      .find((item) => item.text() === '插入填写占位')!
+      .trigger('click')
+    const slotDialog = wrapper.find('.stitch-slot-writer')
+    await slotDialog.find('input').setValue('文风')
+    await slotDialog.find('button.button--primary').trigger('click')
+
+    const editor = wrapper.find('.stitch-editor')
+    expect((editor.find('input').element as HTMLInputElement).value).toBe('文风')
+    expect((editor.find('textarea').element as HTMLTextAreaElement).value).toMatch(
+      /^\{\{srl_slot::[a-f\d-]{36}::文风\}\}$/u,
+    )
+    await editor.find('.button--primary').trigger('click')
+    expect(wrapper.find('.stitch-pane--target').text()).toContain('文风')
+  })
+
+  it('选中已有占位可修改显示名并保留稳定 ID', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    await wrapper.find('.stitch-pane__add-entry').trigger('click')
+    await wrapper
+      .findAll('.stitch-editor__macros button')
+      .find((item) => item.text() === '插入填写占位')!
+      .trigger('click')
+    const slotDialog = wrapper.find('.stitch-slot-writer')
+    await slotDialog.find('input').setValue('文风')
+    await slotDialog.find('button.button--primary').trigger('click')
+    let editor = wrapper.find('.stitch-editor')
+    const initialMacro = (editor.find('textarea').element as HTMLTextAreaElement).value
+    const initialId = initialMacro.match(/srl_slot::([^:]+)::/u)?.[1]
+    expect(initialId).toBeTruthy()
+    await editor.find('.button--primary').trigger('click')
+
+    const row = targetRow(wrapper, '文风')
+    expect(row.exists()).toBe(true)
+    await row.find('.stitch-entry__copy').trigger('click')
+    await row.find('.stitch-entry__actions button').trigger('click')
+    editor = wrapper.find('.stitch-editor')
+    const textarea = editor.find('textarea')
+    const textareaElement = textarea.element as HTMLTextAreaElement
+    textareaElement.setSelectionRange(0, textareaElement.value.length)
+    await textarea.trigger('select')
+    await editor
+      .findAll('.stitch-editor__macros button')
+      .find((button) => button.text().trim() === '插入填写占位')!
+      .trigger('click')
+    const renameDialog = wrapper.find('.stitch-slot-writer')
+    expect(renameDialog.find('strong').text()).toBe('修改填写占位')
+    expect((renameDialog.find('input').element as HTMLInputElement).value).toBe('文风')
+    await renameDialog.find('input').setValue('叙事风格')
+    await renameDialog.find('button.button--primary').trigger('click')
+    const renamedMacro = (editor.find('textarea').element as HTMLTextAreaElement).value
+    expect(renamedMacro).toBe(`{{srl_slot::${initialId}::叙事风格}}`)
+    await editor.find('.button--primary').trigger('click')
+    expect(targetRow(wrapper, '叙事风格').text()).toContain('叙事风格')
+  })
+
+  it('更多菜单不显示提示词预览或 token 入口', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
+    const menu = wrapper.find('.stitch-tools__menu')
+    expect(menu.text()).not.toMatch(/预览|token/i)
+    expect(wrapper.find('.stitch-prompt-card').exists()).toBe(false)
+  })
+
+  it('顶部按左右、全屏、SVG 更多排序，更多可用 Esc 和点击外部关闭', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    const tools = wrapper.find('.feature-app-header .stitch-tools')
+    expect(
+      tools.findAll('.stitch__header-action').map((button) => button.attributes('aria-label')),
+    ).toEqual(['将主预设调到左侧', '进入全屏工作区', '工作台更多操作'])
+    const toggle = tools.find('.stitch-tools__toggle')
+    expect(toggle.find('svg').exists()).toBe(true)
+    expect(toggle.text()).toBe('')
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(tools.findAll('.stitch-tools__action')).toHaveLength(5)
+    expect(tools.findAll('.stitch-tools__action')[1].attributes('disabled')).toBeDefined()
+    await tools.findAll('.stitch-tools__action')[2].trigger('keydown', { key: 'Escape' })
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(tools.find('.stitch-tools__menu').exists()).toBe(false)
+    await toggle.trigger('click')
+    dispatchPointer(document.body, 'pointerdown', {
+      pointerId: 70,
+      clientX: 0,
+      clientY: 200,
+      pointerType: 'mouse',
+    })
+    await wrapper.vm.$nextTick()
+    expect(tools.find('.stitch-tools__menu').exists()).toBe(false)
+    expect(wrapper.find('.stitch-workbench').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('选择主预设后拉出填充表单，默认填充在左、主预设在右，并可记忆调换', async () => {
     const wrapper = render()
     await wrapper
@@ -246,7 +425,13 @@ describe('PresetStitcherApp', () => {
     )
     expect(wrapper.find('.stitch-workbench').classes()).not.toContain('is-main-left')
 
-    await wrapper.findAll('.stitch__header-action')[1].trigger('click')
+    await wrapper
+      .find('.stitch-sheet')
+      .findAll('.stitch__preset-list button')
+      .find((button) => button.text().includes('文风来源'))!
+      .trigger('click')
+    await flushPromises()
+    await wrapper.find('[aria-label="将主预设调到左侧"]').trigger('click')
     expect(wrapper.find('.stitch-workbench').classes()).toContain('is-main-left')
     expect(storageApi.setStitchMainSide).toHaveBeenCalledWith('left')
   })
@@ -463,7 +648,7 @@ describe('PresetStitcherApp', () => {
     Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
   })
 
-  it('生成前检查和最终确认展示逐行、宏及变量读写变化', async () => {
+  it('最终确认只保留正文前后对比与宏变化，不显示逐行和重复变量明细', async () => {
     const wrapper = render()
     await pickBaseAndSource(wrapper)
     await sourceRow(wrapper, '文风段').find('.stitch-entry__add').trigger('click')
@@ -475,15 +660,42 @@ describe('PresetStitcherApp', () => {
 
     expect(wrapper.find('.stitch-audit').exists()).toBe(false)
     await wrapper.find('.stitch__footer .button--primary').trigger('click')
-    expect(wrapper.text()).toContain('新增条目与正则')
-    expect(wrapper.text()).toContain('具体增加的行')
+    expect(wrapper.text()).toContain('新增 1 条目')
+    expect(wrapper.text()).toContain('删除 0 条目')
+    expect(wrapper.text()).toContain('修改 1 条目')
+    expect(wrapper.find('.stitch-review__hero').exists()).toBe(false)
+    expect(wrapper.find('.stitch-review__content-transition').text()).toContain('修改前')
+    expect(wrapper.find('.stitch-review__content-transition').text()).toContain('修改后')
+    expect(wrapper.text()).not.toContain('具体增加的行')
     expect(wrapper.text()).toContain('新版主提示')
-    expect(wrapper.text()).toContain('具体删除的行')
+    expect(wrapper.text()).not.toContain('具体删除的行')
     expect(wrapper.text()).toContain('底板主提示')
     expect(wrapper.text()).toContain('宏变化')
-    expect(wrapper.text()).toContain('新增变量读取')
-    expect(wrapper.text()).toContain('新增变量写入')
-    expect(wrapper.text()).toContain('聊天：mood')
+    expect(wrapper.text()).not.toContain('新增变量读取')
+    expect(wrapper.text()).not.toContain('新增变量写入')
+    expect(wrapper.find('.stitch-review__technical').text()).toContain('{{setvar::mood::warm}}')
+    expect(wrapper.find('.stitch-review__technical').text()).toContain('{{getvar::mood}}')
+    expect(wrapper.find('.stitch-review__technical').attributes('open')).toBeUndefined()
+  })
+
+  it('差异较多时按组收起长列表，没有宏变化时不显示额外明细', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    for (let index = 1; index <= 5; index += 1) {
+      await wrapper.find('.stitch-pane__add-entry').trigger('click')
+      const editor = wrapper.find('.stitch-editor')
+      await editor.find('input').setValue(`自定义段 ${index}`)
+      await editor.find('textarea').setValue(`规则正文 ${index}`)
+      await editor.find('.stitch-editor__actions .button--primary').trigger('click')
+    }
+    await wrapper.find('.stitch__footer .button--primary').trigger('click')
+    const addedGroup = wrapper.find('.stitch-review__group--added')
+    expect(addedGroup.find('summary').text()).toContain('5')
+    expect(addedGroup.attributes('open')).toBeUndefined()
+    expect(wrapper.find('.stitch-review__overview').text()).toContain('新增 5')
+    expect(wrapper.find('.stitch-review__overview').text()).toContain('删除 0')
+    const technical = wrapper.find('.stitch-review__technical')
+    expect(technical.exists()).toBe(false)
   })
 
   it('生成前检查只显示阻断错误，不显示变量提醒', async () => {
@@ -516,14 +728,14 @@ describe('PresetStitcherApp', () => {
     expect(targetRow(wrapper, '文风段').exists()).toBe(true)
 
     const actions = wrapper
-    await wrapper.find('.stitch-tools__ball').trigger('click')
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
     await actions
       .findAll('button')
       .find((button) => button.text() === '撤销')!
       .trigger('click')
     await flushPromises()
     expect(targetRow(wrapper, '文风段')).toBeUndefined()
-    await wrapper.find('.stitch-tools__ball').trigger('click')
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
     await actions
       .findAll('button')
       .find((button) => button.text() === '重做')!
@@ -531,7 +743,7 @@ describe('PresetStitcherApp', () => {
     await flushPromises()
     expect(targetRow(wrapper, '文风段').exists()).toBe(true)
 
-    await wrapper.find('.stitch-tools__ball').trigger('click')
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
     await actions
       .findAll('button')
       .find((button) => button.text() === '保存工作台检查点')!
@@ -539,7 +751,7 @@ describe('PresetStitcherApp', () => {
     expect(storageApi.setPresetStitchCheckpoint).toHaveBeenCalled()
     await targetRow(wrapper, '文风段').find('.stitch-entry__copy').trigger('click')
     await targetRow(wrapper, '文风段').find('.is-danger').trigger('click')
-    await wrapper.find('.stitch-tools__ball').trigger('click')
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
     await actions
       .findAll('button')
       .find((button) => button.text() === '恢复检查点')!
@@ -583,7 +795,13 @@ describe('PresetStitcherApp', () => {
     await source.findAll('.stitch-entry__detail button')[3].trigger('click')
     await wrapper.find('.stitch-pane--target .stitch-pane__candidates').trigger('click')
 
-    expect(wrapper.find('.stitch-candidates__summary').text()).toContain('将加入 1 条')
+    expect(wrapper.find('.stitch-candidates__summary').text()).toContain('1 条候选')
+    expect(wrapper.find('.stitch-candidates__templates').element.tagName).toBe('DETAILS')
+    expect(wrapper.find('.stitch-candidates__templates').attributes('open')).toBeUndefined()
+    await wrapper.find('.stitch-candidates__actions button').trigger('click')
+    expect(wrapper.find('.stitch-candidates__compare').exists()).toBe(true)
+    await wrapper.find('.stitch-candidates__actions button').trigger('click')
+    expect(wrapper.find('.stitch-candidates__compare').exists()).toBe(false)
     await wrapper.find('.stitch-candidates__template-save input').setValue('常用文风')
     await wrapper.find('.stitch-candidates__template-save button').trigger('click')
     expect(storageApi.setStitchTemplates).toHaveBeenCalled()
@@ -609,9 +827,15 @@ describe('PresetStitcherApp', () => {
     expect(targetRow(wrapper, '文风段')).toBeUndefined()
 
     dispatchPointer(handle.element, 'pointerdown', { pointerId: 2, clientX: 20, clientY: 20 })
+    const noticeBeforePickup = wrapper.find('.stitch__notice').exists()
+      ? wrapper.find('.stitch__notice').text()
+      : ''
     vi.advanceTimersByTime(421)
     await flushPromises()
     expect(wrapper.find('.stitch-drag-ghost').exists()).toBe(true)
+    expect(
+      wrapper.find('.stitch__notice').exists() ? wrapper.find('.stitch__notice').text() : '',
+    ).toBe(noticeBeforePickup)
     expect(wrapper.find('.stitch-workbench').classes()).toContain('is-dragging')
     dispatchPointer(window, 'pointerup', { pointerId: 2, clientX: 20, clientY: 20 })
     await wrapper.vm.$nextTick()
@@ -700,7 +924,7 @@ describe('PresetStitcherApp', () => {
     const wrapper = render()
     try {
       await pickBaseAndSource(wrapper)
-      await wrapper.find('.stitch-tools__ball').trigger('click')
+      await wrapper.find('.stitch-tools__toggle').trigger('click')
       expect(wrapper.findAll('.stitch-tools__action')).toHaveLength(5)
       await wrapper
         .findAll('.stitch-tools__action')
@@ -737,7 +961,7 @@ describe('PresetStitcherApp', () => {
         '文风段',
         'Chat History',
       ])
-      await wrapper.find('.stitch-tools__ball').trigger('click')
+      await wrapper.find('.stitch-tools__toggle').trigger('click')
       await wrapper
         .findAll('.stitch-tools__action')
         .find((button) => button.text() === '撤销')!
@@ -792,15 +1016,39 @@ describe('PresetStitcherApp', () => {
     }
   })
 
+  it('调整两栏宽度保持装配内容，左右互换后键盘方向跟随分隔线', async () => {
+    const wrapper = render()
+    await pickBaseAndSource(wrapper)
+    const names = wrapper.findAll('.stitch-entry--target strong').map((row) => row.text())
+    const separator = wrapper.find('.stitch-column-separator')
+    expect(separator.attributes('aria-valuenow')).toBe('40')
+    await separator.trigger('keydown', { key: 'ArrowRight' })
+    expect(separator.attributes('aria-valuenow')).toBe('42')
+    await wrapper.find('[aria-label="将主预设调到左侧"]').trigger('click')
+    await separator.trigger('keydown', { key: 'ArrowRight' })
+    expect(separator.attributes('aria-valuenow')).toBe('40')
+    await separator.trigger('keydown', { key: 'Home' })
+    await separator.trigger('keydown', { key: 'ArrowRight' })
+    expect(separator.attributes('aria-valuenow')).toBe('30')
+    await separator.trigger('keydown', { key: 'End' })
+    await separator.trigger('keydown', { key: 'ArrowLeft' })
+    expect(separator.attributes('aria-valuenow')).toBe('60')
+    expect(wrapper.findAll('.stitch-entry--target strong').map((row) => row.text())).toEqual(names)
+    wrapper.unmount()
+  })
+
   it('全屏工作区保留分页、编辑与拖放操作，退出后回到普通工作台', async () => {
     const wrapper = render()
     await pickBaseAndSource(wrapper)
 
-    await wrapper.findAll('.stitch__header-action')[0].trigger('click')
+    await wrapper.find('[aria-label="进入全屏工作区"]').trigger('click')
     expect(wrapper.find('.stitch').classes()).toContain('is-reading')
     expect(wrapper.find('.stitch__focus-exit').exists()).toBe(true)
     expect(wrapper.find('.stitch__footer').exists()).toBe(false)
-    expect(wrapper.find('.stitch-tools__ball').exists()).toBe(true)
+    await wrapper.find('.stitch-tools__toggle').trigger('click')
+    expect(wrapper.findAll('.stitch-tools__action')).toHaveLength(5)
+    expect(wrapper.find('.stitch-tools__menu').text()).not.toContain('导出')
+    expect(wrapper.find('.stitch-tools__toggle').exists()).toBe(true)
     expect(wrapper.find('.stitch__focus-swap').exists()).toBe(true)
     expect(wrapper.findAll('.stitch-workbench > section')).toHaveLength(2)
     expect(wrapper.find('.stitch-pane--source .stitch-pagination').exists()).toBe(true)
@@ -871,7 +1119,7 @@ describe('PresetStitcherApp', () => {
     await wrapper.find('.stitch__footer .button--primary').trigger('click')
     expect(resourceApi.importStitchedPreset).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('新增「文风段」')
-    expect(wrapper.text()).toContain('编辑「主提示」')
+    expect(wrapper.text()).toContain('修改「主提示」')
     await wrapper.find('.stitch__generate .button--primary').trigger('click')
     await flushPromises()
 

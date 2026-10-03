@@ -423,7 +423,11 @@ onBeforeUnmount(() => {
       </article>
     </div>
 
-    <div v-else class="resource-sources__discord-probe">
+    <div
+      v-if="!groups.some((group) => group.id === 'discord') || !openPlatforms.has('discord')"
+      v-show="!groups.length"
+      class="resource-sources__discord-probe"
+    >
       <DiscordCommunitySources
         :key="`${props.resourceId}:${communityRevision}:probe`"
         :resource-id="props.resourceId"

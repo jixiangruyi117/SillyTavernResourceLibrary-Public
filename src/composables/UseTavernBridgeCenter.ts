@@ -6,6 +6,7 @@ import { browserStorageService, resourceService } from '../core/AppContainer'
 import { tavernConnectionStore, type TavernConnectionSnapshot } from '../core/TavernConnectionStore'
 import { canUseLocalTavernDirect } from '../services/LanDirectService'
 import { prepareChatReturn, type ChatReturnPlan } from '../services/TavernChatReturn'
+import { hashBlob } from '../services/HashService'
 import type {
   TavernConflictPolicy,
   TavernResourceItem,
@@ -31,7 +32,11 @@ import {
   tavernItemExistsLocally,
 } from '../utils/TavernBridgeDiff'
 import { buildTavernSyncPlan, summarizeTavernSyncPlan } from '../utils/TavernSyncPlan'
-import { copyPersonaForTavern, personaContentMatches } from '../utils/TavernPersonaTransfer'
+import {
+  copyPersonaForTavern,
+  mapPersonaCharacterVariantsForTavern,
+  personaContentMatches,
+} from '../utils/TavernPersonaTransfer'
 
 export type TavernBridgeCenterProps = {
   resources: ResourceSummary[]
@@ -78,6 +83,18 @@ interface PersonaSendPlan {
   skip?: boolean
   file?: File
   avatarId?: string
+  characterTargets?: Map<string, Map<string, string>>
+  missingCharacters?: Array<{
+    personaAvatar: string
+    sourceId: string
+    avatarId: string
+    name: string
+    file?: File
+  }>
+  sendMissingCharacters?: boolean
+  identicalPersona?: boolean
+  skipPersona?: boolean
+  forceOverwritePersona?: boolean
 }
 
 export function useTavernBridgeCenter(
@@ -1007,48 +1024,216 @@ export function useTavernBridgeCenter(
     signal?: AbortSignal,
   ): Promise<Map<string, PersonaSendPlan> | null> {
     const plans = new Map<string, PersonaSendPlan>()
-    if (
-      conflictPolicy.value !== 'skip' ||
-      !summaries.some((item) => item.type === RESOURCE_TYPE.USER_PERSONA)
+    const personaSummaries = summaries.filter((item) => item.type === RESOURCE_TYPE.USER_PERSONA)
+    if (!personaSummaries.length) return plans
+    const prepared = await Promise.all(
+      personaSummaries.map(async (summary) => {
+        const resource = await resourceService.get(summary.id)
+        if (!resource) throw new Error(`人设“${summary.name}”已不存在`)
+        const local = parseSillyTavernPersonaBackup(JSON.parse(await resource.originalBlob.text()))
+        return { summary, resource, local }
+      }),
     )
-      return plans
-    // 目录用于展示，可能是旧快照；发送前单独核对酒馆当前的人设键和内容。
-    const current = await tavernBridgeService.listResources(undefined, { signal })
-    for (const summary of summaries) {
-      if (summary.type !== RESOURCE_TYPE.USER_PERSONA) continue
-      const resource = await resourceService.get(summary.id)
-      if (!resource) throw new Error(`人设“${summary.name}”已不存在`)
-      const local = parseSillyTavernPersonaBackup(JSON.parse(await resource.originalBlob.text()))
-      if (local.entries.length !== 1) continue
-      const avatarId = local.entries[0]!.avatarId
-      const remote = current.find((item) => item.id === `userPersona:${avatarId}`)
-      if (!remote) continue
-      const [remoteFile] = await tavernBridgeService.pullResources([remote], { signal })
-      if (!remoteFile) throw new Error(`无法核对酒馆人设“${summary.name}”`)
-      if (personaContentMatches(local.raw, JSON.parse(await remoteFile.text()), avatarId)) {
-        plans.set(summary.id, { skip: true })
-        continue
+    const needsPersonaInventory =
+      conflictPolicy.value === 'skip' && prepared.some(({ local }) => local.entries.length === 1)
+    const needsCharacterInventory = prepared.some(({ local }) =>
+      local.entries.some((entry) => Object.keys(entry.profile.variants).length > 0),
+    )
+    const [personaInventory, tavernCharacters] = await (async (): Promise<
+      [TavernResourceItem[], TavernResourceItem[]]
+    > => {
+      if (
+        needsPersonaInventory &&
+        needsCharacterInventory &&
+        !state.value.capabilities?.includes('catalog-kind-filter-v1')
+      ) {
+        const inventory = await tavernBridgeService.listResources(undefined, { signal })
+        return [inventory, inventory.filter((item) => item.kind === 'character')]
       }
+      const inventories = await Promise.all([
+        needsPersonaInventory
+          ? tavernBridgeService.listResources('userPersona', { signal })
+          : Promise.resolve([]),
+        needsCharacterInventory
+          ? tavernBridgeService.listResources('character', { signal })
+          : Promise.resolve([]),
+      ])
+      return [inventories[0], inventories[1]]
+    })()
+    const characterById = new Map(tavernCharacters.map((item) => [item.id, item]))
+    const characterByAvatar = new Map(
+      tavernCharacters.map((item) => [item.fileName.toLocaleLowerCase(), item]),
+    )
+    const characterByHash = new Map(
+      tavernCharacters
+        .filter((item) => item.contentHash)
+        .map((item) => [item.contentHash!.toLocaleLowerCase(), item]),
+    )
+    const characterByName = new Map<string, TavernResourceItem[]>()
+    for (const item of tavernCharacters) {
+      const key = item.name.trim().toLocaleLowerCase()
+      const matches = characterByName.get(key) ?? []
+      matches.push(item)
+      characterByName.set(key, matches)
+    }
+    const missingNames: string[] = []
+    for (const { summary, local } of prepared) {
+      let plan: PersonaSendPlan = {}
+      if (conflictPolicy.value === 'skip' && local.entries.length === 1) {
+        const avatarId = local.entries[0]!.avatarId
+        const remote = personaInventory.find((item) => item.id === `userPersona:${avatarId}`)
+        if (remote) {
+          const [remoteFile] = await tavernBridgeService.pullResources([remote], { signal })
+          if (!remoteFile) throw new Error(`无法核对酒馆人设“${summary.name}”`)
+          if (personaContentMatches(local.raw, JSON.parse(await remoteFile.text()), avatarId)) {
+            if (!local.entries.some((entry) => Object.keys(entry.profile.variants).length)) {
+              plans.set(summary.id, { skip: true })
+              continue
+            }
+            plan.identicalPersona = true
+          } else {
+            const decision = await chooseAction({
+              title: '酒馆人设已有不同内容',
+              message: `“${summary.name}”仍使用酒馆原头像标识，但名称或描述已修改。跳过会保留酒馆原版；另存为新人设会生成新的头像标识，不覆盖原版，也不切换当前使用的人设。`,
+              confirmLabel: '另存为新人设',
+              alternativeLabel: '跳过这项',
+              cancelLabel: '取消发送',
+            })
+            if (decision === 'cancel') return null
+            if (decision === 'alternative') {
+              plans.set(summary.id, { skip: true })
+              continue
+            }
+            const nextAvatarId = `persona-${crypto.randomUUID()}.png`
+            const copy = copyPersonaForTavern(local.raw, avatarId, nextAvatarId)
+            plan = {
+              avatarId: nextAvatarId,
+              file: new File([JSON.stringify(copy, null, 2)], `${nextAvatarId.slice(0, -4)}.json`, {
+                type: 'application/json',
+              }),
+            }
+          }
+        }
+      }
+
+      const characterTargets = new Map<string, Map<string, string>>()
+      const missingCharacters: NonNullable<PersonaSendPlan['missingCharacters']> = []
+      const mapCharacter = (personaAvatar: string, sourceId: string, targetAvatar: string) => {
+        const mappings = characterTargets.get(personaAvatar) ?? new Map<string, string>()
+        mappings.set(sourceId, targetAvatar)
+        characterTargets.set(personaAvatar, mappings)
+      }
+      for (const entry of local.entries) {
+        for (const sourceId of Object.keys(entry.profile.variants)) {
+          const snapshot = entry.characterBindings[sourceId]
+          const sourceAvatar = snapshot?.avatar || sourceId
+          const exact =
+            characterByAvatar.get(sourceAvatar.toLocaleLowerCase()) ??
+            characterById.get(`character:${sourceAvatar}`)
+          if (exact) {
+            mapCharacter(entry.avatarId, sourceId, exact.fileName)
+            continue
+          }
+          const hashMatch = snapshot?.hash
+            ? characterByHash.get(snapshot.hash.toLocaleLowerCase())
+            : undefined
+          if (hashMatch) {
+            mapCharacter(entry.avatarId, sourceId, hashMatch.fileName)
+            continue
+          }
+
+          let sameName = snapshot?.name
+            ? (characterByName.get(snapshot.name.trim().toLocaleLowerCase()) ?? [])
+            : []
+          if (!sameName.length && !snapshot) {
+            const sourceName = sourceId.replace(/\.png$/iu, '').toLocaleLowerCase()
+            sameName = characterByName.get(sourceName) ?? []
+          }
+          if (sameName.length === 1 && !snapshot?.hash) {
+            mapCharacter(entry.avatarId, sourceId, sameName[0]!.fileName)
+            continue
+          }
+          if (sameName.length && snapshot?.hash) {
+            const files = await tavernBridgeService.pullResources(sameName, { signal })
+            const matchedIndex = await (async () => {
+              for (const [index, file] of files.entries()) {
+                if ((await hashBlob(file)) === snapshot.hash) return index
+              }
+              return -1
+            })()
+            if (matchedIndex >= 0) {
+              mapCharacter(entry.avatarId, sourceId, sameName[matchedIndex]!.fileName)
+              continue
+            }
+          }
+
+          const localCharacterSummary = props.resources.find(
+            (item) =>
+              item.type === RESOURCE_TYPE.CHARACTER_CARD &&
+              (snapshot?.hash
+                ? item.contentHash === snapshot.hash
+                : item.fileName.toLocaleLowerCase() === sourceAvatar.toLocaleLowerCase() ||
+                  item.name.trim().toLocaleLowerCase() ===
+                    (snapshot?.name || sourceId.replace(/\.png$/iu, ''))
+                      .trim()
+                      .toLocaleLowerCase()),
+          )
+          let characterFile: File | undefined
+          if (localCharacterSummary) {
+            const localCharacter = await resourceService.get(localCharacterSummary.id)
+            if (localCharacter) {
+              characterFile = new File([localCharacter.originalBlob], sourceAvatar, {
+                type: localCharacter.mimeType || 'image/png',
+              })
+            }
+          }
+          const identityLabel = snapshot?.name || sourceId.replace(/\.png$/iu, '')
+          missingNames.push(
+            `${summary.name} · ${identityLabel}${characterFile ? '' : '（资源库中找不到角色卡文件）'}`,
+          )
+          missingCharacters.push({
+            personaAvatar: entry.avatarId,
+            sourceId,
+            avatarId: sourceAvatar,
+            name: identityLabel,
+            file: characterFile,
+          })
+        }
+      }
+      if (characterTargets.size || missingCharacters.length) {
+        plan.characterTargets = characterTargets
+        plan.missingCharacters = missingCharacters
+      }
+      if (plan.identicalPersona && !missingCharacters.length) plan.skip = true
+      plans.set(summary.id, plan)
+    }
+
+    const hasMissing = Array.from(plans.values()).some((plan) => plan.missingCharacters?.length)
+    if (hasMissing) {
       const decision = await chooseAction({
-        title: '酒馆人设已有不同内容',
-        message: `“${summary.name}”仍使用酒馆原头像标识，但名称或描述已修改。跳过会保留酒馆原版；另存为新人设会生成新的头像标识，不覆盖原版，也不切换当前使用的人设。`,
-        confirmLabel: '另存为新人设',
-        alternativeLabel: '跳过这项',
+        title: '酒馆缺少角色卡',
+        message: `以下角色卡还没有在酒馆中匹配到：\n${missingNames.join('\n')}\n\n选择“一并传入”会先尝试安全地导入资源库中已有的角色卡，再传入对应的角色专属人设。没有角色卡文件的项目无法补传。选择“只传已有角色卡的人设”时，会保留酒馆已匹配角色卡的专属设定；若一张也没有匹配，则只传全局人设。`,
+        confirmLabel: '一并传入角色卡',
+        alternativeLabel: '只传已有卡的人设',
         cancelLabel: '取消发送',
       })
       if (decision === 'cancel') return null
-      if (decision === 'alternative') {
-        plans.set(summary.id, { skip: true })
-        continue
+      for (const plan of plans.values()) {
+        plan.sendMissingCharacters = decision === 'confirm'
+        if (!plan.identicalPersona) continue
+        if (decision === 'confirm') {
+          plan.skipPersona = true
+          continue
+        }
+        const overwriteConfirmed = await confirmAction({
+          title: '更新酒馆中已有的人设',
+          message:
+            '酒馆里已经有相同的人设。为了按你的选择移除没有对应角色卡的专属设定，需要更新这份人设内容；全局描述和原生 connections 会保留。是否继续？',
+          confirmLabel: '更新这份人设',
+        })
+        if (!overwriteConfirmed) return null
+        plan.forceOverwritePersona = true
       }
-      const nextAvatarId = `persona-${crypto.randomUUID()}.png`
-      const copy = copyPersonaForTavern(local.raw, avatarId, nextAvatarId)
-      plans.set(summary.id, {
-        avatarId: nextAvatarId,
-        file: new File([JSON.stringify(copy, null, 2)], `${nextAvatarId.slice(0, -4)}.json`, {
-          type: 'application/json',
-        }),
-      })
     }
     return plans
   }
@@ -1157,6 +1342,7 @@ export function useTavernBridgeCenter(
     busy.value = true
     error.value = ''
     let sentCount = 0
+    const transferredCharacterAvatars = new Set<string>()
     try {
       for (let index = 0; index < summaries.length; index += 1) {
         if (signal?.aborted) {
@@ -1181,6 +1367,8 @@ export function useTavernBridgeCenter(
           continue
         }
         let avatarDetail = ''
+        const personaTransferDetails: string[] = []
+        let roleCardImported = false
         try {
           const resource = await resourceService.get(summary.id)
           if (!resource) throw new Error('资源已不存在')
@@ -1218,11 +1406,96 @@ export function useTavernBridgeCenter(
                   : `头像${avatarResult?.status === 'overwritten' ? '已替换' : '已上传'}`
             }
           }
+          let personaFile = personaPlan?.file
+          if (summary.type === RESOURCE_TYPE.USER_PERSONA) {
+            const characterTargets = new Map(
+              Array.from(personaPlan?.characterTargets ?? [], ([personaAvatar, mappings]) => [
+                personaAvatar,
+                new Map(mappings),
+              ]),
+            )
+            if (personaPlan?.sendMissingCharacters) {
+              for (const missing of personaPlan.missingCharacters ?? []) {
+                if (transferredCharacterAvatars.has(missing.avatarId)) {
+                  const mappings = characterTargets.get(missing.personaAvatar) ?? new Map()
+                  mappings.set(missing.sourceId, missing.avatarId)
+                  characterTargets.set(missing.personaAvatar, mappings)
+                  continue
+                }
+                if (!missing.file) {
+                  personaTransferDetails.push(
+                    `${missing.name}角色卡文件不在资源库，只保留全局/已匹配设定`,
+                  )
+                  continue
+                }
+                try {
+                  const [cardResult] = await tavernBridgeService.sendFiles(
+                    [
+                      {
+                        file: missing.file,
+                        kind: 'character',
+                        displayName: `${missing.name} · 角色卡`,
+                        operationId: `${entry.operationId}:character:${missing.avatarId}`,
+                      },
+                    ],
+                    'skip',
+                    undefined,
+                    { signal },
+                  )
+                  if (cardResult?.status === 'created' || cardResult?.status === 'overwritten') {
+                    transferredCharacterAvatars.add(missing.avatarId)
+                    roleCardImported = true
+                    const mappings = characterTargets.get(missing.personaAvatar) ?? new Map()
+                    mappings.set(missing.sourceId, missing.avatarId)
+                    characterTargets.set(missing.personaAvatar, mappings)
+                    personaTransferDetails.push(`${missing.name}角色卡已传入`)
+                  } else {
+                    personaTransferDetails.push(`${missing.name}角色卡未导入，已跳过对应专属设定`)
+                  }
+                } catch (reason) {
+                  if (signal?.aborted) throw reason
+                  const message = reason instanceof Error ? reason.message : '角色卡发送失败'
+                  personaTransferDetails.push(`${missing.name}角色卡未导入：${message}`)
+                }
+              }
+            } else if (personaPlan?.missingCharacters?.length) {
+              personaTransferDetails.push('按选择跳过酒馆缺少的角色卡专属设定')
+            }
+            const personaSourceFile =
+              personaFile ??
+              new File([resource.originalBlob], resource.fileName, {
+                type: resource.mimeType,
+              })
+            const personaBackup = JSON.parse(await personaSourceFile.text())
+            const mappedBackup = mapPersonaCharacterVariantsForTavern(
+              personaBackup,
+              characterTargets,
+            )
+            personaFile = new File(
+              [JSON.stringify(mappedBackup, null, 2)],
+              personaSourceFile.name,
+              {
+                type: 'application/json',
+              },
+            )
+          }
+          if (personaPlan?.skipPersona) {
+            entry.status = 'done'
+            entry.detail = [
+              '酒馆已有相同人设，未重复写入',
+              roleCardImported ? '缺少的角色卡已补传' : '',
+              ...personaTransferDetails,
+            ]
+              .filter(Boolean)
+              .join(' · ')
+            if (roleCardImported) sentCount += 1
+            continue
+          }
           const [result] = await tavernBridgeService.sendFiles(
             [
               {
                 file:
-                  personaPlan?.file ??
+                  personaFile ??
                   new File([resource.originalBlob], resource.fileName, {
                     type: resource.mimeType,
                   }),
@@ -1240,12 +1513,21 @@ export function useTavernBridgeCenter(
                         : undefined,
               },
             ],
-            chatPlan ? 'copy' : personaPlan?.file ? 'skip' : conflictPolicy.value,
+            chatPlan
+              ? 'copy'
+              : personaPlan?.forceOverwritePersona
+                ? 'overwrite'
+                : personaPlan?.file
+                  ? 'skip'
+                  : conflictPolicy.value,
             (_completed, _total, detail) => {
               if (detail) progress.value = detail
             },
             { signal },
           )
+          if (resource.type === RESOURCE_TYPE.CHARACTER_CARD && result?.status !== 'skipped') {
+            transferredCharacterAvatars.add(resource.fileName)
+          }
           if (chatPlan?.regexFile) {
             avatarDetail = '聊天已导入'
             await tavernBridgeService.sendFiles(
@@ -1272,6 +1554,7 @@ export function useTavernBridgeCenter(
                 ? '已写入并校验，下次启动酒馆生效'
                 : '酒馆已确认导入',
             avatarDetail,
+            ...personaTransferDetails,
           ]
             .filter(Boolean)
             .join(' · ')
@@ -1279,7 +1562,9 @@ export function useTavernBridgeCenter(
         } catch (reason) {
           if (signal?.aborted) {
             entry.status = 'pending'
-            entry.detail = '已取消，未完成资源可重试'
+            entry.detail = ['已取消，未完成人设可重试', ...personaTransferDetails]
+              .filter(Boolean)
+              .join(' · ')
             for (const remaining of summaries.slice(index + 1)) {
               const queued = transferQueue.value.find((item) => item.key === remaining.id)
               if (queued && queued.status !== 'done') {
@@ -1293,6 +1578,7 @@ export function useTavernBridgeCenter(
           const message = reason instanceof Error ? reason.message : '发送失败'
           entry.detail = [
             avatarDetail,
+            ...personaTransferDetails,
             message.includes('暂不支持')
               ? `${message}；助手脚本互传需要页面扩展 ${BRIDGE_EXTENSION_VERSION}+，请在酒馆扩展管理中点击更新`
               : message,

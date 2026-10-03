@@ -137,6 +137,8 @@ export interface CommunitySource {
   savedMessageCheckCursor?: string
   /** 仅在用户明确选择“保留上一版本”时生成；随 Source 一起进入 Vault / Backup。 */
   revisions?: CommunitySourceRevision[]
+  /** Snapshot time of the source display metadata, independent from message edit versions. */
+  metadataCapturedAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -217,6 +219,8 @@ export interface CommunitySourceMessage {
   remoteState?: CommunitySourceMessageRemoteState
   lastRemoteCheckedAt?: number
   capturedAt: number
+  /** Snapshot delivery time, separate from Discord's message creation time; older deliveries cannot replace it. */
+  deliveryCapturedAt?: number
   updatedAt: number
 }
 

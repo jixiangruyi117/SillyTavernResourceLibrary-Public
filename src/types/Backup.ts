@@ -69,7 +69,6 @@ export interface ArchivePortableData {
     hideChatDisplayRegex?: boolean
     showManuallyBoundResources?: boolean
     searchHistory: string[]
-    historySnapshotLimit: number
   }
   /** 包含 API Key；只能在用户明确选择时迁移。 */
   mainApiProfiles?: MainApiProfilesState
@@ -80,6 +79,7 @@ export interface ArchivePortableData {
     imageGeneration?: FrontendWorkshopImageGenerationConfig[]
     imageHosting?: FrontendWorkshopSelfHostedImageBedConfig
     legacyFrontendWorkshopApi?: MainApiConfig
+    productAssistantApi?: MainApiConfig
     discordSource?: DiscordSourceConnectionSettings
     cloudBackup?: Partial<Record<'github' | 'webdav', string>>
   }

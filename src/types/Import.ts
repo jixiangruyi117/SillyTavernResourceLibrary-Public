@@ -1,6 +1,7 @@
 import type { Resource, ResourceSummary, ResourceType } from './Resource'
 
-export type VersionMatchKind = 'contentDuplicate' | 'containerVariant' | 'version' | 'heuristic'
+export type VersionMatchKind =
+  'contentDuplicate' | 'containerVariant' | 'version' | 'heuristic' | 'sameName'
 
 export interface ParsedResource {
   type: ResourceType
@@ -12,6 +13,7 @@ export interface ParsedResource {
 }
 
 export interface ImportSuccess {
+  sourceContentHash?: string
   status: 'imported'
   fileName: string
   resource: Resource
@@ -19,6 +21,7 @@ export interface ImportSuccess {
 }
 
 export interface ImportDuplicate {
+  sourceContentHash?: string
   status: 'duplicate'
   fileName: string
   message: string
@@ -34,9 +37,12 @@ export interface ImportFailure {
 }
 
 export interface ImportVersionCandidate {
+  onResolved?: (committedHash?: string) => Promise<void>
+  sourceContentHash?: string
   status: 'versionCandidate'
   fileName: string
   file: File
+  shareRecoveryId?: string
   candidates: Array<{
     resource: ResourceSummary
     matchedResource: ResourceSummary

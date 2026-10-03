@@ -8,6 +8,7 @@ const transfer = vi.hoisted(() => ({
   stageObjectFromLibrary: vi.fn(),
   stageObjectFromSources: vi.fn(),
   probeLibraryObject: vi.fn(),
+  probeLibraryObjects: vi.fn(),
   appendObject: vi.fn(),
   commitObject: vi.fn(),
   abortObject: vi.fn(),
@@ -35,7 +36,7 @@ import {
   cancelActiveNativeCloudTransfer,
   clearNativeCloudCredential,
   invalidateNativeCloudCredential,
-  NATIVE_CLOUD_INLINE_MAX_BYTES,
+  getLatestNativeCloudRestoreJob,
   nativeWebDavFetch,
   readNativeCloudCredential,
   readNativeRestoredCardMetadata,
@@ -55,6 +56,7 @@ describe('NativeCloudTransfer', () => {
       available: true,
       size: 256 * 1024 * 1024,
     })
+    transfer.probeLibraryObjects.mockResolvedValue({ available: true })
     transfer.appendObject.mockResolvedValue(undefined)
     transfer.commitObject.mockResolvedValue(undefined)
     transfer.startJob.mockResolvedValue({ status: 'queued' })
@@ -120,6 +122,28 @@ describe('NativeCloudTransfer', () => {
     })
     expect(transfer.appendObject).not.toHaveBeenCalled()
     expect(transfer.readRestoredCardMetadata).not.toHaveBeenCalled()
+  })
+
+  it('queries restore jobs separately so a download never becomes an upload or backup-success record', async () => {
+    transfer.getLatestJob.mockResolvedValueOnce({
+      present: true,
+      kind: 'restore',
+      id: 'restore-1',
+      status: 'running',
+      completed: 2,
+      total: 3,
+    })
+    expect(await getLatestNativeCloudRestoreJob()).toMatchObject({
+      kind: 'restore',
+      id: 'restore-1',
+    })
+    expect(transfer.getLatestJob).toHaveBeenCalledWith({ kind: 'restore' })
+    transfer.getLatestJob.mockResolvedValueOnce({
+      present: true,
+      id: 'legacy-upload',
+      status: 'running',
+    })
+    expect(await getLatestNativeCloudRestoreJob()).toBeNull()
   })
 
   it('reads exactly one verified card per metadata request', async () => {
@@ -261,8 +285,47 @@ describe('NativeCloudTransfer', () => {
     })
   })
 
+  it('将超过旧 4 MiB 限制的清单按原生流分段暂存', async () => {
+    const manifest = new Blob([new Uint8Array(4 * 1024 * 1024 + 1)])
+
+    await expect(
+      canUseNativeStructuredSnapshotHandoff({
+        objects: [],
+        manifest: {
+          name: 'snapshot.json.gz',
+          blob: manifest,
+          contentType: 'application/gzip',
+        },
+      }),
+    ).resolves.toBe(true)
+
+    await uploadNativeStructuredSnapshot({
+      config: {
+        provider: 'webdav',
+        baseUrl: 'https://example.test/dav',
+        folder: 'backup',
+        username: 'user',
+        retention: 7,
+        autoBackup: false,
+      },
+      secret: 'secret',
+      objects: [],
+      manifest: {
+        name: 'snapshot.json.gz',
+        blob: manifest,
+        contentType: 'application/gzip',
+      },
+    })
+
+    expect(transfer.beginObject).toHaveBeenCalledWith(
+      expect.objectContaining({ manifest: true, size: manifest.size }),
+    )
+    expect(transfer.appendObject).toHaveBeenCalled()
+    expect(transfer.commitObject).toHaveBeenCalled()
+  })
+
   it('只在 NativeLibrary 原件真实可用时允许大型 changed object 进入原生 handoff', async () => {
-    const blob = new Blob([new Uint8Array(NATIVE_CLOUD_INLINE_MAX_BYTES + 1)])
+    const blob = new Blob([new Uint8Array(5 * 1024 * 1024 + 1)])
     const object = {
       name: `srl-chunk--sha256-${'a'.repeat(64)}`,
       blob,
@@ -283,12 +346,16 @@ describe('NativeCloudTransfer', () => {
     await expect(
       canUseNativeStructuredSnapshotHandoff({ objects: [object], manifest }),
     ).resolves.toBe(true)
-    expect(transfer.probeLibraryObject).toHaveBeenCalledWith({
-      sourceHash: 'b'.repeat(64),
-      minimumSize: 1024 + blob.size,
+    expect(transfer.probeLibraryObjects).toHaveBeenCalledWith({
+      sources: [
+        {
+          sourceHash: 'b'.repeat(64),
+          minimumSize: 1024 + blob.size,
+        },
+      ],
     })
 
-    transfer.probeLibraryObject.mockResolvedValueOnce({ available: false, size: 0 })
+    transfer.probeLibraryObjects.mockResolvedValueOnce({ available: false })
     await expect(
       canUseNativeStructuredSnapshotHandoff({ objects: [object], manifest }),
     ).resolves.toBe(false)
@@ -301,8 +368,65 @@ describe('NativeCloudTransfer', () => {
     ).resolves.toBe(false)
   })
 
+  it('thousands of object sources are preflighted in one native bridge call, including large offsets', async () => {
+    const manifest = {
+      name: 'snapshot.json.gz',
+      blob: new Blob(['manifest']),
+      contentType: 'application/gzip',
+    }
+    const objects = Array.from({ length: 1_000 }, (_, index) => {
+      const sourceHash = index.toString(16).padStart(64, '0')
+      return {
+        name: `srl-chunk--sha256-${sourceHash}`,
+        size: 32 * 1024 * 1024,
+        contentType: 'application/octet-stream',
+        nativeSource: {
+          kind: 'range' as const,
+          contentHash: sourceHash,
+          offset: 3 * 1024 * 1024 * 1024,
+          size: 32 * 1024 * 1024,
+        },
+      }
+    })
+
+    await expect(canUseNativeStructuredSnapshotHandoff({ objects, manifest })).resolves.toBe(true)
+    expect(transfer.probeLibraryObjects).toHaveBeenCalledOnce()
+    expect(transfer.probeLibraryObjects.mock.calls[0]?.[0].sources).toHaveLength(1_000)
+    expect(transfer.probeLibraryObjects.mock.calls[0]?.[0].sources[0]?.minimumSize).toBe(
+      3 * 1024 * 1024 * 1024 + 32 * 1024 * 1024,
+    )
+  })
+
+  it('falls back to bounded single-object probes on older APKs without batch support', async () => {
+    const blob = new Blob(['chunk'])
+    transfer.probeLibraryObjects.mockRejectedValueOnce({ code: 'UNIMPLEMENTED' })
+    await expect(
+      canUseNativeStructuredSnapshotHandoff({
+        objects: [
+          {
+            name: 'chunk',
+            size: blob.size,
+            contentType: 'application/octet-stream',
+            nativeSource: {
+              kind: 'range',
+              contentHash: 'e'.repeat(64),
+              offset: 0,
+              size: blob.size,
+            },
+          },
+        ],
+        manifest: {
+          name: 'snapshot',
+          blob: new Blob(['manifest']),
+          contentType: 'application/gzip',
+        },
+      }),
+    ).resolves.toBe(true)
+    expect(transfer.probeLibraryObject).toHaveBeenCalledOnce()
+  })
+
   it('大型 NativeLibrary source 在 staging 时消失也不会重新退回 Base64 Bridge', async () => {
-    const blob = new Blob([new Uint8Array(NATIVE_CLOUD_INLINE_MAX_BYTES + 1)])
+    const blob = new Blob([new Uint8Array(5 * 1024 * 1024 + 1)])
     transfer.stageObjectFromLibrary.mockResolvedValueOnce({ staged: false })
 
     await expect(

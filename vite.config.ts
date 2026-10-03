@@ -18,7 +18,6 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 import buildInfo from './build-info.json' with { type: 'json' }
 
-const workerProxy = { '/api': 'http://127.0.0.1:8787' }
 const previewVendorGlobalsSourceId = 'virtual:srl-preview-vendor-globals-source'
 const resolvedPreviewVendorGlobalsSourceId = `\0${previewVendorGlobalsSourceId}`
 const appearanceStarterCssSourceId = 'virtual:srl-appearance-starter-css-source'
@@ -67,7 +66,7 @@ const appearanceStarterCssSources: Record<string, AppearanceStarterCssSource[]> 
   ],
 }
 
-function extractAppearanceStarterRules(css: string, selectorHint?: RegExp, limit = 8): string[] {
+function extractAppearanceStarterRules(css: string, selectorHint?: RegExp, limit = 40): string[] {
   const rules: string[] = []
   const source = css.replace(/\/\*[\s\S]*?\*\//gu, '')
   for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
@@ -98,7 +97,7 @@ function appearanceStarterCssSourcePlugin(): Plugin {
               .flatMap(({ file, selectorHint }) =>
                 extractAppearanceStarterRules(readFileSync(join(root, file), 'utf8'), selectorHint),
               )
-              .slice(0, 8)
+              .slice(0, 80)
               .join('\n\n'),
           ]),
         ),
@@ -240,8 +239,32 @@ function offlineAssetManifestPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __SRL_PREINSTALL_OFFICIAL_APPS__: JSON.stringify(
+      process.env.SRL_ANDROID_PREINSTALL_OFFICIAL_APPS === '1',
+    ),
+  },
   plugins: [
     vue(),
+    {
+      name: 'srl-runtime-build-info',
+      transformIndexHtml: {
+        order: 'pre',
+        handler(html) {
+          const serializedBuildInfo = JSON.stringify(buildInfo).replaceAll('<', '\\u003c')
+          return {
+            html,
+            tags: [
+              {
+                tag: 'script',
+                children: `globalThis.__SRL_BUILD_INFO__=${serializedBuildInfo};`,
+                injectTo: 'head-prepend',
+              },
+            ],
+          }
+        },
+      },
+    },
     appearanceStarterCssSourcePlugin(),
     officialAppPackagesPlugin(buildInfo.buildId),
     previewVendorGlobalsSourcePlugin(),
@@ -269,10 +292,12 @@ export default defineConfig({
         // Web Share Target 的 POST 接收器；系统分享的文件由它暂存后交回应用。
         importScripts: ['sw-share-target.js'],
         // 默认只安装应用壳与资源库核心入口；Feature 分包和教程图按需进入运行时缓存。
+        // 官方 APP 共享资产清单随壳预缓存，供原生端安全判断旧 APP 依赖是否仍可用。
         globPatterns: [
           'index.html',
           'force-refresh.html',
           'manifest.webmanifest',
+          'official-app-assets.json',
           'icons/*.{svg,png,ico}',
         ],
         manifestTransforms: [
@@ -283,7 +308,7 @@ export default defineConfig({
         ],
         globIgnores: ['**/downloads/**', '**/official-apps/**', '**/offline-assets.json'],
         navigateFallback: 'index.html',
-        // Worker API 与互传中继必须实时访问服务器，任何情况下都不能走缓存。
+        // 互传中继必须实时访问服务器，任何情况下都不能走缓存。
         navigateFallbackDenylist: [/^\/api\//, /^\/force-refresh\.html$/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
@@ -341,8 +366,6 @@ export default defineConfig({
     cssTarget: 'chrome61',
   },
   server: {
-    proxy: workerProxy,
     watch: { ignored: ['**/android/**'] },
   },
-  preview: { proxy: workerProxy },
 })

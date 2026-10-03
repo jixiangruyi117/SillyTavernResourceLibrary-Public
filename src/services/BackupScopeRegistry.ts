@@ -160,7 +160,7 @@ export const BACKUP_SCOPE_REGISTRY: ReadonlyArray<BackupScopeDefinition> = [
     id: 'extra.generalPreferences',
     group: 'extraContent',
     label: '常用偏好',
-    description: '预览安全、导入偏好、搜索历史和快照数量',
+    description: '预览安全、导入偏好与搜索历史',
     defaultLocal: true,
     defaultCloud: true,
   },

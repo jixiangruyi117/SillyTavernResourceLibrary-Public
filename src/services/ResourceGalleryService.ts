@@ -23,7 +23,9 @@ export async function moveResourceGallery(
   from: string,
   to: string,
 ): Promise<void> {
-  const summaries = await (storage.listResourceListSummaries?.() ?? storage.listSummaries())
+  const summaries = await (storage.listGalleryListSummaries?.(from) ??
+    storage.listResourceListSummaries?.() ??
+    storage.listSummaries())
   for (const summary of summaries) {
     if (galleryOwnerId(summary) !== from) continue
     const image = await storage.get(summary.id)
@@ -51,6 +53,14 @@ export class ResourceGalleryService {
   }
 
   private async imagesOfType(ownerId: string, requireOwner = false): Promise<ResourceSummary[]> {
+    if (this.storage.listGalleryListSummaries) {
+      const owner = await (this.storage.getSummary?.(ownerId) ?? this.storage.get(ownerId))
+      if (!owner || isResourceGalleryImage(owner)) {
+        if (requireOwner) throw new Error('资源已经不存在，请返回资源库')
+        return []
+      }
+      return this.storage.listGalleryListSummaries(ownerId, true)
+    }
     const summaries = await this.summaries()
     const owner = summaries.find((r) => r.id === ownerId && !isResourceGalleryImage(r))
     if (!owner) {

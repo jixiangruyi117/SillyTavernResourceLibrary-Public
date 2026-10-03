@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 
-import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
-import { categoryService, historyService, resourceService } from '../core/AppContainer'
+import { confirmAction } from '../composables/UseConfirmDialog'
+import { resourceService } from '../core/AppContainer'
 import {
   buildStoredVersionRecognitionReport,
   findHistoricalDuplicateGroups,
@@ -10,15 +10,22 @@ import {
   type StoredVersionRecognitionReport,
   type StoredVersionRecognitionGroup,
 } from '../services/ResourceVersionMatcher'
-import { RESOURCE_TYPE_LABELS, type ResourceSummary } from '../types/Resource'
+import { RESOURCE_TYPE_LABELS, type Category, type ResourceSummary } from '../types/Resource'
+import ResourcePicker from './ResourcePicker.vue'
 
-const props = defineProps<{ resources: ResourceSummary[] }>()
+const props = defineProps<{
+  resources: ResourceSummary[]
+  sameNameVersionCandidates?: boolean
+  categories?: Category[]
+}>()
 const emit = defineEmits<{ close: []; 'library-changed': [] }>()
 const currentResources = ref<ResourceSummary[]>(props.resources)
 const historicalVersions = ref<ResourceSummary[]>([])
 const loadingHistory = ref(true)
 const groups = computed(() =>
-  findStoredVersionGroups(currentResources.value, historicalVersions.value),
+  findStoredVersionGroups(currentResources.value, historicalVersions.value, {
+    sameNameVersionCandidates: props.sameNameVersionCandidates,
+  }),
 )
 const historicalCleanupGroups = computed(() => {
   const currentById = new Map(currentResources.value.map((resource) => [resource.id, resource]))
@@ -48,6 +55,25 @@ const keeperChoices = ref<Record<string, string>>({})
 const activeWorkflow = ref<'cleanup' | 'merge'>('cleanup')
 const busy = ref(false)
 const message = ref('')
+const groupQuery = ref('')
+const groupPage = ref(1)
+const filteredGroups = computed(() => {
+  const terms = groupQuery.value.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+  return groups.value.filter((group) =>
+    group.resources.some((resource) => {
+      const text =
+        `${resource.name}\n${resource.fileName}\n${resource.tags.join(' ')}`.toLocaleLowerCase()
+      return terms.every((term) => text.includes(term))
+    }),
+  )
+})
+const groupPageCount = computed(() => Math.max(1, Math.ceil(filteredGroups.value.length / 10)))
+const visibleGroups = computed(() =>
+  filteredGroups.value.slice((groupPage.value - 1) * 10, groupPage.value * 10),
+)
+watch(filteredGroups, () => {
+  groupPage.value = 1
+})
 
 const selectedGroups = computed(() =>
   groups.value.filter((group) => selectedIds.value.has(group.id)),
@@ -157,20 +183,20 @@ function formatDate(value: number): string {
 
 async function mergeSelected(): Promise<void> {
   if (!selectedGroups.value.length || busy.value) return
-  const confirmed = await confirmAction({
-    title: '并入跨资源版本',
-    message: `将处理 ${selectedGroups.value.length} 组资源，把 ${selectedSourceCount.value} 个独立资源并入所选保留项的历史时间线。来源记录会从当前资源列表移出，原文件及已有历史会保留在目标时间线。\n\n只使用完整卡指纹、核心指纹或稳定来源 ID 等强证据。`,
-    confirmLabel: '开始并入',
-    centered: true,
-  })
-  if (!confirmed) return
-
+  const plan = selectedGroups.value.map((group) => ({ group, keeperId: keeperOf(group) }))
   busy.value = true
-  message.value = '正在整理版本…'
   let merged = 0
   try {
-    for (const group of selectedGroups.value) {
-      const keeperId = keeperOf(group)
+    const confirmed = await confirmAction({
+      title: '并入跨资源版本',
+      message: `将处理 ${selectedGroups.value.length} 组资源，把 ${selectedSourceCount.value} 个独立资源并入所选保留项的历史时间线。来源记录会从当前资源列表移出，原文件及已有历史会保留在目标时间线。\n\n${selectedGroups.value.some((group) => group.matchKind === 'sameName') ? '包含仅同名的候选组，内容和作者可能不同，请确认这些文件确实应属于同一条历史时间线。' : '候选来自完整卡指纹、核心指纹或稳定来源 ID。'}`,
+      confirmLabel: '开始并入',
+      centered: true,
+    })
+    if (!confirmed) return
+
+    message.value = '正在整理版本…'
+    for (const { group, keeperId } of plan) {
       for (const resource of group.resources) {
         if (resource.id === keeperId) continue
         await resourceService.mergeExistingResourceAsVersion(
@@ -183,7 +209,7 @@ async function mergeSelected(): Promise<void> {
         merged += 1
       }
     }
-    message.value = `已完成：${selectedGroups.value.length} 组、${merged} 个资源并入历史版本。`
+    message.value = `已完成：${plan.length} 组、${merged} 个资源并入历史版本。`
     selectedIds.value = new Set()
     emit('library-changed')
   } catch (error) {
@@ -207,29 +233,20 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
     .filter((group) => group.versionIds.length > 0)
   const selectedCount = selectedByOwner.reduce((total, group) => total + group.versionIds.length, 0)
   if (!selectedCount || busy.value) return
-  const choice = await chooseAction({
-    title: '删除已存历史版本',
-    message: `将从 ${selectedByOwner.length} 条资源时间线永久删除 ${selectedCount} 个已存历史版本。当前版本不会删除。整库快照可能很大，请选择是否额外创建。`,
-    confirmLabel: '创建完整快照并删除',
-    alternativeLabel: '不建快照，直接删除',
-    cancelLabel: '取消',
-    danger: true,
-    centered: true,
-  })
-  if (choice === 'cancel') return
-
   busy.value = true
-  message.value = choice === 'confirm' ? '正在创建快照并删除所选历史版本…' : '正在删除所选历史版本…'
   let deleted = 0
   let deletionStarted = false
   try {
-    if (choice === 'confirm') {
-      await historyService.capture(
-        await resourceService.list(),
-        await categoryService.list(),
-        '清理已存历史版本前用户选择的完整快照',
-      )
-    }
+    const confirmed = await confirmAction({
+      title: '删除已存历史版本',
+      message: `将从 ${selectedByOwner.length} 条资源时间线永久删除 ${selectedCount} 个已存历史版本。当前版本不会删除。删除后无法恢复，建议先导出备份。`,
+      confirmLabel: '删除所选历史版本',
+      danger: true,
+      centered: true,
+    })
+    if (!confirmed) return
+
+    message.value = '正在删除所选历史版本…'
     for (const group of selectedByOwner) {
       deletionStarted = true
       deleted += await resourceService.deleteVersions(group.ownerId, group.versionIds)
@@ -361,7 +378,9 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
       <header class="version-recognition__workflow-heading">
         <div>
           <h3>清理已存历史版本</h3>
-          <p>这里只列出已经归入资源时间线的版本。删除前会创建本地快照；当前版本始终保留。</p>
+          <p>
+            这里只列出已经归入资源时间线的版本。删除后无法恢复，建议先导出备份；当前版本始终保留。
+          </p>
         </div>
         <button
           v-if="historyCleanupCandidateCount"
@@ -452,13 +471,21 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
           {{ selectedIds.size === groups.length ? '取消全选' : '全选候选组' }}
         </button>
       </header>
+      <input
+        v-model="groupQuery"
+        class="field__control version-recognition__search"
+        type="search"
+        aria-label="搜索候选组"
+        placeholder="搜索名称、文件名或标签"
+        :disabled="busy"
+      />
       <div v-if="loadingHistory" class="version-recognition__empty">
         <strong>正在扫描资源…</strong>
         <p>只读取轻量摘要，不加载高清原文件。</p>
       </div>
       <div v-else-if="groups.length" class="version-recognition__groups">
         <article
-          v-for="(group, groupIndex) in groups"
+          v-for="(group, groupIndex) in visibleGroups"
           :key="group.id"
           :class="{ 'is-selected': selectedIds.has(group.id) }"
         >
@@ -477,41 +504,62 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
                   {{ group.resources.length }} 个文件</strong
                 >
                 <small>{{
-                  group.matchKind === 'containerVariant' ? '同卡不同封装' : '历史版本'
+                  group.matchKind === 'sameName'
+                    ? '仅同名，待人工确认'
+                    : group.matchKind === 'containerVariant'
+                      ? '同卡不同封装'
+                      : '历史版本'
                 }}</small>
               </span>
             </label>
             <p>{{ group.reasons.join('；') }}</p>
           </header>
-          <ul>
-            <li v-for="resource in group.resources" :key="resource.id">
-              <label>
-                <input
-                  type="radio"
-                  :name="`version-keeper-${groupIndex}`"
-                  :checked="keeperOf(group) === resource.id"
-                  :disabled="busy"
-                  @change="keeperChoices[group.id] = resource.id"
-                />
-                <span>
-                  <strong>{{ resource.name }}</strong>
-                  <small
-                    >{{ resource.fileName }} · {{ formatDate(resource.updatedAt) }} ·
-                    {{ resource.versionCount ?? 1 }} 个现有版本</small
-                  >
-                </span>
-                <em>{{ keeperOf(group) === resource.id ? '保留为当前版' : '并入历史' }}</em>
-              </label>
-            </li>
-          </ul>
+          <ResourcePicker
+            title="选择保留为当前版的资源，其余并入历史"
+            :resources="group.resources"
+            :categories="categories"
+            :model-value="[keeperOf(group)]"
+            :multiple="false"
+            :show-actions="false"
+            :disabled="busy"
+            @update:model-value="keeperChoices[group.id] = $event[0] ?? keeperOf(group)"
+          />
         </article>
       </div>
       <div v-else class="version-recognition__empty">
         <strong>没有可并入历史版本的跨资源候选</strong>
         <p>
-          需要不同资源之间存在强版本证据才会列在这里。已归入资源时间线的版本请到“清理历史版本”中查看。
+          {{
+            sameNameVersionCandidates
+              ? '目前没有强证据或同名候选。'
+              : '需要不同资源之间存在强版本证据才会列在这里；可在设置中开启同名候选。'
+          }}已归入资源时间线的版本请到“清理历史版本”中查看。
         </p>
       </div>
+      <p v-if="groups.length && !filteredGroups.length">没有匹配的候选组，调整搜索词后再试。</p>
+      <nav
+        v-if="groupPageCount > 1"
+        class="version-recognition__pagination"
+        aria-label="候选组分页"
+      >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="busy || groupPage === 1"
+          @click="groupPage -= 1"
+        >
+          上一页
+        </button>
+        <span>{{ groupPage }} / {{ groupPageCount }} · {{ filteredGroups.length }} 组</span>
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="busy || groupPage === groupPageCount"
+          @click="groupPage += 1"
+        >
+          下一页
+        </button>
+      </nav>
       <footer v-if="groups.length">
         <span
           >已选 {{ selectedGroups.length }} 组，将

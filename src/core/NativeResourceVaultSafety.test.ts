@@ -18,6 +18,16 @@ afterEach(() => {
 })
 
 describe('native startup and incomplete vault migration', () => {
+  it('shares a single native mirror sync when startup and cloud backup meet', async () => {
+    let resolveInfo!: (value: undefined) => void
+    nativeFiles.info.mockReturnValueOnce(new Promise((resolve) => (resolveInfo = resolve)))
+    const startup = syncNativeResourceFiles()
+    const backup = syncNativeResourceFiles()
+    expect(nativeFiles.info).toHaveBeenCalledOnce()
+    resolveInfo(undefined)
+    await Promise.all([startup, backup])
+  })
+
   it('does not clear native-only originals while an enabled vault awaits migration/unlock', async () => {
     nativeFiles.info.mockResolvedValue({ storageVersion: 4 })
     vi.spyOn(vaultService, 'isEnabled').mockReturnValue(true)

@@ -69,10 +69,13 @@ const MAX_TEXT_ATTACHMENTS_PER_CAPTURE = 2
 const MAX_TEXT_ATTACHMENT_BYTES_PER_READ = 2_000_000
 
 export function hasTextAttachments(capture: Record<string, unknown>): boolean {
-  return Array.isArray(capture.attachments) && capture.attachments.some((item) => {
-    const attachment = asRecord(item)
-    return asString(attachment?.name).toLowerCase().endsWith('.txt')
-  })
+  return (
+    Array.isArray(capture.attachments) &&
+    capture.attachments.some((item) => {
+      const attachment = asRecord(item)
+      return asString(attachment?.name).toLowerCase().endsWith('.txt')
+    })
+  )
 }
 
 function textAttachmentUrl(value: unknown): string | undefined {
@@ -103,10 +106,13 @@ async function readTextAttachment(
     const response = await fetch(url, {
       method: 'GET',
       cache: 'no-store',
-      redirect: 'error',
+      redirect: 'manual',
       signal: controller.signal,
     })
-    if (!response.ok || !response.body) return undefined
+    if (!response.ok || !response.body) {
+      await response.body?.cancel()
+      return undefined
+    }
     const contentLength = Number(response.headers.get('content-length'))
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
       await response.body.cancel()

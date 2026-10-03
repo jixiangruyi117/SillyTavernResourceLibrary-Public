@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import './Styles.css'
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { secretResourceService } from './services/SecretResourceService'
 onBeforeUnmount(() => secretResourceService.lock())
 import { secretPasswordRequest } from './composables/UseSecretPasswordPrompt'
@@ -11,6 +11,7 @@ const SecretPasswordDialog = createAsyncPanel(
 import LibraryLinkImportPanel from './components/LibraryLinkImportPanel.vue'
 import CategoryManager from './components/CategoryManager.vue'
 import DataVaultPanel from './components/DataVaultPanel.vue'
+import FeatureBackButton from './components/FeatureBackButton.vue'
 import { createAsyncPanel } from './core/AsyncPanel'
 const loadAiTaggingPanel = () => import('./components/AiTaggingPanel.vue')
 const AiTaggingPanel = createAsyncPanel('AI 标签实验台', loadAiTaggingPanel, { modal: true })
@@ -69,6 +70,7 @@ import ResourceCard from './components/ResourceCard.vue'
 import ResourceInspector from './components/ResourceInspector.vue'
 import ResourceListRow from './components/ResourceListRow.vue'
 import { useApp } from './composables/UseApp'
+import { nativeFileSize } from './core/NativeFileSource'
 const controller = useApp()
 watch(controller.isBatchMode, (active) => {
   // 进入多选时提前加载下一步界面；失败仍由打开面板时的原错误边界展示。
@@ -80,6 +82,27 @@ const personalEditor = useTemplateRef<{ requestBack: () => void }>('personalEdit
 const personalOrganizer = useTemplateRef<{ requestClose: () => void }>('personalOrganizer')
 const { newPersonalKind, personalSaved, createPersonal, closePersonal } =
   usePersonalResourceNavigation(controller, personalEditor, personalOrganizer)
+
+let uniformCardHeightFrame: number | undefined
+function syncUniformResourceCardHeight(): void {
+  if (uniformCardHeightFrame !== undefined) cancelAnimationFrame(uniformCardHeightFrame)
+
+  uniformCardHeightFrame = requestAnimationFrame(() => {
+    uniformCardHeightFrame = undefined
+    const grid = resourceGridElement.value
+    if (!grid) return
+
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.resource-card'))
+    cards.forEach((card) => card.style.removeProperty('min-height'))
+    if (resourceCardHeightMode.value !== 'uniform' || layoutMode.value !== 'grid') return
+
+    const tallestCard = Math.max(...cards.map((card) => card.getBoundingClientRect().height), 0)
+    if (tallestCard > 0) {
+      const uniformHeight = `${Math.ceil(tallestCard)}px`
+      cards.forEach((card) => card.style.setProperty('min-height', uniformHeight))
+    }
+  })
+}
 
 const {
   layoutMode,
@@ -112,8 +135,12 @@ const {
   openImportChooser,
   handleImport,
   handleTavernBackupImport,
+  handleLibraryBackupImport,
+  handleResourceArchiveImport,
   pendingSharedFileBatch,
   chooseSharedImportRoute,
+  downloadSharedDiscordAttachmentNow,
+  cancelSharedDiscordAttachment,
   sharedAppImportFiles,
   handleSharedAppFilesConsumed,
   isImportChooserOpen,
@@ -121,6 +148,8 @@ const {
   closeImportChooser,
   openLinkImportPanel,
   openFileImportPicker,
+  openResourceArchivePicker,
+  openLibraryBackupPicker,
   openTavernBackupPicker,
   statistics,
   backupOverdue,
@@ -148,6 +177,10 @@ const {
   categoriesForResource,
   selectedResourceIds,
   blurThumbnails,
+  autoDownloadDiscordShareLinks,
+  persistResourceVersionMatchCache,
+  skipVersionComparisonOnImport,
+  sameNameVersionCandidates,
   handleFavorite,
   openResourceFromLayout,
   toggleResourceSelection,
@@ -244,8 +277,6 @@ const {
   showManuallyBoundResources,
   showPerformanceMonitor,
   hiddenCharacterAssetCount,
-  historySnapshotLimit,
-  historySnapshots,
   applyRemotePreviewPolicy,
   applyScriptPreviewPolicy,
   applyGreetingPreviewPreload,
@@ -255,8 +286,11 @@ const {
   applyHideChatDisplayRegex,
   applyShowManuallyBoundResources,
   applyBlurThumbnails,
+  applyAutoDownloadDiscordShareLinks,
+  applyPersistResourceVersionMatchCache,
+  applySkipVersionComparisonOnImport,
+  applySameNameVersionCandidates,
   updatePerformanceMonitorVisibility,
-  handleHistorySnapshotLimit,
   openFolderSettings,
   openVaultSettings,
   openVersionRecognition,
@@ -272,6 +306,8 @@ const {
   preparedRestore,
   restoreReport,
   isRestoring,
+  isRestorePreflighting,
+  stopRestoreInspection,
   restoreEntry,
   completedRestoreMode,
   handleRestoreInspect,
@@ -283,33 +319,9 @@ const {
   handleVaultEnable,
   handleVaultDisable,
   handleVaultLock,
-  handleCreateSnapshot,
-  handleRestoreSnapshot,
-  handleDeleteSnapshot,
   isVersionRecognitionOpen,
   refreshLibraryAndOpenVersions,
 } = controller
-
-let uniformCardHeightFrame: number | undefined
-function syncUniformResourceCardHeight(): void {
-  if (uniformCardHeightFrame !== undefined) cancelAnimationFrame(uniformCardHeightFrame)
-
-  uniformCardHeightFrame = requestAnimationFrame(() => {
-    uniformCardHeightFrame = undefined
-    const grid = resourceGridElement.value
-    if (!grid) return
-
-    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.resource-card'))
-    cards.forEach((card) => card.style.removeProperty('min-height'))
-    if (resourceCardHeightMode.value !== 'uniform' || layoutMode.value !== 'grid') return
-
-    const tallestCard = Math.max(...cards.map((card) => card.getBoundingClientRect().height), 0)
-    if (tallestCard > 0) {
-      const uniformHeight = `${Math.ceil(tallestCard)}px`
-      cards.forEach((card) => card.style.setProperty('min-height', uniformHeight))
-    }
-  })
-}
 
 watch(
   [
@@ -334,6 +346,19 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', syncUniformResourceCardHeight)
   if (uniformCardHeightFrame !== undefined) cancelAnimationFrame(uniformCardHeightFrame)
 })
+
+type ImportChooserStep = 'home' | 'resource' | 'backup' | 'other'
+const importChooserStep = ref<ImportChooserStep>('home')
+
+function openImportMenu(): void {
+  importChooserStep.value = 'home'
+  openImportChooser()
+}
+
+function returnToImportMenu(): void {
+  if (isLinkImportOpen.value) isLinkImportOpen.value = false
+  else importChooserStep.value = 'home'
+}
 
 const isBatchBarVisible = computed(
   () =>
@@ -386,7 +411,12 @@ const isBatchBarVisible = computed(
     </div>
     <LibrarySidebar :model="panelModel" />
 
-    <main v-if="!isFeatureHubOpen" class="library">
+    <main
+      v-show="!isFeatureHubOpen"
+      class="library"
+      :inert="isFeatureHubOpen || undefined"
+      :aria-hidden="isFeatureHubOpen || undefined"
+    >
       <header class="library__header">
         <div>
           <h1 class="library__title">你的私人资源档案</h1>
@@ -451,14 +481,14 @@ const isBatchBarVisible = computed(
             :class="{ 'import-button--busy': isBusy }"
             type="button"
             :disabled="isBusy"
-            @click="openImportChooser"
+            @click="openImportMenu"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
             </svg>
             <span>
-              {{ isBusy ? '正在导入' : '资源 / 备份' }}
-              <small v-if="!isBusy">选择链接导入或本地导入</small>
+              {{ isBusy ? '正在导入' : '导入' }}
+              <small v-if="!isBusy">链接、资源或备份</small>
             </span>
           </button>
         </div>
@@ -468,11 +498,31 @@ const isBatchBarVisible = computed(
         ref="fileImportInput"
         class="import-button__input"
         type="file"
-        accept=".png,.json,.jsonl,.srlchat,.css,.txt,.zip,image/png,application/json,text/css,text/plain,application/zip"
+        accept=".png,.json,.jsonl,.srlchat,.css,.txt,image/png,application/json,text/css,text/plain"
         multiple
         :disabled="isBusy"
-        aria-label="批量选择资源文件或备份包"
+        aria-label="选择单个资源文件，可多选"
         @change="handleImport"
+      />
+
+      <input
+        ref="resourceArchiveInput"
+        class="import-button__input"
+        type="file"
+        accept=".zip,application/zip"
+        :disabled="isBusy"
+        aria-label="选择资源合集压缩包"
+        @change="handleResourceArchiveImport"
+      />
+
+      <input
+        ref="libraryBackupInput"
+        class="import-button__input"
+        type="file"
+        accept=".zip,application/zip"
+        :disabled="isBusy"
+        aria-label="选择资源库备份 ZIP"
+        @change="handleLibraryBackupImport"
       />
 
       <input
@@ -489,7 +539,11 @@ const isBatchBarVisible = computed(
         v-if="isImportChooserOpen"
         class="import-choice-overlay"
         role="presentation"
-        @click.self="closeImportChooser"
+        @click.self="
+          pendingSharedFileBatch?.discordAttachment
+            ? cancelSharedDiscordAttachment()
+            : closeImportChooser()
+        "
       >
         <section
           class="import-choice-sheet"
@@ -499,17 +553,11 @@ const isBatchBarVisible = computed(
           :aria-label="isLinkImportOpen ? '链接导入' : '选择导入方式'"
         >
           <header>
-            <button
-              v-if="isLinkImportOpen"
-              class="import-choice-sheet__back"
-              type="button"
-              aria-label="返回导入方式"
-              @click="isLinkImportOpen = false"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m14 6-6 6 6 6" />
-              </svg>
-            </button>
+            <FeatureBackButton
+              v-if="!pendingSharedFileBatch && (isLinkImportOpen || importChooserStep !== 'home')"
+              label="返回导入方式"
+              @click="returnToImportMenu"
+            />
             <span class="import-choice-sheet__header-title">
               <small v-if="isLinkImportOpen">LINK IMPORT</small>
               <strong>
@@ -518,7 +566,13 @@ const isBatchBarVisible = computed(
                     ? '导入脚本 / 外部扩展链接'
                     : pendingSharedFileBatch
                       ? '选择分享文件用途'
-                      : '资源 / 备份'
+                      : importChooserStep === 'home'
+                        ? '导入'
+                        : importChooserStep === 'resource'
+                          ? '导入资源'
+                          : importChooserStep === 'backup'
+                            ? '导入备份'
+                            : '其他资源'
                 }}
               </strong>
             </span>
@@ -526,43 +580,78 @@ const isBatchBarVisible = computed(
               class="import-choice-sheet__close"
               type="button"
               aria-label="关闭导入"
-              @click="closeImportChooser"
+              @click="
+                pendingSharedFileBatch?.discordAttachment
+                  ? cancelSharedDiscordAttachment()
+                  : closeImportChooser()
+              "
             >
               ×
             </button>
           </header>
 
           <section v-if="pendingSharedFileBatch" class="shared-import-routes">
-            <p>收到 {{ pendingSharedFileBatch.files.length }} 个分享文件，请选择导入用途：</p>
-            <ul>
-              <li v-for="file in pendingSharedFileBatch.files" :key="`${file.name}-${file.size}`">
-                {{ file.name }} · {{ formatBytes(file.size) }}
-              </li>
-            </ul>
-            <button type="button" @click="chooseSharedImportRoute('libraryBackup')">
-              <strong>导入资源库备份</strong>
-              <small>SRL 导出的完整或选择性备份 ZIP；进入资源库恢复预检</small>
-            </button>
-            <button type="button" @click="chooseSharedImportRoute('tavernBackup')">
-              <strong>导入酒馆备份</strong>
-              <small>SillyTavern 完整备份 ZIP；仅提取支持的资源文件</small>
-            </button>
-            <button type="button" @click="chooseSharedImportRoute('resource')">
-              <strong>导入资源</strong>
-              <small>角色卡、世界书、正则、预设等资源文件或酒馆资源 ZIP</small>
-            </button>
-            <button type="button" @click="chooseSharedImportRoute('thirdPartyApp')">
-              <strong>导入第三方 APP</strong>
-              <small>HTML、ZIP 或 .srlapp；先预览并检查权限，再由你确认安装</small>
-            </button>
+            <template v-if="pendingSharedFileBatch.discordAttachment">
+              <p>收到一个 Discord 附件直链，请核对文件后选择是否导入：</p>
+              <ul>
+                <li>{{ pendingSharedFileBatch.discordAttachment.name }}</li>
+                <li>来源：cdn.discordapp.com</li>
+                <li>下载时会校验实际响应并按资源文件导入</li>
+              </ul>
+              <p v-if="pendingSharedFileBatch.discordAttachment.error" role="alert">
+                上次下载失败：{{ pendingSharedFileBatch.discordAttachment.error }}。可以重试或取消。
+              </p>
+              <button type="button" @click="downloadSharedDiscordAttachmentNow">
+                <strong>下载并导入</strong>
+                <small>下载附件到本机并按角色卡、世界书等资源识别</small>
+              </button>
+              <button type="button" @click="cancelSharedDiscordAttachment">
+                <strong>取消</strong>
+                <small>丢弃这条分享链接，不保存为资源链接</small>
+              </button>
+            </template>
+            <template v-else>
+              <div
+                v-if="pendingSharedFileBatch.interrupted"
+                class="shared-import-recovery"
+                role="status"
+              >
+                <strong>检测到上次导入中断</strong>
+                <p>继续时会核对已完成内容，并重新尝试尚未完成的项目。</p>
+                <button
+                  v-if="pendingSharedFileBatch.route"
+                  type="button"
+                  @click="chooseSharedImportRoute(pendingSharedFileBatch.route)"
+                >
+                  继续上次导入
+                </button>
+              </div>
+              <p>收到 {{ pendingSharedFileBatch.files.length }} 个分享文件，请选择导入用途：</p>
+              <ul>
+                <li v-for="file in pendingSharedFileBatch.files" :key="`${file.name}-${file.size}`">
+                  {{ file.name }} · {{ formatBytes(nativeFileSize(file)) }}
+                </li>
+              </ul>
+              <button type="button" @click="chooseSharedImportRoute('libraryBackup')">
+                <strong>导入资源库备份</strong>
+                <small>SRL 导出的完整或选择性备份 ZIP；进入资源库恢复预检</small>
+              </button>
+              <button type="button" @click="chooseSharedImportRoute('tavernBackup')">
+                <strong>导入酒馆备份</strong>
+                <small>SillyTavern 完整备份 ZIP；仅提取支持的资源文件</small>
+              </button>
+              <button type="button" @click="chooseSharedImportRoute('resource')">
+                <strong>导入资源</strong>
+                <small>角色卡、世界书、正则、预设等资源文件或酒馆资源 ZIP</small>
+              </button>
+              <button type="button" @click="chooseSharedImportRoute('thirdPartyApp')">
+                <strong>导入第三方 APP</strong>
+                <small>HTML、ZIP 或 .srlapp；先预览并检查权限，再由你确认安装</small>
+              </button>
+            </template>
           </section>
 
-          <template v-else-if="!isLinkImportOpen">
-            <div class="personal-create-actions">
-              <button type="button" @click="createPersonal('extraStory')">添加番外指令</button>
-              <button type="button" @click="createPersonal('pocketPhone')">收纳小手机</button>
-              <button type="button" @click="createPersonal('secret')">保存密钥资料</button>
-            </div>
+          <template v-else-if="!isLinkImportOpen && importChooserStep === 'home'">
             <button
               class="import-choice-card import-choice-card--link"
               type="button"
@@ -575,11 +664,65 @@ const isBatchBarVisible = computed(
                 </svg>
               </span>
               <span class="import-choice-card__copy">
-                <small>LINK IMPORT</small>
-                <strong>链接导入脚本 / 外部扩展</strong>
-                <em>读取 GitHub 说明，或保存 Release、raw 文件与社区入口</em>
+                <small>链接</small>
+                <strong>链接导入</strong>
+                <em>导入脚本、外部扩展或资源链接</em>
               </span>
             </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="importChooserStep = 'resource'"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>本地文件</small>
+                <strong>资源</strong>
+                <em>选择单个资源文件，或导入包含多项资源的压缩包</em>
+              </span>
+            </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="importChooserStep = 'backup'"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16v12H4zM7 4h10v3M8 11h8M8 15h5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>备份文件</small>
+                <strong>备份</strong>
+                <em>选择酒馆备份或资源库备份，进入对应恢复流程</em>
+              </span>
+            </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="importChooserStep = 'other'"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 5h16v14H4zM8 9h8M8 13h5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>个人资料</small>
+                <strong>其他资源</strong>
+                <em>新建番外指令、收纳小手机或保存密钥资料</em>
+              </span>
+            </button>
+          </template>
+
+          <template v-else-if="!isLinkImportOpen && importChooserStep === 'resource'">
             <button
               class="import-choice-card"
               type="button"
@@ -592,11 +735,31 @@ const isBatchBarVisible = computed(
                 </svg>
               </span>
               <span class="import-choice-card__copy">
-                <small>FILE IMPORT</small>
-                <strong>{{ isBusy ? '正在导入资源' : '导入本地资源 / 备份' }}</strong>
-                <em>资源文件、SRL 备份 ZIP、个人资源包；酒馆备份请用下方专用入口</em>
+                <small>可多选</small>
+                <strong>单个资源文件</strong>
+                <em>选择一个或多个 PNG、JSON、聊天、美化等资源文件</em>
               </span>
             </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="openResourceArchivePicker"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16v13H4zM4 10h16M9 4h6M9 13h6M9 16h6" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>ZIP 压缩包</small>
+                <strong>资源合集压缩包</strong>
+                <em>从一个压缩包中提取多项资源；备份包请从“备份”进入</em>
+              </span>
+            </button>
+          </template>
+
+          <template v-else-if="!isLinkImportOpen && importChooserStep === 'backup'">
             <button
               class="import-choice-card"
               type="button"
@@ -609,9 +772,65 @@ const isBatchBarVisible = computed(
                 </svg>
               </span>
               <span class="import-choice-card__copy">
-                <small>TAVERN BACKUP</small>
-                <strong>导入酒馆备份</strong>
-                <em>仅接受 SillyTavern 备份 ZIP，提取角色卡、世界书、预设、美化等支持资源</em>
+                <small>SillyTavern</small>
+                <strong>酒馆备份</strong>
+                <em>提取备份中受支持的角色卡、世界书、预设与美化资源</em>
+              </span>
+            </button>
+            <button
+              class="import-choice-card"
+              type="button"
+              :disabled="isBusy"
+              @click="openLibraryBackupPicker"
+            >
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16v13H4zM4 10h16M8 4h8M8 14h8M8 17h5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>SRL</small>
+                <strong>资源库备份</strong>
+                <em>检查备份内容后，选择覆盖或合并恢复</em>
+              </span>
+            </button>
+          </template>
+
+          <template v-else-if="!isLinkImportOpen && importChooserStep === 'other'">
+            <button class="import-choice-card" type="button" @click="createPersonal('extraStory')">
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>个人资料</small>
+                <strong>添加番外指令</strong>
+                <em>创建一份新的番外指令资料</em>
+              </span>
+            </button>
+            <button class="import-choice-card" type="button" @click="createPersonal('pocketPhone')">
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M7 3h10v18H7zM10 6h4M11 18h2" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>个人资料</small>
+                <strong>收纳小手机</strong>
+                <em>创建并整理一份小手机内容</em>
+              </span>
+            </button>
+            <button class="import-choice-card" type="button" @click="createPersonal('secret')">
+              <span class="import-choice-card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5zM12 14v3" />
+                </svg>
+              </span>
+              <span class="import-choice-card__copy">
+                <small>个人资料</small>
+                <strong>保存密钥资料</strong>
+                <em>在加密保护下新建密钥资料</em>
               </span>
             </button>
           </template>
@@ -817,7 +1036,7 @@ const isBatchBarVisible = computed(
     </main>
 
     <FeatureHub
-      v-else
+      v-if="isFeatureHubOpen"
       :resources="managedResources"
       :versions="organizingVersions"
       :categories="categories"
@@ -886,7 +1105,7 @@ const isBatchBarVisible = computed(
         :class="{ 'mobile-bottom-nav__import--busy': isBusy }"
         type="button"
         :disabled="isBusy"
-        @click="openImportChooser"
+        @click="openImportMenu"
       >
         <span aria-hidden="true">+</span>
         <small>{{ isBusy ? '导入中' : '资源 / 备份' }}</small>
@@ -1025,6 +1244,7 @@ const isBatchBarVisible = computed(
     <VersionImportDialog
       v-if="activeVersionImport"
       :candidate="activeVersionImport"
+      :categories="categories"
       :remaining="pendingVersionImports.length"
       :busy="isVersionImportBusy"
       :comparison="versionImportComparison"
@@ -1047,10 +1267,12 @@ const isBatchBarVisible = computed(
       :hide-chat-display-regex="hideChatDisplayRegex"
       :show-manually-bound-resources="showManuallyBoundResources"
       :blur-thumbnails="blurThumbnails"
+      :auto-download-discord-share-links="autoDownloadDiscordShareLinks"
+      :persist-resource-version-match-cache="persistResourceVersionMatchCache"
+      :skip-version-comparison-on-import="skipVersionComparisonOnImport"
+      :same-name-version-candidates="sameNameVersionCandidates"
       :show-performance-monitor="showPerformanceMonitor"
       :hidden-character-asset-count="hiddenCharacterAssetCount"
-      :history-snapshot-limit="historySnapshotLimit"
-      :history-snapshot-count="historySnapshots.length"
       @library-changed="handleLibraryChanged"
       @update:allow-remote-previews="applyRemotePreviewPolicy"
       @update:allow-script-previews="applyScriptPreviewPolicy"
@@ -1061,8 +1283,11 @@ const isBatchBarVisible = computed(
       @update:hide-chat-display-regex="applyHideChatDisplayRegex"
       @update:show-manually-bound-resources="applyShowManuallyBoundResources"
       @update:blur-thumbnails="applyBlurThumbnails"
+      @update:auto-download-discord-share-links="applyAutoDownloadDiscordShareLinks"
+      @update:persist-resource-version-match-cache="applyPersistResourceVersionMatchCache"
+      @update:same-name-version-candidates="applySameNameVersionCandidates"
+      @update:skip-version-comparison-on-import="applySkipVersionComparisonOnImport"
       @update:show-performance-monitor="updatePerformanceMonitorVisibility"
-      @update:history-snapshot-limit="handleHistorySnapshotLimit"
       @manage-folders="openFolderSettings"
       @open-vault="openVaultSettings"
       @open-version-recognition="openVersionRecognition"
@@ -1098,17 +1323,18 @@ const isBatchBarVisible = computed(
       :prepared="preparedRestore"
       :report="restoreReport"
       :busy="isRestoring"
+      :preflight-busy="isRestorePreflighting"
       :entry="restoreEntry"
       :completed-mode="completedRestoreMode"
       @close="closeRestorePanel"
       @inspect="handleRestoreInspect"
       @confirm="handleRestoreConfirm"
+      @stop="stopRestoreInspection"
     />
 
     <DataVaultPanel
       v-if="isVaultPanelOpen"
       :status="vaultStatus"
-      :snapshots="historySnapshots"
       :busy="isVaultBusy"
       :required="vaultStatus.locked"
       @close="isVaultPanelOpen = false"
@@ -1116,9 +1342,6 @@ const isBatchBarVisible = computed(
       @enable="handleVaultEnable"
       @disable="handleVaultDisable"
       @lock="handleVaultLock"
-      @snapshot="handleCreateSnapshot"
-      @restore="handleRestoreSnapshot"
-      @delete="handleDeleteSnapshot"
     />
 
     <div
@@ -1228,6 +1451,8 @@ const isBatchBarVisible = computed(
         aria-label="历史版本管理"
       >
         <VersionRecognitionPanel
+          :same-name-version-candidates="sameNameVersionCandidates"
+          :categories="categories"
           :resources="managedResources"
           @close="isVersionRecognitionOpen = false"
           @library-changed="refreshLibraryAndOpenVersions"

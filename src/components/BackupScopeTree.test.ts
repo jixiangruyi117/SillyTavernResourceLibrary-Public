@@ -48,6 +48,37 @@ const resources = [
 ] as ResourceSummary[]
 
 describe('BackupScopeTree', () => {
+  it('paginates 2501 resources and searching preserves selection outside the results', async () => {
+    const cards = Array.from({ length: 2501 }, (_, index) => ({
+      ...resources[0]!,
+      id: `bulk-${index}`,
+      name: `角色 ${index}`,
+      fileName: `file-${index}.json`,
+      tags: index === 2400 ? ['稀有'] : [],
+    }))
+    const wrapper = mount(BackupScopeTree, {
+      props: {
+        resources: cards,
+        mode: 'local',
+        modelValue: { resourceIds: ['bulk-0'], scopeIds: [] },
+      },
+    })
+    await wrapper.get('button[aria-label="展开角色卡"]').trigger('click')
+    expect(wrapper.findAll('.backup-scope-tree__resources label')).toHaveLength(30)
+    await wrapper.findAll('nav[aria-label="角色卡分页"] button')[1]!.trigger('click')
+    expect(wrapper.get('nav').text()).toContain('2 / 84')
+    await wrapper.get('input[type="search"]').setValue('2400 稀有')
+    expect(wrapper.findAll('.backup-scope-tree__resources label')).toHaveLength(1)
+    await wrapper.get('.backup-scope-tree__resources input').setValue(true)
+    const emitted = wrapper.emitted('update:modelValue')!.at(-1)![0] as { resourceIds: string[] }
+    expect(emitted.resourceIds).toEqual(['bulk-0', 'bulk-2400'])
+    await wrapper.setProps({ modelValue: { resourceIds: emitted.resourceIds, scopeIds: [] } })
+    await wrapper.get('input[type="search"]').setValue('不存在')
+    expect(wrapper.text()).toContain('2 项资源')
+    await wrapper.get('input[type="search"]').setValue('')
+    expect(wrapper.get('nav').text()).toContain('1 / 84')
+    wrapper.unmount()
+  })
   it('counts selected gallery bytes and keeps cover bytes when the gallery is unchecked', async () => {
     const owner = { ...resources[0]!, fileSize: 1024, metadata: { resourceCoverId: 'cover' } }
     const attachment = (id: string, fileSize: number) => ({

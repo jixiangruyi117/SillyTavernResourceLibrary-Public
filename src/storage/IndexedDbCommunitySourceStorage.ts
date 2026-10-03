@@ -1,4 +1,6 @@
 import type { AppDatabase } from '../database/AppDatabase'
+import Dexie from 'dexie'
+
 import {
   decodeCommunitySource,
   decodeCommunitySourceMessage,
@@ -24,8 +26,9 @@ import {
   type StoredCommunitySourceMessage,
   type StoredResourceSourceBinding,
 } from '../types/CommunitySource'
-import type { EncryptedValue } from '../types/Vault'
+import { isEncryptedResourceSummary, type EncryptedValue } from '../types/Vault'
 import type { CommunitySourceStorage } from './CommunitySourceStorage'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 
 const MIGRATION_BATCH_SIZE = 24
 
@@ -254,6 +257,42 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
 
   async deleteBinding(id: string): Promise<void> {
     await this.database.resourceSourceBindings.delete(id)
+  }
+
+  async repairInvalidResourceBindings(
+    validResourceIds: ReadonlySet<string>,
+    galleryVersions: ReadonlyMap<string, number>,
+  ): Promise<number> {
+    if (this.vault.getStatus().locked) throw new Error('请先解锁保险库，再恢复待整理来源')
+    return this.database.transaction(
+      'rw',
+      this.database.resourceSourceBindings,
+      this.database.resources,
+      this.database.resourceSummaries,
+      async () => {
+        const table = this.database.resourceSourceBindings
+        const resourceIds = await table.orderBy('resourceId').uniqueKeys()
+        let removed = 0
+        for (const resourceId of resourceIds) {
+          if (typeof resourceId !== 'string' || validResourceIds.has(resourceId)) continue
+          const exists = await this.database.resources.where('id').equals(resourceId).count()
+          if (exists) {
+            // A restored/new resource or changed gallery target invalidates the old snapshot.
+            const expectedVersion = galleryVersions.get(resourceId)
+            const current = await this.database.resourceSummaries.get(resourceId)
+            if (expectedVersion === undefined || !current || current.updatedAt !== expectedVersion)
+              continue
+            const decoded = isEncryptedResourceSummary(current)
+              ? await Dexie.waitFor(this.vault.decodeResourceSummary(current))
+              : current
+            if (!isResourceGalleryImage(decoded)) continue
+          }
+          if (this.vault.getStatus().locked) throw new Error('保险库已锁定，关联修复尚未完成')
+          removed += await table.where('resourceId').equals(resourceId).delete()
+        }
+        return removed
+      },
+    )
   }
 
   async exportAll(): Promise<CommunitySourceBackupData> {

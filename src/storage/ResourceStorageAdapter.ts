@@ -7,10 +7,24 @@ export type ResourceMetadataPatch = Partial<
   >
 >
 
+export interface ResourceVersionMatchFingerprintCache {
+  schemaVersion: 1
+  resources: Record<string, { signature: string; full: string; core: string }>
+  versions: Record<string, { signature: string; full: string; core: string }>
+}
+
 export interface ResourceStorageAdapter {
+  getVersionMatchFingerprintCache?(): Promise<ResourceVersionMatchFingerprintCache | undefined>
+  setVersionMatchFingerprintCache?(cache: ResourceVersionMatchFingerprintCache): Promise<void>
+  clearVersionMatchFingerprintCache?(): Promise<void>
   list(): Promise<Resource[]>
   listSummaries(): Promise<ResourceSummary[]>
   listResourceListSummaries?(): Promise<ResourceListSummary[]>
+  /** Current gallery images; same-type scope also supplies shared category candidates. */
+  listGalleryListSummaries?(
+    ownerId: string,
+    includeSameType?: boolean,
+  ): Promise<ResourceListSummary[]>
   repairThumbnailAssets?(): Promise<number>
   get(id: string): Promise<Resource | undefined>
   getSummary?(id: string): Promise<ResourceSummary | undefined>

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ParsedResource } from '../types/Import'
+import { computeCardFingerprints } from '../utils/CharacterCardFingerprint'
 import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
 import {
   buildStoredVersionRecognitionReport,
   createVersionMatchEntries,
+  createVersionCandidateIndex,
   findHistoricalDuplicateGroups,
   findStoredVersionGroups,
   findVersionCandidates,
@@ -32,6 +34,41 @@ function summary(overrides: Partial<ResourceSummary> = {}): ResourceSummary {
   }
 }
 
+it('avoids reading 5000 descriptions during indexing and reuses only the matched candidate text', () => {
+  let reads = 0
+  const resources = Array.from({ length: 5000 }, (_, index) => {
+    const item = summary({
+      id: `lazy-${index}`,
+      name: `唯一角色 ${index}`,
+      metadata: { cardCoreHash: `core-${index}` },
+    })
+    Object.defineProperty(item, 'description', {
+      get: () => {
+        reads += 1
+        return '需要按需读取的长正文'.repeat(1000)
+      },
+    })
+    return item
+  })
+  const index = createVersionCandidateIndex(createVersionMatchEntries(resources, []))
+  expect(reads).toBe(0)
+  const parsed: ParsedResource = {
+    type: RESOURCE_TYPE.CHARACTER_CARD,
+    name: '唯一角色 4999',
+    description: '',
+    metadata: { cardCoreHash: 'core-4999' },
+  }
+  expect(findVersionCandidates(parsed, 'different.json', index)).toHaveLength(1)
+  expect(reads).toBe(0)
+  parsed.metadata = {}
+  expect(
+    findVersionCandidates(parsed, 'different.json', index, { sameNameVersionCandidates: true }),
+  ).toHaveLength(1)
+  expect(reads).toBe(1)
+  findVersionCandidates(parsed, 'different.json', index, { sameNameVersionCandidates: true })
+  expect(reads).toBe(1)
+})
+
 function match(
   parsed: ParsedResource,
   fileName: string,
@@ -42,6 +79,145 @@ function match(
 }
 
 describe('ResourceVersionMatcher', () => {
+  it('only offers unrelated same-name cards when opted in, with weak evidence and type boundaries', () => {
+    const incoming: ParsedResource = {
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      name: ' 同名角色 ',
+      description: '星际战争',
+      metadata: { creator: '另一作者' },
+    }
+    const existing = summary({
+      name: '同名角色',
+      description: '古代宫廷',
+      fileName: 'unrelated.png',
+    })
+    const entries = createVersionMatchEntries([existing], [])
+    expect(findVersionCandidates(incoming, 'new-file.json', entries)).toEqual([])
+    expect(
+      findVersionCandidates(incoming, 'new-file.json', entries, {
+        sameNameVersionCandidates: true,
+      }),
+    ).toMatchObject([
+      { matchKind: 'sameName', score: 60, reasons: expect.arrayContaining(['作者不同']) },
+    ])
+    expect(
+      findVersionCandidates({ ...incoming, type: RESOURCE_TYPE.PRESET }, 'new-file.json', entries, {
+        sameNameVersionCandidates: true,
+      }),
+    ).toEqual([])
+    expect(
+      findStoredVersionGroups([existing, { ...existing, id: 'other', contentHash: 'other-file' }]),
+    ).toEqual([])
+    expect(
+      findStoredVersionGroups(
+        [existing, { ...existing, id: 'other', contentHash: 'other-file' }],
+        [],
+        { sameNameVersionCandidates: true },
+      ),
+    ).toMatchObject([{ matchKind: 'sameName' }])
+    expect(
+      findStoredVersionGroups(
+        [
+          { ...existing, name: '' },
+          { ...existing, name: '', id: 'empty', contentHash: 'empty-file' },
+        ],
+        [],
+        { sameNameVersionCandidates: true },
+      ),
+    ).toEqual([])
+  })
+
+  it('retains all same-name choices beyond the former top-three cutoff and keeps strong matches first', () => {
+    const resources = Array.from({ length: 8 }, (_, index) =>
+      summary({
+        id: `same-${index}`,
+        name: '同名',
+        fileName: `unrelated-${index}.png`,
+        description: '原版',
+        contentHash: `file-${index}`,
+        metadata: { cardContentHash: `full-${index}` },
+      }),
+    )
+    const parsed: ParsedResource = {
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      name: '同名',
+      description: '不同内容',
+      metadata: { cardContentHash: 'full-7' },
+    }
+    const candidates = findVersionCandidates(
+      parsed,
+      'different.png',
+      createVersionMatchEntries(resources, []),
+      { sameNameVersionCandidates: true },
+    )
+    expect(candidates).toHaveLength(8)
+    expect(candidates[0]).toMatchObject({
+      resource: { id: 'same-7' },
+      matchKind: 'containerVariant',
+      score: 100,
+    })
+    expect(candidates.slice(1).every((item) => item.matchKind === 'sameName')).toBe(true)
+  })
+
+  it('uses a narrow prepared index and admits newly imported resources without rebuilding the library', () => {
+    const resources = Array.from({ length: 2501 }, (_, index) =>
+      summary({ id: `resource-${index}`, name: `唯一角色 ${index}`, contentHash: `file-${index}` }),
+    )
+    const index = createVersionCandidateIndex(createVersionMatchEntries(resources, []))
+    const parsed: ParsedResource = {
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      name: '唯一角色 2400',
+      description: '',
+      metadata: {},
+    }
+    expect(index.select(parsed)).toHaveLength(1)
+    expect(
+      findVersionCandidates(parsed, 'different.json', index, { sameNameVersionCandidates: true })[0]
+        ?.resource.id,
+    ).toBe('resource-2400')
+    const added = summary({ id: 'new', name: '刚导入' })
+    index.add({ resource: added, groupResource: added, historical: false })
+    expect(
+      findVersionCandidates({ ...parsed, name: '刚导入' }, 'different.json', index, {
+        sameNameVersionCandidates: true,
+      })[0]?.resource.id,
+    ).toBe('new')
+    expect(index.select({ ...parsed, name: '不存在' })).toEqual([])
+  })
+  it('groups stored greeting revisions as versions while keeping them out of duplicate cleanup', async () => {
+    const makeCard = async (id: string, greetings: string[]) => {
+      const metadata = {
+        card: {
+          data: {
+            name: '夜航船',
+            description: '航海者的相同设定',
+            first_mes: '你好',
+            alternate_greetings: greetings,
+          },
+        },
+      }
+      const fingerprints = await computeCardFingerprints(metadata)
+      return summary({
+        id,
+        contentHash: id,
+        fileName: `${id}.json`,
+        mimeType: 'application/json',
+        metadata: {
+          ...metadata,
+          cardContentHash: fingerprints!.full,
+          cardCoreHash: fingerprints!.core,
+        },
+      })
+    }
+    const first = await makeCard('first', ['旧开场'])
+    const revised = await makeCard('revised', ['旧开场', '新增开场'])
+    expect(findStoredVersionGroups([first, revised])).toMatchObject([
+      { matchKind: 'version', resources: expect.arrayContaining([first, revised]) },
+    ])
+    expect(
+      findHistoricalDuplicateGroups([first], [{ ...revised, versionGroupId: first.id }]),
+    ).toEqual([])
+  })
   it('ranks matching name and creator as a likely version', () => {
     const parsed: ParsedResource = {
       type: RESOURCE_TYPE.CHARACTER_CARD,
@@ -151,7 +327,7 @@ describe('卡内容指纹匹配', () => {
 
     const candidates = match(parsed, 'a.json', [existing])
     expect(candidates[0]?.score).toBe(90)
-    expect(candidates[0]?.reasons).toContain('核心内容一致，附加字段不同')
+    expect(candidates[0]?.reasons).toContain('核心设定一致，开场白或附加内容不同')
   })
 
   it('指纹都不同时回落原有启发式', () => {

@@ -27,6 +27,7 @@ const emit = defineEmits<{
 }>()
 
 const panel = ref<HTMLElement>()
+let returnFocus: HTMLElement | undefined
 
 function close(): void {
   emit('update:open', false)
@@ -39,7 +40,28 @@ function select(action: ActionSheetAction): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (props.open && event.key === 'Escape') close()
+  if (!props.open) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    close()
+  } else if (event.key === 'Tab') {
+    const controls = Array.from(
+      panel.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
+    )
+    const first = controls[0]
+    const last = controls.at(-1)
+    if (
+      first &&
+      last &&
+      (!panel.value?.contains(document.activeElement) ||
+        (event.shiftKey && document.activeElement === first) ||
+        (!event.shiftKey && document.activeElement === last))
+    ) {
+      event.preventDefault()
+      ;(event.shiftKey ? last : first).focus()
+    }
+  }
 }
 
 function onBackRequest(event: Event): void {
@@ -47,6 +69,7 @@ function onBackRequest(event: Event): void {
   const detail = (event as CustomEvent<SrlBackRequestDetail>).detail
   if (detail.handled) return
   detail.handled = true
+  event.stopImmediatePropagation()
   close()
 }
 
@@ -54,17 +77,31 @@ watch(
   () => props.open,
   (open) => {
     document.documentElement.classList.toggle('srl-action-sheet-open', open)
-    if (open) void nextTick(() => panel.value?.focus({ preventScroll: true }))
+    if (open) {
+      returnFocus =
+        document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+      void nextTick(() => panel.value?.focus({ preventScroll: true }))
+    } else {
+      void nextTick(() => {
+        if (
+          returnFocus?.isConnected &&
+          (document.activeElement === document.body ||
+            panel.value?.contains(document.activeElement))
+        )
+          returnFocus.focus({ preventScroll: true })
+        returnFocus = undefined
+      })
+    }
   },
   { immediate: true },
 )
 
-window.addEventListener('keydown', onKeydown)
-window.addEventListener(SRL_BACK_REQUEST_EVENT, onBackRequest)
+window.addEventListener('keydown', onKeydown, true)
+window.addEventListener(SRL_BACK_REQUEST_EVENT, onBackRequest, true)
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('srl-action-sheet-open')
-  window.removeEventListener('keydown', onKeydown)
-  window.removeEventListener(SRL_BACK_REQUEST_EVENT, onBackRequest)
+  window.removeEventListener('keydown', onKeydown, true)
+  window.removeEventListener(SRL_BACK_REQUEST_EVENT, onBackRequest, true)
 })
 </script>
 

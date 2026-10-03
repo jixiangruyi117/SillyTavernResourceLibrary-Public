@@ -10,18 +10,26 @@ import {
   syncNativeResourceFiles,
 } from '../core/AppContainer'
 import { markStartupReady } from '../core/SafeStartup'
+import { noticeCenter } from '../core/NoticeCenter'
 import type { FilterValue, SortValue } from '../types/AppView'
 import type { UiFontScale } from '../types/BrowserPreferences'
 import { type ResourceSummary } from '../types/Resource'
 import type { VaultStatus } from '../types/Vault'
 import type { ThemeValue } from '../utils/LibraryFormatting'
-import { clearShareTargetQuery, takeSharedFileBatch } from '../utils/ShareTargetIntake'
+import {
+  allowDiscordAttachmentRetry,
+  clearShareTargetQuery,
+  forgetCompletedDiscordAttachment,
+  takeSharedFileBatches,
+} from '../utils/ShareTargetIntake'
 import type { SharedFileBatch } from '../utils/ShareTargetIntake'
 import type { SearchScope } from './UseSearchIndex'
+import { useDiscordResourceInbox } from './UseDiscordResourceInbox'
 
 interface LibraryLifecycleContext {
   showNotice: (message: string, duration?: number, preserveRecycleUndo?: boolean) => void
   receiveSharedFileBatch: (batch: SharedFileBatch) => void
+  handleNativeDownloadState?: (event: Event) => boolean | void
   loadResources: () => Promise<void>
   refreshStorageHealth: () => Promise<void>
   vaultStatus: Ref<VaultStatus>
@@ -29,7 +37,6 @@ interface LibraryLifecycleContext {
   searchHistory: Ref<string[], string[]>
   isVaultPanelOpen: Ref<boolean, boolean>
   loadLibrary: () => Promise<void>
-  loadHistorySnapshots: () => Promise<void>
   loadRecycleBin: () => Promise<void>
   handleNativeDeepLink: (event?: Event) => Promise<void>
   isOverlayOpen: ComputedRef<boolean>
@@ -60,27 +67,60 @@ interface LibraryLifecycleContext {
 }
 
 export function useLibraryLifecycle(context: LibraryLifecycleContext) {
+  useDiscordResourceInbox(context.vaultStatus, context.receiveSharedFileBatch)
   let searchIndexTimer: number | undefined
   let cloudBackupTimer: number | undefined
   let libraryMaintenanceTimer: number | undefined
   let consumingSharedFiles = false
+  let sharedFilesRequested = false
   let disposed = false
   let resumeMaintenance: (() => void) | undefined
   let maintenanceRun: Promise<void> | undefined
   let stopGreetingUpdates: (() => void) | undefined
 
+  function handleDiscordDownloadFailure(event: Event): void {
+    if (context.handleNativeDownloadState?.(event) === false) return
+    const token = (event as CustomEvent<{ token?: string }>).detail?.token
+    if (!token) return
+    allowDiscordAttachmentRetry(token)
+    void consumeSharedFiles()
+  }
+
+  function handleDiscordDownloadComplete(event: Event): void {
+    if (context.handleNativeDownloadState?.(event) === false) return
+    const token = (event as CustomEvent<{ token?: string }>).detail?.token
+    if (token) forgetCompletedDiscordAttachment(token)
+  }
+
+  function handleDiscordDownloadStarted(event: Event): void {
+    context.handleNativeDownloadState?.(event)
+  }
+
   async function consumeSharedFiles(): Promise<void> {
+    sharedFilesRequested = true
     if (consumingSharedFiles) return
     consumingSharedFiles = true
     const arrivedViaShare = new URLSearchParams(window.location.search).has('share-target')
     try {
       clearShareTargetQuery()
-      const batch = await takeSharedFileBatch()
-      if (batch.files.length) {
-        context.receiveSharedFileBatch(batch)
-      } else if (arrivedViaShare) {
+      let received = false
+      do {
+        sharedFilesRequested = false
+        const batches = await takeSharedFileBatches((detail) =>
+          context.handleNativeDownloadState?.(
+            new CustomEvent('srl:native-share-download-started', { detail }),
+          ),
+        )
+        for (const batch of batches) {
+          received = true
+          context.receiveSharedFileBatch(batch)
+          // Deliver URL confirmations before reading unrelated file contents.
+          // A failed file read must not discard already accepted URL batches.
+          if (batch.discordAttachment) sharedFilesRequested = true
+        }
+      } while (sharedFilesRequested && !disposed)
+      if (!received && arrivedViaShare)
         context.showNotice('分享跳转已到达，但没有收到文件；请重新分享或使用“导入资源”。')
-      }
     } catch (error) {
       context.showNotice(
         error instanceof Error ? error.message : '读取系统分享文件失败；文件已保留，可稍后重试',
@@ -169,33 +209,59 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     await context.loadLibrary()
     if (disposed) return
     markStartupReady()
-    // The usable library must not wait for backup history, recycle-bin contents or quota probes.
+    // The usable library must not wait for recycle-bin contents or quota probes.
     void (async () => {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
       if (disposed || context.vaultStatus.value.locked) return
       const results = await Promise.allSettled([
         context.refreshStorageHealth(),
-        context.loadHistorySnapshots(),
         context.loadRecycleBin(),
       ])
       if (!disposed && results.some((result) => result.status === 'rejected'))
-        context.showNotice('资源库已打开，部分存储或历史信息暂时读取失败，可在对应面板重试')
+        context.showNotice('资源库已打开，部分存储或回收站信息暂时读取失败，可在对应面板重试')
     })()
     await context.handleNativeDeepLink()
     await consumeSharedFiles()
     if (disposed) return
     scheduleLibraryMaintenance()
-    void syncNativeResourceFiles().catch((error) => {
-      context.showNotice(
-        error instanceof Error
-          ? `Android 本地文件同步失败：${error.message}`
-          : 'Android 本地文件同步失败',
-      )
-    })
     void cloudBackupService
-      .reconcileNativeJob()
+      .pendingNativeRestores()
+      .then((records) => {
+        if (disposed) return
+        for (const record of records) {
+          if (!record.restore) continue
+          noticeCenter.push({
+            id: 'cloud-restore:' + record.id,
+            type: 'warning',
+            persistent: true,
+            message: '上次云恢复尚未完成本机导入',
+            details: record.restore.item.objectKey,
+            actions: [
+              {
+                label: '查看并继续',
+                run: () => {
+                  window.dispatchEvent(
+                    new CustomEvent('srl:native-deep-link', { detail: { kind: 'backup' } }),
+                  )
+                },
+              },
+            ],
+          })
+        }
+      })
+      .catch(() => {
+        if (!disposed) context.showNotice('暂时无法读取云恢复检查点，可在云备份中重试。')
+      })
+    void syncNativeResourceFiles()
+      .then(() => cloudBackupService.reconcileNativeJob())
       .then(() => cloudBackupService.runDueBackup())
-      .catch(() => undefined)
+      .catch((error) => {
+        context.showNotice(
+          error instanceof Error
+            ? `Android 本地文件同步或云备份启动失败：${error.message}`
+            : 'Android 本地文件同步或云备份启动失败',
+        )
+      })
   }
 
   watch(
@@ -263,6 +329,9 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     window.history.pushState({ ...(window.history.state ?? {}), srlBackGuard: true }, '')
     window.addEventListener('resize', context.updateSplitViewport)
     window.addEventListener('srl:native-share', consumeSharedFiles)
+    window.addEventListener('srl:native-share-download-started', handleDiscordDownloadStarted)
+    window.addEventListener('srl:native-share-download-failed', handleDiscordDownloadFailure)
+    window.addEventListener('srl:native-share-download-completed', handleDiscordDownloadComplete)
     window.addEventListener('srl:native-shortcut', context.handleNativeShortcut)
     window.addEventListener('srl:native-deep-link', context.handleNativeDeepLink)
     window.addEventListener('pagehide', context.saveWorkspaceSnapshot)
@@ -291,6 +360,9 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     window.removeEventListener('popstate', context.handleBrowserPopState)
     window.removeEventListener('resize', context.updateSplitViewport)
     window.removeEventListener('srl:native-share', consumeSharedFiles)
+    window.removeEventListener('srl:native-share-download-started', handleDiscordDownloadStarted)
+    window.removeEventListener('srl:native-share-download-failed', handleDiscordDownloadFailure)
+    window.removeEventListener('srl:native-share-download-completed', handleDiscordDownloadComplete)
     window.removeEventListener('srl:native-shortcut', context.handleNativeShortcut)
     window.removeEventListener('srl:native-deep-link', context.handleNativeDeepLink)
     window.removeEventListener('pagehide', context.saveWorkspaceSnapshot)

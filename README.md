@@ -1,6 +1,6 @@
 # SillyTavern Resource Library
 
-SRL 是一个本地优先的 SillyTavern 资源整理、预览、互传与创作工具。本仓库保留主要本地与自部署功能，但与主项目并非功能完全一致：不包含作者账号系统、管理后台、反馈服务、预打包 APK、作者官方 APK 更新通道或在线创作组件分享。需要云端基础设施的能力由部署者自行配置。功能边界与已知差异见 [Public Release 功能差异](docs/PUBLIC_RELEASE_DIFFERENCES.md)。
+SRL 是一个本地优先的 SillyTavern 资源整理、预览、互传与创作工具。本仓库保留主要本地与自部署功能，但与主项目并非功能完全一致：不包含作者账号系统、资源广场、管理后台、反馈服务、预打包 APK、作者官方 APK 更新通道或在线创作组件分享。本轮共享代码同步暂不包含尚未完成的小助手与配了么增量。需要云端基础设施的能力由部署者自行配置。功能边界与已知差异见 [Public Release 功能差异](docs/PUBLIC_RELEASE_DIFFERENCES.md)。
 
 > [!WARNING]
 > **关于本文档**

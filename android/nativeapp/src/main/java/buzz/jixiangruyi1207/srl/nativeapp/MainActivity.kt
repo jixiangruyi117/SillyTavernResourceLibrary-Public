@@ -23,7 +23,6 @@ import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeGitHubConfig
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeWebDavConfig
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeCategory
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResource
-import buzz.jixiangruyi1207.srl.nativeapp.model.NativeSnapshot
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeBackupSelection
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResourceBundle
 import buzz.jixiangruyi1207.srl.nativeapp.ui.NativeSrlApp
@@ -73,7 +72,6 @@ class MainActivity : ComponentActivity() {
     private var resources by mutableStateOf<List<NativeResource>>(emptyList())
     private var categories by mutableStateOf<List<NativeCategory>>(emptyList())
     private var versions by mutableStateOf<List<NativeResource>>(emptyList())
-    private var snapshots by mutableStateOf<List<NativeSnapshot>>(emptyList())
     private var cloudBackups by mutableStateOf<List<NativeCloudBackup>>(emptyList())
     private var githubConfig by mutableStateOf<NativeGitHubConfig?>(null)
     private var webDavConfig by mutableStateOf<NativeWebDavConfig?>(null)
@@ -91,6 +89,7 @@ class MainActivity : ComponentActivity() {
     private var cabinetState by mutableStateOf(NativeCabinetState())
     private var externalPackages by mutableStateOf<List<NativeExternalPackage>>(emptyList())
     private var aiTaggingState by mutableStateOf(NativeAiState(NativeAiConfig(), null, emptyList()))
+    private var legacyLibraryHistory by mutableStateOf(buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryCleanup())
     private var busy by mutableStateOf(false)
     private var message by mutableStateOf("原生本地库已就绪")
     private var pendingExportSelection = NativeBackupSelection()
@@ -137,7 +136,9 @@ class MainActivity : ComponentActivity() {
         resources = store.loadResources()
         categories = store.loadCategories()
         versions = store.loadAllVersions()
-        snapshots = store.listSnapshots()
+        runCatching { store.legacyLibraryHistoryCleanup() }
+            .onSuccess { legacyLibraryHistory = it }
+            .onFailure { message = "无法读取旧整库快照占用：${it.message}" }
         resourceBundles = store.loadResourceBundles()
         drawState = characterDrawService.load()
         appearanceState = appearanceService.load()
@@ -153,7 +154,6 @@ class MainActivity : ComponentActivity() {
                 resources = resources,
                 categories = categories,
                 versions = versions,
-                snapshots = snapshots,
                 cloudBackups = cloudBackups,
                 githubConfig = githubConfig,
                 webDavConfig = webDavConfig,
@@ -174,6 +174,8 @@ class MainActivity : ComponentActivity() {
                 busy = busy,
                 message = message,
                 storagePath = store.storageDirectory().absolutePath,
+                legacyLibraryHistory = legacyLibraryHistory,
+                onClearLegacyLibraryHistory = ::clearLegacyLibraryHistory,
                 onImport = { filePicker.launch(arrayOf("*/*")) },
                 onExport = { selection ->
                     pendingExportSelection = selection
@@ -190,9 +192,6 @@ class MainActivity : ComponentActivity() {
                 onActivateVersion = ::activateVersion,
                 onUpdateVersionNote = ::updateVersionNote,
                 onDeleteVersion = ::deleteVersion,
-                onCaptureSnapshot = ::captureSnapshot,
-                onRestoreSnapshot = ::restoreSnapshot,
-                onDeleteSnapshot = ::deleteSnapshot,
                 onSaveGitHub = ::saveGitHub,
                 onSaveWebDav = ::saveWebDav,
                 onTestCloud = ::testCloud,
@@ -267,12 +266,10 @@ class MainActivity : ComponentActivity() {
                 val refreshed = store.loadResources()
                 val refreshedCategories = store.loadCategories()
                 val refreshedVersions = store.loadAllVersions()
-                val refreshedSnapshots = store.listSnapshots()
                 runOnUiThread {
                     resources = refreshed
                     categories = refreshedCategories
                     versions = refreshedVersions
-                    snapshots = refreshedSnapshots
                     message = report.summary()
                     busy = false
                 }
@@ -326,13 +323,13 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun deleteCategory(category: NativeCategory) =
-        runStoreMutation("文件夹已删除，删除前快照已保留") { store.deleteCategory(category.id) }
+        runStoreMutation("文件夹已删除，资源已移到未放入文件夹") { store.deleteCategory(category.id) }
 
     private fun setResourceCategories(resourceId: String, categoryIds: List<String>) =
         runStoreMutation("资源文件夹已更新") { store.setResourceCategories(resourceId, categoryIds) }
 
     private fun deleteResource(resourceId: String) =
-        runStoreMutation("资源已删除，删除前快照已保留") { store.deleteResource(resourceId) }
+        runStoreMutation("资源及其历史版本已删除") { store.deleteResource(resourceId) }
 
     private fun activateVersion(resourceId: String, versionId: String) =
         runStoreMutation("历史版本已切换，原当前版本已保留") { store.activateVersion(resourceId, versionId) }
@@ -342,15 +339,6 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteVersion(resourceId: String, versionId: String) =
         runStoreMutation("历史版本已删除") { store.deleteVersion(resourceId, versionId) }
-
-    private fun captureSnapshot(reason: String) =
-        runStoreMutation("本机完整快照已创建") { store.captureSnapshot(reason) }
-
-    private fun restoreSnapshot(snapshotId: String) =
-        runStoreMutation("历史快照已恢复，恢复前状态也已自动保存") { store.restoreSnapshot(snapshotId) }
-
-    private fun deleteSnapshot(snapshotId: String) =
-        runStoreMutation("本机快照已删除") { store.deleteSnapshot(snapshotId) }
 
     private fun saveGitHub(config: NativeGitHubConfig, token: String) = runCloudAction("GitHub 配置已保存到本机") {
         cloudService.saveGitHub(config, token.takeIf { it.isNotBlank() })
@@ -391,9 +379,8 @@ class MainActivity : ComponentActivity() {
         val refreshedResources = store.loadResources()
         val refreshedCategories = store.loadCategories()
         val refreshedVersions = store.loadAllVersions()
-        val refreshedSnapshots = store.listSnapshots()
         runOnUiThread {
-            resources = refreshedResources; categories = refreshedCategories; versions = refreshedVersions; snapshots = refreshedSnapshots
+            resources = refreshedResources; categories = refreshedCategories; versions = refreshedVersions
         }
     }
 
@@ -613,11 +600,9 @@ class MainActivity : ComponentActivity() {
                 val result = frontendWorkshopService.compileAndSave(fieldSource, designSource, title, dataMode)
                 val refreshedResources = store.loadResources()
                 val refreshedVersions = store.loadAllVersions()
-                val refreshedSnapshots = store.listSnapshots()
                 runOnUiThread {
                     resources = refreshedResources
                     versions = refreshedVersions
-                    snapshots = refreshedSnapshots
                     workshopOutputIds = listOf(result.regexResourceId, result.worldBookResourceId)
                     message = "“${result.title}”已生成：${result.fieldCount} 个字段、正则与世界书已双向关联"
                     busy = false
@@ -786,6 +771,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun clearLegacyLibraryHistory(plan: buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryCleanup) {
+        if (busy || plan.files.isEmpty()) return
+        busy = true
+        android.app.AlertDialog.Builder(this)
+            .setTitle("清理旧整库快照")
+            .setMessage("永久删除 ${plan.files.size} 份旧整库快照（${android.text.format.Formatter.formatFileSize(this, plan.bytes)}），无法撤销。当前资源、单资源版本和云备份不受影响；未登记的文件会保留。")
+            .setNegativeButton("取消") { _, _ -> busy = false }
+            .setOnCancelListener { busy = false }
+            .setPositiveButton("永久清理") { _, _ ->
+                worker.execute {
+                    val result = try {
+                        store.clearLegacyLibraryHistory(plan)
+                        "已清理 ${plan.files.size} 份旧整库快照"
+                    } catch (error: Exception) { error.message ?: "旧整库快照清理失败" }
+                    val remaining = runCatching { store.legacyLibraryHistoryCleanup() }.getOrNull()
+                    runOnUiThread {
+                        if (remaining != null) legacyLibraryHistory = remaining
+                        message = result
+                        busy = false
+                    }
+                }
+            }.show()
+    }
+
     private fun runStoreMutation(successMessage: String, action: () -> Unit) {
         if (busy) return
         busy = true
@@ -795,7 +804,6 @@ class MainActivity : ComponentActivity() {
                 val refreshedResources = store.loadResources()
                 val refreshedCategories = store.loadCategories()
                 val refreshedVersions = store.loadAllVersions()
-                val refreshedSnapshots = store.listSnapshots()
                 val refreshedBundles = store.loadResourceBundles()
                 val refreshedExternalPackages = externalPackageService.load()
                 val refreshedAiTaggingState = aiTaggingService.load()
@@ -803,7 +811,6 @@ class MainActivity : ComponentActivity() {
                     resources = refreshedResources
                     categories = refreshedCategories
                     versions = refreshedVersions
-                    snapshots = refreshedSnapshots
                     resourceBundles = refreshedBundles
                     externalPackages = refreshedExternalPackages
                     aiTaggingState = refreshedAiTaggingState

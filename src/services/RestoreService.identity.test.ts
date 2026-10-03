@@ -10,6 +10,7 @@ import { ExportService } from './ExportService'
 import { hashBlob } from './HashService'
 import { RestoreService } from './RestoreService'
 import { VaultService } from './VaultService'
+import { summarizeRestoreSelection } from '../utils/RestoreIdentity'
 
 async function fixture(): Promise<Resource[]> {
   const create = async (id: string, body: string): Promise<Resource> => {
@@ -122,6 +123,7 @@ describe('restore the same backup repeatedly', () => {
                     [],
                     'backup',
                   )
+          expect(summarizeRestoreSelection(existing, records).added).toBe(prepared.resources.length)
           expect(prepared.resources.length).toBe(round === 0 ? 3 : 0)
           expect(prepared.versions.length).toBe(round === 0 ? 1 : 0)
           const report =

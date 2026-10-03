@@ -445,7 +445,11 @@ export function inspectCompatibility(runtimeHtml: string): ExternalAppCompatibil
         '检测到 Worker 或 Service Worker；隔离 iframe 可能无法注册，请为该能力准备降级路径。',
     })
   }
-  if (/(?:\bfile:|\bhttps?:\/\/|\/)[^'"\s<>]+/i.test(runtimeHtml)) {
+  if (
+    /(?:\bfile:|\bhttps?:\/\/)[^'"\s<>]+|\b(?:src|href)\s*=\s*["']\/|url\(\s*["']?\/|\b(?:fetch|import|register)\s*\(\s*["']\//i.test(
+      runtimeHtml,
+    )
+  ) {
     notices.push({
       level: 'warning',
       code: 'external-or-absolute-path',

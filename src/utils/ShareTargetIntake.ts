@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { rememberNativeFile } from '../core/NativeFileSource'
+import type { ImportResult } from '../types/Import'
 
 /**
  * 取回系统分享暂存的文件。
@@ -11,6 +12,10 @@ import { rememberNativeFile } from '../core/NativeFileSource'
 
 const INTAKE_CACHE = 'srl-share-intake'
 const LEGACY_MANIFEST_KEY = '/srl-shared/manifest'
+const PENDING_ROUTE_PREFIX = 'srl.shared-import-route.v1.'
+const PENDING_IMPORT_PREFIX = 'srl.shared-import-attempt.v1.'
+const PENDING_IMPORT_ITEM_PREFIX = 'srl.shared-import-item.v1.'
+const PENDING_ROUTE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 interface SharedFileMeta {
   name: string
@@ -18,33 +23,243 @@ interface SharedFileMeta {
 }
 
 interface NativeSharedFile extends SharedFileMeta {
+  discordSourceToken?: string
+  cloudLibraryId?: string
   size?: number
   /** 0.0.2 及更早原生壳返回 Base64；保留读取能力，避免网页先更新时旧 APK 失效。 */
   data?: string
   /** 新原生壳返回应用私有暂存目录中的 file:// URI，避免 Base64 放大与多次内存复制。 */
   uri?: string
   cleanupToken?: string
-  route?: SharedImportRoute
+  route?: SharedImportRoute | 'discordUrl'
+}
+
+export interface NativeDiscordAttachmentShare {
+  cloudLibraryId?: string
+  name: string
+  type: string
+  size?: number
+  cleanupToken: string
+  discordUrl: string
+  error?: string
 }
 
 interface ShareReceiverPlugin {
-  getPendingShare(): Promise<{ files: NativeSharedFile[] }>
+  getPendingShare(): Promise<{
+    files: NativeSharedFile[]
+    discordUrls?: NativeDiscordAttachmentShare[]
+    downloads?: Array<{ token: string; workId?: string; name?: string }>
+  }>
   cleanupPendingShare(options: { tokens: string[] }): Promise<void>
+  setPendingShareRoute?(options: { tokens: string[]; route?: SharedImportRoute }): Promise<void>
+  downloadDiscordAttachment(options: { token: string }): Promise<void>
+  stageCloudResource(options: {
+    id: string
+    libraryId: string
+    workerUrl: string
+    url: string
+  }): Promise<{ token: string }>
+  readCloudResource(options: { id: string; libraryId: string; workerUrl: string }): Promise<{
+    cancelled?: boolean
+    error?: string
+    transferredBytes: number
+    totalBytes?: number
+    file?: NativeSharedFile
+  }>
 }
 
 const shareReceiver = registerPlugin<ShareReceiverPlugin>('ShareReceiver')
+type NativeShareSnapshot = Awaited<ReturnType<ShareReceiverPlugin['getPendingShare']>>
 
 // 原件保留到导入提交成功，但同一 WebView 会话只投递一次。
 // Android 的 ready / 回前台事件不是新分享；进程重建后集合自然清空。
 const deliveredNativeTokens = new Set<string>()
 
 export interface SharedFileBatch {
+  onItemComplete?(result: ImportResult): Promise<void>
+  onVersionResolved?(committedHash?: string): Promise<void>
+  onFailure?(message: string): Promise<void>
   files: File[]
   route?: SharedImportRoute
+  routeWasPersisted?: boolean
+  /** A prior import was interrupted; ask before replaying it after app restart. */
+  interrupted?: boolean
+  /** Content hashes committed by an earlier run of this same retained share. */
+  completedContentHashes?: string[]
+  completedImportAliases?: Record<string, string>
+  /** Stable identity used to retain staged source files until follow-up decisions finish. */
+  recoveryId?: string
+  nativeShareTokens?: string[]
+  discordAttachment?: NativeDiscordAttachmentShare
+  setRoute?(route?: SharedImportRoute): Promise<void>
+  markImportStarted?(): Promise<void>
+  markImportItemCompleted?(contentHash: string, sourceContentHash?: string): Promise<void>
   acknowledge(): Promise<void>
 }
 
 export type SharedImportRoute = 'libraryBackup' | 'tavernBackup' | 'resource' | 'thirdPartyApp'
+
+export function shouldAutoResumeSharedImport(
+  batch: Pick<SharedFileBatch, 'route' | 'interrupted'>,
+): batch is Pick<SharedFileBatch, 'route' | 'interrupted'> & { route: SharedImportRoute } {
+  return Boolean(batch.route) && !batch.interrupted
+}
+
+function isSharedImportRoute(value: unknown): value is SharedImportRoute {
+  return (
+    value === 'libraryBackup' ||
+    value === 'tavernBackup' ||
+    value === 'resource' ||
+    value === 'thirdPartyApp'
+  )
+}
+
+function storedRoute(token: string): SharedImportRoute | undefined {
+  const key = `${PENDING_ROUTE_PREFIX}${token}`
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as {
+      route?: unknown
+      savedAt?: unknown
+    } | null
+    if (
+      !saved ||
+      !isSharedImportRoute(saved.route) ||
+      typeof saved.savedAt !== 'number' ||
+      Date.now() - saved.savedAt > PENDING_ROUTE_MAX_AGE_MS
+    ) {
+      localStorage.removeItem(key)
+      return undefined
+    }
+    return saved.route
+  } catch {
+    return undefined
+  }
+}
+
+function saveStoredRoute(token: string, route?: SharedImportRoute): void {
+  const key = `${PENDING_ROUTE_PREFIX}${token}`
+  if (!route) {
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // A removed/expired share cannot be misrouted by a leftover token entry.
+    }
+    return
+  }
+  localStorage.setItem(key, JSON.stringify({ route, savedAt: Date.now() }))
+}
+
+interface StoredImportAttempt {
+  startedAt?: number
+}
+
+function readStoredImportAttempt(token: string): StoredImportAttempt | undefined {
+  const key = `${PENDING_IMPORT_PREFIX}${token}`
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as {
+      startedAt?: unknown
+    } | null
+    if (!saved || typeof saved !== 'object') return undefined
+    return {
+      ...(typeof saved.startedAt === 'number' ? { startedAt: saved.startedAt } : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function readStoredCompletedImportHashes(token: string): string[] {
+  const prefix = `${PENDING_IMPORT_ITEM_PREFIX}${token}.`
+  const hashes = new Set<string>()
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith(prefix)) continue
+      const hash = key.slice(prefix.length)
+      if (/^[a-f\d]{64}$/iu.test(hash)) hashes.add(hash.toLowerCase())
+    }
+  } catch {
+    // Checkpoint reads are best-effort; resource storage remains authoritative.
+  }
+  return [...hashes]
+}
+
+function hasInterruptedImport(token: string): boolean {
+  const key = `${PENDING_IMPORT_PREFIX}${token}`
+  try {
+    const saved = readStoredImportAttempt(token)
+    if (
+      typeof saved?.startedAt === 'number' &&
+      Date.now() - saved.startedAt <= PENDING_ROUTE_MAX_AGE_MS
+    )
+      return true
+    localStorage.removeItem(key)
+  } catch {
+    return false
+  }
+  return false
+}
+
+function markStoredImportStarted(token: string): void {
+  const key = `${PENDING_IMPORT_PREFIX}${token}`
+  const saved = readStoredImportAttempt(token)
+  localStorage.setItem(key, JSON.stringify({ ...saved, startedAt: saved?.startedAt ?? Date.now() }))
+}
+
+function markStoredImportItemCompleted(token: string, contentHash: string): void {
+  localStorage.setItem(`${PENDING_IMPORT_ITEM_PREFIX}${token}.${contentHash.toLowerCase()}`, '1')
+}
+
+function readStoredImportAliases(token: string): Record<string, string> {
+  const prefix = `${PENDING_IMPORT_ITEM_PREFIX}${token}.`
+  const aliases: Record<string, string> = {}
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith(prefix)) continue
+      const sourceHash = key.slice(prefix.length)
+      const committedHash = localStorage.getItem(key) ?? ''
+      if (/^[a-f\d]{64}$/iu.test(sourceHash) && /^[a-f\d]{64}$/iu.test(committedHash))
+        aliases[sourceHash.toLowerCase()] = committedHash.toLowerCase()
+    }
+  } catch {
+    // A resume still verifies the matching resource in authoritative storage.
+  }
+  return aliases
+}
+
+export function markSharedImportItemCompleted(
+  recoveryId: string,
+  contentHash: string,
+  sourceContentHash?: string,
+): void {
+  if (!/^[a-f\d]{64}$/iu.test(contentHash)) throw new Error('导入检查点校验值无效')
+  markStoredImportItemCompleted(recoveryId, contentHash)
+  if (
+    sourceContentHash &&
+    /^[a-f\d]{64}$/iu.test(sourceContentHash) &&
+    sourceContentHash !== contentHash
+  )
+    localStorage.setItem(
+      `${PENDING_IMPORT_ITEM_PREFIX}${recoveryId}.${sourceContentHash.toLowerCase()}`,
+      contentHash.toLowerCase(),
+    )
+}
+
+function clearStoredImportAttempt(token: string): void {
+  try {
+    localStorage.removeItem(`${PENDING_IMPORT_PREFIX}${token}`)
+    const itemPrefix = `${PENDING_IMPORT_ITEM_PREFIX}${token}.`
+    const itemKeys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith(itemPrefix)) itemKeys.push(key)
+    }
+    for (const key of itemKeys) localStorage.removeItem(key)
+  } catch {
+    // Native acknowledgement remains authoritative when WebView storage is unavailable.
+  }
+}
 
 function base64File(shared: NativeSharedFile & { data: string }): File {
   const binary = atob(shared.data)
@@ -55,14 +270,21 @@ function base64File(shared: NativeSharedFile & { data: string }): File {
   })
 }
 
-async function takeNativeSharedFiles(): Promise<SharedFileBatch> {
+async function takeNativeSharedFiles(snapshot?: NativeShareSnapshot): Promise<SharedFileBatch> {
   if (!Capacitor.isNativePlatform()) return { files: [], acknowledge: async () => undefined }
-  const result = await shareReceiver.getPendingShare()
-  const pending = (result.files ?? []).filter(
-    (shared) => !shared.cleanupToken || !deliveredNativeTokens.has(shared.cleanupToken),
+  const result = snapshot ?? (await shareReceiver.getPendingShare())
+  const pendingDiscordUrl = result.discordUrls?.find(
+    (attachment) => !deliveredNativeTokens.has(attachment.cleanupToken),
   )
+  // Keep URL and file shares in separate confirmation batches so cancelling a
+  // URL can never acknowledge an unrelated file that was already pending.
+  const pending = pendingDiscordUrl
+    ? []
+    : (result.files ?? []).filter(
+        (shared) => !shared.cleanupToken || !deliveredNativeTokens.has(shared.cleanupToken),
+      )
   const files: File[] = []
-  const cleanupTokens: string[] = []
+  const cleanupTokens: string[] = pendingDiscordUrl ? [pendingDiscordUrl.cleanupToken] : []
   for (const shared of pending) {
     if (shared.uri) {
       if (
@@ -104,21 +326,223 @@ async function takeNativeSharedFiles(): Promise<SharedFileBatch> {
     if (shared.cleanupToken) cleanupTokens.push(shared.cleanupToken)
   }
   for (const token of cleanupTokens) deliveredNativeTokens.add(token)
+  const interrupted = cleanupTokens.some(hasInterruptedImport)
+  const checkpointToken = [...cleanupTokens].sort()[0]
+  const completedContentHashes = checkpointToken
+    ? readStoredCompletedImportHashes(checkpointToken)
+    : []
+  const completedContentHashSet = new Set(completedContentHashes)
+  const completedImportAliases = checkpointToken ? readStoredImportAliases(checkpointToken) : {}
+  const routedFile = pending
+    .map((shared) => {
+      const platformRoute = isSharedImportRoute(shared.route) ? shared.route : undefined
+      const rememberedRoute =
+        !platformRoute && shared.cleanupToken ? storedRoute(shared.cleanupToken) : undefined
+      return {
+        route: platformRoute ?? rememberedRoute,
+        routeWasPersisted: Boolean(platformRoute || rememberedRoute),
+      }
+    })
+    .find((candidate) => candidate.route)
   return {
     files,
-    route: pending.find((shared) => shared.route)?.route,
+    route: routedFile?.route,
+    routeWasPersisted: routedFile?.routeWasPersisted,
+    interrupted,
+    completedContentHashes,
+    completedImportAliases,
+    recoveryId: checkpointToken,
+    nativeShareTokens: [
+      ...new Set([
+        ...cleanupTokens,
+        ...pending
+          .map((file) => file.discordSourceToken)
+          .filter((token): token is string => Boolean(token)),
+      ]),
+    ],
+    discordAttachment: pendingDiscordUrl,
+    setRoute: async (route) => {
+      let nativeRoutePersisted = false
+      if (cleanupTokens.length && shareReceiver.setPendingShareRoute) {
+        try {
+          await shareReceiver.setPendingShareRoute({ tokens: cleanupTokens, route })
+          nativeRoutePersisted = true
+        } catch (error) {
+          // Older APKs do not expose native route persistence; local storage remains
+          // the compatibility path for those shells.
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !('code' in error) ||
+            error.code !== 'UNIMPLEMENTED'
+          ) {
+            throw error
+          }
+        }
+      }
+      for (const token of cleanupTokens) {
+        try {
+          saveStoredRoute(token, route)
+        } catch {
+          if (!nativeRoutePersisted) throw new Error('无法保存系统分享用途')
+        }
+      }
+    },
+    markImportStarted: async () => {
+      for (const token of cleanupTokens) markStoredImportStarted(token)
+    },
+    markImportItemCompleted: async (contentHash, sourceContentHash) => {
+      if (!checkpointToken) return
+      const normalizedHash = contentHash.toLowerCase()
+      markSharedImportItemCompleted(checkpointToken, normalizedHash, sourceContentHash)
+      if (!completedContentHashSet.has(normalizedHash)) {
+        completedContentHashSet.add(normalizedHash)
+        completedContentHashes.push(normalizedHash)
+      }
+      if (sourceContentHash && sourceContentHash !== normalizedHash)
+        completedImportAliases[sourceContentHash.toLowerCase()] = normalizedHash
+    },
     acknowledge: async () => {
       if (cleanupTokens.length) {
         await shareReceiver.cleanupPendingShare({ tokens: cleanupTokens })
-        for (const token of cleanupTokens) deliveredNativeTokens.delete(token)
+        for (const token of cleanupTokens) {
+          deliveredNativeTokens.delete(token)
+          saveStoredRoute(token)
+          clearStoredImportAttempt(token)
+        }
       }
     },
   }
 }
 
+export async function downloadSharedDiscordAttachment(
+  attachment: NativeDiscordAttachmentShare,
+): Promise<void> {
+  if (!Capacitor.isNativePlatform()) throw new Error('Discord URL 直传仅支持 APK')
+  await shareReceiver.downloadDiscordAttachment({ token: attachment.cleanupToken })
+}
+
+export function allowDiscordAttachmentRetry(token: string): void {
+  deliveredNativeTokens.delete(token)
+}
+
+export function forgetCompletedDiscordAttachment(token: string): void {
+  deliveredNativeTokens.delete(token)
+}
+
 export async function takeSharedFileBatch(): Promise<SharedFileBatch> {
   const nativeBatch = await takeNativeSharedFiles()
-  if (nativeBatch.files.length) return nativeBatch
+  if (nativeBatch.files.length || nativeBatch.discordAttachment) return nativeBatch
+  return takeWebSharedFileBatch()
+}
+
+/** Drain one native snapshot into the existing confirmation queue with one bridge/directory read. */
+export async function takeSharedFileBatches(
+  onDownload?: (detail: { token: string; workId?: string; name?: string }) => void,
+): Promise<SharedFileBatch[]> {
+  if (Capacitor.isNativePlatform()) {
+    const received = await shareReceiver.getPendingShare()
+    for (const detail of received.downloads ?? []) onDownload?.(detail)
+    // Only the paired cloud intake may claim these files after a restart.
+    const snapshot = {
+      files: received.files.filter((file) => !file.cloudLibraryId),
+      discordUrls: received.discordUrls?.filter((file) => !file.cloudLibraryId),
+    }
+    const batches: SharedFileBatch[] = []
+    const urls = snapshot.discordUrls?.filter(
+      (attachment) => !deliveredNativeTokens.has(attachment.cleanupToken),
+    )
+    if (urls?.length) {
+      for (const attachment of urls) {
+        const batch = await takeNativeSharedFiles({ files: [], discordUrls: [attachment] })
+        if (batch.discordAttachment) batches.push(batch)
+      }
+      return batches
+    }
+    // A notification identifies one CDN share. Keep unrelated downloaded attachments
+    // separate; ordinary multi-file system shares retain their existing batch semantics.
+    const ordinary = snapshot.files.filter((file) => !file.discordSourceToken)
+    const groups = new Map<string, NativeSharedFile[]>()
+    for (const file of snapshot.files) {
+      if (!file.discordSourceToken) continue
+      const group = groups.get(file.discordSourceToken) ?? []
+      group.push(file)
+      groups.set(file.discordSourceToken, group)
+    }
+    for (const files of [ordinary, ...groups.values()]) {
+      if (!files.length) continue
+      const batch = await takeNativeSharedFiles({ files })
+      if (batch.files.length) batches.push(batch)
+    }
+    if (batches.length) return batches
+  }
+  const batch = await takeWebSharedFileBatch()
+  return batch.files.length ? [batch] : []
+}
+
+export async function stageCloudDiscordResource(options: {
+  id: string
+  libraryId: string
+  workerUrl: string
+  url: string
+}): Promise<void> {
+  try {
+    await shareReceiver.stageCloudResource(options)
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'UNIMPLEMENTED'
+    )
+      throw new Error('当前 APK 尚不支持云端资源下载，请更新 APK；原来的直接分享仍可使用。', {
+        cause: error,
+      })
+    throw error
+  }
+}
+
+/** Web cloud files can be re-downloaded; retain only the existing hash/alias checkpoints. */
+export function cloudWebResourceBatch(file: File, recoveryId: string): SharedFileBatch {
+  const completedContentHashes = readStoredCompletedImportHashes(recoveryId)
+  const completedImportAliases = readStoredImportAliases(recoveryId)
+  return {
+    files: [file],
+    recoveryId,
+    completedContentHashes,
+    completedImportAliases,
+    markImportStarted: async () => markStoredImportStarted(recoveryId),
+    markImportItemCompleted: async (hash, sourceHash) => {
+      markSharedImportItemCompleted(recoveryId, hash, sourceHash)
+      if (!completedContentHashes.includes(hash)) completedContentHashes.push(hash)
+      if (sourceHash && sourceHash !== hash) completedImportAliases[sourceHash] = hash
+    },
+    acknowledge: async () => clearStoredImportAttempt(recoveryId),
+  }
+}
+
+export async function readCloudDiscordResource(options: {
+  id: string
+  libraryId: string
+  workerUrl: string
+}): Promise<{
+  batch?: SharedFileBatch
+  cancelled?: boolean
+  error?: string
+  transferredBytes: number
+  totalBytes?: number
+}> {
+  const state = await shareReceiver.readCloudResource(options)
+  return {
+    cancelled: state.cancelled,
+    error: state.error,
+    transferredBytes: state.transferredBytes,
+    totalBytes: state.totalBytes,
+    batch: state.file ? await takeNativeSharedFiles({ files: [state.file] }) : undefined,
+  }
+}
+
+async function takeWebSharedFileBatch(): Promise<SharedFileBatch> {
   if (typeof caches === 'undefined') return { files: [], acknowledge: async () => undefined }
   try {
     const cacheNames = await caches.keys()

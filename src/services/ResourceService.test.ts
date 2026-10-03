@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { JsonResourceParser } from '../parser/JsonResourceParser'
+import { JSON_RESOURCE_PARSER_VERSION, JsonResourceParser } from '../parser/JsonResourceParser'
 import { PngResourceParser } from '../parser/PngResourceParser'
 import { ResourceParserRegistry } from '../parser/ResourceParser'
-import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
+import type {
+  ResourceStorageAdapter,
+  ResourceVersionMatchFingerprintCache,
+} from '../storage/ResourceStorageAdapter'
 import type { ParsedResource } from '../types/Import'
 import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
@@ -11,6 +14,7 @@ import {
   RESOURCE_LINK_PURPOSE,
   RESOURCE_LINK_TYPE,
   RESOURCE_TYPE,
+  toResourceListSummary,
   toResourceSummary,
   type Resource,
   type ResourceSummary,
@@ -19,6 +23,8 @@ import { ResourceService } from './ResourceService'
 import { GreetingResourceService } from './GreetingResourceService'
 import type { GitHubResourceInspection, GitHubResourceInspector } from './GitHubResourceInspector'
 import { UserPersonaService } from './UserPersonaService'
+import * as nativeFiles from '../core/NativeFileSource'
+import { hashBlob } from './HashService'
 
 class MemoryResourceStorage implements ResourceStorageAdapter {
   private readonly resources = new Map<string, Resource>()
@@ -132,6 +138,140 @@ function createServiceWithStorage(linkInspector: GitHubResourceInspector = noLin
 }
 
 describe('ResourceService', () => {
+  it('deduplicates a manual import racing a cloud resource import', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const save = storage.save.bind(storage)
+    vi.spyOn(storage, 'save').mockImplementation(async (resource) => {
+      // IndexedDB commits yield; the old in-memory fixture committed before a competing hash read.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await save(resource)
+    })
+    const files = ['manual.json', 'cloud.json'].map(
+      (name) => new File(['{"name":"并发卡","entries":{}}'], name),
+    )
+    const results = await Promise.all(files.map((file) => service.importFiles([file])))
+    expect(await storage.list()).toHaveLength(1)
+    expect(
+      results
+        .flat()
+        .map((result) => result.status)
+        .sort(),
+    ).toEqual(['duplicate', 'imported'])
+  })
+
+  it('an aborted queued import does not block subsequent imports', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const save = storage.save.bind(storage)
+    let saving!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => {
+      saving = resolve
+    })
+    const commit = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    vi.spyOn(storage, 'save').mockImplementationOnce(async (resource) => {
+      saving()
+      await commit
+      await save(resource)
+    })
+    const file = new File(['{"name":"队列卡","entries":{}}'], 'queued.json')
+    const first = service.importFiles([file])
+    await started
+    const controller = new AbortController()
+    const cancelled = expect(
+      service.importFiles([file], { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    const next = service.importFiles([file])
+    controller.abort()
+    release()
+    expect((await first)[0]?.status).toBe('imported')
+    await cancelled
+    expect((await next)[0]?.status).toBe('duplicate')
+    expect(await storage.list()).toHaveLength(1)
+  })
+  it('native share version candidates retain materialized bytes for preview and version activation', async () => {
+    const service = createService()
+    const card = (description: string) =>
+      new File(
+        [
+          JSON.stringify({
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: { name: 'Native card', description, first_mes: 'Hello' },
+          }),
+        ],
+        'native-card.json',
+        { type: 'application/json' },
+      )
+    const [first] = await service.importFiles([card('original')])
+    if (first?.status !== 'imported') throw new Error('missing initial resource')
+    const bytes = card('updated')
+    const placeholder = new File([], bytes.name, { type: bytes.type })
+    const source = vi
+      .spyOn(nativeFiles, 'nativeFileSource')
+      .mockImplementation((file) => (file === placeholder ? 'file:///staged' : undefined))
+    const hash = vi.spyOn(nativeFiles, 'hashNativeFile').mockResolvedValue(await hashBlob(bytes))
+    const read = vi.spyOn(nativeFiles, 'materializeNativeFile').mockResolvedValue(bytes)
+    try {
+      const [candidate] = await service.importFiles([placeholder])
+      if (candidate?.status !== 'versionCandidate') throw new Error('missing version candidate')
+      expect(candidate.file.size).toBe(bytes.size)
+      expect(await candidate.file.text()).toBe(await bytes.text())
+      await expect(service.previewImportFile(candidate.file)).resolves.toBeDefined()
+      await service.importAsVersion(candidate.file, first.resource.id, true)
+      expect(await (await service.get(first.resource.id))!.originalBlob.text()).toBe(
+        await bytes.text(),
+      )
+    } finally {
+      source.mockRestore()
+      hash.mockRestore()
+      read.mockRestore()
+    }
+  })
+  it('共享导入可逐项回报并释放已完成结果，重进后跳过已提交哈希', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const file = new File(['{"name":"已提交资源"}'], 'committed.json', {
+      type: 'application/json',
+    })
+    const firstCompletion = vi.fn()
+    const first = await service.importFiles([file], {
+      discardCompletedResults: true,
+      onItemComplete: firstCompletion,
+    })
+
+    expect(first).toEqual([])
+    expect(firstCompletion).toHaveBeenCalledOnce()
+    expect(firstCompletion.mock.calls[0]?.[0].status).toBe('imported')
+    const saved = (await storage.list())[0]
+    expect(saved).toBeDefined()
+
+    const resumedCompletion = vi.fn()
+    const resumed = await service.importFiles([file], {
+      completedContentHashes: [saved!.contentHash],
+      discardCompletedResults: true,
+      onItemComplete: resumedCompletion,
+    })
+
+    expect(resumed).toEqual([])
+    expect(resumedCompletion).toHaveBeenCalledOnce()
+    expect(resumedCompletion.mock.calls[0]?.[0]).toMatchObject({
+      status: 'duplicate',
+      message: '此前的导入任务已成功保存此资源',
+    })
+  })
+
+  it('收到停止信号后不启动剩余文件导入', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const controller = new AbortController()
+    controller.abort(new DOMException('stopped', 'AbortError'))
+
+    await expect(
+      service.importFiles([new File(['{}'], 'stopped.json')], { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await storage.list()).toHaveLength(0)
+  })
+
   it('saves opening sets and applies them as independent cards or recoverable versions', async () => {
     const { service } = createServiceWithStorage()
     const greetingService = new GreetingResourceService(service)
@@ -852,7 +992,10 @@ describe('ResourceService', () => {
       reclassified: true,
       resource: {
         type: RESOURCE_TYPE.CHARACTER_CARD,
-        metadata: { parserVersion: 8, detectedVariant: 'characterCardJson' },
+        metadata: {
+          parserVersion: JSON_RESOURCE_PARSER_VERSION,
+          detectedVariant: 'characterCardJson',
+        },
       },
     })
     expect((await service.list())[0]?.type).toBe(RESOURCE_TYPE.CHARACTER_CARD)
@@ -1165,7 +1308,7 @@ describe('ResourceService', () => {
     expect(await service.upgradeLegacyJsonResources()).toBe(1)
     const [resource] = await service.list()
     expect(resource?.type).toBe(RESOURCE_TYPE.REGEX)
-    expect(resource?.metadata.parserVersion).toBe(8)
+    expect(resource?.metadata.parserVersion).toBe(JSON_RESOURCE_PARSER_VERSION)
     expect(resource?.metadata.authorNote).toBe('升级也保留备注')
     expect(resource?.favorite).toBe(true)
     expect(resource?.categoryId).toBe('tools')
@@ -1186,7 +1329,7 @@ describe('ResourceService', () => {
       tags: ['保留标签'],
       metadata: {
         format: 'json',
-        parserVersion: 8,
+        parserVersion: JSON_RESOURCE_PARSER_VERSION,
         detectedVariant: 'regexCollection',
         regexScope: 'global',
         sourceName: '全局正则',
@@ -1277,7 +1420,7 @@ describe('ResourceService', () => {
     expect(resource?.type).toBe(RESOURCE_TYPE.CHARACTER_CARD)
     expect(resource?.tags).toEqual(['用户标签', '角色卡标签', '额外标签'])
     expect(resource?.metadata).toMatchObject({
-      parserVersion: 8,
+      parserVersion: JSON_RESOURCE_PARSER_VERSION,
       detectedVariant: 'characterCardJson',
       card,
     })
@@ -1307,7 +1450,10 @@ describe('ResourceService', () => {
     await service.upgradeLegacyJsonResources()
     const [resource] = await service.list()
     expect(resource?.type).toBe(RESOURCE_TYPE.PRESET)
-    expect(resource?.metadata).toMatchObject({ parserVersion: 8, manualTypeOverride: 'preset' })
+    expect(resource?.metadata).toMatchObject({
+      parserVersion: JSON_RESOURCE_PARSER_VERSION,
+      manualTypeOverride: 'preset',
+    })
   })
 
   it('没有读取远端内容时不把普通 GitHub 仓库臆断为酒馆扩展', async () => {
@@ -1342,6 +1488,126 @@ describe('ResourceService', () => {
     ])
     expect(duplicate[0]?.status).toBe('duplicate')
     expect(await storage.list()).toHaveLength(1)
+  })
+
+  it('indexes lightweight link summaries once without reading unrelated originals', async () => {
+    const { service, storage } = createServiceWithStorage()
+    await service.importFiles([
+      new File([JSON.stringify({ unrelated: 'body'.repeat(10000) })], 'unrelated.json', {
+        type: 'application/json',
+      }),
+    ])
+    const list = vi.spyOn(storage, 'list')
+    const get = vi.spyOn(storage, 'get')
+    const listSummaries = vi.spyOn(storage, 'listSummaries')
+    const listLightSummaries = vi.fn(async () =>
+      (await storage.listSummaries()).map(toResourceListSummary),
+    )
+    Object.assign(storage, { listResourceListSummaries: listLightSummaries })
+
+    const results = await service.importLinks([
+      'https://example.com/first.json',
+      'https://example.com/second.json',
+      'https://example.com/first.json',
+    ])
+
+    expect(results.map((result) => result.status)).toEqual(['imported', 'imported', 'duplicate'])
+    expect(listLightSummaries).toHaveBeenCalledTimes(1)
+    expect(listSummaries).toHaveBeenCalledTimes(1)
+    expect(list).not.toHaveBeenCalled()
+    expect(get).not.toHaveBeenCalled()
+    if (results[0]?.status !== 'imported' || results[2]?.status !== 'duplicate') return
+    expect(results[2].resource).toBe(results[0].resource)
+    expect(results[2].resource.originalBlob).toBeInstanceOf(Blob)
+  })
+
+  it('hydrates an existing duplicate only once while retaining complete import callbacks', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const [saved] = await service.importLinks(['https://example.com/existing.json'])
+    if (saved?.status !== 'imported') throw new Error('Missing fixture resource')
+    const list = vi.spyOn(storage, 'list')
+    const listSummaries = vi.spyOn(storage, 'listSummaries')
+    const get = vi.spyOn(storage, 'get')
+    const onItemComplete = vi.fn()
+
+    const results = await service.importLinks(
+      ['https://example.com/existing.json', 'https://example.com/EXISTING.json'],
+      { onItemComplete },
+    )
+
+    expect(results.map((result) => result.status)).toEqual(['duplicate', 'duplicate'])
+    expect(list).not.toHaveBeenCalled()
+    expect(listSummaries).toHaveBeenCalledTimes(1)
+    expect(get).toHaveBeenCalledExactlyOnceWith(saved.resource.id)
+    expect(onItemComplete).toHaveBeenCalledTimes(2)
+    for (const result of results) {
+      if (result.status !== 'duplicate') throw new Error('Expected duplicate')
+      expect(result.resource).toBe(saved.resource)
+      expect(result.resource.originalBlob).toBe(saved.resource.originalBlob)
+    }
+  })
+
+  it('rebuilds the link index after source edits instead of reusing stale duplicate entries', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const [saved] = await service.importLinks(['https://example.com/old.json'])
+    if (saved?.status !== 'imported') throw new Error('Missing fixture resource')
+    await storage.update(saved.resource.id, {
+      sourceLinks: saved.resource.sourceLinks?.map((link) => ({
+        ...link,
+        url: 'https://example.com/new.json',
+      })),
+    })
+
+    const results = await service.importLinks([
+      'https://example.com/old.json',
+      'https://example.com/new.json',
+    ])
+
+    expect(results.map((result) => result.status)).toEqual(['imported', 'duplicate'])
+    if (results[1]?.status !== 'duplicate') throw new Error('Expected duplicate')
+    expect(results[1].resource.id).toBe(saved.resource.id)
+    expect(results[1].resource.sourceLinks?.[0]?.url).toBe('https://example.com/new.json')
+  })
+
+  it('imports again when a summary points to a deleted resource and deduplicates the new item', async () => {
+    const inspect = vi.fn(noLinkInspection)
+    const { service, storage } = createServiceWithStorage(inspect)
+    const [saved] = await service.importLinks(['https://example.com/deleted.json'])
+    if (saved?.status !== 'imported') throw new Error('Missing fixture resource')
+    const summary = toResourceListSummary(saved.resource)
+    await storage.delete(saved.resource.id)
+    Object.assign(storage, { listResourceListSummaries: vi.fn(async () => [summary]) })
+    const get = vi.spyOn(storage, 'get')
+    inspect.mockClear()
+
+    const results = await service.importLinks([
+      'https://example.com/deleted.json',
+      'https://example.com/deleted.json',
+    ])
+
+    expect(results.map((result) => result.status)).toEqual(['imported', 'duplicate'])
+    expect(get).toHaveBeenCalledExactlyOnceWith(saved.resource.id)
+    expect(inspect).toHaveBeenCalledTimes(1)
+    if (results[0]?.status !== 'imported' || results[1]?.status !== 'duplicate') return
+    expect(results[1].resource.id).toBe(results[0].resource.id)
+    expect(results[0].resource.id).not.toBe(saved.resource.id)
+  })
+
+  it('does not start inspecting links after cancellation during summary loading', async () => {
+    const inspect = vi.fn(noLinkInspection)
+    const { service, storage } = createServiceWithStorage(inspect)
+    const controller = new AbortController()
+    Object.assign(storage, {
+      listResourceListSummaries: vi.fn(async () => {
+        controller.abort(new DOMException('Stopped', 'AbortError'))
+        return []
+      }),
+    })
+
+    await expect(
+      service.importLinks(['https://example.com/card.json'], { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(inspect).not.toHaveBeenCalled()
   })
 
   it('读取 GitHub README 与 manifest 后用证据生成名称、说明和扩展分类', async () => {
@@ -1642,6 +1908,35 @@ describe('历史时间线合并', () => {
 })
 
 describe('角色卡内容指纹', () => {
+  it('同名但内容差很多的资源按设置成为候选，跳过比对仍优先生效', async () => {
+    const firstCard = { name: '同名角色', description: '古代宫廷', first_mes: '宫中初见' }
+    const secondCard = { name: '同名角色', description: '星际战争', first_mes: '飞船出击' }
+    const first = new File([JSON.stringify(firstCard)], 'court.json', { type: 'application/json' })
+    const second = new File([JSON.stringify(secondCard)], 'space.json', {
+      type: 'application/json',
+    })
+    const { service } = createServiceWithStorage()
+    const [initial, candidate] = await service.importFiles([first, second], {
+      sameNameVersionCandidates: true,
+    })
+    expect(initial.status).toBe('imported')
+    expect(candidate.status).toBe('versionCandidate')
+    if (candidate.status !== 'versionCandidate') throw new Error('未识别同名候选')
+    expect(candidate.candidates[0].matchKind).toBe('sameName')
+    const { service: defaultService } = createServiceWithStorage()
+    expect(
+      (await defaultService.importFiles([first, second])).map((result) => result.status),
+    ).toEqual(['imported', 'imported'])
+    const { service: skipService } = createServiceWithStorage()
+    expect(
+      (
+        await skipService.importFiles([first, second], {
+          sameNameVersionCandidates: true,
+          skipVersionComparison: true,
+        })
+      ).map((result) => result.status),
+    ).toEqual(['imported', 'imported'])
+  })
   const cardJson = {
     spec: 'chara_card_v2',
     data: { name: '夜航船', description: '描述', first_mes: '你好。' },
@@ -1650,6 +1945,79 @@ describe('角色卡内容指纹', () => {
   function cardFile(name: string): File {
     return new File([JSON.stringify(cardJson)], name, { type: 'application/json' })
   }
+
+  it('升级后拒绝复用旧算法的持久指纹缓存', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const [initial] = await service.importFiles([cardFile('original.json')])
+    if (initial.status !== 'imported') throw new Error('初始导入失败')
+    await storage.update(initial.resource.id, {
+      metadata: { ...initial.resource.metadata, cardFingerprintVersion: 2 },
+    })
+    let cache: ResourceVersionMatchFingerprintCache | undefined
+    Object.assign(storage, {
+      getVersionMatchFingerprintCache: async () => structuredClone(cache),
+      setVersionMatchFingerprintCache: async (value: ResourceVersionMatchFingerprintCache) => {
+        cache = structuredClone(value)
+      },
+    })
+    const parser = new ResourceParserRegistry([new PngResourceParser(), new JsonResourceParser()])
+    const revision = new File(
+      [JSON.stringify({ ...cardJson, data: { ...cardJson.data, alternate_greetings: ['新增'] } })],
+      'other.json',
+      { type: 'application/json' },
+    )
+    await new ResourceService(storage, parser, noLinkInspection).importFiles([revision])
+    const stored = cache!.resources[initial.resource.id]!
+    // v2 生成的 signature 未包含算法版本，即便原件没变化也不能再命中。
+    stored.signature = JSON.stringify(JSON.parse(stored.signature).slice(1))
+    stored.core = 'obsolete-greeting-dependent-hash'
+    const [result] = await new ResourceService(storage, parser, noLinkInspection).importFiles([
+      revision,
+    ])
+    expect(result.status).toBe('versionCandidate')
+    if (result.status !== 'versionCandidate') throw new Error('未识别版本候选')
+    expect(result.candidates[0]?.score).toBe(90)
+    expect(cache!.resources[initial.resource.id]!.core).not.toBe('obsolete-greeting-dependent-hash')
+  })
+
+  it('增加开场白且更换文件名时提示版本，保留不同版本及原文件', async () => {
+    const { service, storage } = createServiceWithStorage()
+    const [initial] = await service.importFiles([cardFile('original.json')])
+    expect(initial.status).toBe('imported')
+    if (initial.status !== 'imported') throw new Error('初始导入失败')
+    // 存量 v2 指纹必须在版本匹配时重新计算，而非只影响新导入卡。
+    await storage.update(initial.resource.id, {
+      metadata: {
+        ...initial.resource.metadata,
+        cardCoreHash: 'legacy-core',
+        cardFingerprintVersion: 2,
+      },
+    })
+    const file = new File(
+      [
+        JSON.stringify({
+          ...cardJson,
+          data: { ...cardJson.data, alternate_greetings: ['新增一', '新增二'] },
+        }),
+      ],
+      'unrelated-export.json',
+      { type: 'application/json' },
+    )
+    const [candidate] = await service.importFiles([file])
+    expect(candidate.status).toBe('versionCandidate')
+    if (candidate.status !== 'versionCandidate') throw new Error('未识别版本候选')
+    expect(candidate.candidates[0]).toMatchObject({
+      resource: { id: initial.resource.id },
+      matchKind: 'version',
+      score: 90,
+    })
+    await service.importAsVersion(file, initial.resource.id, true)
+    const versions = await service.listVersions(initial.resource.id)
+    expect(versions).toHaveLength(2)
+    expect((await service.list())[0].versionCount).toBe(2)
+    const original = versions.find((version) => version.resource.fileName === 'original.json')!
+    expect(await original.resource.originalBlob.text()).toBe(JSON.stringify(cardJson))
+  })
 
   it('导入角色卡时写入两级内容指纹', async () => {
     const { service, storage } = createServiceWithStorage()
@@ -1973,6 +2341,36 @@ it('records only the selected target of a manual binding and removes its directi
   expect((await service.get(a!.id))!.metadata.manuallyBoundResourceIds).toEqual([b!.id])
   await service.updateDetails(updatedB, { ...details, name: b!.name, relatedResourceIds: [] })
   expect((await service.get(a!.id))!.metadata.manuallyBoundResourceIds).toEqual([])
+})
+
+it('resumes a transformed share using the committed resource and rejects stale checkpoints', async () => {
+  const service = createService()
+  const first = new File(['{"name":"already encrypted","iv":"first"}'], 'secret.json')
+  const [saved] = await service.importFiles([first], { detectVersions: false })
+  if (saved?.status !== 'imported') throw new Error('测试导入失败')
+  const originalHash = 'a'.repeat(64)
+  const encryptedAgain = new File(['{"name":"already encrypted","iv":"second"}'], 'secret.json')
+  const onItemComplete = vi.fn()
+  const [resumed] = await service.importFiles([encryptedAgain], {
+    detectVersions: false,
+    originalContentHashes: new Map([[encryptedAgain, originalHash]]),
+    completedImportAliases: { [originalHash]: saved.resource.contentHash! },
+    onItemComplete,
+  })
+  expect(resumed).toMatchObject({
+    status: 'duplicate',
+    sourceContentHash: originalHash,
+    resource: { id: saved.resource.id },
+  })
+  expect(onItemComplete).toHaveBeenCalledWith(resumed)
+  expect(await service.list()).toHaveLength(1)
+  const [missing] = await service.importFiles([encryptedAgain], {
+    detectVersions: false,
+    originalContentHashes: new Map([[encryptedAgain, originalHash]]),
+    completedImportAliases: { [originalHash]: 'b'.repeat(64) },
+  })
+  expect(missing?.status).toBe('imported')
+  expect(await service.list()).toHaveLength(2)
 })
 
 it('lets persona saves replace current content while retaining only explicitly requested history', async () => {

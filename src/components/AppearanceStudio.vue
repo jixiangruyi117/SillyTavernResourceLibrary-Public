@@ -265,7 +265,7 @@ const hasUnsavedChanges = computed(() => {
 const presetState = computed(() => {
   if (!savedDraft.value) return '新预设 · 尚未保存'
   if (hasUnsavedChanges.value) return '有未保存修改'
-  return '已保存并应用'
+  return '预设已保存'
 })
 const hasCssContent = computed(
   () =>
@@ -716,9 +716,14 @@ const previewDocument = computed(() => {
           </div>
           <p v-if="installationError" role="status">{{ installationError }}</p>
           <p v-else-if="!installationsLoaded" role="status">正在读取 APP 安装状态…</p>
-          <details v-if="inactiveScopes.length">
-            <summary>未安装 APP / 待恢复的样式（{{ inactiveScopes.length }}）</summary>
-            <p>样式保留在预设与备份中，安装后自动恢复。可在这里提前编辑。</p>
+          <details v-if="inactiveScopes.length" class="appearance-inactive-scopes">
+            <summary>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="4" />
+                <path d="M8 12h8m-4-4v8" /></svg
+              ><span>未安装 APP</span><small>{{ inactiveScopes.length }}</small
+              ><span class="appearance-inactive-scopes__chevron" aria-hidden="true">⌄</span>
+            </summary>
             <div class="appearance-scope-tabs" role="tablist" aria-label="未安装 APP 的样式">
               <button
                 v-for="scope in inactiveScopes"
@@ -733,14 +738,6 @@ const previewDocument = computed(() => {
               </button>
             </div>
           </details>
-          <p>
-            {{ selectedScope?.hint }}。
-            <template v-if="selectedScope?.selector"
-              >保存时会自动限制在
-              <code>{{ selectedScope.selector }}</code> 内，不需要手写外层选择器。</template
-            >
-            <template v-else>该界面暂不可用，样式仅保存、不应用。</template>
-          </p>
           <div class="appearance-scope-editor__header">
             <strong>{{ selectedScope?.title }}专用 CSS</strong>
             <AppearanceOriginalCssActions v-if="selectedScope" :scope="selectedScope" />

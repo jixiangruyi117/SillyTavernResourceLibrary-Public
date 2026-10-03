@@ -36,8 +36,31 @@ export interface MainApiProfilesState {
 }
 
 export interface MainApiMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | MainApiContentPart[]
+  toolCalls?: MainApiToolCall[]
+  toolCallId?: string
+  toolError?: boolean
+  /** Preserve signed Anthropic thinking blocks during a tool round trip. */
+  providerContent?: Array<Record<string, unknown>>
+  reasoning?: string
+}
+
+export interface MainApiToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+export interface MainApiTool {
+  name: string
+  description: string
+  parameters: {
+    type: 'object'
+    properties: Record<string, { type: 'string'; description?: string; maxLength?: number }>
+    required: string[]
+    additionalProperties: false
+  }
 }
 
 export type MainApiContentPart = { type: 'text'; text: string } | { type: 'image'; dataUrl: string }
@@ -50,13 +73,20 @@ export interface MainApiTokenUsage {
 }
 
 export interface MainApiCompletionResult {
+  sources?: Array<{ title: string; url: string }>
   text: string
   usage: MainApiTokenUsage
   reasoning?: string
   finishReason?: string
+  toolCalls?: MainApiToolCall[]
+  providerContent?: Array<Record<string, unknown>>
 }
 
 export interface MainApiRequestOptions {
+  /** Query-only native search: Responses web_search or Anthropic server tool. */
+  webSearch?: boolean
+  /** Native function calling. Tool requests use complete JSON responses before execution. */
+  tools?: readonly MainApiTool[]
   /** Per-request browser timeout; does not affect connection tests or saved API settings. */
   timeoutMs?: number
   /** Allows long-running callers to cancel the in-flight fetch immediately. */
@@ -193,6 +223,63 @@ function responseTextFromJson(body: Record<string, unknown>, protocol: MainApiPr
   return ''
 }
 
+function readNativeSearchResult(body: Record<string, unknown>, protocol: MainApiProtocol) {
+  const anthropic = protocol === 'anthropic-compatible'
+  const blocks = (anthropic ? body.content : body.output) as
+    Array<Record<string, unknown>> | undefined
+  if (
+    !Array.isArray(blocks) ||
+    body.status === 'incomplete' ||
+    body.error ||
+    ['max_tokens', 'pause_turn'].includes(String(body.stop_reason))
+  )
+    throw new Error('原生搜索没有完整返回；未获得可核验资料')
+  const performed = blocks.some((block) =>
+    anthropic
+      ? block.type === 'server_tool_use' && block.name === 'web_search'
+      : block.type === 'web_search_call' && block.status === 'completed',
+  )
+  const sources: Array<{ title: string; url: string }> = []
+  let text = ''
+  for (const block of blocks) {
+    if (block.type === 'web_search_tool_result' && !Array.isArray(block.content))
+      throw new Error('服务商搜索工具返回错误，未获得可核验资料')
+    const content = anthropic
+      ? [block]
+      : Array.isArray(block.content)
+        ? (block.content as Array<Record<string, unknown>>)
+        : []
+    for (const part of content) {
+      if (part.type !== 'text' && part.type !== 'output_text') continue
+      text += String(part.text ?? '')
+      const citations = (part.citations ?? part.annotations ?? []) as Array<Record<string, unknown>>
+      for (const citation of citations) {
+        const raw = citation.url
+        if (typeof raw !== 'string') continue
+        try {
+          const url = new URL(raw)
+          if (url.protocol !== 'https:' || url.username || url.password) continue
+        } catch {
+          continue
+        }
+        if (!sources.some((source) => source.url === raw))
+          sources.push({ title: String(citation.title ?? raw).slice(0, 200), url: raw })
+      }
+    }
+  }
+  if (!performed || !text.trim() || !sources.length)
+    throw new Error('服务商未执行搜索或没有返回来源；不能作为联网证据')
+  return {
+    text,
+    sources: sources.slice(0, 10),
+    usage: tokenUsageFromJson(body, 'anthropic-compatible'),
+    finishReason: 'stop',
+    reasoning: undefined,
+    toolCalls: undefined,
+    providerContent: undefined,
+  }
+}
+
 function responseFinishReason(body: Record<string, unknown>, protocol: MainApiProtocol) {
   const choices = body.choices as Array<{ finish_reason?: unknown }> | undefined
   const delta = body.delta as { stop_reason?: unknown } | undefined
@@ -201,6 +288,39 @@ function responseFinishReason(body: Record<string, unknown>, protocol: MainApiPr
       ? (body.stop_reason ?? delta?.stop_reason)
       : choices?.[0]?.finish_reason
   return typeof reason === 'string' && reason ? reason : undefined
+}
+
+function responseToolCalls(
+  body: Record<string, unknown>,
+  protocol: MainApiProtocol,
+): MainApiToolCall[] {
+  const choices = body.choices as Array<{ message?: { tool_calls?: unknown[] } }> | undefined
+  const raw =
+    protocol === 'anthropic-compatible'
+      ? Array.isArray(body.content)
+        ? body.content.filter((item) => item?.type === 'tool_use')
+        : []
+      : (choices?.[0]?.message?.tool_calls ?? [])
+  const seen = new Set<string>()
+  return raw.map((item) => {
+    const record = item as Record<string, unknown>
+    const fn = record.function as Record<string, unknown> | undefined
+    const id = record.id
+    const name = protocol === 'anthropic-compatible' ? record.name : fn?.name
+    const args = protocol === 'anthropic-compatible' ? JSON.stringify(record.input) : fn?.arguments
+    if (
+      typeof id !== 'string' ||
+      !id ||
+      seen.has(id) ||
+      typeof name !== 'string' ||
+      !name ||
+      typeof args !== 'string' ||
+      (protocol === 'openai-compatible' && record.type !== 'function')
+    )
+      throw new Error('API 返回了无效或重复的工具调用，未执行操作')
+    seen.add(id)
+    return { id, name, arguments: args }
+  })
 }
 
 function reasoningFragments(value: unknown): string[] {
@@ -246,13 +366,63 @@ function openAiMessages(messages: MainApiMessage[]): Array<Record<string, unknow
     role: message.role,
     content:
       typeof message.content === 'string'
-        ? message.content
+        ? message.content || (message.toolCalls?.length ? null : '')
         : message.content.map((part) =>
             part.type === 'text'
               ? { type: 'text', text: part.text }
               : { type: 'image_url', image_url: { url: part.dataUrl, detail: 'auto' } },
           ),
+    ...(message.toolCalls?.length
+      ? {
+          tool_calls: message.toolCalls.map((call) => ({
+            id: call.id,
+            type: 'function',
+            function: { name: call.name, arguments: call.arguments },
+          })),
+        }
+      : {}),
+    ...(message.role === 'tool' ? { tool_call_id: message.toolCallId } : {}),
+    ...(message.role === 'assistant' && message.reasoning
+      ? { reasoning_content: message.reasoning }
+      : {}),
   }))
+}
+
+function anthropicMessages(messages: MainApiMessage[]): Array<Record<string, unknown>> {
+  const output: Array<Record<string, unknown>> = []
+  for (const message of messages) {
+    if (message.role === 'system') continue
+    if (message.role === 'tool') {
+      const block = {
+        type: 'tool_result',
+        tool_use_id: message.toolCallId,
+        content: textOnly(message.content),
+        ...(message.toolError ? { is_error: true } : {}),
+      }
+      const previous = output[output.length - 1]
+      if (
+        previous?.role === 'user' &&
+        Array.isArray(previous.content) &&
+        previous.content.every((item) => item.type === 'tool_result')
+      )
+        previous.content.push(block)
+      else output.push({ role: 'user', content: [block] })
+    } else if (message.role === 'assistant' && message.toolCalls?.length) {
+      output.push({
+        role: 'assistant',
+        content: message.providerContent ?? [
+          ...(textOnly(message.content) ? [{ type: 'text', text: textOnly(message.content) }] : []),
+          ...message.toolCalls.map((call) => ({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: JSON.parse(call.arguments),
+          })),
+        ],
+      })
+    } else output.push({ role: message.role, content: anthropicContent(message.content) })
+  }
+  return output
 }
 
 function anthropicContent(
@@ -302,7 +472,12 @@ export function estimateMainApiTokens(messages: MainApiMessage[]): number {
             (sum, part) => sum + (part.type === 'text' ? estimateTextTokens(part.text) : 1_000),
             0,
           )
-    return total + contentTokens + 4
+    return (
+      total +
+      contentTokens +
+      (message.toolCalls ? estimateTextTokens(JSON.stringify(message.toolCalls)) : 0) +
+      4
+    )
   }, 2)
 }
 
@@ -626,7 +801,11 @@ export class MainApiService {
     override?: Partial<MainApiConfig>,
     options?: MainApiRequestOptions,
   ): Promise<MainApiCompletionResult> {
-    const config = normalizedConfig({ ...this.getConfig(), ...override })
+    const config = normalizedConfig({
+      ...this.getConfig(),
+      ...override,
+      ...(options?.tools?.length || options?.webSearch ? { stream: false } : {}),
+    })
     if (!config.model) throw new Error('请先填写模型名称')
     const timeoutMs = normalizedRequestTimeout(options?.timeoutMs)
     const controller = new AbortController()
@@ -639,41 +818,64 @@ export class MainApiService {
       controller.abort()
     }, timeoutMs)
     try {
-      const response =
-        config.protocol === 'anthropic-compatible'
-          ? await this.requestAnthropic(config, messages, controller.signal)
-          : await this.requestOpenAi(config, messages, controller.signal)
+      if (
+        options?.webSearch &&
+        (options.tools?.length ||
+          messages.some((message) => message.role === 'tool' || message.toolCalls?.length))
+      )
+        throw new Error('原生搜索仅接收独立查询，不与客户端工具回合混合')
+      const response = options?.webSearch
+        ? await this.requestWebSearch(config, messages, controller.signal)
+        : config.protocol === 'anthropic-compatible'
+          ? await this.requestAnthropic(config, messages, controller.signal, options?.tools)
+          : await this.requestOpenAi(config, messages, controller.signal, options?.tools)
       if (!response.ok) throw new Error(`API 返回 ${response.status}：${await readError(response)}`)
       const result = config.stream
         ? await this.readStream(response, config.protocol, options?.onText)
         : (() => {
             return response.json().then((rawBody) => {
               const body = rawBody as Record<string, unknown>
+              if (options?.webSearch) return readNativeSearchResult(body, config.protocol)
               return {
+                sources: undefined,
                 text: responseTextFromJson(body, config.protocol),
                 usage: tokenUsageFromJson(body, config.protocol),
                 reasoning: responseReasoningFromJson(body, config.protocol),
                 finishReason: responseFinishReason(body, config.protocol),
+                toolCalls: responseToolCalls(body, config.protocol),
+                providerContent:
+                  config.protocol === 'anthropic-compatible' && Array.isArray(body.content)
+                    ? (body.content as Array<Record<string, unknown>>)
+                    : undefined,
               }
             })
           })()
-      const { text, usage, reasoning, finishReason } = await result
+      const { text, usage, reasoning, finishReason, toolCalls, providerContent, sources } =
+        await result
       if (!config.stream) options?.onText?.(text)
-      if (text) {
-        const estimatedInput = estimateMainApiTokens(messages)
+      if (text || toolCalls?.length) {
+        const estimatedInput =
+          estimateMainApiTokens(messages) +
+          (options?.tools?.length ? estimateTextTokens(JSON.stringify(options.tools)) : 0)
+        const estimatedOutput = estimateTextTokens(
+          text + (toolCalls?.length ? JSON.stringify(toolCalls) : ''),
+        )
         const normalizedUsage: MainApiTokenUsage = usage
           ? { ...usage, source: 'provider' }
           : {
               inputTokens: estimatedInput,
-              outputTokens: estimateTextTokens(text),
-              totalTokens: estimatedInput + estimateTextTokens(text),
+              outputTokens: estimatedOutput,
+              totalTokens: estimatedInput + estimatedOutput,
               source: 'estimated',
             }
         return {
           text,
+          ...(sources?.length ? { sources } : {}),
           usage: normalizedUsage,
           ...(reasoning ? { reasoning } : {}),
           ...(finishReason ? { finishReason } : {}),
+          ...(toolCalls?.length ? { toolCalls } : {}),
+          ...(providerContent && toolCalls?.length ? { providerContent } : {}),
         }
       }
       throw new Error('API 已响应，但没有返回可读取的文本内容')
@@ -698,10 +900,63 @@ export class MainApiService {
     }
   }
 
+  private requestWebSearch(
+    config: MainApiConfig,
+    messages: MainApiMessage[],
+    signal: AbortSignal,
+  ): Promise<Response> {
+    const anthropic = config.protocol === 'anthropic-compatible'
+    const base = config.url
+      .replace(/\/+$/u, '')
+      .replace(/\/chat\/completions$/iu, '')
+      .replace(/\/responses$/iu, '')
+    const url = anthropic ? endpointFor(config) : `${base}/responses`
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(anthropic
+          ? {
+              'anthropic-version': '2023-06-01',
+              ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
+            }
+          : config.apiKey
+            ? { Authorization: `Bearer ${config.apiKey}` }
+            : {}),
+      },
+      body: JSON.stringify(
+        anthropic
+          ? {
+              model: config.model,
+              system: messages
+                .filter((message) => message.role === 'system')
+                .map((message) => textOnly(message.content))
+                .join('\n'),
+              messages: anthropicMessages(messages),
+              stream: false,
+              max_tokens: 1500,
+              tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+            }
+          : {
+              model: config.model,
+              input: openAiMessages(messages),
+              stream: false,
+              store: false,
+              tools: [{ type: 'web_search', search_context_size: 'low' }],
+              tool_choice: 'required',
+              max_tool_calls: 3,
+              max_output_tokens: 1500,
+            },
+      ),
+      signal,
+    })
+  }
+
   private requestOpenAi(
     config: MainApiConfig,
     messages: MainApiMessage[],
     signal: AbortSignal,
+    tools?: readonly MainApiTool[],
   ): Promise<Response> {
     const body: Record<string, unknown> = {
       model: config.model,
@@ -711,6 +966,11 @@ export class MainApiService {
       stream: config.stream,
       frequency_penalty: config.frequencyPenalty,
       presence_penalty: config.presencePenalty,
+    }
+    if (tools?.length) {
+      body.tools = tools.map((tool) => ({ type: 'function', function: { ...tool, strict: true } }))
+      body.tool_choice = 'auto'
+      body.parallel_tool_calls = false
     }
     if (config.maxTokens > 0) body.max_tokens = config.maxTokens
     if (config.reasoningEffort !== 'auto') body.reasoning_effort = config.reasoningEffort
@@ -729,6 +989,7 @@ export class MainApiService {
     config: MainApiConfig,
     messages: MainApiMessage[],
     signal: AbortSignal,
+    tools?: readonly MainApiTool[],
   ): Promise<Response> {
     if (config.maxTokens <= 0)
       throw new Error('Anthropic Messages 协议要求明确填写最大输出 Token，不能使用自动值')
@@ -746,9 +1007,17 @@ export class MainApiService {
       body: JSON.stringify({
         model: config.model,
         system,
-        messages: messages
-          .filter((message) => message.role !== 'system')
-          .map((message) => ({ role: message.role, content: anthropicContent(message.content) })),
+        messages: anthropicMessages(messages),
+        ...(tools?.length
+          ? {
+              tools: tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.parameters,
+              })),
+              tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+            }
+          : {}),
         temperature: config.temperature,
         top_p: config.topP,
         max_tokens: config.maxTokens,
@@ -767,6 +1036,9 @@ export class MainApiService {
     usage?: Omit<MainApiTokenUsage, 'source'>
     reasoning?: string
     finishReason?: string
+    toolCalls?: MainApiToolCall[]
+    providerContent?: Array<Record<string, unknown>>
+    sources?: Array<{ title: string; url: string }>
   }> {
     if (!response.body) throw new Error('API 声称使用流式传输，但没有返回可读取的数据流')
     const reader = response.body.getReader()

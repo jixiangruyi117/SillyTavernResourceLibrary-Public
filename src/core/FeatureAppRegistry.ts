@@ -3,6 +3,7 @@ export type BuiltInFeatureAppId =
   | 'draw'
   | 'appearance'
   | 'folders'
+  | 'inbox'
   | 'cloud'
   | 'tavernBridge'
   | 'stitch'
@@ -75,6 +76,16 @@ export const FEATURE_APP_REGISTRY: readonly FeatureAppDescriptor[] = [
     sortOrder: 30,
     visible: true,
     badge: (context) => `${context.folderCount} 个文件夹`,
+  },
+  {
+    id: 'inbox',
+    page: 'inbox',
+    name: '收件箱',
+    description: 'Discord 帖子与资源下载',
+    icon: 'inbox',
+    sortOrder: 35,
+    visible: true,
+    badge: '领取 · 重试 · 关联',
   },
   {
     id: 'cloud',

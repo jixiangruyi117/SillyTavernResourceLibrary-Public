@@ -111,7 +111,14 @@ function formatBytes(value = 0): string {
                 <strong>{{ record.reason || '未命名资源' }}</strong>
                 <span>{{ formatDate(record.createdAt) }}</span>
                 <small>
-                  {{ record.resourceCount }} 项资源 · {{ formatBytes(record.size) }}
+                  {{
+                    record.itemKind === 'persona-version'
+                      ? '1 个人设版本'
+                      : record.itemKind === 'persona-character'
+                        ? '1 组角色卡人设'
+                        : `${record.resourceCount} 项资源`
+                  }}
+                  · {{ formatBytes(record.size) }}
                   <template v-if="record.encrypted"> · 已加密</template>
                 </small>
               </div>
@@ -134,7 +141,9 @@ function formatBytes(value = 0): string {
             <span aria-hidden="true">↺</span>
             <strong>{{ query ? '没有匹配的已删除资源' : '回收站是空的' }}</strong>
             <p>
-              {{ query ? '换一个名称或清除搜索条件。' : '删除资源后，它会先安全地保存在这里。' }}
+              {{
+                query ? '换一个名称或清除搜索条件。' : '删除资源或人设版本后，它会先保存在这里。'
+              }}
             </p>
           </section>
 

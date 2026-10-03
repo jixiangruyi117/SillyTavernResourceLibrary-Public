@@ -23,8 +23,12 @@ import java.util.UUID;
 
 final class NativeCloudRestoreTransport {
     static final int RESTORE_BUFFER_BYTES = 256 * 1024;
+    static final class IntegrityException extends IOException {
+        IntegrityException(String message) { super(message); }
+    }
     interface ObjectLocator { File locate(String hash) throws Exception; }
     interface ObjectDownloader { void download(RestoreObject object, File temporary) throws Exception; }
+    interface RestoreProgress { void update(int completed, int total) throws Exception; }
 
     static final class RestoreObject {
         final String hash;
@@ -67,6 +71,88 @@ final class NativeCloudRestoreTransport {
         File pendingRoot, List<RestoreObject> objects, List<RestoreResource> resources,
         ObjectLocator locator, ObjectDownloader downloader
     ) throws Exception {
+        return restoreFiles(pendingRoot, objects, resources, locator, downloader, false, (completed, total) -> {});
+    }
+
+    static RestoreCounts restoreFiles(
+        File pendingRoot, List<RestoreObject> objects, List<RestoreResource> resources,
+        ObjectLocator locator, ObjectDownloader downloader, boolean resumable, RestoreProgress progress
+    ) throws Exception {
+        Map<String, RestoreObject> byHash = validatePlan(objects, resources);
+        File taskRoot = resumable ? pendingRoot : new File(pendingRoot, UUID.randomUUID().toString());
+        if (!taskRoot.isDirectory() && !taskRoot.mkdirs()) throw new IOException("无法创建原生恢复任务暂存目录");
+        if (resumable) {
+            File[] abandoned = taskRoot.listFiles(file -> file.isFile() && file.getName().matches("[a-f0-9-]{36}\\.resource\\.part"));
+            if (abandoned != null) for (File file : abandoned) {
+                if (!file.delete()) throw new IllegalStateException("无法清理已中断的原件拼装文件");
+            }
+        }
+        List<File> ownedFiles = new ArrayList<>();
+        if (resumable) for (RestoreObject object : objects) ownedFiles.add(new File(taskRoot, object.hash + ".chunk.part"));
+        Map<String, File> verified = new HashMap<>();
+        RestoreCounts counts = new RestoreCounts();
+        boolean successful = false;
+        int completed = 0;
+        try {
+            for (RestoreResource resource : resources) {
+                progress.update(completed, resources.size());
+                File destination = locator.locate(resource.hash);
+                if (verifyFile(destination, resource.hash, resource.size)) {
+                    counts.reused++;
+                    progress.update(++completed, resources.size());
+                    continue;
+                }
+                File temporary = new File(taskRoot, UUID.randomUUID() + ".resource.part");
+                ownedFiles.add(temporary);
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                long written = 0;
+                try (FileOutputStream output = new FileOutputStream(temporary)) {
+                    byte[] buffer = new byte[RESTORE_BUFFER_BYTES];
+                    for (RestoreSegment segment : resource.segments) {
+                        File source = verified.get(segment.hash);
+                        if (source == null) {
+                            RestoreObject object = byHash.get(segment.hash);
+                            File legacy = locator.locate(segment.hash);
+                            if (verifyFile(legacy, object.hash, object.size)) {
+                                source = legacy;
+                                counts.reused++;
+                            } else {
+                                source = new File(taskRoot, object.hash + ".chunk.part");
+                                ownedFiles.add(source);
+                                if (!verifyFile(source, object.hash, object.size)) {
+                                    downloader.download(object, source);
+                                    counts.downloaded++;
+                                } else counts.reused++;
+                                if (!verifyFile(source, object.hash, object.size)) {
+                                    source.delete();
+                                    throw new IntegrityException("原生恢复对象大小或 SHA-256 校验失败");
+                                }
+                            }
+                            verified.put(segment.hash, source);
+                        }
+                        written += copyRange(source, segment.offset, segment.size, output, digest, buffer);
+                    }
+                    output.getFD().sync();
+                }
+                if (written != resource.size || !resource.hash.equals(hex(digest.digest()))) {
+                    throw new IntegrityException("原生恢复资源大小或 SHA-256 校验失败");
+                }
+                installRestoredObject(temporary, destination, resource.size);
+                counts.assembled++;
+                progress.update(++completed, resources.size());
+            }
+            successful = true;
+            return counts;
+        } finally {
+            for (File file : ownedFiles) {
+                if (file.isFile() && (!resumable || successful || !file.getName().endsWith(".chunk.part"))) file.delete();
+            }
+            deleteEmptyDirectory(taskRoot);
+            deleteEmptyDirectory(pendingRoot);
+        }
+    }
+
+    static Map<String, RestoreObject> validatePlan(List<RestoreObject> objects, List<RestoreResource> resources) {
         Map<String, RestoreObject> byHash = new HashMap<>();
         for (RestoreObject object : objects) {
             RestoreObject previous = byHash.put(object.hash, object);
@@ -88,66 +174,7 @@ final class NativeCloudRestoreTransport {
             }
             if (total != resource.size) throw new IllegalArgumentException("原生恢复资源分段总量不一致");
         }
-        File taskRoot = new File(pendingRoot, UUID.randomUUID().toString());
-        if (!taskRoot.mkdirs()) throw new IOException("无法创建原生恢复任务暂存目录");
-        List<File> ownedFiles = new ArrayList<>();
-        Map<String, File> verified = new HashMap<>();
-        RestoreCounts counts = new RestoreCounts();
-        try {
-            for (RestoreResource resource : resources) {
-                File destination = locator.locate(resource.hash);
-                // The path is content-addressed, but a same-size local corruption must not be
-                // accepted as a recovered original. Verification is the restore trust boundary.
-                if (verifyFile(destination, resource.hash, resource.size)) {
-                    counts.reused++;
-                    continue;
-                }
-                File temporary = new File(taskRoot, UUID.randomUUID() + ".resource.part");
-                ownedFiles.add(temporary);
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                long written = 0;
-                try (FileOutputStream output = new FileOutputStream(temporary)) {
-                    byte[] buffer = new byte[RESTORE_BUFFER_BYTES];
-                    for (RestoreSegment segment : resource.segments) {
-                        File source = verified.get(segment.hash);
-                        if (source == null) {
-                            RestoreObject object = byHash.get(segment.hash);
-                            File legacy = locator.locate(segment.hash);
-                            if (verifyFile(legacy, object.hash, object.size)) {
-                                source = legacy;
-                                counts.reused++;
-                            } else {
-                                source = new File(taskRoot, object.hash + ".chunk.part");
-                                ownedFiles.add(source);
-                                downloader.download(object, source);
-                                // Preserve the existing SHA/size trust boundary even for alternate transports.
-                                if (!verifyFile(source, object.hash, object.size)) {
-                                    throw new IOException("原生恢复对象大小或 SHA-256 校验失败");
-                                }
-                                counts.downloaded++;
-                            }
-                            verified.put(segment.hash, source);
-                        }
-                        written += copyRange(source, segment.offset, segment.size, output, digest, buffer);
-                    }
-                    output.getFD().sync();
-                }
-                if (written != resource.size || !resource.hash.equals(hex(digest.digest()))) {
-                    throw new IOException("原生恢复资源大小或 SHA-256 校验失败");
-                }
-                installRestoredObject(temporary, destination, resource.size);
-                counts.assembled++;
-            }
-            return counts;
-        } finally {
-            // Only files created by this call are eligible. Legacy CAS chunks, other jobs,
-            // originals and unknown pre-existing pending files are deliberately untouched.
-            for (File file : ownedFiles) {
-                if (file.isFile()) file.delete();
-            }
-            deleteEmptyDirectory(taskRoot);
-            deleteEmptyDirectory(pendingRoot);
-        }
+        return byHash;
     }
 
     static void validateRestoreUri(String provider, URI uri, String webDavHost) {
@@ -171,7 +198,21 @@ final class NativeCloudRestoreTransport {
         long expectedSize,
         File temporary
     ) throws Exception {
+        downloadRestoreObject(provider, url, secret, webDavUsername, expectedHash, expectedSize, temporary, call -> {});
+    }
+
+    static void downloadRestoreObject(
+        String provider, String url, String secret, String webDavUsername, String expectedHash,
+        long expectedSize, File temporary, java.util.function.Consumer<okhttp3.Call> onCall
+    ) throws Exception {
+        if (temporary.isFile() && temporary.length() >= expectedSize) {
+            if (verifyFile(temporary, expectedHash, expectedSize)) return;
+            if (!temporary.delete()) throw new IllegalStateException("无法清理损坏的恢复断点");
+        }
+        long offset = temporary.isFile() ? temporary.length() : 0;
         Request.Builder request = new Request.Builder().url(url).get();
+        request.header("Accept-Encoding", "identity");
+        if (offset > 0) request.header("Range", "bytes=" + offset + "-");
         if ("github".equals(provider)) {
             request.header("Accept", "application/octet-stream");
             request.header("Authorization", "Bearer " + secret);
@@ -183,39 +224,62 @@ final class NativeCloudRestoreTransport {
                 "Basic " + Base64.encodeToString(credentials.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP)
             );
         }
-        try (Response response = NativeHttpClients.CLOUD.newCall(request.build()).execute()) {
+        okhttp3.Call call = NativeHttpClients.CLOUD.newCall(request.build());
+        onCall.accept(call);
+        try (Response response = call.execute()) {
             if (!response.isSuccessful()) {
                 throw new CloudHttpStatusException(response.code(), "原生恢复对象下载失败（" + response.code() + "）");
             }
             ResponseBody body = response.body();
             if (body == null) throw new IOException("原生恢复对象响应为空");
+            offset = restoreResponseOffset(response.code(), response.header("Content-Range"), offset, expectedSize);
             long declaredSize = body.contentLength();
-            if (declaredSize >= 0 && declaredSize != expectedSize) {
-                throw new IOException("原生恢复对象远端大小不一致");
+            if (declaredSize >= 0 && declaredSize != expectedSize - offset) {
+                throw new IllegalStateException("原生恢复对象远端大小不一致");
             }
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            long written = 0L;
-            try (InputStream input = body.byteStream(); FileOutputStream output = new FileOutputStream(temporary)) {
+            if (offset > 0) try (FileInputStream prefix = new FileInputStream(temporary)) {
+                byte[] buffer = new byte[RESTORE_BUFFER_BYTES];
+                int count;
+                while ((count = prefix.read(buffer)) >= 0) digest.update(buffer, 0, count);
+            }
+            long written = offset;
+            try (InputStream input = body.byteStream(); FileOutputStream output = new FileOutputStream(temporary, offset > 0)) {
+              try {
                 byte[] buffer = new byte[RESTORE_BUFFER_BYTES];
                 int count;
                 while ((count = input.read(buffer)) >= 0) {
+                    if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("云恢复已暂停");
                     if (written > expectedSize - count) {
-                        throw new IOException("原生恢复对象超过声明大小");
+                        temporary.delete();
+                        throw new IllegalStateException("原生恢复对象超过声明大小");
                     }
                     output.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     written += count;
                 }
-                output.getFD().sync();
-            } catch (Exception error) {
-                temporary.delete();
-                throw error;
+              } finally { output.getFD().sync(); }
             }
-            if (written != expectedSize || !expectedHash.equals(hex(digest.digest()))) {
+            if (written != expectedSize) throw new IOException("原生恢复对象下载中断；已保留断点");
+            if (!expectedHash.equals(hex(digest.digest()))) {
                 temporary.delete();
-                throw new IOException("原生恢复对象大小或 SHA-256 校验失败");
+                throw new IllegalStateException("原生恢复对象大小或 SHA-256 校验失败");
             }
         }
+    }
+
+    /** A server may ignore Range with 200; only an exact suffix 206 can append bytes. */
+    static long restoreResponseOffset(int status, String range, long offset, long size) {
+        if (status == 200) return 0;
+        if (status != 206 || range == null || offset < 0 || offset >= size) throw new IllegalStateException("原生恢复断点响应无效");
+        java.util.regex.Matcher match = java.util.regex.Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)").matcher(range);
+        try {
+            if (!match.matches() || Long.parseLong(match.group(1)) != offset
+                || Long.parseLong(match.group(2)) != size - 1 || Long.parseLong(match.group(3)) != size) {
+                throw new IllegalStateException("原生恢复断点范围不一致");
+            }
+        } catch (NumberFormatException invalid) { throw new IllegalStateException("原生恢复断点范围无效", invalid); }
+        return offset;
     }
 
     static boolean isReusableCasObject(File file, long expectedSize) {
@@ -228,7 +292,10 @@ final class NativeCloudRestoreTransport {
         try (FileInputStream input = new FileInputStream(file)) {
             byte[] buffer = new byte[RESTORE_BUFFER_BYTES];
             int count;
-            while ((count = input.read(buffer)) >= 0) digest.update(buffer, 0, count);
+            while ((count = input.read(buffer)) >= 0) {
+                if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("云恢复已暂停");
+                digest.update(buffer, 0, count);
+            }
         }
         return expectedHash.equals(hex(digest.digest()));
     }
@@ -245,6 +312,7 @@ final class NativeCloudRestoreTransport {
             input.seek(offset);
             long remaining = size;
             while (remaining > 0) {
+                if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("云恢复已暂停");
                 int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
                 if (count < 0) throw new IOException("原生恢复资源分段被截断");
                 output.write(buffer, 0, count);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { toRef, type ShallowUnwrapRef } from 'vue'
+import { toRef, watch, type ShallowUnwrapRef } from 'vue'
 import type { useApp } from '../composables/UseApp'
 
 type PanelModel = Pick<
@@ -19,6 +19,11 @@ type PanelModel = Pick<
   | 'storageUsagePercent'
   | 'isClearingNativeCache'
   | 'clearNativeTemporaryStorage'
+  | 'legacyLibraryHistory'
+  | 'isClearingLegacyLibraryHistory'
+  | 'refreshLegacyLibraryHistory'
+  | 'clearLegacyLibraryHistory'
+  | 'isVaultBusy'
   | 'formatBackupDate'
   | 'lastFullBackupAt'
   | 'backupOverdue'
@@ -46,6 +51,17 @@ const displayedStorageAvailable = toRef(input.model, 'displayedStorageAvailable'
 const storageUsagePercent = toRef(input.model, 'storageUsagePercent')
 const isClearingNativeCache = toRef(input.model, 'isClearingNativeCache')
 const clearNativeTemporaryStorage = toRef(input.model, 'clearNativeTemporaryStorage')
+const legacyLibraryHistory = toRef(input.model, 'legacyLibraryHistory')
+const isClearingLegacyLibraryHistory = toRef(input.model, 'isClearingLegacyLibraryHistory')
+const clearLegacyLibraryHistory = toRef(input.model, 'clearLegacyLibraryHistory')
+const isVaultBusy = toRef(input.model, 'isVaultBusy')
+watch(
+  isDataProtectionOpen,
+  (open) => {
+    if (open) void input.model.refreshLegacyLibraryHistory().catch(() => undefined)
+  },
+  { immediate: true },
+)
 const formatBackupDate = toRef(input.model, 'formatBackupDate')
 const lastFullBackupAt = toRef(input.model, 'lastFullBackupAt')
 const backupOverdue = toRef(input.model, 'backupOverdue')
@@ -71,7 +87,7 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
       </div>
       <div class="protection-panel__header-actions">
         <button class="protection-panel__manage" type="button" @click="openVaultPanel">
-          加密与历史版本
+          本地保险库
         </button>
         <button type="button" aria-label="关闭数据保护面板" @click="isDataProtectionOpen = false">
           ×
@@ -86,7 +102,7 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
           <strong>{{ recycleBinEntries.length }}</strong>
           <span>{{ formatBytes(recycleBinSize) }}</span>
         </div>
-        <p>删除资源会先进入本地回收站；恢复只读取本次删除的资源和历史版本，不再创建整库快照。</p>
+        <p>删除资源会先进入本地回收站；恢复只读取本次删除的资源和历史版本。</p>
         <button class="protection-card__action" type="button" @click="openRecycleBin">
           {{ recycleBinEntries.length ? '打开回收站' : '查看回收站' }}
         </button>
@@ -139,6 +155,20 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
         </div>
         <p v-if="isNativeApk">统计本 APK 的资源、设置与临时缓存；不含 APK 安装包。</p>
         <p v-else>资源保存在当前浏览器的 IndexedDB 中，不会自动上传。</p>
+        <template v-if="legacyLibraryHistory.records.length">
+          <p>
+            旧整库快照：{{ legacyLibraryHistory.records.length }} 份 ·
+            {{ formatBytes(legacyLibraryHistory.bytes) }}
+          </p>
+          <button
+            class="protection-card__action"
+            type="button"
+            :disabled="isClearingLegacyLibraryHistory || isVaultBusy"
+            @click="clearLegacyLibraryHistory"
+          >
+            {{ isClearingLegacyLibraryHistory ? '正在清理…' : '清理旧整库快照' }}
+          </button>
+        </template>
         <button
           v-if="isNativeApk"
           class="protection-card__action"

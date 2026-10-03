@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { RESOURCE_TYPE } from '../types/Resource'
-import { JsonResourceParser } from './JsonResourceParser'
+import { JSON_RESOURCE_PARSER_VERSION, JsonResourceParser } from './JsonResourceParser'
 
 function jsonFile(data: unknown, name = 'resource.json'): File {
   return new File([JSON.stringify(data)], name, { type: 'application/json' })
@@ -9,6 +9,38 @@ function jsonFile(data: unknown, name = 'resource.json'): File {
 
 describe('JsonResourceParser', () => {
   const parser = new JsonResourceParser()
+  it('keeps Tavern bindings distinct from persona-specific character variants', async () => {
+    const cardHash = 'a'.repeat(64)
+    const result = await parser.parse(
+      jsonFile({
+        personas: { 'alice.png': 'Alice' },
+        persona_descriptions: {
+          'alice.png': {
+            description: 'Global',
+            connections: [{ type: 'character', id: 'native.png' }],
+            srl_persona_character_bindings: {
+              'native.png': { avatar: 'native.png', name: '酒馆绑定卡', hash: cardHash },
+              'profile.png': { avatar: 'profile.png', name: '专属人设卡', hash: cardHash },
+            },
+            srl_persona_profile: {
+              version: 1,
+              sections: [{ id: 'base', name: '基础设定', text: 'Global' }],
+              variants: {
+                'profile.png': { defaultVersionId: 'v1', versions: { v1: { name: 'v1' } } },
+              },
+            },
+          },
+        },
+      }),
+    )
+
+    expect(result.metadata).toMatchObject({
+      personaNativeCharacterNames: ['酒馆绑定卡'],
+      personaProfileCharacterNames: ['专属人设卡'],
+      personaCharacterNames: ['酒馆绑定卡', '专属人设卡'],
+    })
+  })
+
   it('classifies portable opening sets without mistaking them for character cards', async () => {
     const payload = {
       format: 'srl-greeting',
@@ -174,7 +206,11 @@ describe('JsonResourceParser', () => {
     expect(result).toMatchObject({
       type: RESOURCE_TYPE.SCRIPT,
       description: '酒馆助手脚本库，包含 2 个脚本',
-      metadata: { parserVersion: 8, detectedVariant: 'tavernHelperScriptTree', itemCount: 2 },
+      metadata: {
+        parserVersion: JSON_RESOURCE_PARSER_VERSION,
+        detectedVariant: 'tavernHelperScriptTree',
+        itemCount: 2,
+      },
     })
   })
 
@@ -203,7 +239,7 @@ describe('JsonResourceParser', () => {
     expect(result.description).toBe('Keeps the archive.')
     expect(result.tags).toEqual(['Library', 'Reference', 'Quiet'])
     expect(result.metadata).toMatchObject({
-      parserVersion: 8,
+      parserVersion: JSON_RESOURCE_PARSER_VERSION,
       detectedVariant: 'characterCardJson',
       creator: 'SRL',
       characterVersion: '2.0',
@@ -243,7 +279,11 @@ describe('JsonResourceParser', () => {
     expect(result).toMatchObject({
       type: RESOURCE_TYPE.PRESET,
       description: 'SillyTavern 生成与提示词预设 · 1 条配套正则',
-      metadata: { parserVersion: 8, presetRegexCount: 1, promptCount: 1 },
+      metadata: {
+        parserVersion: JSON_RESOURCE_PARSER_VERSION,
+        presetRegexCount: 1,
+        promptCount: 1,
+      },
     })
   })
 

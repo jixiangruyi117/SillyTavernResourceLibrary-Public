@@ -7,6 +7,7 @@ import { zipArchiveChunks } from '../utils/ZipArchiveStream'
 
 interface NativeArchivePlugin {
   listArchiveEntries(options: { uri: string; size: number }): Promise<{ paths: string[] }>
+  cancelArchiveStage(options: { requestId: string }): Promise<void>
   stageArchive(options: {
     uri: string
     size: number
@@ -41,6 +42,7 @@ export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
     file: File,
     selectedPaths?: string[],
     onProgress?: (progress: ArchiveStageProgress) => void,
+    signal?: AbortSignal,
   ): Promise<string | undefined> {
     const uri = nativeFileSource(file)
     if (!uri) return undefined
@@ -58,12 +60,18 @@ export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
               throw new Error('备份解压后超过支持的大小限制')
           },
           true,
+          undefined,
+          signal,
         )) {
           /* Native ZipFile owns payload reads and decompression. */
         }
       }
+      if (signal?.aborted) throw abortError()
       const requestId = crypto.randomUUID()
       let listener: PluginListenerHandle | undefined
+      const cancel = () => {
+        void plugin.cancelArchiveStage({ requestId }).catch(() => undefined)
+      }
       try {
         listener = await plugin.addListener('archiveProgress', (event) => {
           if (event.requestId !== requestId) return
@@ -78,12 +86,18 @@ export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
             completedEntries: event.completedEntries,
           })
         })
+        if (signal?.aborted) throw abortError()
+        signal?.addEventListener('abort', cancel, { once: true })
         const result = await plugin.stageArchive({
           uri,
           size: sourceSize,
           requestId,
           ...(selectedPaths ? { selectedPaths } : {}),
         })
+        if (signal?.aborted) {
+          await plugin.deleteArchiveJob({ jobId: result.jobId })
+          throw abortError()
+        }
         onProgress?.({
           phase: 'complete',
           readBytes: selectedPaths ? result.stagedBytes : sourceSize,
@@ -96,6 +110,7 @@ export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
         })
         return result.jobId
       } finally {
+        signal?.removeEventListener('abort', cancel)
         await listener?.remove()
       }
     } catch (error) {
@@ -138,4 +153,10 @@ export class NativeRestoreStagingStore extends IndexedDbRestoreStagingStore {
     if (!jobId.startsWith('native-zip-')) return super.deleteJob(jobId)
     await plugin.deleteArchiveJob({ jobId })
   }
+}
+
+function abortError(): Error {
+  const error = new Error('已停止备份识别')
+  error.name = 'AbortError'
+  return error
 }

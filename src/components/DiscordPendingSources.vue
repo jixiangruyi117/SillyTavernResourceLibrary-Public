@@ -7,8 +7,13 @@ import { communitySourceService } from '../core/CommunitySourceRuntime'
 import { resourceService } from '../core/AppContainer'
 import type { CommunitySource, CommunitySourceMessage } from '../types/CommunitySource'
 import type { ResourceListSummary } from '../types/Resource'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
+import ResourcePicker from './ResourcePicker.vue'
 
-const props = defineProps<{ contextResourceId?: string }>()
+const props = withDefaults(defineProps<{ contextResourceId?: string; hideWhenEmpty?: boolean }>(), {
+  contextResourceId: undefined,
+  hideWhenEmpty: false,
+})
 
 type PendingView = { source: CommunitySource; messages: CommunitySourceMessage[] }
 
@@ -21,9 +26,11 @@ const { statusMessage, showTransientStatus } = useTransientStatus()
 const expandedSourceId = ref('')
 const bindingSourceId = ref('')
 const selectedResourceId = ref('')
-const query = ref('')
 const hasMore = ref(false)
 const busySourceId = ref('')
+let resourceRevision = 0
+let reloadRequested = false
+let disposed = false
 
 const contextResource = computed(() =>
   props.contextResourceId
@@ -31,35 +38,47 @@ const contextResource = computed(() =>
     : undefined,
 )
 
-const filteredResources = computed(() => {
-  const keyword = query.value.trim().toLocaleLowerCase()
-  const source = keyword
-    ? resources.value.filter((resource) =>
-        [resource.name, resource.fileName, ...resource.tags]
-          .join('\n')
-          .toLocaleLowerCase()
-          .includes(keyword),
-      )
-    : resources.value
-  return source.slice(0, 12)
-})
+function updateResources(summaries: ResourceListSummary[]): void {
+  resources.value = summaries.filter((resource) => !isResourceGalleryImage(resource))
+  if (!resources.value.some((resource) => resource.id === selectedResourceId.value))
+    selectedResourceId.value = ''
+}
+
+function handleResourcesChanged(event: Event): void {
+  const summaries = (event as CustomEvent<ResourceListSummary[]>).detail
+  if (Array.isArray(summaries)) {
+    resourceRevision += 1
+    updateResources(summaries)
+  }
+}
 
 async function load(): Promise<void> {
-  if (loading.value) return
+  if (disposed) return
+  if (loading.value) {
+    reloadRequested = true
+    return
+  }
+  const revision = resourceRevision
   loading.value = true
   loadError.value = ''
   try {
-    const [views, summaries] = await Promise.all([
-      communitySourceService.listPendingSources(DISPLAY_LIMIT + 1),
-      resourceService.listResourceListSummaries(),
-    ])
+    const summaries = await resourceService.listResourceListSummaries()
+    if (disposed) return
+    const repaired = await communitySourceService.repairInvalidResourceBindings(summaries)
+    const views = await communitySourceService.listPendingSources(DISPLAY_LIMIT + 1)
+    if (disposed) return
+    if (repaired) showTransientStatus(`已解除 ${repaired} 条无效关联，可在待整理中重新选择资源。`)
     hasMore.value = views.length > DISPLAY_LIMIT
     pending.value = views.slice(0, DISPLAY_LIMIT)
-    resources.value = summaries
+    if (revision === resourceRevision) updateResources(summaries)
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : '无法读取待整理来源'
+    if (!disposed) loadError.value = error instanceof Error ? error.message : '无法读取待整理来源'
   } finally {
     loading.value = false
+    if (reloadRequested && !disposed) {
+      reloadRequested = false
+      void load()
+    }
   }
 }
 
@@ -69,11 +88,14 @@ function handleSourcesChanged(): void {
 
 onMounted(() => {
   window.addEventListener('srl:community-sources-changed', handleSourcesChanged)
+  window.addEventListener('srl:library-resources-changed', handleResourcesChanged)
   void load()
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   window.removeEventListener('srl:community-sources-changed', handleSourcesChanged)
+  window.removeEventListener('srl:library-resources-changed', handleResourcesChanged)
 })
 
 function latestMessage(view: PendingView): CommunitySourceMessage | undefined {
@@ -101,17 +123,16 @@ function formatDate(value: string | number): string {
 function startBinding(sourceId: string): void {
   bindingSourceId.value = bindingSourceId.value === sourceId ? '' : sourceId
   selectedResourceId.value = ''
-  query.value = ''
 }
 
 async function bind(sourceId: string, resourceId: string): Promise<void> {
-  if (!resourceId || busySourceId.value) return
+  const resource = resources.value.find((item) => item.id === resourceId)
+  if (!resource || busySourceId.value) return
   busySourceId.value = sourceId
   loadError.value = ''
   try {
     await communitySourceService.bindSource(resourceId, sourceId)
-    const resource = resources.value.find((item) => item.id === resourceId)
-    showTransientStatus(`已关联到“${resource?.name ?? '所选资源'}”`)
+    showTransientStatus(`已关联到“${resource.name}”`)
     bindingSourceId.value = ''
     selectedResourceId.value = ''
     window.dispatchEvent(new Event('srl:community-sources-changed'))
@@ -149,7 +170,12 @@ async function deletePending(view: PendingView): Promise<void> {
 </script>
 
 <template>
-  <section class="discord-pending" aria-labelledby="discord-pending-title">
+  <section
+    v-if="!props.hideWhenEmpty || pending.length || loading || loadError || statusMessage"
+    class="discord-pending"
+    :class="{ 'discord-pending--inbox': props.hideWhenEmpty }"
+    aria-labelledby="discord-pending-title"
+  >
     <header class="discord-pending__header">
       <div>
         <strong id="discord-pending-title">待整理来源</strong>
@@ -227,16 +253,15 @@ async function deletePending(view: PendingView): Promise<void> {
         </div>
 
         <div v-if="bindingSourceId === view.source.id" class="discord-pending__bind">
-          <input v-model="query" type="search" placeholder="搜索资源名称、文件名或标签" />
-          <div class="discord-pending__resources">
-            <label v-for="resource in filteredResources" :key="resource.id">
-              <input v-model="selectedResourceId" type="radio" :value="resource.id" />
-              <span>
-                <strong>{{ resource.name }}</strong>
-                <small>{{ resource.fileName }}</small>
-              </span>
-            </label>
-          </div>
+          <ResourcePicker
+            title="选择关联资源"
+            :resources="resources"
+            :model-value="selectedResourceId ? [selectedResourceId] : []"
+            :multiple="false"
+            :show-actions="false"
+            :disabled="Boolean(busySourceId)"
+            @update:model-value="selectedResourceId = $event[0] ?? ''"
+          />
           <button
             class="button button--primary"
             type="button"

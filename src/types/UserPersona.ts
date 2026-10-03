@@ -20,6 +20,12 @@ export interface UserPersonaConnection {
   id: string
 }
 
+export interface UserPersonaCharacterBindingSnapshot {
+  avatar: string
+  name: string
+  hash: string
+}
+
 export interface UserPersonaDescriptor extends Record<string, unknown> {
   description?: unknown
   position?: unknown
@@ -27,7 +33,38 @@ export interface UserPersonaDescriptor extends Record<string, unknown> {
   role?: unknown
   lorebook?: unknown
   connections?: unknown
+  srl_persona_character_bindings?: unknown
   title?: unknown
+  srl_persona_profile?: unknown
+}
+
+export interface UserPersonaProfileSection {
+  id: string
+  name: string
+  text: string
+}
+
+export interface UserPersonaSectionOverride {
+  mode: 'replace' | 'disable'
+  text?: string
+}
+
+export interface UserPersonaCharacterVariant {
+  versions: Record<string, UserPersonaCharacterVariantVersion>
+  defaultVersionId: string
+  chatVersions?: Record<string, string>
+}
+
+export interface UserPersonaCharacterVariantVersion {
+  name: string
+  overrides: Record<string, UserPersonaSectionOverride>
+  addition: string
+}
+
+export interface UserPersonaProfile {
+  version: 1
+  sections: UserPersonaProfileSection[]
+  variants: Record<string, UserPersonaCharacterVariant>
 }
 
 export interface SillyTavernPersonaBackup extends Record<string, unknown> {
@@ -46,8 +83,10 @@ export interface UserPersonaEntry {
   role: number
   lorebook: string
   connections: UserPersonaConnection[]
+  characterBindings: Record<string, UserPersonaCharacterBindingSnapshot>
   invalidConnectionCount: number
   descriptorExists: boolean
+  profile: UserPersonaProfile
 }
 
 export interface UserPersonaBackupView {
@@ -67,6 +106,8 @@ export interface UserPersonaDraft {
   role: number
   lorebook: string
   connections: UserPersonaConnection[]
+  characterBindings: Record<string, UserPersonaCharacterBindingSnapshot>
+  profile: UserPersonaProfile
 }
 
 export interface UserPersonaTemplate {

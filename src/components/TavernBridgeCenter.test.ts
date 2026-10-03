@@ -6,6 +6,7 @@ import TavernBridgeCenter from './TavernBridgeCenter.vue'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 import { resourceService } from '../core/AppContainer'
 import { tavernConnectionStore } from '../core/TavernConnectionStore'
+import { hashBlob } from '../services/HashService'
 import type { TavernResourceItem } from '../services/TavernBridgeProtocol'
 import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
 
@@ -24,7 +25,9 @@ const bridgeMocks = vi.hoisted(() => ({
   bindDirectory: vi.fn(async () => undefined),
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),
-  listResources: vi.fn(async (_kind?: 'chat'): Promise<TavernResourceItem[]> => []),
+  listResources: vi.fn(
+    async (_kind?: 'chat' | 'character' | 'userPersona'): Promise<TavernResourceItem[]> => [],
+  ),
   isLocalTavernDirectAvailable: vi.fn(() => false),
   disconnect: vi.fn(),
   sendFiles: vi.fn(async () => [{ status: 'created', name: '已接收' }]),
@@ -683,7 +686,8 @@ describe('用户人设共用互传通道', () => {
       pairCode: '',
       tavernOrigin: 'http://127.0.0.1:8000',
       bridgeVersion: '0.3.11',
-    })
+      capabilities: ['catalog-kind-filter-v1'],
+    } as ReturnType<typeof bridgeMocks.getState>)
     bridgeMocks.listResources.mockResolvedValue([
       {
         id: 'persona:all',
@@ -732,9 +736,254 @@ describe('用户人设共用互传通道', () => {
     expect(policy).toBe('skip')
     expect(files).toHaveLength(1)
     expect(files[0]!.kind).toBe('userPersona')
-    expect(await files[0]!.file.text()).toBe(json)
+    expect(JSON.parse(await files[0]!.file.text())).toEqual(JSON.parse(json))
+    expect(bridgeMocks.listResources).not.toHaveBeenCalledWith('character', expect.anything())
     w.unmount()
   })
+
+  function personaWithVariants(
+    variants: Record<string, unknown>,
+    bindings: Record<string, unknown>,
+  ) {
+    const persona = resource({
+      id: 'persona-variant-local',
+      type: RESOURCE_TYPE.USER_PERSONA,
+      name: '分角色人设',
+      fileName: 'persona.json',
+    })
+    const backup = {
+      personas: { 'persona.png': '分角色人设' },
+      persona_descriptions: {
+        'persona.png': {
+          description: '全局设定',
+          connections: [],
+          srl_persona_character_bindings: bindings,
+          srl_persona_profile: {
+            version: 1,
+            sections: [{ id: 'base', name: '基础设定', text: '全局设定' }],
+            variants,
+          },
+        },
+      },
+    }
+    return {
+      persona,
+      backup,
+      full: {
+        ...persona,
+        originalBlob: new Blob([JSON.stringify(backup)], { type: 'application/json' }),
+        mimeType: 'application/json',
+      },
+    }
+  }
+
+  function roleCard(id: string, name: string, fileName: string, contentHash: string) {
+    const summary = resource({
+      id,
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      name,
+      fileName,
+      contentHash,
+      mimeType: 'image/png',
+    })
+    return {
+      summary,
+      full: {
+        ...summary,
+        originalBlob: new Blob([`png:${name}`], { type: 'image/png' }),
+        mimeType: 'image/png',
+      },
+    }
+  }
+
+  it('通过卡片哈希匹配酒馆已有 char 并自动映射角色专属人设', async () => {
+    const remoteCardFile = new File(['same-card-bytes'], 'tavern-card.png', { type: 'image/png' })
+    const hash = await hashBlob(remoteCardFile)
+    const { persona, full } = personaWithVariants(
+      { 'source-card.png': { defaultVersionId: 'v1', versions: { v1: { name: '雨夜' } } } },
+      { 'source-card.png': { avatar: 'source-card.png', name: '雨夜侦探', hash } },
+    )
+    bridgeMocks.listResources.mockImplementation(async (kind) =>
+      kind === 'character'
+        ? [
+            ...Array.from({ length: 1500 }, (_, index) => ({
+              id: `character:noise-${index}.png`,
+              kind: 'character' as const,
+              name: `无关角色 ${index}`,
+              fileName: `noise-${index}.png`,
+              detail: '',
+            })),
+            {
+              id: 'character:tavern-card.png',
+              kind: 'character' as const,
+              name: '雨夜侦探',
+              fileName: 'tavern-card.png',
+              detail: '',
+            },
+          ]
+        : [],
+    )
+    bridgeMocks.pullResources.mockResolvedValueOnce([remoteCardFile])
+    vi.mocked(resourceService.get).mockResolvedValue(
+      full as Awaited<ReturnType<typeof resourceService.get>>,
+    )
+    const w = mountBridge({
+      props: { resources: [persona], initialLocalIds: [persona.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((button) => button.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+
+    await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalled())
+    expect(chooseAction).not.toHaveBeenCalled()
+    const [files] = bridgeMocks.sendFiles.mock.calls.at(-1) as unknown as [
+      Array<{ kind: string; file: File }>,
+    ]
+    expect(files[0]!.kind).toBe('userPersona')
+    const descriptor = JSON.parse(await files[0]!.file.text()).persona_descriptions['persona.png']
+    expect(descriptor.description).toBe('全局设定')
+    expect(descriptor.connections).toEqual([])
+    expect(descriptor.srl_persona_profile.variants).toHaveProperty('tavern-card.png')
+    expect(descriptor.srl_persona_profile.variants).not.toHaveProperty('source-card.png')
+  })
+
+  it('拒绝补传缺少的 char 时只传酒馆已有角色卡对应的专属人设', async () => {
+    const existingHash = 'a'.repeat(64)
+    const missingHash = 'b'.repeat(64)
+    const { persona, full } = personaWithVariants(
+      {
+        'existing.png': { defaultVersionId: 'v1', versions: { v1: { name: '现有设定' } } },
+        'missing.png': { defaultVersionId: 'v1', versions: { v1: { name: '缺卡设定' } } },
+      },
+      {
+        'existing.png': { avatar: 'existing.png', name: '现有角色', hash: existingHash },
+        'missing.png': { avatar: 'missing.png', name: '缺失角色', hash: missingHash },
+      },
+    )
+    const missingCard = roleCard('role-card', '缺失角色', 'missing.png', missingHash)
+    bridgeMocks.listResources.mockResolvedValue([
+      {
+        id: 'character:existing.png',
+        kind: 'character',
+        name: '现有角色',
+        fileName: 'existing.png',
+        contentHash: existingHash,
+        detail: '',
+      },
+    ])
+    vi.mocked(chooseAction).mockResolvedValue('alternative')
+    vi.mocked(resourceService.get).mockImplementation(async (id) =>
+      id === persona.id
+        ? (full as Awaited<ReturnType<typeof resourceService.get>>)
+        : (missingCard.full as Awaited<ReturnType<typeof resourceService.get>>),
+    )
+    const w = mountBridge({
+      props: {
+        resources: [persona, missingCard.summary],
+        initialLocalIds: [persona.id],
+        initialKind: 'userPersona',
+      },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((button) => button.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+
+    expect(chooseAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '酒馆缺少角色卡',
+        message: expect.stringContaining('缺失角色'),
+      }),
+    )
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1)
+    const [files] = bridgeMocks.sendFiles.mock.calls[0] as unknown as [
+      Array<{ kind: string; file: File }>,
+    ]
+    expect(files[0]!.kind).toBe('userPersona')
+    const descriptor = JSON.parse(await files[0]!.file.text()).persona_descriptions['persona.png']
+    expect(descriptor.srl_persona_profile.variants).toHaveProperty('existing.png')
+    expect(descriptor.srl_persona_profile.variants).not.toHaveProperty('missing.png')
+    expect(descriptor.description).toBe('全局设定')
+  })
+
+  it('酒馆没有任何匹配 char 且拒绝补传时只传全局设定', async () => {
+    const hash = 'c'.repeat(64)
+    const { persona, full } = personaWithVariants(
+      { 'missing.png': { defaultVersionId: 'v1', versions: { v1: { name: '缺卡设定' } } } },
+      { 'missing.png': { avatar: 'missing.png', name: '缺失角色', hash } },
+    )
+    bridgeMocks.listResources.mockResolvedValue([])
+    vi.mocked(chooseAction).mockResolvedValue('alternative')
+    vi.mocked(resourceService.get).mockResolvedValue(
+      full as Awaited<ReturnType<typeof resourceService.get>>,
+    )
+    const w = mountBridge({
+      props: { resources: [persona], initialLocalIds: [persona.id], initialKind: 'userPersona' },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((button) => button.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+
+    const [files] = bridgeMocks.sendFiles.mock.calls[0] as unknown as [Array<{ file: File }>]
+    const descriptor = JSON.parse(await files[0]!.file.text()).persona_descriptions['persona.png']
+    expect(descriptor.description).toBe('全局设定')
+    expect(descriptor.srl_persona_profile.sections[0].text).toBe('全局设定')
+    expect(descriptor.srl_persona_profile.variants).toEqual({})
+  })
+
+  it('用户同意补传时先导入角色卡，再导入该卡专属人设', async () => {
+    const hash = 'd'.repeat(64)
+    const { persona, full } = personaWithVariants(
+      { 'traveler.png': { defaultVersionId: 'v1', versions: { v1: { name: '同行' } } } },
+      { 'traveler.png': { avatar: 'traveler.png', name: '旅行者', hash } },
+    )
+    const card = roleCard('role-card', '旅行者', 'traveler.png', hash)
+    bridgeMocks.listResources.mockResolvedValue([])
+    vi.mocked(chooseAction).mockResolvedValue('confirm')
+    vi.mocked(resourceService.get).mockImplementation(async (id) =>
+      id === persona.id
+        ? (full as Awaited<ReturnType<typeof resourceService.get>>)
+        : (card.full as Awaited<ReturnType<typeof resourceService.get>>),
+    )
+    const w = mountBridge({
+      props: {
+        resources: [persona, card.summary],
+        initialLocalIds: [persona.id],
+        initialKind: 'userPersona',
+      },
+    })
+    mountedWrappers.push(w)
+    await flushPromises()
+    await w
+      .findAll('.tavern-bridge__sticky-action')
+      .find((button) => button.text().includes('发送'))!
+      .trigger('click')
+    await flushPromises()
+
+    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2)
+    const calls = bridgeMocks.sendFiles.mock.calls as unknown as Array<
+      [Array<{ kind: string; file: File }>, string]
+    >
+    expect(calls[0]![0][0]!.kind).toBe('character')
+    expect(calls[0]![1]).toBe('skip')
+    expect(calls[1]![0][0]!.kind).toBe('userPersona')
+    const descriptor = JSON.parse(await calls[1]![0][0]!.file.text()).persona_descriptions[
+      'persona.png'
+    ]
+    expect(descriptor.srl_persona_profile.variants).toHaveProperty('traveler.png')
+  })
+
   it('checks the cached default cover and uploads it before the persona only when selected', async () => {
     bridgeMocks.getState.mockReturnValue({
       status: 'connected',
@@ -808,7 +1057,7 @@ describe('用户人设共用互传通道', () => {
       pairCode: '',
       tavernOrigin: 'http://127.0.0.1:8000',
       bridgeVersion: '0.3.31',
-      capabilities: ['persona-avatar-check-v1'],
+      capabilities: ['persona-avatar-check-v1', 'catalog-kind-filter-v1'],
     } as ReturnType<typeof bridgeMocks.getState>)
     const local = resource({
       id: 'persona-local',
@@ -878,9 +1127,9 @@ describe('用户人设共用互传通道', () => {
     await send.trigger('click')
     expect(send.attributes('disabled')).toBeDefined()
     await send.trigger('click')
+    await vi.waitFor(() => expect(finishList).toBeDefined())
     finishList?.([])
-    await flushPromises()
-    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1))
   })
 
   it('同头像键但内容变化时可另存为新的人设，并将缓存封面跟随新键发送', async () => {
@@ -952,9 +1201,10 @@ describe('用户人设共用互传通道', () => {
       .findAll('.tavern-bridge__sticky-action')
       .find((b) => b.text().includes('发送'))!
       .trigger('click')
-    await flushPromises()
-    expect(chooseAction).toHaveBeenCalledWith(
-      expect.objectContaining({ title: '酒馆人设已有不同内容' }),
+    await vi.waitFor(() =>
+      expect(chooseAction).toHaveBeenCalledWith(
+        expect.objectContaining({ title: '酒馆人设已有不同内容' }),
+      ),
     )
     expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2)
     const sendCalls = bridgeMocks.sendFiles.mock.calls as unknown as Array<

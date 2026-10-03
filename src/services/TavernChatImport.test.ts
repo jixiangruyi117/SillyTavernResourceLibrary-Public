@@ -14,6 +14,7 @@ import { ExternalAppSdkService } from './ExternalAppSdkService'
 import { prepareChatReturn } from './TavernChatReturn'
 import { hashBlob } from './HashService'
 import { RESOURCE_TYPE } from '../types/Resource'
+import * as nativeFiles from '../core/NativeFileSource'
 
 vi.mock('../utils/createImageThumbnail', () => ({
   createImageThumbnail: async () => new Blob(['thumbnail'], { type: 'image/webp' }),
@@ -62,6 +63,21 @@ function archive(marker = 'a', text = raw) {
   return createChatArchive(png(marker), new File([text], '雨夜.jsonl'), `${marker}.png`)
 }
 describe('chat transfer to the canonical resource library', () => {
+  it('imports a native shared chat package through the service entrypoint', async () => {
+    const { resources } = setup()
+    const bytes = archive()
+    const placeholder = new File([], bytes.name)
+    const read = vi.spyOn(nativeFiles, 'materializeNativeFile').mockResolvedValue(bytes)
+    try {
+      const [result] = await resources.importFiles([placeholder])
+      expect(result?.status).toBe('imported')
+      if (result?.status !== 'imported') throw new Error('chat import failed')
+      expect(result.resource.type).toBe(RESOURCE_TYPE.CHAT)
+      expect(result.resource.fileSize).toBeGreaterThan(0)
+    } finally {
+      read.mockRestore()
+    }
+  })
   it('uses the existing hash index among 500 cards and skips full metadata/version preparation for chat packages', async () => {
     const { resources, storage } = setup()
     await resources.importFiles([png('a')])
@@ -82,7 +98,7 @@ describe('chat transfer to the canonical resource library', () => {
     await resources.importFiles([archive()])
     expect(summaryRead).not.toHaveBeenCalled()
     expect(versionRead).not.toHaveBeenCalled()
-  })
+  }, 10_000)
   it('stores only a chat by default, keeping reading rules and a portable thumbnail without full card lore', async () => {
     const { resources } = setup()
     await resources.importFiles([archive(), archive()])

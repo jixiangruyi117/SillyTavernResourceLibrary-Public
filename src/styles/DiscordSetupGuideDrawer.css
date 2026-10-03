@@ -83,6 +83,13 @@
   line-height: 1.7;
 }
 
+.discord-guide-intro {
+  margin: 16px 0 0;
+  color: var(--text-secondary, #62777f);
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+
 .discord-guide-step p {
   margin: 0;
   color: var(--text-secondary, #62777f);
@@ -111,6 +118,43 @@
   font-weight: 750;
 }
 
+.discord-guide-step pre.discord-guide-config {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  margin: 10px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.discord-guide-step pre.discord-guide-config code {
+  display: inline;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.discord-guide-step p code,
+.discord-guide-step li code,
+.discord-guide-step figcaption code {
+  display: inline;
+  width: auto;
+  margin-top: 0;
+  vertical-align: baseline;
+}
+
 .discord-guide-step a {
   display: inline-block;
   margin-top: 11px;
@@ -122,6 +166,55 @@
 
 .discord-guide-step a:hover {
   text-decoration: underline;
+}
+
+.discord-guide-step .discord-guide-action {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 7px;
+  background: var(--accent-strong, #426b79);
+  color: white;
+  text-decoration: none;
+}
+
+.discord-guide-copy-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.discord-guide-copy-list button {
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft, #cbd8da);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-strong, #496d79);
+  font-size: 0.68rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.discord-guide-copy-list button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.discord-guide-status {
+  position: sticky;
+  bottom: 8px;
+  width: fit-content;
+  margin: 14px auto 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-soft, #cbd8db);
+  border-radius: 7px;
+  background: var(--surface-strong, #f8fbfb);
+  color: var(--text-secondary, #55727c);
+  font-size: 0.7rem;
+  font-weight: 800;
 }
 
 .discord-guide-step .discord-guide-action {

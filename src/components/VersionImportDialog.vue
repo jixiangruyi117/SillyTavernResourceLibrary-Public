@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import type { ImportVersionCandidate, ImportVersionComparison } from '../types/Import'
-import { RESOURCE_TYPE_LABELS } from '../types/Resource'
+import { getResourceCategoryIds, RESOURCE_TYPE_LABELS, type Category } from '../types/Resource'
 import VersionDiffDialog from './VersionDiffDialog.vue'
 
 const props = defineProps<{
@@ -11,6 +11,7 @@ const props = defineProps<{
   busy: boolean
   comparingId?: string
   comparison?: ImportVersionComparison
+  categories?: Category[]
 }>()
 const emit = defineEmits<{
   compare: [matchedResourceId: string]
@@ -26,6 +27,33 @@ const emit = defineEmits<{
 
 const selectedId = ref('')
 const versionNote = ref('')
+const query = ref('')
+const categoryId = ref('all')
+const page = ref(1)
+const pageSize = 10
+const filteredCandidates = computed(() => {
+  const terms = query.value.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+  return props.candidate.candidates.filter((item) => {
+    const ids = getResourceCategoryIds(item.resource)
+    if (categoryId.value === 'uncategorized' && ids.length) return false
+    if (
+      categoryId.value !== 'all' &&
+      categoryId.value !== 'uncategorized' &&
+      !ids.includes(categoryId.value)
+    )
+      return false
+    const text =
+      `${item.resource.name}\n${item.resource.fileName}\n${item.resource.tags.join(' ')}`.toLocaleLowerCase()
+    return terms.every((term) => text.includes(term))
+  })
+})
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredCandidates.value.length / pageSize)))
+const visibleCandidates = computed(() =>
+  filteredCandidates.value.slice((page.value - 1) * pageSize, page.value * pageSize),
+)
+watch(filteredCandidates, () => {
+  page.value = 1
+})
 const isActionBusy = computed(
   () => props.busy || Boolean(props.comparingId) || Boolean(props.comparison),
 )
@@ -38,6 +66,8 @@ const isExistingContent = computed(() => selectedCandidate.value?.matchKind === 
 watch(
   () => props.candidate,
   (candidate) => {
+    query.value = ''
+    categoryId.value = 'all'
     selectedId.value = candidate.candidates[0]?.resource.id ?? ''
     versionNote.value =
       candidate.candidates[0]?.matchKind === 'containerVariant' ? '同内容，不同立绘或文件封装' : ''
@@ -73,7 +103,7 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
       >
         <header>
           <div>
-            <small>VERSION CHECK · {{ remaining }} 待确认</small>
+            <small>版本识别 · {{ remaining }} 待确认</small>
             <h2 id="version-import-title">
               {{
                 isContainerVariant
@@ -103,13 +133,44 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
           <small v-else-if="isExistingContent">
             相同卡数据已存在于多个资源组，系统不会自动重复保存，请人工确认。
           </small>
+          <small v-else-if="selectedCandidate?.matchKind === 'sameName'"
+            >此候选仅名称相同，不能证明版本关系。请先查看差异，再确认是否归组。</small
+          >
           <small v-else>文件尚未写入资源库，请确认它应该归到哪里。</small>
         </div>
 
         <fieldset>
           <legend>选择最接近的已有资源 <small>点右侧“比”查看差异</small></legend>
+          <div class="version-import-dialog__filters">
+            <input
+              v-model="query"
+              class="field__control"
+              type="search"
+              aria-label="搜索版本候选"
+              placeholder="搜索名称、文件名或标签"
+              :disabled="isActionBusy"
+            />
+            <select
+              v-if="categories"
+              v-model="categoryId"
+              class="field__control"
+              aria-label="候选文件夹"
+              :disabled="isActionBusy"
+            >
+              <option value="all">全部文件夹</option>
+              <option value="uncategorized">未分类</option>
+              <option v-for="category in categories" :key="category.id" :value="category.id">
+                {{ category.name }}
+              </option>
+            </select>
+          </div>
+          <small v-if="selectedCandidate"
+            >已选：{{ selectedCandidate.resource.name }} ·
+            {{ selectedCandidate.resource.fileName }}</small
+          >
+          <p v-if="!filteredCandidates.length">没有匹配的候选，调整搜索词或文件夹后再试。</p>
           <div
-            v-for="item in candidate.candidates"
+            v-for="item in visibleCandidates"
             :key="item.resource.id"
             class="version-import-dialog__candidate"
             :class="{ 'is-selected': selectedId === item.resource.id }"
@@ -121,9 +182,13 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
                 :value="item.resource.id"
                 :disabled="isActionBusy"
               />
-              <span class="version-import-dialog__score">{{ item.score }}%</span>
-              <span>
-                <strong>{{ item.resource.name }}</strong>
+              <span class="version-import-dialog__candidate-content">
+                <span class="version-import-dialog__candidate-title">
+                  <strong>{{ item.resource.name }}</strong>
+                  <span class="version-import-dialog__score">{{
+                    item.matchKind === 'sameName' ? '同名' : `${item.score} 分`
+                  }}</span>
+                </span>
                 <small
                   >{{ RESOURCE_TYPE_LABELS[item.resource.type] }} ·
                   {{ item.reasons.join('、') }}</small
@@ -150,6 +215,25 @@ function decide(action: 'activate' | 'archive' | 'replace' | 'independent' | 'sk
               </svg>
             </button>
           </div>
+          <nav v-if="pageCount > 1" class="version-import-dialog__filters" aria-label="候选分页">
+            <button
+              class="button button--quiet"
+              type="button"
+              :disabled="isActionBusy || page === 1"
+              @click="page -= 1"
+            >
+              上一页
+            </button>
+            <span>{{ page }} / {{ pageCount }} · {{ filteredCandidates.length }} 项</span>
+            <button
+              class="button button--quiet"
+              type="button"
+              :disabled="isActionBusy || page === pageCount"
+              @click="page += 1"
+            >
+              下一页
+            </button>
+          </nav>
         </fieldset>
 
         <label class="version-import-dialog__note">

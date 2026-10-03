@@ -262,15 +262,30 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
     return resourceFilterCounts.value.get(filter) ?? 0
   }
 
+  // Folder counts reflect the whole visible library, independent of search and temporary ID scopes.
+  const categoryCounts = computed(() => {
+    const counts = new Map<string | null | undefined, number>([
+      [undefined, 0],
+      [null, 0],
+    ])
+    const filter = context.activeFilter.value
+    for (const resource of visibleLibraryResources.value) {
+      if (
+        filter !== 'all' &&
+        !(filter === 'favorites' && resource.favorite) &&
+        resource.type !== filter
+      )
+        continue
+      counts.set(undefined, (counts.get(undefined) ?? 0) + 1)
+      const categoryIds = getResourceCategoryIds(resource)
+      if (!categoryIds.length) counts.set(null, (counts.get(null) ?? 0) + 1)
+      for (const id of categoryIds) counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    return counts
+  })
+
   function countCategory(categoryId: string | null | undefined): number {
-    return visibleLibraryResources.value.filter((resource) => {
-      const matchesCurrentCategory = matchesCategory(resource, categoryId)
-      const matchesFilter =
-        context.activeFilter.value === 'all' ||
-        (context.activeFilter.value === 'favorites' && resource.favorite) ||
-        resource.type === context.activeFilter.value
-      return matchesCurrentCategory && matchesFilter
-    }).length
+    return categoryCounts.value.get(categoryId) ?? 0
   }
   return {
     countFilter,

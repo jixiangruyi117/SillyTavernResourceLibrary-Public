@@ -1,3 +1,6 @@
+import { DISCORD_INBOX_SCHEMA } from '../../workers/discord-source-bridge/src/DiscordInboxSchema.js'
+import { DISCORD_RESOURCE_SCHEMA } from '../../workers/discord-source-bridge/src/DiscordResourceSchema.js'
+
 export const DISCORD_BRIDGE_PUBLIC_REPOSITORY_URL =
   'https://github.com/jixiangruyi117/SRL-Discord-Bridge'
 
@@ -16,6 +19,7 @@ function ensureManualSchema(env: Env): Promise<void> {
     await env.DB.prepare(
       'CREATE INDEX IF NOT EXISTS idx_handoffs_expires_at ON handoffs (expires_at)',
     ).run()
+    await env.DB.batch(${JSON.stringify([...DISCORD_INBOX_SCHEMA, ...DISCORD_RESOURCE_SCHEMA])}.map((statement) => env.DB.prepare(statement)))
   })()
   return manualSchemaReady
 }
@@ -25,7 +29,7 @@ const FETCH_SIGNATURE =
   'async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {'
 
 /**
- * Dashboard / Quick Editor users do not have Wrangler migrations. Keep the public Worker source
+ * Dashboard / Quick Editor users do not have Wrangler migrations. Keep the Worker source
  * as the single owner, then derive a browser-paste variant by adding one idempotent D1 schema gate.
  */
 export function buildDiscordBridgeManualSource(workerSource: string): string {

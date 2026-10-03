@@ -395,4 +395,217 @@ describe('ExternalAppService', () => {
     expect(putRuntime).not.toHaveBeenCalled()
     expect((await service.get(installed.id))?.persistentPermissionGrants).toEqual(['app.storage'])
   })
+  it('distinguishes duplicate packages, changed content and newly requested abilities', async () => {
+    const service = createService(`external-compare-${crypto.randomUUID()}`)
+    const original = await service.install(createPackage(manifest))
+    const duplicate = await service.inspect(createPackage(manifest))
+    expect(duplicate.previousInstallation).toMatchObject({ id: original.id, version: '1.0.0' })
+    expect(duplicate.contentChanged).toBe(false)
+    expect(duplicate.addedPermissions).toEqual([])
+    const changed = await service.inspect(createPackage({ ...manifest, version: '1.0.1' }))
+    expect(changed.contentChanged).toBe(true)
+    expect(changed.addedPermissions).toEqual([])
+    expect(changed.requiresReauthorization).toBe(true)
+  })
+
+  it('lets a quick webpage explicitly update an existing app without losing its data', async () => {
+    const service = createService(`external-target-${crypto.randomUUID()}`)
+    const original = await service.install(createPackage(manifest))
+    await service.setData(original.id, 'draft', { text: '保留草稿' })
+    const incoming = await service.inspect(
+      new File(['<p>新版网页</p>'], 'new.html', { type: 'text/html' }),
+    )
+    expect(incoming.manifest.id).not.toBe(original.id)
+    const configured = await service.configurePreview(incoming, { updateAppId: original.id })
+    expect(configured.manifest.id).toBe(original.id)
+    expect(configured.previousInstallation?.name).toBe(original.manifest.name)
+    expect(configured.packageFingerprint).toBe(incoming.packageFingerprint)
+    expect(configured.packageFiles).toBe(incoming.packageFiles)
+    expect(incoming.manifest.id).not.toBe(original.id)
+    await service.install(configured)
+    expect(await service.list()).toHaveLength(1)
+    expect((await service.exportPortableState()).data).toEqual([
+      expect.objectContaining({ appId: original.id, key: 'draft', value: { text: '保留草稿' } }),
+    ])
+  })
+
+  it('supports selecting another quick-import HTML entry and refuses to retarget authored packages', async () => {
+    const service = createService(`external-entry-${crypto.randomUUID()}`)
+    const incoming = await service.inspect([
+      new File(['<p>首页</p>'], 'index.html'),
+      new File(['<p>另一个入口</p>'], 'other.html'),
+    ])
+    const selected = await service.configurePreview(incoming, { entry: 'other.html' })
+    expect(selected.runtimeHtml).toContain('另一个入口')
+    await expect(service.configurePreview(incoming, { entry: 'absent.html' })).rejects.toThrow(
+      '包内 HTML',
+    )
+    const authored = await service.inspect(createPackage(manifest))
+    await expect(service.configurePreview(authored, { entry: 'index.html' })).rejects.toThrow(
+      '作者声明',
+    )
+  })
+
+  it('switches installed runtime modes without discarding data and invalidates remembered grants', async () => {
+    const service = createService(`external-mode-${crypto.randomUUID()}`)
+    const app = await service.install(
+      createPackage({
+        ...manifest,
+        schemaVersion: 2,
+        apiVersion: 'srl-app-api@1',
+        permissions: ['app.storage', 'resources.library.read'],
+      }),
+    )
+    await service.setData(app.id, 'note', 'keep')
+    await service.grantPersistentPermission(app.id, 'resources.library.read')
+    await service.recordPermissionDecision(app.id, {
+      permission: 'resources.library.read',
+      method: 'resources.list',
+      decision: 'always',
+      summary: '读取摘要',
+    })
+    await service.setRuntimeMode(app.id, 'trustedCompatible')
+    const changed = await service.get(app.id)
+    expect(changed?.runtimeMode).toBe('trustedCompatible')
+    expect(changed?.runtimeHtml).toContain('connect-src https:')
+    expect(changed?.persistentPermissionGrants).toEqual([])
+    expect(await service.getData(app.id, 'note')).toBe('keep')
+    await service.setRuntimeMode(app.id, 'isolated')
+    expect((await service.get(app.id))?.runtimeHtml).toContain("connect-src 'none'")
+  })
+
+  it('does not retain authorization across a same-package runtime mode change', async () => {
+    const service = createService(`external-reinstall-mode-${crypto.randomUUID()}`)
+    const file = createPackage({
+      ...manifest,
+      schemaVersion: 2,
+      apiVersion: 'srl-app-api@1',
+      permissions: ['resources.library.read'],
+    })
+    const app = await service.install(file)
+    await service.grantPersistentPermission(app.id, 'resources.library.read')
+    await service.recordPermissionDecision(app.id, {
+      permission: 'resources.library.read',
+      method: 'resources.list',
+      decision: 'always',
+      summary: '读取摘要',
+    })
+    const preview = await service.inspect(file)
+    const installed = await service.install(preview, 'trustedCompatible')
+    expect(installed.persistentPermissionGrants).toEqual([])
+  })
+
+  it('lists and clears only uninstalled third-party data, preserving reader and installed app data', async () => {
+    const service = createService(`external-retained-${crypto.randomUUID()}`)
+    const removed = await service.install(createPackage(manifest))
+    await service.setData(removed.id, 'note', 'retained')
+    const kept = await service.install(createPackage({ ...manifest, id: 'com.example.kept' }))
+    await service.setData(kept.id, 'note', 'installed')
+    const reader = await service.install(createPackage({ ...manifest, id: 'com.srl.duleme' }))
+    await service.setData(reader.id, 'note', 'reader')
+    await service.uninstall(removed.id)
+    const retained = await service.listRetainedData()
+    expect(retained).toEqual([expect.objectContaining({ appId: removed.id, dataEntries: 1 })])
+    const exported = await service.exportData(removed.id)
+    expect(JSON.parse(await exported.text()).records[0].value).toBe('retained')
+    await expect(service.clearRetainedData(kept.id)).rejects.toThrow('管理页')
+    await service.clearRetainedData(removed.id)
+    expect(await service.listRetainedData()).toEqual([])
+    expect(await service.getData(kept.id, 'note')).toBe('installed')
+    expect(await service.getData(reader.id, 'note')).toBe('reader')
+  })
+
+  it('resets watchdog suspension when the user explicitly re-enables the app', async () => {
+    const service = createService(`external-watchdog-reset-${crypto.randomUUID()}`)
+    const app = await service.install(createPackage(manifest))
+    for (let index = 0; index < 3; index++) await service.recordRuntimeError(app.id, 'broken')
+    expect((await service.getHealth(app.id)).disabledByWatchdog).toBe(true)
+    await service.setEnabled(app.id, true)
+    expect((await service.getHealth(app.id)).disabledByWatchdog).toBe(false)
+    expect((await service.getHealth(app.id)).consecutiveFailures).toBe(0)
+    await service.recordRuntimeError(app.id, 'new failure')
+    expect((await service.get(app.id))?.enabled).toBe(true)
+  })
+
+  it('does not mistake closing HTML tags for external resources', async () => {
+    const service = createService(`external-no-false-warning-${crypto.randomUUID()}`)
+    const preview = await service.inspect(
+      new File(
+        ['<!doctype html><meta name="viewport" content="width=device-width"><p>纯本地</p>'],
+        'offline.html',
+      ),
+    )
+    expect(preview.compatibility.some((item) => item.code === 'external-or-absolute-path')).toBe(
+      false,
+    )
+  })
+  it('installs quick webpages with an htm entry', async () => {
+    const service = createService(`external-htm-${crypto.randomUUID()}`)
+    const preview = await service.inspect(
+      new File(['<p>网页</p>'], 'index.htm', { type: 'text/html' }),
+    )
+    expect(preview.manifest.entry).toBe('index.htm')
+    expect((await service.install(preview)).manifest.entry).toBe('index.htm')
+  })
+  it('uses the selected folder name rather than its first CSS file, including single-file folders', async () => {
+    const service = createService(`external-folder-name-${crypto.randomUUID()}`)
+    const css = new File(['p{}'], 'app.css')
+    const html = new File(['<p>网页</p>'], 'index.html')
+    Object.defineProperty(css, 'webkitRelativePath', { value: '我的工具.v2/app.css' })
+    Object.defineProperty(html, 'webkitRelativePath', { value: '我的工具.v2/index.html' })
+    for (const files of [[css, html], [html]]) {
+      const preview = await service.inspect(files)
+      expect(preview.manifest.name).toBe('我的工具.v2')
+      expect(preview.manifest.entry).toBe('index.html')
+      expect(preview.sourceKind).toBe('folder')
+    }
+  })
+  it('exports the saved local icon so it survives reinstalling the package', async () => {
+    const service = createService(`external-export-icon-${crypto.randomUUID()}`)
+    const app = await service.install(createPackage(manifest))
+    const icon = 'data:image/png;base64,aWNvbg=='
+    await service.updatePresentation(app.id, '新名称', icon)
+    const inspected = await service.inspect(await service.exportPackage(app.id))
+    expect(inspected.manifest.name).toBe('新名称')
+    expect(inspected.iconDataUrl).toBe(icon)
+  })
+  it('exports a cleared icon without resurrecting the package icon', async () => {
+    const service = createService(`external-export-no-icon-${crypto.randomUUID()}`)
+    const app = await service.install(createPackage({ ...manifest, icon: 'images/logo.svg' }))
+    await service.updatePresentation(app.id, manifest.name, '')
+    const preview = await service.inspect(await service.exportPackage(app.id))
+    expect(preview.manifest.icon).toBeUndefined()
+    expect(preview.iconDataUrl).toBeUndefined()
+  })
+  it('explains that a remote display icon needs an uploaded image for package export', async () => {
+    const service = createService(`external-export-url-${crypto.randomUUID()}`)
+    const app = await service.install(createPackage(manifest))
+    await service.updatePresentation(app.id, manifest.name, 'https://example.com/icon.png')
+    await expect(service.exportPackage(app.id)).rejects.toThrow('链接图标仅用于本机显示')
+    expect((await service.get(app.id))?.iconDataUrl).toBe('https://example.com/icon.png')
+  })
+  it('enumerates retained app IDs without unique cursors or reading all data bodies', async () => {
+    const service = createService(`external-key-cursor-${crypto.randomUUID()}`)
+    const app = await service.install(createPackage(manifest))
+    await service.setData(app.id, 'one', 1)
+    await service.setData(app.id, 'two', 2)
+    await service.uninstall(app.id)
+    const original = IDBIndex.prototype.openKeyCursor
+    const cursor = vi.spyOn(IDBIndex.prototype, 'openKeyCursor').mockImplementation(function (
+      this: IDBIndex,
+      query,
+      direction,
+    ) {
+      if (direction === 'nextunique' || direction === 'prevunique')
+        throw new DOMException('Unable to open cursor', 'UnknownError')
+      return original.call(this, query, direction)
+    })
+    try {
+      expect(await service.listRetainedData()).toEqual([
+        expect.objectContaining({ appId: app.id, dataEntries: 2 }),
+      ])
+    } finally {
+      cursor.mockRestore()
+    }
+  })
 })

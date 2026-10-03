@@ -7,6 +7,7 @@ import android.content.ComponentCallbacks2;
 import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
+import java.util.UUID;
 
 public class MainActivity extends BridgeActivity {
     @Override
@@ -77,7 +78,16 @@ public class MainActivity extends BridgeActivity {
         if (intent == null) return false;
         String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
-            return intent.getData() != null || intent.getParcelableExtra(Intent.EXTRA_STREAM) != null;
+            boolean hasFile = intent.getData() != null;
+            if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+                java.util.ArrayList<Uri> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                hasFile |= streams != null && !streams.isEmpty();
+            } else {
+                hasFile |= intent.getParcelableExtra(Intent.EXTRA_STREAM) != null;
+            }
+            boolean hasDiscordUrl = NativeShareRouteShortcuts.ROUTE_DISCORD_URL.equals(NativeShareRouteShortcuts.routeFrom(intent))
+                && intent.getCharSequenceExtra(Intent.EXTRA_TEXT) != null;
+            return hasFile || hasDiscordUrl;
         }
         if (!Intent.ACTION_VIEW.equals(action)) return false;
         Uri data = intent.getData();
@@ -87,6 +97,7 @@ public class MainActivity extends BridgeActivity {
     private void stageSystemShareNow(Intent intent) {
         Intent service = new Intent(this, NativeShareImportService.class)
             .putExtra(NativeShareImportService.EXTRA_SOURCE, intent)
+            .putExtra(NativeShareImportService.EXTRA_OPERATION_ID, UUID.randomUUID().toString())
             .putExtra(NativeShareImportService.EXTRA_ROUTE, NativeShareRouteShortcuts.routeFrom(intent));
         ContextCompat.startForegroundService(this, service);
         // 文件复制由前台服务负责，避免页面读取同一 URI 造成重复导入。

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
+import { createUserPersonaProfile } from '../utils/UserPersonaProfile'
 
 import {
   addPersonaToBackup,
@@ -65,6 +66,8 @@ describe('SillyTavernPersonaBackup', () => {
       role: 0,
       lorebook: 'New Lore',
       connections: [{ type: 'character', id: 'Writer.png' }],
+      characterBindings: {},
+      profile: createUserPersonaProfile('Updated'),
     })
 
     expect(updated.future_top_level).toBe('preserve me')
@@ -75,6 +78,70 @@ describe('SillyTavernPersonaBackup', () => {
       position: 2,
     })
     expect(updated.personas['alice.png']).toBeUndefined()
+  })
+
+  it('migrates a legacy description into one global section and stores character variants separately', () => {
+    const parsed = parseSillyTavernPersonaBackup(officialBackup)
+    const profile = parsed.entries[0]!.profile
+    expect(profile.sections).toEqual([
+      { id: 'base', name: '基础设定', text: '[{{user}} is Alice.]' },
+    ])
+
+    const updated = updatePersonaInBackup(officialBackup, 'alice.png', {
+      avatarId: 'alice.png',
+      name: 'Alice',
+      title: '',
+      description: '[{{user}} is Alice.]',
+      position: 0,
+      depth: 2,
+      role: 0,
+      lorebook: '',
+      connections: [],
+      characterBindings: {},
+      profile: {
+        version: 1,
+        sections: [{ id: 'base', name: '基础设定', text: '全局描述' }],
+        variants: {
+          'detective.png': {
+            defaultVersionId: 'detective-1',
+            versions: {
+              'detective-1': {
+                name: '侦探时期',
+                overrides: { base: { mode: 'replace', text: '侦探世界中的版本' } },
+                addition: '与侦探是搭档。',
+              },
+              'detective-2': {
+                name: '潜伏时期',
+                overrides: {},
+                addition: '正在执行潜伏任务。',
+              },
+            },
+          },
+        },
+      },
+    })
+    expect(updated.persona_descriptions['alice.png']).toMatchObject({
+      description: '全局描述',
+      srl_persona_profile: {
+        variants: {
+          'detective.png': {
+            defaultVersionId: 'detective-1',
+            versions: {
+              'detective-1': {
+                name: '侦探时期',
+                overrides: { base: { mode: 'replace', text: '侦探世界中的版本' } },
+                addition: '与侦探是搭档。',
+              },
+              'detective-2': {
+                name: '潜伏时期',
+                overrides: {},
+                addition: '正在执行潜伏任务。',
+              },
+            },
+          },
+        },
+      },
+    })
   })
 
   it('adds, selects and removes personas while keeping a valid default', () => {
@@ -88,6 +155,8 @@ describe('SillyTavernPersonaBackup', () => {
       role: 0,
       lorebook: '',
       connections: [],
+      characterBindings: {},
+      profile: createUserPersonaProfile(''),
     })
     const selected = setDefaultPersonaInBackup(added, 'cara.png')
     const removed = removePersonaFromBackup(selected, 'cara.png')

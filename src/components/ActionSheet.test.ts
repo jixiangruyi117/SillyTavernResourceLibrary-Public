@@ -1,9 +1,35 @@
 /** @vitest-environment jsdom */
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
 import ActionSheet from './ActionSheet.vue'
 
 describe('ActionSheet', () => {
+  it('traps keyboard focus and consumes Escape before outer page navigation', async () => {
+    const wrapper = mount(ActionSheet, {
+      attachTo: document.body,
+      props: { open: true, title: '添加 APP', actions: [{ id: 'file', label: '导入文件' }] },
+      global: { stubs: { Teleport: true, Transition: false } },
+    })
+    const outerBack = vi.fn()
+    window.addEventListener('keydown', outerBack)
+    try {
+      await flushPromises()
+      const first = wrapper.get('button[aria-label="关闭操作面板"]').element as HTMLButtonElement
+      const last = wrapper.get('.action-sheet__actions button').element
+      first.focus()
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true }),
+      )
+      expect(document.activeElement).toBe(last)
+      outerBack.mockClear()
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+      expect(wrapper.emitted('update:open')?.[0]).toEqual([false])
+      expect(outerBack).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', outerBack)
+      wrapper.unmount()
+    }
+  })
   it('identifies the current selection without marking ordinary actions as toggles', () => {
     const wrapper = mount(ActionSheet, {
       props: {

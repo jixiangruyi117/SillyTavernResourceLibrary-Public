@@ -344,12 +344,21 @@
   margin: 0.25rem 0;
   accent-color: var(--color-accent);
 }
+.ai-tagging__api-config {
+  padding: 0.75rem;
+}
+.ai-tagging__api-config .ai-tagging__field {
+  gap: 0.25rem;
+}
+.ai-tagging__api-config .ai-tagging__filter-grid {
+  gap: 0.5rem;
+}
 .ai-tagging__details-toggle {
   width: 100%;
   margin-top: 0.5rem;
 }
 .ai-tagging__details-toggle + .ai-tagging__filter-grid {
-  margin-top: 0.75rem;
+  margin-top: 0.5rem;
 }
 .ai-tagging__api-summary,
 .ai-tagging__privacy-note {

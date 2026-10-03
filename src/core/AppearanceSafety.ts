@@ -16,6 +16,7 @@ interface AppearanceTransactionOptions {
   onKeep?(): void
   onRollback?(): void
   durationMs?: number
+  autoKeep?: boolean
 }
 
 function parsePendingAppearance(): PendingAppearance | null {
@@ -84,6 +85,23 @@ export function readLastGoodAppearance(): string {
 
 class AppearanceTransactionManager {
   private rollbackActive?: () => void
+  private keepActive?: () => void
+  private undoConfirmed?: () => void
+
+  keep(): void {
+    this.keepActive?.()
+  }
+  undo(): boolean {
+    if (this.rollbackActive) {
+      this.rollbackActive()
+      return true
+    }
+    const undo = this.undoConfirmed
+    this.undoConfirmed = undefined
+    if (!undo) return false
+    undo()
+    return true
+  }
 
   rollback(): void {
     this.rollbackActive?.()
@@ -111,9 +129,29 @@ class AppearanceTransactionManager {
       @media(max-width:520px){.guard{align-items:stretch;flex-direction:column}.actions button{flex:1}}
     </style><div class="guard" role="alert"><div class="copy"><strong>自定义 CSS 已临时应用</strong><span data-countdown></span></div><div class="actions"><button type="button" data-rollback>立即恢复</button><button type="button" class="keep" data-keep>保留更改</button></div></div>`
     const countdown = root.querySelector<HTMLElement>('[data-countdown]')
+    if (options.autoKeep) {
+      root.querySelector('strong')!.textContent = '美化已应用'
+      root.querySelector('[data-rollback]')!.textContent = '撤销'
+      root.querySelector('[data-keep]')!.textContent = '收起提示'
+      host.style.setProperty(
+        'bottom',
+        'calc(94px + var(--bottom-nav-reserved, 0px) + var(--safe-bottom, 0px))',
+        'important',
+      )
+      const style = document.createElement('style')
+      style.textContent = `
+        .guard{width:max-content;max-width:100%;margin:auto;padding:3px 3px 3px 12px;gap:12px;flex-direction:row;align-items:center;border-radius:999px;background:var(--color-surface-raised,#f4fffc);border-color:var(--color-line,#6fa79d);color:var(--color-ink,#15342f);box-shadow:0 6px 20px var(--color-shadow,#102d2820)}
+        .copy{display:flex;align-items:center;gap:7px}.copy::before{content:"✓";display:grid;place-items:center;width:18px;height:18px;flex:0 0 18px;border-radius:50%;background:var(--color-accent-soft,#d8eeec);color:var(--color-accent,#187f73);font:600 11px system-ui}
+        .copy span{display:none}.copy strong{font-size:12px;font-weight:500;white-space:nowrap}
+        .actions button{min-width:44px;min-height:44px;padding:6px 12px;border:0;border-radius:999px;background:var(--color-accent-soft,#d8eeec);color:var(--color-accent,#187f73);font-size:12px;font-weight:600}
+        .actions button:focus-visible{outline:2px solid var(--color-accent,#187f73);outline-offset:2px}.actions [data-keep]{display:none}`
+      root.append(style)
+    }
     const updateCountdown = () => {
       if (countdown)
-        countdown.textContent = `${Math.max(0, Math.ceil((pending.expiresAt - Date.now()) / 1000))} 秒内未确认将自动恢复上一版`
+        countdown.textContent = options.autoKeep
+          ? '不满意可以立即恢复，或在对话里说“撤销”。提示会自动收起。'
+          : `${Math.max(0, Math.ceil((pending.expiresAt - Date.now()) / 1000))} 秒内未确认将自动恢复上一版`
     }
     updateCountdown()
     const interval = window.setInterval(updateCountdown, 250)
@@ -126,24 +164,34 @@ class AppearanceTransactionManager {
       host.remove()
       localStorage.removeItem(PENDING_APPEARANCE_KEY)
       this.rollbackActive = undefined
+      this.keepActive = undefined
       if (keep) {
         localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, options.nextCss)
+        this.undoConfirmed = () => {
+          options.persist(options.previousCss)
+          options.apply(options.previousCss)
+          localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, options.previousCss)
+          options.onRollback?.()
+        }
         options.onKeep?.()
       } else {
+        this.undoConfirmed = undefined
         options.persist(options.previousCss)
         options.apply(options.previousCss)
         localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, options.previousCss)
         options.onRollback?.()
       }
     }
-    const timeout = window.setTimeout(() => finish(false), durationMs)
+    const timeout = window.setTimeout(() => finish(Boolean(options.autoKeep)), durationMs)
     root.querySelector('[data-keep]')?.addEventListener('click', () => finish(true))
     root.querySelector('[data-rollback]')?.addEventListener('click', () => finish(false))
     this.rollbackActive = () => finish(false)
+    this.keepActive = () => finish(true)
   }
 
   clear(css: string, apply: (value: string) => void, persist: (value: string) => void): void {
     this.rollbackActive?.()
+    this.undoConfirmed = undefined
     localStorage.removeItem(PENDING_APPEARANCE_KEY)
     localStorage.setItem(LAST_GOOD_APPEARANCE_KEY, css)
     persist(css)

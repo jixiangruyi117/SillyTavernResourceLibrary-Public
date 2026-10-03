@@ -182,6 +182,23 @@ export interface ExternalAppPreview {
   packageBytes: number
   packageFiles: Record<string, Uint8Array>
   iconDataUrl?: string
+  /** 仅自动生成清单的网页可由用户选择更新另一个本机 APP。 */
+  generatedManifest?: boolean
+  previousInstallation?: {
+    id: string
+    name: string
+    version: string
+    enabled: boolean
+    runtimeMode: ExternalAppRuntimeMode
+  }
+  contentChanged?: boolean
+  addedPermissions?: ExternalAppPermission[]
+}
+
+export interface RetainedExternalAppData {
+  appId: string
+  dataBytes: number
+  dataEntries: number
 }
 
 export interface ExternalAppDataRecord {

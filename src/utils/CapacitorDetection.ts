@@ -27,7 +27,3 @@ export function getCapacitorPlatform(): 'android' | 'ios' | 'web' {
   if (platform === 'android' || platform === 'ios') return platform
   return 'web'
 }
-
-export function isAndroidApk(): boolean {
-  return isCapacitorApp() && getCapacitorPlatform() === 'android'
-}

@@ -7,7 +7,9 @@ import FeatureAppIcon from './FeatureAppIcon.vue'
 const builtInIcons = [
   'draw',
   'appearance',
+  'assistant',
   'folders',
+  'inbox',
   'cloud',
   'bridge',
   'stitch',

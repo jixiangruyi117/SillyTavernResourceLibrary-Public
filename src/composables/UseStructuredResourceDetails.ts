@@ -1,6 +1,6 @@
 import { computed, nextTick, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { usePreviewPolicy } from '../composables/UsePreviewPolicy'
-import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { RESOURCE_TYPE, type Resource, type ResourceSummary } from '../types/Resource'
 import { parseGreetingMetadata } from '../utils/GreetingMetadata'
 import { summarizeRegexEffect, type RegexEffectSummary } from '../utils/RegexEffectPreview'
 import {
@@ -9,7 +9,10 @@ import {
 } from '../utils/RegexStaticPreview'
 import { isRecord } from '../utils/UnknownValue'
 
-export type StructuredResourceDetailsProps = { resource: Resource }
+export type StructuredResourceDetailsProps = {
+  resource: Resource
+  relatedResources?: ResourceSummary[]
+}
 
 export type PresetPage = 'overview' | 'prompts' | 'regex'
 

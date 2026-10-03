@@ -648,53 +648,88 @@ const {
           <template v-if="section === 'connection' || internalTab === 'connection'">
             <div class="section image-generation-connection">
               <div class="head">
-                <div>
-                  <div class="title">{{ providerLabel(provider) }} 连接</div>
-                  <div class="note">配置与凭据使用现有本机受保护存储。</div>
-                </div>
+                <div class="title">{{ providerLabel(provider) }} 连接</div>
               </div>
-              <div class="row2">
+              <div class="image-generation-connection__fields">
                 <label
-                  >Endpoint<input
+                  >API 地址<input
                     v-model="config[provider].endpoint"
                     class="input"
                     type="url"
-                    :disabled="busy" /></label
-                ><label
-                  >API Key<input
+                    :disabled="busy"
+                /></label>
+                <label
+                  >API 密钥<input
                     v-model="config[provider].apiKey"
                     class="input"
                     type="password"
                     autocomplete="off"
-                    :disabled="busy" /></label
-                ><label
-                  >模型 ID<input
-                    v-model="config[provider].model"
-                    class="input"
-                    type="text"
                     :disabled="busy"
-                    @change="applyModelMetadata" /></label
-                ><label
-                  >凭据保存<select v-model="config[provider].credentialPersistence" class="select">
-                    <option value="local">本机受保护存储</option>
-                    <option value="session">仅本次使用</option>
-                  </select></label
-                ><button
-                  class="btn"
-                  type="button"
-                  :disabled="modelsBusy || busy"
-                  @click="loadModels"
-                >
-                  {{ modelsBusy ? '拉取中…' : '拉取模型' }}</button
-                ><button class="btn" type="button" :disabled="busy" @click="saveConnection">
+                /></label>
+                <label
+                  >模型 ID
+                  <div class="image-generation-connection__model">
+                    <input
+                      v-model="config[provider].model"
+                      aria-label="模型 ID"
+                      class="input"
+                      type="text"
+                      :disabled="busy"
+                      @change="applyModelMetadata"
+                    />
+                    <button
+                      class="btn"
+                      type="button"
+                      :disabled="modelsBusy || busy"
+                      @click="loadModels"
+                    >
+                      {{ modelsBusy ? '拉取中…' : '拉取模型' }}
+                    </button>
+                  </div>
+                </label>
+                <details class="image-generation-connection__advanced">
+                  <summary>
+                    更多设置
+                    <small>{{
+                      config[provider].credentialPersistence === 'session'
+                        ? '密钥仅本次使用'
+                        : '密钥保存在本机'
+                    }}</small>
+                  </summary>
+                  <label
+                    >密钥保存方式<select
+                      v-model="config[provider].credentialPersistence"
+                      aria-label="密钥保存方式"
+                      class="select"
+                    >
+                      <option value="local">本机受保护存储</option>
+                      <option value="session">仅本次使用</option>
+                    </select></label
+                  >
+                  <p class="note">配置与凭据使用现有本机受保护存储。</p>
+                  <button class="btn" type="button" :disabled="busy" @click="resetEndpoint">
+                    恢复默认地址
+                  </button>
+                </details>
+                <button class="btn primary" type="button" :disabled="busy" @click="saveConnection">
                   保存连接
                 </button>
-                <button class="btn" type="button" :disabled="busy" @click="resetEndpoint">
-                  恢复默认地址
-                </button>
+                <p v-if="notice" class="workspace-notice" role="status">{{ notice }}</p>
+                <p v-if="error" class="workspace-notice error" role="alert">{{ error }}</p>
               </div>
             </div>
-            <div v-if="provider === 'openai'" class="section">
+            <details
+              v-if="provider === 'openai'"
+              class="section image-generation-connection__capabilities"
+            >
+              <summary>
+                兼容能力
+                <span>{{
+                  { basic: '基础兼容', enhanced: '增强兼容', editing: '完整图像编辑' }[
+                    capabilities.compatibilityLevel
+                  ]
+                }}</span>
+              </summary>
               <div class="head">
                 <div>
                   <div class="title">兼容级别</div>
@@ -740,12 +775,12 @@ const {
                   >
                 </div>
               </div>
-            </div>
+            </details>
             <div class="workspace-notice">
               {{ capabilities.notes.join(' ') || '模型参数按当前能力显示。' }}
             </div>
           </template>
-          <details v-if="internalTab === 'prompt'" class="section">
+          <details v-if="section !== 'connection' && internalTab === 'prompt'" class="section">
             <summary>模板 {{ templates.length }}</summary>
             <form class="row2" @submit.prevent="saveTemplate">
               <input
@@ -763,8 +798,20 @@ const {
               <button type="button" @click="deleteTemplate(template)">删除</button>
             </div>
           </details>
-          <p v-if="notice" class="workspace-notice" role="status">{{ notice }}</p>
-          <p v-if="error" class="workspace-notice error" role="alert">{{ error }}</p>
+          <p
+            v-if="notice && section !== 'connection' && internalTab !== 'connection'"
+            class="workspace-notice"
+            role="status"
+          >
+            {{ notice }}
+          </p>
+          <p
+            v-if="error && section !== 'connection' && internalTab !== 'connection'"
+            class="workspace-notice error"
+            role="alert"
+          >
+            {{ error }}
+          </p>
         </section>
         <footer class="footerbar image-generation-generate-bar">
           <div class="cost">

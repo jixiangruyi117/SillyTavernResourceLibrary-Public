@@ -88,7 +88,7 @@ const openManualRepair = toRef(input.model, 'openManualRepair')
           </select>
         </label>
         <template v-if="apiMode === 'custom'">
-          <div class="frontend-workshop__api-pair">
+          <div class="frontend-workshop__api-basics">
             <label>
               <span>协议</span>
               <select v-model="customApi.protocol">
@@ -120,74 +120,84 @@ const openManualRepair = toRef(input.model, 'openManualRepair')
               placeholder="允许无密钥接口留空"
             />
           </label>
-          <label>
-            <span>密钥保存方式</span>
-            <select v-model="customApiCredentialPersistence">
-              <option value="local">保存在本机（推荐）</option>
-              <option value="session">仅本次使用</option>
-            </select>
-          </label>
-          <div class="frontend-workshop__api-pair">
+          <details class="frontend-workshop__api-advanced">
+            <summary>
+              更多设置
+              <small>{{
+                customApiCredentialPersistence === 'local' ? '密钥保存在本机' : '密钥仅本次使用'
+              }}</small>
+            </summary>
             <label>
-              <span>温度 {{ customApi.temperature }}</span>
-              <input
-                v-model.number="customApi.temperature"
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-              />
-            </label>
-            <label>
-              <span>Top P {{ customApi.topP }}</span>
-              <input v-model.number="customApi.topP" type="range" min="0" max="1" step="0.05" />
-            </label>
-            <label>
-              <span>传输方式</span>
-              <select v-model="customApi.stream">
-                <option :value="false">非流式</option>
-                <option :value="true">流式接收</option>
+              <span>密钥保存方式</span>
+              <select v-model="customApiCredentialPersistence">
+                <option value="local">保存在本机（推荐）</option>
+                <option value="session">仅本次使用</option>
               </select>
             </label>
-            <label v-if="customApi.protocol === 'openai-compatible'">
-              <span>推理深度</span>
-              <select v-model="customApi.reasoningEffort">
-                <option value="auto">自动</option>
-                <option value="none">无推理 none</option>
-                <option value="minimal">最少 minimal</option>
-                <option value="low">低 low</option>
-                <option value="medium">中 medium</option>
-                <option value="high">高 high</option>
-                <option value="xhigh">很高 xhigh</option>
-                <option value="max">最高 max</option>
-              </select>
-            </label>
-            <label>
-              <span>最大输出 Token（0 = 自动）</span>
-              <input v-model.number="customApi.maxTokens" type="number" min="0" max="128000" />
-              <small> 0 不发送上限，但模型仍受自身限制；Anthropic 协议必须填写大于 0 的值。 </small>
-            </label>
-            <label v-if="customApi.protocol === 'openai-compatible'">
-              <span>频率惩罚</span>
-              <input
-                v-model.number="customApi.frequencyPenalty"
-                type="number"
-                min="-2"
-                max="2"
-                step="0.1"
-              />
-            </label>
-            <label v-if="customApi.protocol === 'openai-compatible'">
-              <span>存在惩罚</span>
-              <input
-                v-model.number="customApi.presencePenalty"
-                type="number"
-                min="-2"
-                max="2"
-                step="0.1"
-              />
-            </label>
-          </div>
+            <div class="frontend-workshop__api-pair">
+              <label>
+                <span>温度 {{ customApi.temperature }}</span>
+                <input
+                  v-model.number="customApi.temperature"
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.05"
+                />
+              </label>
+              <label>
+                <span>Top P {{ customApi.topP }}</span>
+                <input v-model.number="customApi.topP" type="range" min="0" max="1" step="0.05" />
+              </label>
+              <label>
+                <span>传输方式</span>
+                <select v-model="customApi.stream">
+                  <option :value="false">非流式</option>
+                  <option :value="true">流式接收</option>
+                </select>
+              </label>
+              <label v-if="customApi.protocol === 'openai-compatible'">
+                <span>推理深度</span>
+                <select v-model="customApi.reasoningEffort">
+                  <option value="auto">自动</option>
+                  <option value="none">无推理 none</option>
+                  <option value="minimal">最少 minimal</option>
+                  <option value="low">低 low</option>
+                  <option value="medium">中 medium</option>
+                  <option value="high">高 high</option>
+                  <option value="xhigh">很高 xhigh</option>
+                  <option value="max">最高 max</option>
+                </select>
+              </label>
+              <label>
+                <span>最大输出 Token（0 = 自动）</span>
+                <input v-model.number="customApi.maxTokens" type="number" min="0" max="128000" />
+                <small>
+                  0 不发送上限，但模型仍受自身限制；Anthropic 协议必须填写大于 0 的值。
+                </small>
+              </label>
+              <label v-if="customApi.protocol === 'openai-compatible'">
+                <span>频率惩罚</span>
+                <input
+                  v-model.number="customApi.frequencyPenalty"
+                  type="number"
+                  min="-2"
+                  max="2"
+                  step="0.1"
+                />
+              </label>
+              <label v-if="customApi.protocol === 'openai-compatible'">
+                <span>存在惩罚</span>
+                <input
+                  v-model.number="customApi.presencePenalty"
+                  type="number"
+                  min="-2"
+                  max="2"
+                  step="0.1"
+                />
+              </label>
+            </div>
+          </details>
         </template>
         <div class="frontend-workshop__api-actions">
           <button type="button" @click="saveApiPreference">保存选择</button>

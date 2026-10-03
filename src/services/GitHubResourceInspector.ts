@@ -52,6 +52,8 @@ export interface GitHubReadmeDocument {
 
 export type GitHubResourceInspector = (
   link: ResourceLink,
+  fetchImpl?: typeof fetch,
+  signal?: AbortSignal,
 ) => Promise<GitHubResourceInspection | undefined>
 
 interface GitHubRepositoryResponse {
@@ -158,6 +160,7 @@ async function fetchGitHub(
   fetchImpl: typeof fetch,
   url: string,
   accept: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return fetchImpl(url, {
     method: 'GET',
@@ -166,14 +169,20 @@ async function fetchGitHub(
       'X-GitHub-Api-Version': '2022-11-28',
     },
     cache: 'no-store',
+    signal,
   })
 }
 
-async function fetchRawText(fetchImpl: typeof fetch, url: string): Promise<string> {
+async function fetchRawText(
+  fetchImpl: typeof fetch,
+  url: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const response = await fetchImpl(url, {
     method: 'GET',
     headers: { Accept: 'text/plain' },
     cache: 'no-store',
+    signal,
   })
   if (!response.ok) return ''
 
@@ -207,11 +216,13 @@ async function readLatestGitHubRelease(
   fetchImpl: typeof fetch,
   owner: string,
   repo: string,
+  signal?: AbortSignal,
 ): Promise<GitHubResourceInspection['latestRelease']> {
   const response = await fetchGitHub(
     fetchImpl,
     `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
     'application/vnd.github+json',
+    signal,
   )
   if (!response.ok) return undefined
   const release = (await response.json().catch(() => ({}))) as GitHubReleaseResponse
@@ -260,15 +271,17 @@ async function readRawRepositoryFiles(
   owner: string,
   repo: string,
   refs: string[],
+  signal?: AbortSignal,
 ): Promise<RawRepositoryFiles> {
   for (const ref of refs) {
     const encodedRef = encodeURIComponent(ref)
     const rawBase = `https://raw.githubusercontent.com/${owner}/${repo}/${encodedRef}`
     const [readmeText, lowercaseReadmeText, manifestText] = await Promise.all([
-      fetchRawText(fetchImpl, `${rawBase}/README.md`).catch(() => ''),
-      fetchRawText(fetchImpl, `${rawBase}/readme.md`).catch(() => ''),
-      fetchRawText(fetchImpl, `${rawBase}/manifest.json`).catch(() => ''),
+      fetchRawText(fetchImpl, `${rawBase}/README.md`, signal).catch(() => ''),
+      fetchRawText(fetchImpl, `${rawBase}/readme.md`, signal).catch(() => ''),
+      fetchRawText(fetchImpl, `${rawBase}/manifest.json`, signal).catch(() => ''),
     ])
+    signal?.throwIfAborted()
     const readme = summarizeGitHubReadme(readmeText || lowercaseReadmeText)
     let manifest: GitHubResourceInspection['manifest'] | undefined
     if (manifestText) {
@@ -293,6 +306,7 @@ function uniqueRefs(link: ResourceLink, defaultBranch: string): string[] {
 export async function inspectGitHubResource(
   link: ResourceLink,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<GitHubResourceInspection | undefined> {
   const github = link.github
   if (!github?.owner || !github.repo) return undefined
@@ -303,10 +317,16 @@ export async function inspectGitHubResource(
 
   let repositoryResponse: Response | undefined
   try {
-    repositoryResponse = await fetchGitHub(fetchImpl, repositoryUrl, 'application/vnd.github+json')
+    repositoryResponse = await fetchGitHub(
+      fetchImpl,
+      repositoryUrl,
+      'application/vnd.github+json',
+      signal,
+    )
   } catch {
     repositoryResponse = undefined
   }
+  signal?.throwIfAborted()
 
   let repository: GitHubRepositoryResponse = {}
   if (repositoryResponse?.ok) {
@@ -316,11 +336,12 @@ export async function inspectGitHubResource(
   const fullName = readString(repository.full_name, 200) || fallbackName
   const repositoryDescription = readString(repository.description)
   const [rawFiles, latestRelease] = await Promise.all([
-    readRawRepositoryFiles(fetchImpl, owner, repo, uniqueRefs(link, defaultBranch)),
+    readRawRepositoryFiles(fetchImpl, owner, repo, uniqueRefs(link, defaultBranch), signal),
     repositoryResponse?.ok
-      ? readLatestGitHubRelease(fetchImpl, owner, repo).catch(() => undefined)
+      ? readLatestGitHubRelease(fetchImpl, owner, repo, signal).catch(() => undefined)
       : Promise.resolve(undefined),
   ])
+  signal?.throwIfAborted()
   const summary = rawFiles.manifest?.description || repositoryDescription || rawFiles.readme.excerpt
   const hasRepositoryMetadata = repositoryResponse?.ok === true
   const evidence = [

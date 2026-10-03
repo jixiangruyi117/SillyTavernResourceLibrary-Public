@@ -137,7 +137,7 @@ export function normalizeManifest(value: unknown): ExternalAppManifest {
   if (!name || name.length > 80) throw new Error('APP 名称必须为 1 到 80 个字符')
   if (!VERSION_PATTERN.test(version)) throw new Error('APP 版本必须使用 x.y.z 格式')
   const safeEntry = requireSafePath(entry, '入口文件')
-  if (!safeEntry.endsWith('.html')) throw new Error('第一阶段的入口文件必须是 HTML')
+  if (!/\.html?$/i.test(safeEntry)) throw new Error('入口文件必须是 HTML')
   const author =
     typeof candidate.author === 'string' ? candidate.author.trim().slice(0, 80) : undefined
   const description =
@@ -252,7 +252,7 @@ export function quickManifest(
   sourceName: string,
   fingerprint: string,
 ): ExternalAppManifest {
-  const htmlPaths = Object.keys(files).filter((path) => path.toLowerCase().endsWith('.html'))
+  const htmlPaths = Object.keys(files).filter((path) => /\.html?$/i.test(path))
   const entry = htmlPaths.find((path) => /(^|\/)index\.html$/i.test(path)) ?? htmlPaths[0]
   if (!entry)
     throw new Error('未找到 HTML 入口文件；请选择 HTML 文件或包含 index.html 的文件夹/ZIP')
@@ -338,7 +338,8 @@ export async function filesFromInput(input: File | readonly File[]): Promise<Pac
   const relativePaths = selected.map((file) => file.webkitRelativePath || file.name)
   const firstSegments = relativePaths.map((path) => path.replaceAll('\\', '/').split('/')[0])
   const stripRoot =
-    selected.length > 1 && firstSegments.every((segment) => segment === firstSegments[0])
+    selected.some((file) => file.webkitRelativePath?.includes('/')) &&
+    firstSegments.every((segment) => segment === firstSegments[0])
   const files: Record<string, Uint8Array> = {}
   for (let index = 0; index < selected.length; index += 1) {
     const file = selected[index]
@@ -352,8 +353,19 @@ export async function filesFromInput(input: File | readonly File[]): Promise<Pac
   const fingerprint = await fingerprintFiles(files)
   const manifest = files['manifest.json']
     ? normalizeManifest(JSON.parse(readText(files['manifest.json'], 'manifest.json')))
-    : quickManifest(files, selected[0].name, fingerprint)
+    : quickManifest(
+        files,
+        stripRoot
+          ? `${firstSegments[0]}.html`
+          : (selected.find((file) => /\.html?$/i.test(file.name))?.name ?? selected[0].name),
+        fingerprint,
+      )
   if (!files['manifest.json']) addGeneratedIcon(files, manifest)
   requireDeclaredFiles(files, manifest)
-  return { files, manifest, fingerprint, sourceKind: selected.length === 1 ? 'html' : 'folder' }
+  return {
+    files,
+    manifest,
+    fingerprint,
+    sourceKind: stripRoot || selected.length > 1 ? 'folder' : 'html',
+  }
 }

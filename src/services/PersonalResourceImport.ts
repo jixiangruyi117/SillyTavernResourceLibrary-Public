@@ -1,17 +1,23 @@
 import { parsePersonalResource } from '../types/PersonalResource'
 import { secretResourceService } from './SecretResourceService'
+import { materializeNativeFile, nativeFileSize } from '../core/NativeFileSource'
 
 export async function protectPersonalImport(
   file: File,
   requestPassword: () => Promise<string | undefined>,
+  signal?: AbortSignal,
 ): Promise<File> {
-  if (!/\.json$/i.test(file.name) || file.size > 2 * 1024 * 1024) return file
+  signal?.throwIfAborted()
+  if (!/\.json$/i.test(file.name) || nativeFileSize(file) > 2 * 1024 * 1024) return file
+  file = await materializeNativeFile(file, { signal })
   let value: unknown
   try {
     value = JSON.parse(await file.text())
   } catch {
+    signal?.throwIfAborted()
     return file
   }
+  signal?.throwIfAborted()
   if (
     !value ||
     typeof value !== 'object' ||
@@ -28,6 +34,7 @@ export async function protectPersonalImport(
   if (!password && !secretResourceService.isUnlocked())
     throw new Error('已取消密钥导入；原文件未修改')
   const protectedDocument = await secretResourceService.protect(document, password)
+  signal?.throwIfAborted()
   return new File([JSON.stringify(protectedDocument)], file.name, { type: 'application/json' })
 }
 

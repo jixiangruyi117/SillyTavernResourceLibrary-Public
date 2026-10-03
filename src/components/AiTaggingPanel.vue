@@ -341,15 +341,10 @@ function selectRuleTemplate(event: Event): void {
             </details>
           </section>
 
-          <section class="ai-tagging__block">
-            <div class="ai-tagging__block-heading">
-              <div>
-                <h3>API 来源</h3>
-              </div>
-            </div>
+          <section class="ai-tagging__block ai-tagging__api-config">
             <label class="ai-tagging__field ai-tagging__field--wide">
-              <span>调用配置</span>
-              <select v-model="apiSource">
+              <span>API 配置</span>
+              <select v-model="apiSource" aria-label="API 配置">
                 <option value="active">主 API · {{ activeProfile?.name || '当前启用配置' }}</option>
                 <option
                   v-for="profile in profiles"

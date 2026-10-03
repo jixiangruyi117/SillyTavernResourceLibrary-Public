@@ -29,7 +29,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResource
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeCategory
-import buzz.jixiangruyi1207.srl.nativeapp.model.NativeSnapshot
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeBackupSelection
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeCloudBackup
 import buzz.jixiangruyi1207.srl.nativeapp.cloud.NativeCredentialState
@@ -42,6 +41,7 @@ import buzz.jixiangruyi1207.srl.nativeapp.persona.NativePersonaEntry
 import buzz.jixiangruyi1207.srl.nativeapp.preset.NativePresetSegment
 import buzz.jixiangruyi1207.srl.nativeapp.preset.NativeStitchRequest
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResourceBundle
+import buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryCleanup
 import buzz.jixiangruyi1207.srl.nativeapp.draw.NativeDrawOptions
 import buzz.jixiangruyi1207.srl.nativeapp.draw.NativeDrawState
 import buzz.jixiangruyi1207.srl.nativeapp.appearance.NativeAppearanceState
@@ -58,7 +58,6 @@ fun NativeSrlApp(
     resources: List<NativeResource>,
     categories: List<NativeCategory>,
     versions: List<NativeResource>,
-    snapshots: List<NativeSnapshot>,
     cloudBackups: List<NativeCloudBackup>,
     githubConfig: NativeGitHubConfig?,
     webDavConfig: NativeWebDavConfig?,
@@ -79,6 +78,8 @@ fun NativeSrlApp(
     busy: Boolean,
     message: String,
     storagePath: String,
+    legacyLibraryHistory: LegacyLibraryHistoryCleanup,
+    onClearLegacyLibraryHistory: (LegacyLibraryHistoryCleanup) -> Unit,
     onImport: () -> Unit,
     onExport: (NativeBackupSelection) -> Unit,
     onToggleFavorite: (String) -> Unit,
@@ -91,9 +92,6 @@ fun NativeSrlApp(
     onActivateVersion: (String, String) -> Unit,
     onUpdateVersionNote: (String, String, String) -> Unit,
     onDeleteVersion: (String, String) -> Unit,
-    onCaptureSnapshot: (String) -> Unit,
-    onRestoreSnapshot: (String) -> Unit,
-    onDeleteSnapshot: (String) -> Unit,
     onSaveGitHub: (NativeGitHubConfig, String) -> Unit,
     onSaveWebDav: (NativeWebDavConfig, String) -> Unit,
     onTestCloud: (String) -> Unit,
@@ -212,7 +210,6 @@ fun NativeSrlApp(
                     when (page) {
                         0 -> ResourceLibrary(
                             resources, categories, versions, appearanceState.layoutMode, libraryFiltersOpen, onImport,
-                            onOpenProtection = { page = 1; featureRoute = 2 },
                             onOpenAiTagging = { selectedIds -> aiTaggingInitialIds = selectedIds; page = 1; featureRoute = 12 },
                             onToggleFavorite, onUpdateResourceDetails, onCreateCategory, onUpdateCategory,
                             onDeleteCategory, onSetResourceCategories, onDeleteResource,
@@ -227,10 +224,6 @@ fun NativeSrlApp(
                                     onSaveGitHub, onSaveWebDav, onTestCloud, onRefreshCloud, onCreateCloudBackup,
                                     onRestoreCloudBackup, onDeleteCloudBackup,
                                 )
-                            }
-                            2 -> Column(Modifier.fillMaxSize()) {
-                                FeaturePageHeader("本地保险库与历史", "完整快照、删除前保护和安全回退", onBack = { featureRoute = 0 })
-                                DataProtectionScreen(snapshots, busy, onCaptureSnapshot, onRestoreSnapshot, onDeleteSnapshot)
                             }
                             3 -> Column(Modifier.fillMaxSize()) {
                                 FeaturePageHeader("酒馆互传", "设备码安全中继，双向收发资源", onBack = { featureRoute = 0 })
@@ -325,8 +318,8 @@ fun NativeSrlApp(
                             onSaveGitHub, onSaveWebDav, onTestCloud, onRefreshCloud, onCreateCloudBackup,
                             onRestoreCloudBackup, onDeleteCloudBackup,
                         )
-                        4 -> SettingsScreen(resources.size, storagePath, snapshots.size, busy, { page = 1; featureRoute = 2 })
-                        else -> SettingsScreen(resources.size, storagePath, snapshots.size, busy, { page = 1; featureRoute = 2 })
+                        4 -> SettingsScreen(resources.size, storagePath, busy, legacyLibraryHistory, onClearLegacyLibraryHistory)
+                        else -> SettingsScreen(resources.size, storagePath, busy, legacyLibraryHistory, onClearLegacyLibraryHistory)
                     }
                 }
             }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyUserPersonaTemplate } from './UserPersonaManagement'
+import { createUserPersonaProfile } from './UserPersonaProfile'
 
 const draft = {
   avatarId: 'me.png',
@@ -11,6 +12,8 @@ const draft = {
   role: 0,
   lorebook: '',
   connections: [],
+  characterBindings: {},
+  profile: createUserPersonaProfile(),
 }
 
 describe('UserPersonaManagement', () => {
@@ -22,5 +25,6 @@ describe('UserPersonaManagement', () => {
     expect(next.description).toContain('{{user}}')
     expect(next.avatarId).toBe('me.png')
     expect(next.connections).toEqual([{ type: 'group', id: 'g' }])
+    expect(next.profile.sections[0]?.text).toBe(next.description)
   })
 })

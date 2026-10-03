@@ -1,0 +1,149 @@
+.discord-downloads {
+  padding: 16px 0 4px;
+  border-top: 1px solid var(--color-line);
+  color: var(--color-ink);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.discord-downloads header,
+.discord-downloads li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.discord-downloads header > div,
+.discord-downloads__file {
+  flex: 1;
+  min-width: 0;
+}
+.discord-downloads strong {
+  font-size: 16px;
+  font-weight: 650;
+}
+.discord-downloads__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.discord-downloads__pending {
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+.discord-downloads p {
+  margin: 8px 0;
+  line-height: 1.5;
+  color: var(--color-ink-soft);
+}
+.discord-downloads small {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.discord-downloads small[data-state='waiting_version'],
+.discord-downloads small[data-state='downloading'],
+.discord-downloads small[data-state='importing'] {
+  color: var(--color-accent);
+}
+.discord-downloads small[data-state='failed'] {
+  color: var(--color-danger);
+}
+.discord-downloads button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  flex: none;
+  cursor: pointer;
+}
+.discord-downloads svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.discord-downloads__file-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.discord-downloads__file-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.discord-downloads button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.discord-downloads button:focus-visible,
+.discord-downloads summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.discord-downloads ul {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.discord-downloads li {
+  padding: 10px 0;
+}
+.discord-downloads li + li {
+  border-top: 1px solid var(--color-line);
+}
+.discord-downloads__file > span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.discord-downloads p.discord-downloads__error {
+  color: var(--color-danger, #bd4646);
+}
+.discord-downloads details {
+  margin-top: 12px;
+  border-top: 1px solid var(--color-line);
+}
+.discord-downloads details p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.discord-downloads summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+.discord-downloads summary::after {
+  content: '⌄';
+  margin-left: auto;
+  font-size: 18px;
+}
+.discord-downloads details[open] summary::after {
+  content: '⌃';
+}

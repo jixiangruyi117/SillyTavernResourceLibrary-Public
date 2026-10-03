@@ -9,6 +9,7 @@ import { ChatReaderService } from './ChatReaderService'
 import { hashBlob } from './HashService'
 import { isRecord } from '../utils/UnknownValue'
 import { chatCharacterThumbnailData, chatCharacterSummary } from './ChatReaderCharacter'
+import { materializeNativeFile } from '../core/NativeFileSource'
 
 function resourceOf(result: ImportResult): Resource {
   if (result.status === 'failed') throw new Error(result.message)
@@ -23,6 +24,8 @@ export async function importTavernChat(
   parser: ResourceParserRegistry,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
+  file = await materializeNativeFile(file, { detachFromNativeSource: true, signal: options.signal })
+  options.signal?.throwIfAborted()
   const { card, chat, avatar, displayRules, presetRules, regexContext, hasRegexSnapshot } =
     await readChatArchive(file)
   // Validate both before the first write. A filename or chat speaker never proves card identity.

@@ -556,6 +556,7 @@ export class TavernBridgeService extends EventTarget {
       pairCode: this.invitation.pairCode,
       capabilities: [
         'catalog-pages-v1',
+        'catalog-kind-filter-v1',
         'pull-cancel-v1',
         'pull-progress-v1',
         ...(supportsBridgeGzip() ? ['gzip'] : []),
@@ -564,14 +565,16 @@ export class TavernBridgeService extends EventTarget {
   }
 
   async listResources(
-    kind?: 'chat',
+    kind?: 'chat' | 'character' | 'userPersona',
     options: { signal?: AbortSignal } = {},
   ): Promise<TavernResourceItem[]> {
     throwIfAborted(options.signal)
-    if (kind && !this.peerCapabilities.includes('chat-archive-v1'))
+    if (kind === 'chat' && !this.peerCapabilities.includes('chat-archive-v1'))
       throw new Error('此连接不支持聊天归档，请使用配套测试版酒馆扩展')
     if (this.directory) {
-      const items = await this.directory.listResources()
+      const items = await this.directory.listResources(
+        kind === 'character' || kind === 'userPersona' ? kind : undefined,
+      )
       throwIfAborted(options.signal)
       return items
     }
@@ -599,7 +602,12 @@ export class TavernBridgeService extends EventTarget {
       () => this.failList(requestId, '读取酒馆资源超过 30 分钟，请检查酒馆目录状态'),
       PULL_ABSOLUTE_TIMEOUT_MS,
     )
-    void this.send('list-request', { requestId, ...(kind ? { kind } : {}) }).catch((error) =>
+    const canFilterByKind = this.peerCapabilities.includes('catalog-kind-filter-v1')
+    const requestKind = kind === 'chat' || canFilterByKind ? kind : undefined
+    void this.send('list-request', {
+      requestId,
+      ...(requestKind ? { kind: requestKind } : {}),
+    }).catch((error) =>
       this.failList(requestId, error instanceof Error ? error.message : '发送资源清单请求失败'),
     )
     return withAbortSignal(pendingPromise, options.signal).finally(() => {

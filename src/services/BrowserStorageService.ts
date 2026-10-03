@@ -1,4 +1,8 @@
 import { Capacitor } from '@capacitor/core'
+import type {
+  IndexedDbResourceHealthStorage,
+  LegacyLibraryHistoryCleanup,
+} from '../storage/IndexedDbResourceHealthStorage'
 import type { TavernConflictPolicy } from './TavernBridgeProtocol'
 
 export interface BridgeTransferDraft {
@@ -122,6 +126,10 @@ const HIDE_CHAT_DISPLAY_REGEX_KEY = 'srl.library.hideChatDisplayRegex'
 const HIDE_CHARACTER_ASSETS_KEY = 'srl.library.hideCharacterAssets'
 
 const BLUR_THUMBNAILS_KEY = 'srl.library.blurThumbnails'
+const AUTO_DOWNLOAD_DISCORD_SHARE_LINKS_KEY = 'srl.library.autoDownloadDiscordShareLinks'
+const PERSIST_RESOURCE_VERSION_MATCH_CACHE_KEY = 'srl.library.persistResourceVersionMatchCache'
+const SKIP_VERSION_COMPARISON_ON_IMPORT_KEY = 'srl.import.skipVersionComparison'
+const SAME_NAME_VERSION_CANDIDATES_KEY = 'srl.library.sameNameVersionCandidates'
 const MOBILE_CARD_ORIENTATION_KEY = 'srl.library.mobileCardOrientation'
 const MOBILE_CARD_FIT_MODE_KEY = 'srl.library.mobileCardFitMode'
 const RESOURCE_CARD_HEIGHT_MODE_KEY = 'srl.library.uniformResourceCardHeight'
@@ -161,6 +169,29 @@ const PREVIEW_POLICY_EVENT = 'srl-preview-policy-change'
 const SEARCH_HISTORY_LIMIT = 10
 
 export class BrowserStorageService {
+  private readonly maintenance?: Pick<
+    IndexedDbResourceHealthStorage,
+    'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory'
+  >
+
+  constructor(
+    maintenance?: Pick<
+      IndexedDbResourceHealthStorage,
+      'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory'
+    >,
+  ) {
+    this.maintenance = maintenance
+  }
+
+  async legacyLibraryHistoryCleanup(): Promise<LegacyLibraryHistoryCleanup> {
+    return this.maintenance?.legacyLibraryHistoryCleanup() ?? { records: [], bytes: 0 }
+  }
+
+  async clearLegacyLibraryHistory(plan: LegacyLibraryHistoryCleanup): Promise<number> {
+    if (!this.maintenance) throw new Error('本机存储维护未初始化')
+    return this.maintenance.clearLegacyLibraryHistory(plan)
+  }
+
   exportStitchWork(): {
     draft?: PresetStitchDraft
     checkpoint?: PresetStitchDraft
@@ -229,6 +260,10 @@ export class BrowserStorageService {
       showManuallyBoundResources: this.getShowManuallyBoundResources(),
       searchHistory: this.getSearchHistory(),
       blurThumbnails: this.getBlurThumbnails(),
+      autoDownloadDiscordShareLinks: this.getAutoDownloadDiscordShareLinks(),
+      persistResourceVersionMatchCache: this.getPersistResourceVersionMatchCache(),
+      skipVersionComparisonOnImport: this.getSkipVersionComparisonOnImport(),
+      sameNameVersionCandidates: this.getSameNameVersionCandidates(),
       mobileCardOrientation: this.getMobileCardOrientation(),
       mobileCardFitMode: this.getMobileCardFitMode(),
       resourceCardHeightMode: this.getResourceCardHeightMode(),
@@ -256,6 +291,10 @@ export class BrowserStorageService {
     this.setHideChatDisplayRegex(value?.hideChatDisplayRegex !== false)
     this.setShowManuallyBoundResources(value?.showManuallyBoundResources !== false)
     this.setBlurThumbnails(value?.blurThumbnails !== false)
+    this.setAutoDownloadDiscordShareLinks(value?.autoDownloadDiscordShareLinks === true)
+    this.setPersistResourceVersionMatchCache(value?.persistResourceVersionMatchCache !== false)
+    this.setSkipVersionComparisonOnImport(value?.skipVersionComparisonOnImport === true)
+    this.setSameNameVersionCandidates(value?.sameNameVersionCandidates === true)
     this.setMobileCardOrientation(value?.mobileCardOrientation)
     this.setMobileCardFitMode(value?.mobileCardFitMode ?? value?.mobileLandscapeFitMode)
     this.setResourceCardHeightMode(
@@ -553,6 +592,70 @@ export class BrowserStorageService {
       localStorage.setItem(BLUR_THUMBNAILS_KEY, String(enabled))
     } catch {
       // 缩略图模糊偏好写入失败时，不影响当前会话继续使用。
+    }
+  }
+
+  getAutoDownloadDiscordShareLinks(): boolean {
+    try {
+      return localStorage.getItem(AUTO_DOWNLOAD_DISCORD_SHARE_LINKS_KEY) === 'true'
+    } catch {
+      return false
+    }
+  }
+
+  setAutoDownloadDiscordShareLinks(enabled: boolean): void {
+    try {
+      localStorage.setItem(AUTO_DOWNLOAD_DISCORD_SHARE_LINKS_KEY, String(enabled))
+    } catch {
+      // 分享下载偏好写入失败时仍在当前会话生效。
+    }
+  }
+
+  getPersistResourceVersionMatchCache(): boolean {
+    try {
+      return localStorage.getItem(PERSIST_RESOURCE_VERSION_MATCH_CACHE_KEY) !== 'false'
+    } catch {
+      return true
+    }
+  }
+
+  setPersistResourceVersionMatchCache(enabled: boolean): void {
+    try {
+      localStorage.setItem(PERSIST_RESOURCE_VERSION_MATCH_CACHE_KEY, String(enabled))
+    } catch {
+      // 持久化偏好写入失败时仍在当前会话使用默认缓存策略。
+    }
+  }
+
+  getSameNameVersionCandidates(): boolean {
+    try {
+      return localStorage.getItem(SAME_NAME_VERSION_CANDIDATES_KEY) === 'true'
+    } catch {
+      return false
+    }
+  }
+
+  setSameNameVersionCandidates(enabled: boolean): void {
+    try {
+      localStorage.setItem(SAME_NAME_VERSION_CANDIDATES_KEY, String(enabled))
+    } catch {
+      /* 当前会话仍使用受控偏好。 */
+    }
+  }
+
+  getSkipVersionComparisonOnImport(): boolean {
+    try {
+      return localStorage.getItem(SKIP_VERSION_COMPARISON_ON_IMPORT_KEY) === 'true'
+    } catch {
+      return false
+    }
+  }
+
+  setSkipVersionComparisonOnImport(enabled: boolean): void {
+    try {
+      localStorage.setItem(SKIP_VERSION_COMPARISON_ON_IMPORT_KEY, String(enabled))
+    } catch {
+      // 导入性能偏好写入失败时仍按当前会话设置执行。
     }
   }
 

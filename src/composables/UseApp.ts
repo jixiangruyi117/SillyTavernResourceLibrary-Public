@@ -6,18 +6,17 @@ import { useNativeResourceExport } from '../composables/UseNativeResourceExport'
 import { useRecycleBin } from '../composables/UseRecycleBin'
 import { useResourceVersions } from '../composables/UseResourceVersions'
 import { useSearchIndex } from '../composables/UseSearchIndex'
-import { isAndroidApk } from '../utils/CapacitorDetection'
+import { isCapacitorApp as isAndroidApk } from '../utils/CapacitorDetection'
 import { browserStorageService, resourceService } from '../core/AppContainer'
 import { noticeCenter, type NoticeType } from '../core/NoticeCenter'
+import { taskCenter } from '../core/TaskCenter'
 import { getPerformanceMonitorVisible } from '../core/PerformanceMonitor'
 import type { StorageHealth } from '../services/BrowserStorageService'
-import { DEFAULT_HISTORY_SNAPSHOT_LIMIT } from '../services/HistoryService'
 import type { ResourceVersionView } from '../services/ResourceService'
 import { type NativeResourceStorageInfo } from '../storage/NativeResourceFileMirror'
 import type { FilterValue, SortValue } from '../types/AppView'
 import type { PreparedRestore, RestoreMode, RestoreReport } from '../types/Backup'
 import type { ImportVersionCandidate, ImportVersionComparison } from '../types/Import'
-import type { BackupRecord } from '../types/Resource'
 import {
   isExtractedCharacterAsset,
   type Category,
@@ -41,7 +40,11 @@ import { useLibraryQueryView } from './UseLibraryQueryView'
 import { useLibraryRefresh } from './UseLibraryRefresh'
 import { useLibraryResourceActions } from './UseLibraryResourceActions'
 import { useLibraryWorkspaceRecovery } from './UseLibraryWorkspaceRecovery'
-import type { SharedFileBatch } from '../utils/ShareTargetIntake'
+import {
+  downloadSharedDiscordAttachment,
+  shouldAutoResumeSharedImport,
+  type SharedFileBatch,
+} from '../utils/ShareTargetIntake'
 export type { FilterValue, SortValue } from '../types/AppView'
 
 export function useApp() {
@@ -117,6 +120,7 @@ export function useApp() {
     handleBrowserPopState,
     handleMobileFocus,
   } = useLibraryNavigation(() => ({
+    openSharedImport,
     activeResourceIds,
     isNativeApk,
     WORKSPACE_RECOVERY_KEY,
@@ -148,6 +152,8 @@ export function useApp() {
     isVersionRecognitionOpen,
     isVaultPanelOpen,
     openImportChooser,
+    openLinkImportPanel,
+    isBusy,
     resources,
     openResourceDetail,
     openRestorePanel,
@@ -208,17 +214,21 @@ export function useApp() {
     linkImportPreview,
     handleImport,
     handleTavernBackupImport,
+    handleLibraryBackupImport,
+    handleResourceArchiveImport,
     handleSystemFileDragOver,
     handleSystemFileDragLeave,
     handleSystemFileDrop,
     handleLinkImport,
-    closeImportChooser,
+    closeImportChooser: closeImportChooserBase,
     openLinkImportPanel,
     openImportChooser,
     openFileImportPicker,
+    openResourceArchivePicker,
+    openLibraryBackupPicker,
     openTavernBackupPicker,
     importResourceFiles,
-    handleVersionImportDecision,
+    handleVersionImportDecision: handleVersionImportDecisionBase,
     handleSharedImportChoice,
   } = useLibraryImport(() => ({
     pendingBackupImport,
@@ -236,6 +246,8 @@ export function useApp() {
     isFeatureHubOpen,
     fileImportInput,
     tavernBackupInput,
+    resourceArchiveInput,
+    libraryBackupInput,
     openRestorePanel,
     handleRestoreInspect,
     extractCharacterAssets,
@@ -243,6 +255,9 @@ export function useApp() {
     LARGE_IMPORT_BYTES,
     backupRecommended,
     hideCharacterAssets,
+    persistResourceVersionMatchCache,
+    skipVersionComparisonOnImport,
+    sameNameVersionCandidates,
     showManuallyBoundResources,
     refreshStorageHealth,
     isVersionImportBusy,
@@ -252,18 +267,16 @@ export function useApp() {
   const {
     refreshStorageHealth,
     clearNativeTemporaryStorage,
+    legacyLibraryHistory,
+    isClearingLegacyLibraryHistory,
+    refreshLegacyLibraryHistory,
+    clearLegacyLibraryHistory,
     requestPersistentStorage,
-    loadHistorySnapshots,
-    handleHistorySnapshotLimit,
-    captureHistory,
     openVaultPanel,
     handleVaultUnlock,
     handleVaultEnable,
     handleVaultDisable,
     handleVaultLock,
-    handleCreateSnapshot,
-    handleRestoreSnapshot,
-    handleDeleteSnapshot,
   } = useLibraryProtection(() => ({
     storageHealth,
     nativeStorageInfo,
@@ -271,9 +284,6 @@ export function useApp() {
     isClearingNativeCache,
     showNotice,
     isRequestingPersistence,
-    historySnapshots,
-    historySnapshotLimit,
-    settingsPanelKey,
     categories,
     isDataProtectionOpen,
     isVaultPanelOpen,
@@ -288,11 +298,11 @@ export function useApp() {
     resources,
     recycleBinEntries,
     recycleUndoEntry,
-    clearBrowsingState,
   }))
 
   const pendingSharedFileBatch = shallowRef<SharedFileBatch>()
   let pendingSharedBackupBatch: SharedFileBatch | undefined
+  const deferredSharedImportBatches = new Map<string, SharedFileBatch>()
 
   async function acknowledgeSharedBackupAfterRestore(): Promise<void> {
     const batch = pendingSharedBackupBatch
@@ -306,12 +316,41 @@ export function useApp() {
     }
   }
 
+  async function cancelPendingSharedBatch(batch: SharedFileBatch): Promise<void> {
+    try {
+      await batch.setRoute?.(undefined)
+      await batch.acknowledge()
+    } catch {
+      showNotice('取消未完成，系统暂存文件未能清理；请重试取消。', 9000)
+      isImportChooserOpen.value = true
+      return
+    }
+    if (pendingSharedFileBatch.value === batch) pendingSharedFileBatch.value = undefined
+    if (pendingSharedBackupBatch === batch) pendingSharedBackupBatch = undefined
+  }
+
+  async function closeImportChooser(): Promise<void> {
+    closeImportChooserBase()
+    const batch = pendingSharedFileBatch.value
+    if (!batch || batch.discordAttachment) return
+    await cancelPendingSharedBatch(batch)
+  }
+
+  async function closeRestorePanel(): Promise<void> {
+    const batch = pendingSharedBackupBatch
+    await closeRestorePanelBase()
+    if (!batch || isRestorePanelOpen.value) return
+    await cancelPendingSharedBatch(batch)
+  }
+
   const {
     handleExport,
     openRestorePanel,
     handleRestoreInspect,
     handleRestoreConfirm,
-    closeRestorePanel,
+    closeRestorePanel: closeRestorePanelBase,
+    isRestorePreflighting,
+    stopRestoreInspection,
   } = useLibraryArchive(() => ({
     isExporting,
     categories,
@@ -320,7 +359,6 @@ export function useApp() {
     backupRecommended,
     isExportPanelOpen,
     refreshStorageHealth,
-    historySnapshotLimit,
     reloadAppearanceSettings,
     searchHistory,
     cabinetResourceIds,
@@ -334,9 +372,14 @@ export function useApp() {
     storageHealth,
     LARGE_ARCHIVE_BYTES,
     isRestoring,
+    isRestorePreflighting,
+    stopRestoreInspection,
     resources,
-    captureHistory,
     loadLibrary,
+    onRestoreImportCancelled: async () => {
+      const batch = pendingSharedBackupBatch ?? pendingSharedFileBatch.value
+      if (batch) await cancelPendingSharedBatch(batch)
+    },
     onRestoreImportComplete: acknowledgeSharedBackupAfterRestore,
   }))
 
@@ -398,20 +441,210 @@ export function useApp() {
 
   const tavernBackupInput = useTemplateRef<HTMLInputElement>('tavernBackupInput')
 
+  const resourceArchiveInput = useTemplateRef<HTMLInputElement>('resourceArchiveInput')
+
+  const libraryBackupInput = useTemplateRef<HTMLInputElement>('libraryBackupInput')
+
   const pendingVersionImports = ref<ImportVersionCandidate[]>([])
 
   const pendingBackupImport = shallowRef<File>()
 
   const sharedAppImportFiles = shallowRef<File[]>([])
+  const autoAttemptedDiscordTokens = new Set<string>()
+  const queuedSharedFileBatches: SharedFileBatch[] = []
+  const nativeDownloadAttempts = new Map<string, { workId?: string; taskId: string }>()
+  const nativeImportResults = new Map<string, Set<string>>()
 
-  function receiveSharedFileBatch(batch: SharedFileBatch): void {
+  // Retain only lightweight recent navigation identities; never evict active transfers.
+  function trimNativeShareHistory(): void {
+    const tasks = new Map(taskCenter.list().map((task) => [task.operationId, task.status]))
+    for (const [token, attempt] of nativeDownloadAttempts) {
+      if (nativeDownloadAttempts.size <= 100) break
+      if (tasks.get(attempt.taskId) !== 'running') {
+        nativeDownloadAttempts.delete(token)
+        taskCenter.dismiss(attempt.taskId)
+      }
+    }
+    while (nativeImportResults.size > 100)
+      nativeImportResults.delete(nativeImportResults.keys().next().value!)
+  }
+
+  function matchesSharedToken(batch: SharedFileBatch, token: string): boolean {
+    return batch.recoveryId === token || Boolean(batch.nativeShareTokens?.includes(token))
+  }
+
+  async function openSharedImport(token: string): Promise<void> {
+    if (!/^discord-url-[a-f0-9-]{36}$/u.test(token)) return
+    if (
+      isBusy.value ||
+      vaultStatus.value.locked ||
+      pendingVersionImports.value.length ||
+      pendingBackupImport.value ||
+      pendingSharedBackupBatch ||
+      sharedAppImportFiles.value.length
+    ) {
+      showNotice('请先完成当前导入或解锁资源库，再查看此附件。')
+      return
+    }
+    function showImported(): boolean {
+      const imported = nativeImportResults.get(token)
+      if (!imported?.size || pendingSharedFileBatch.value) return false
+      selectMobileDestination('all')
+      currentPage.value = 1
+      activeResourceIds.value = new Set(imported)
+      isImportChooserOpen.value = false
+      return true
+    }
+    if (showImported()) return
+    await consumeSharedFiles()
+    if (showImported()) return
+    const pending = pendingSharedFileBatch.value
+    if (isBusy.value || (pending && !matchesSharedToken(pending, token))) {
+      showNotice('当前还有其他导入，请完成后再查看此附件。')
+      return
+    }
+    const index = queuedSharedFileBatches.findIndex((batch) => matchesSharedToken(batch, token))
+    if (!pending && index >= 0)
+      activateSharedFileBatch(queuedSharedFileBatches.splice(index, 1)[0]!)
+    if (pendingSharedFileBatch.value && matchesSharedToken(pendingSharedFileBatch.value, token)) {
+      isFeatureHubOpen.value = false
+      isImportChooserOpen.value = true
+      return
+    }
+    const task = taskCenter
+      .list()
+      .find((item) => item.operationId === nativeDownloadAttempts.get(token)?.taskId)
+    showNotice(
+      task?.status === 'running'
+        ? '此附件仍在下载，完成后可继续导入。'
+        : '此分享已处理或暂存已过期，未打开其他附件。',
+    )
+  }
+
+  function handleNativeDownloadState(event: Event): boolean {
+    const detail = (event as CustomEvent<{ token?: string; workId?: string; name?: string }>).detail
+    const token = detail?.token
+    if (!token || !/^discord-url-[a-f0-9-]{36}$/u.test(token)) return false
+    const started = event.type === 'srl:native-share-download-started'
+    let attempt = nativeDownloadAttempts.get(token)
+    if (!started && attempt?.workId && detail.workId && attempt.workId !== detail.workId)
+      return false
+    if (started && attempt && attempt.workId === detail.workId) return true
+    if (!attempt || started) {
+      attempt = { workId: detail.workId, taskId: 'native-download:' + token }
+      nativeDownloadAttempts.set(token, attempt)
+      taskCenter.start({
+        operationId: attempt.taskId,
+        name: detail.name || 'Discord 附件下载',
+        phase: '等待网络并下载',
+        background: true,
+        action: { label: '查看附件', run: () => openSharedImport(token) },
+      })
+    }
+    if (started) {
+      for (let index = queuedSharedFileBatches.length - 1; index >= 0; index -= 1)
+        if (queuedSharedFileBatches[index]?.discordAttachment?.cleanupToken === token)
+          queuedSharedFileBatches.splice(index, 1)
+      if (pendingSharedFileBatch.value?.discordAttachment?.cleanupToken === token) {
+        pendingSharedFileBatch.value = undefined
+        isImportChooserOpen.value = false
+      }
+    } else if (event.type === 'srl:native-share-download-completed') {
+      taskCenter.update(attempt.taskId, { phase: '下载完成，可继续导入' })
+      taskCenter.complete(attempt.taskId)
+    } else {
+      taskCenter.fail(attempt.taskId, '附件下载未完成，打开附件可查看原因并重试。')
+    }
+    trimNativeShareHistory()
+    return true
+  }
+
+  function activateSharedFileBatch(batch: SharedFileBatch): void {
     pendingSharedFileBatch.value = batch
     isLinkImportOpen.value = false
-    if (batch.route) {
+    const attachment = batch.discordAttachment
+    if (
+      attachment &&
+      autoDownloadDiscordShareLinks.value &&
+      !attachment.error &&
+      !autoAttemptedDiscordTokens.has(attachment.cleanupToken)
+    ) {
+      autoAttemptedDiscordTokens.add(attachment.cleanupToken)
+      isImportChooserOpen.value = false
+      void downloadDiscordAttachment(true)
+      return
+    }
+    if (shouldAutoResumeSharedImport(batch)) {
       void chooseSharedImportRoute(batch.route)
       return
     }
+    isFeatureHubOpen.value = false
     isImportChooserOpen.value = true
+  }
+
+  function receiveSharedFileBatch(batch: SharedFileBatch): void {
+    if (batch.nativeShareTokens?.length && batch.files.length) {
+      const originalComplete = batch.onItemComplete
+      batch.onItemComplete = async (result) => {
+        await originalComplete?.(result)
+        if (result.status !== 'imported' && result.status !== 'duplicate') return
+        for (const token of batch.nativeShareTokens ?? []) {
+          const ids = nativeImportResults.get(token) ?? new Set<string>()
+          ids.add(result.resource.id)
+          nativeImportResults.set(token, ids)
+        }
+        trimNativeShareHistory()
+      }
+    }
+    if (pendingSharedFileBatch.value || isBusy.value) {
+      queuedSharedFileBatches.push(batch)
+      return
+    }
+    activateSharedFileBatch(batch)
+  }
+
+  watch([isBusy, pendingSharedFileBatch], ([busy, pending]) => {
+    if (busy || pending || !queuedSharedFileBatches.length) return
+    activateSharedFileBatch(queuedSharedFileBatches.shift()!)
+  })
+
+  async function downloadSharedDiscordAttachmentNow(): Promise<void> {
+    await downloadDiscordAttachment(false)
+  }
+
+  async function downloadDiscordAttachment(automatic: boolean): Promise<void> {
+    const batch = pendingSharedFileBatch.value
+    if (!batch?.discordAttachment) return
+    try {
+      await downloadSharedDiscordAttachment(batch.discordAttachment)
+      if (pendingSharedFileBatch.value === batch) {
+        pendingSharedFileBatch.value = undefined
+        isImportChooserOpen.value = false
+      }
+      if (!automatic) {
+        showNotice('已加入 Discord 附件下载队列；完成后将自动进入资源导入。', 5000)
+      }
+    } catch (error) {
+      if (automatic) isImportChooserOpen.value = true
+      showNotice(error instanceof Error ? error.message : '无法开始下载 Discord 附件', 9000)
+    }
+  }
+
+  async function cancelSharedDiscordAttachment(): Promise<void> {
+    const batch = pendingSharedFileBatch.value
+    if (!batch?.discordAttachment) return
+    autoAttemptedDiscordTokens.delete(batch.discordAttachment.cleanupToken)
+    try {
+      await batch.acknowledge()
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '清理分享链接失败', 9000)
+      return
+    }
+    if (pendingSharedFileBatch.value === batch) {
+      pendingSharedFileBatch.value = undefined
+      isImportChooserOpen.value = false
+    }
+    window.dispatchEvent(new Event('srl:native-share'))
   }
 
   async function chooseSharedImportRoute(
@@ -422,11 +655,28 @@ export function useApp() {
     // The selected route may open a restore/editor panel or a long-running task.
     // Close the route sheet first so progress and confirmation UI cannot stack on it.
     isImportChooserOpen.value = false
+    let savedRoute = false
     try {
-      const outcome = await handleSharedImportChoice(batch.files, route)
-      if (!outcome) return
+      if (!batch.route && batch.setRoute) {
+        await batch.setRoute(route)
+        savedRoute = true
+      }
+      await batch.markImportStarted?.()
+      const outcome = await handleSharedImportChoice(batch.files, route, batch)
+      if (!outcome) {
+        await batch.onFailure?.('资源未导入；可能已取消、文件结构不支持或需要另选导入用途。')
+        if (batch.onFailure) {
+          pendingSharedFileBatch.value = undefined
+          return
+        }
+        if ((savedRoute || batch.routeWasPersisted) && batch.setRoute)
+          await batch.setRoute(undefined)
+        isImportChooserOpen.value = true
+        return
+      }
       if (outcome === 'thirdPartyApp') return
       if (outcome === 'restore') {
+        if (pendingSharedFileBatch.value !== batch) return
         // Keep the original shared ZIP until the restore is committed. If Android
         // recreates the WebView while the user is choosing a restore mode, the
         // staged share can be recognized and preflighted again. The inspected
@@ -435,10 +685,34 @@ export function useApp() {
         pendingSharedBackupBatch = batch
         return
       }
+      const waitingForVersionDecision = Boolean(
+        batch.recoveryId &&
+        pendingVersionImports.value.some(
+          (candidate) => candidate.shareRecoveryId === batch.recoveryId,
+        ),
+      )
+      if (waitingForVersionDecision && batch.recoveryId) {
+        deferredSharedImportBatches.set(batch.recoveryId, batch)
+        pendingSharedFileBatch.value = undefined
+        return
+      }
       await batch.acknowledge()
     } catch (error) {
+      if (batch.onFailure) {
+        await batch.onFailure(error instanceof Error ? error.message : '云端资源导入或确认失败')
+        pendingSharedFileBatch.value = undefined
+        return
+      }
+      if ((savedRoute || batch.routeWasPersisted) && batch.setRoute) {
+        try {
+          await batch.setRoute(undefined)
+        } catch {
+          // Keep the original processing error visible; stale route hints expire with the share.
+        }
+      }
       const reason = error instanceof Error ? `：${error.message}` : ''
       showNotice(`分享文件处理失败${reason}；原分享文件仍保留，可重新选择用途。`, 9000)
+      isImportChooserOpen.value = true
       return
     }
     pendingSharedFileBatch.value = undefined
@@ -465,6 +739,32 @@ export function useApp() {
   const activeVersionImport = computed<ImportVersionCandidate | undefined>(
     () => pendingVersionImports.value[0],
   )
+
+  async function handleVersionImportDecision(decision: {
+    action: 'activate' | 'archive' | 'replace' | 'independent' | 'skip'
+    targetId?: string
+    note?: string
+  }): Promise<void> {
+    const pending = activeVersionImport.value
+    await handleVersionImportDecisionBase(decision)
+    if (!pending?.shareRecoveryId) return
+    if (pendingVersionImports.value.includes(pending)) return
+    const recoveryId = pending.shareRecoveryId
+    if (pendingVersionImports.value.some((candidate) => candidate.shareRecoveryId === recoveryId))
+      return
+    const batch = deferredSharedImportBatches.get(recoveryId)
+    if (!batch) return
+    try {
+      await batch.acknowledge()
+    } catch {
+      pendingSharedFileBatch.value = batch
+      isImportChooserOpen.value = true
+      showNotice('导入已完成，但系统分享暂存未清理；可以重试清理或保留后续处理。', 9000)
+      return
+    }
+    deferredSharedImportBatches.delete(recoveryId)
+    if (pendingSharedFileBatch.value === batch) pendingSharedFileBatch.value = undefined
+  }
 
   watch(activeVersionImport, () => {
     versionImportComparison.value = undefined
@@ -626,11 +926,7 @@ export function useApp() {
 
   const vaultStatus = ref<VaultStatus>({ enabled: false, locked: false })
 
-  const historySnapshots = shallowRef<BackupRecord[]>([])
-
   restoreWorkspaceSnapshot()
-
-  const historySnapshotLimit = ref(DEFAULT_HISTORY_SNAPSHOT_LIMIT)
 
   const lastFullBackupAt = ref(browserStorageService.getLastFullBackupAt())
 
@@ -647,6 +943,10 @@ export function useApp() {
     mobileCardFitMode,
     resourceCardHeightMode,
     noImageResourceCoverMode,
+    autoDownloadDiscordShareLinks,
+    persistResourceVersionMatchCache,
+    skipVersionComparisonOnImport,
+    sameNameVersionCandidates,
     uiFontScale,
     previewPolicy,
     customUiCss,
@@ -661,6 +961,10 @@ export function useApp() {
     applyMobileCardOrientation,
     applyResourceCardHeightMode,
     applyNoImageResourceCoverMode,
+    applyAutoDownloadDiscordShareLinks,
+    applyPersistResourceVersionMatchCache: setPersistResourceVersionMatchCache,
+    applySkipVersionComparisonOnImport,
+    applySameNameVersionCandidates,
     applyMobileCardFitMode,
     applyUiFontScale,
     syncCustomUiCss,
@@ -672,6 +976,19 @@ export function useApp() {
     applyExtractCharacterAssets,
     reloadAppearanceSettings,
   } = useAppearanceSettings(showNotice)
+
+  function applyPersistResourceVersionMatchCache(enabled: boolean): void {
+    setPersistResourceVersionMatchCache(enabled)
+    if (!enabled) {
+      void resourceService.clearVersionMatchFingerprintCache().catch((error) => {
+        showNotice(
+          error instanceof Error
+            ? `版本比对缓存未能清理：${error.message}`
+            : '版本比对缓存未能清理',
+        )
+      })
+    }
+  }
 
   const {
     searchQuery,
@@ -698,6 +1015,7 @@ export function useApp() {
     organizingResource,
     isOrganizing,
     isImportChooserOpen,
+    closeImportChooser,
     isSettingsOpen,
     isDuplicateCleanerOpen,
     isSimilarNameGroupsOpen,
@@ -903,9 +1221,10 @@ export function useApp() {
       if (notice.value === message) notice.value = ''
     }, duration)
   }
-  const { scheduleLibraryMaintenance } = useLibraryLifecycle({
+  const { scheduleLibraryMaintenance, consumeSharedFiles } = useLibraryLifecycle({
     showNotice,
     receiveSharedFileBatch,
+    handleNativeDownloadState,
     loadResources,
     refreshStorageHealth,
     vaultStatus,
@@ -913,7 +1232,6 @@ export function useApp() {
     searchHistory,
     isVaultPanelOpen,
     loadLibrary,
-    loadHistorySnapshots,
     loadRecycleBin,
     handleNativeDeepLink,
     isOverlayOpen,
@@ -944,10 +1262,16 @@ export function useApp() {
   })
   return {
     layoutMode,
+    autoDownloadDiscordShareLinks,
+    persistResourceVersionMatchCache,
+    skipVersionComparisonOnImport,
+    sameNameVersionCandidates,
     mobileCardOrientation,
     mobileCardFitMode,
     resourceCardHeightMode,
     noImageResourceCoverMode,
+    applyResourceCardHeightMode,
+    applyNoImageResourceCoverMode,
     isBatchMode,
     vaultStatus,
     isSystemFileDropActive,
@@ -982,8 +1306,12 @@ export function useApp() {
     openImportChooser,
     handleImport,
     handleTavernBackupImport,
+    handleLibraryBackupImport,
+    handleResourceArchiveImport,
     pendingSharedFileBatch,
     chooseSharedImportRoute,
+    downloadSharedDiscordAttachmentNow,
+    cancelSharedDiscordAttachment,
     sharedAppImportFiles,
     handleSharedAppFilesConsumed,
     isImportChooserOpen,
@@ -991,6 +1319,8 @@ export function useApp() {
     closeImportChooser,
     openLinkImportPanel,
     openFileImportPicker,
+    openResourceArchivePicker,
+    openLibraryBackupPicker,
     openTavernBackupPicker,
     isLinkImportOpen,
     handleLinkImport,
@@ -1016,6 +1346,10 @@ export function useApp() {
     storageUsagePercent,
     isClearingNativeCache,
     clearNativeTemporaryStorage,
+    legacyLibraryHistory,
+    isClearingLegacyLibraryHistory,
+    refreshLegacyLibraryHistory,
+    clearLegacyLibraryHistory,
     formatBackupDate,
     lastFullBackupAt,
     duplicateGroupCounts,
@@ -1086,8 +1420,6 @@ export function useApp() {
     applyLayoutMode,
     applyMobileCardOrientation,
     applyMobileCardFitMode,
-    applyResourceCardHeightMode,
-    applyNoImageResourceCoverMode,
     applyUiFontScale,
     saveCustomUiCss,
     handleLibraryChanged,
@@ -1148,8 +1480,6 @@ export function useApp() {
     showManuallyBoundResources,
     showPerformanceMonitor,
     hiddenCharacterAssetCount,
-    historySnapshotLimit,
-    historySnapshots,
     applyRemotePreviewPolicy,
     applyScriptPreviewPolicy,
     applyGreetingPreviewPreload,
@@ -1159,8 +1489,11 @@ export function useApp() {
     applyHideChatDisplayRegex,
     applyShowManuallyBoundResources,
     applyBlurThumbnails,
+    applyAutoDownloadDiscordShareLinks,
+    applyPersistResourceVersionMatchCache,
+    applySkipVersionComparisonOnImport,
+    applySameNameVersionCandidates,
     updatePerformanceMonitorVisibility,
-    handleHistorySnapshotLimit,
     openFolderSettings,
     openVaultSettings,
     openVersionRecognition,
@@ -1176,6 +1509,8 @@ export function useApp() {
     preparedRestore,
     restoreReport,
     isRestoring,
+    isRestorePreflighting,
+    stopRestoreInspection,
     restoreEntry,
     completedRestoreMode,
     handleRestoreInspect,
@@ -1187,9 +1522,6 @@ export function useApp() {
     handleVaultEnable,
     handleVaultDisable,
     handleVaultLock,
-    handleCreateSnapshot,
-    handleRestoreSnapshot,
-    handleDeleteSnapshot,
     isVersionRecognitionOpen,
     refreshLibraryAndOpenVersions,
   }

@@ -127,8 +127,14 @@ export class TavernDirectoryService {
     return { file, data: await parse(file) }
   }
 
-  async listResources(): Promise<TavernResourceItem[]> {
-    this.items.clear()
+  async listResources(kind?: 'character' | 'userPersona'): Promise<TavernResourceItem[]> {
+    if (kind) {
+      for (const [id, entry] of this.items) {
+        if (entry.item.kind === kind) this.items.delete(id)
+      }
+    } else {
+      this.items.clear()
+    }
     const add = (
       kind: TavernResourceKind,
       name: string,
@@ -146,6 +152,44 @@ export class TavernDirectoryService {
         detail: path,
       }
       this.items.set(id, { item, path, value, parentKind })
+    }
+    if (kind === 'character') {
+      for (const folder of FOLDERS.character ?? []) {
+        for (const entry of await this.storage.list(folder)) {
+          if (entry.directory || entry.name.startsWith('.') || !/\.png$/iu.test(entry.name))
+            continue
+          add('character', nameOf(entry.name), `${folder}/${entry.name}`)
+        }
+      }
+      return [...this.items.values()]
+        .filter(({ item }) => item.kind === kind)
+        .map(({ item }) => ({ ...item }))
+    }
+    if (kind === 'userPersona') {
+      const { data } = await this.settings()
+      for (const [avatarId, name] of Object.entries(object(data.personas))) {
+        if (typeof name !== 'string') continue
+        const path = `persona/${avatarId}`
+        const item: TavernResourceItem = {
+          id: `userPersona:${avatarId}`,
+          kind: 'userPersona',
+          name,
+          fileName: `${safeName(name)}.json`,
+          detail: path,
+        }
+        this.items.set(item.id, {
+          item,
+          path,
+          value: {
+            personas: { [avatarId]: name },
+            persona_descriptions: { [avatarId]: object(data.persona_descriptions)[avatarId] ?? {} },
+            default_persona: data.default_persona === avatarId ? avatarId : undefined,
+          },
+        })
+      }
+      return [...this.items.values()]
+        .filter(({ item }) => item.kind === kind)
+        .map(({ item }) => ({ ...item }))
     }
     for (const [rawKind, folders] of Object.entries(FOLDERS)) {
       const kind = rawKind as TavernResourceKind

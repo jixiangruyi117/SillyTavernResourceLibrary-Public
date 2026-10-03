@@ -78,7 +78,7 @@ final class OfficialAppWebViewClient extends BridgeWebViewClient {
     static URL buildHostedPackageUrl(URL localUrl, String assetOrigin) throws IOException {
         if (assetOrigin == null || assetOrigin.isEmpty()) throw new IOException("APP package origin is not configured");
         String path = localUrl.getPath();
-        if (path == null || !path.matches("/official-apps/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\\.srlapp")) {
+        if (path == null || java.util.Arrays.stream(path.split("/", -1)).anyMatch(segment -> segment.equals(".") || segment.equals("..")) || !path.matches("/official-apps/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\\.srlapp")) {
             throw new IOException("Invalid APP package path");
         }
         java.net.URI origin = java.net.URI.create(assetOrigin);

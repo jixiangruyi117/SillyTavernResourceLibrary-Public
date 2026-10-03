@@ -77,6 +77,52 @@ describe('ResourceSourceLinks Discord directory lifecycle', () => {
     wrapper.unmount()
   })
 
+  it('loads linked posts even when the card already has a GitHub link and refreshes after a new binding', async () => {
+    runtime.listSummariesForResource.mockResolvedValue([])
+    const wrapper = mount(ResourceSourceLinks, {
+      props: {
+        resourceId: 'resource-1',
+        links: [
+          {
+            id: 'github-1',
+            type: 'github',
+            label: 'GitHub',
+            url: 'https://github.com/octocat/Hello-World',
+            createdAt: 1,
+          },
+        ],
+      },
+      global: {
+        stubs: { ResourceLinkAdvancedSettings: true, ResourceLinkRow: true, Teleport: true },
+      },
+    })
+    await flushPromises()
+    expect(runtime.listSummariesForResource).toHaveBeenCalledWith('resource-1')
+    expect(
+      wrapper
+        .findAll('.resource-source-platform__row')
+        .map((row) => row.text())
+        .join(' '),
+    ).not.toContain('Discord')
+    runtime.listSummariesForResource.mockResolvedValue([savedSourceSummary()])
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+    await flushPromises()
+    const discord = wrapper
+      .findAll('.resource-source-platform__row')
+      .find((row) => row.text().includes('Discord'))
+    expect(discord).toBeDefined()
+    await discord!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已保存的 Discord 来源')
+    expect(
+      wrapper
+        .findAll('.resource-source-platform__row')
+        .map((row) => row.text())
+        .join(' '),
+    ).toContain('GitHub')
+    wrapper.unmount()
+  })
+
   it('stores GitHub metadata when a GitHub source link is added', async () => {
     const wrapper = mount(ResourceSourceLinks, {
       props: { resourceId: 'resource-1', links: [] },

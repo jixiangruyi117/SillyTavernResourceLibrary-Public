@@ -40,6 +40,11 @@ export interface CommunitySourceStorage {
   listBindingsForSource(sourceId: string): Promise<ResourceSourceBinding[]>
   putBinding(binding: ResourceSourceBinding): Promise<void>
   deleteBinding(id: string): Promise<void>
+  /** Repair only binding rows; current resources are rechecked atomically before removal. */
+  repairInvalidResourceBindings?(
+    validResourceIds: ReadonlySet<string>,
+    galleryVersions: ReadonlyMap<string, number>,
+  ): Promise<number>
 
   exportAll(): Promise<CommunitySourceBackupData>
   mergeAll(data: CommunitySourceBackupData): Promise<void>

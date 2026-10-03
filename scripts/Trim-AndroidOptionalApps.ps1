@@ -17,11 +17,31 @@ foreach ($relative in $manifest.files) {
     $candidates.Add((Join-Path $publicRoot $relative))
 }
 $packageRoot = Join-Path $publicRoot 'official-apps'
+$requiredCatalogs = @(
+    "official-apps/$($manifest.shellVersion)/catalog.json",
+    "official-apps/api-$($manifest.hostApiVersion)/catalog.json"
+)
+$preinstalledPackages = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+if ($env:SRL_ANDROID_PREINSTALL_OFFICIAL_APPS -eq '1') {
+    $catalogPath = Join-Path $publicRoot "official-apps\$($manifest.shellVersion)\catalog.json"
+    if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) { throw 'Preinstalled APP catalog missing.' }
+    $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+    foreach ($app in $catalog.apps.PSObject.Properties) {
+        $relativePackage = ([string]$app.Value.url).TrimStart('/')
+        if ($relativePackage -notmatch "^official-apps/$([regex]::Escape($manifest.shellVersion))/$([regex]::Escape($app.Name))-[a-f0-9]{16}\.srlapp$" -or $relativePackage.Contains('..')) {
+            throw "Invalid preinstalled APP package URL: $($app.Value.url)"
+        }
+        [void]$preinstalledPackages.Add($relativePackage)
+    }
+}
 if (Test-Path -LiteralPath $packageRoot) {
     if ((Get-Item -LiteralPath $packageRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Package directory must not be a link.' }
     foreach ($item in Get-ChildItem -LiteralPath $packageRoot -Recurse) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Package assets must not be links.' }
-        if (-not $item.PSIsContainer -and $item.Extension -eq '.srlapp') { $candidates.Add($item.FullName) }
+        if (-not $item.PSIsContainer) {
+            $relativePath = $item.FullName.Substring($publicRoot.Length + 1).Replace('\', '/')
+            if ($relativePath -notin $requiredCatalogs -and -not $preinstalledPackages.Contains($relativePath)) { $candidates.Add($item.FullName) }
+        }
     }
 }
 # Validate the complete generated-file list before deleting any file.
@@ -38,7 +58,4 @@ foreach ($candidate in $candidates) {
     }
 }
 foreach ($candidate in $candidates) { Remove-Item -LiteralPath $candidate }
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Official APP build manifest was removed.' }
-$shellCatalog = Join-Path $packageRoot (Join-Path $manifest.shellVersion 'catalog.json')
-if (-not (Test-Path -LiteralPath $shellCatalog -PathType Leaf)) { throw 'Official APP shell catalog was removed.' }
 Write-Host "Excluded $($candidates.Count) optional APP files from the APK web assets."

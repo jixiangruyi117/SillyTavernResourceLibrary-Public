@@ -50,6 +50,91 @@ describe('IndexedDbResourceHealthStorage', () => {
     vi.unstubAllGlobals()
   })
 
+  it('clears only the confirmed whole-library history, preserving recycler, cloud records and resource versions', async () => {
+    await database.backupRecords.bulkPut(
+      [
+        'local-history',
+        'local-recycle-bin',
+        'local-recycle-bin-persona-version',
+        'github',
+        'local-history-copy',
+      ].map((adapter, index) => ({
+        id: adapter,
+        adapter,
+        createdAt: index,
+        objectKey: `${adapter}.zip`,
+        resourceCount: 1,
+        blob: new Blob(['old archive']),
+        size: 11,
+        encrypted: adapter === 'local-history',
+        encryptionIv: 'old-iv',
+      })),
+    )
+    await database.resourceVersions.put({ ...resource('version'), versionGroupId: 'current' })
+    await storage.save(resource('current'))
+    await database.settings.put({ id: 'history.snapshotLimit', value: 8, updatedAt: 1 })
+    const plan = await health.legacyLibraryHistoryCleanup()
+    expect(plan.records.map(({ id }) => id)).toEqual(['local-history'])
+    expect(await health.clearLegacyLibraryHistory(plan)).toBe(11)
+    expect(await database.backupRecords.count()).toBe(4)
+    expect(await database.resources.count()).toBe(1)
+    expect(await database.resourceVersions.count()).toBe(1)
+    expect(await database.settings.get('history.snapshotLimit')).toBeUndefined()
+  })
+
+  it('rejects a changed deletion scope atomically and accepts a freshly confirmed scope', async () => {
+    const record = {
+      id: 'old',
+      adapter: 'local-history',
+      createdAt: 1,
+      objectKey: 'old.zip',
+      resourceCount: 1,
+      size: 100,
+    }
+    await database.backupRecords.put(record)
+    const plan = await health.legacyLibraryHistoryCleanup()
+    await database.backupRecords.put({ ...record, id: 'another' })
+    await expect(health.clearLegacyLibraryHistory(plan)).rejects.toThrow('范围已变化')
+    expect(await database.backupRecords.count()).toBe(2)
+    await health.clearLegacyLibraryHistory(await health.legacyLibraryHistoryCleanup())
+    expect(await database.backupRecords.count()).toBe(0)
+  })
+
+  it('checks a vault migration checkpoint written by another connection before deletion', async () => {
+    await database.backupRecords.put({
+      id: 'old',
+      adapter: 'local-history',
+      createdAt: 1,
+      objectKey: 'old.zip',
+      resourceCount: 1,
+      size: 100,
+    })
+    const plan = await health.legacyLibraryHistoryCleanup()
+    const other = new AppDatabase(database.name)
+    try {
+      await other.settings.put({
+        id: 'local-vault-migration',
+        value: { status: 'paused' },
+        updatedAt: 1,
+      })
+      await expect(health.clearLegacyLibraryHistory(plan)).rejects.toThrow('保险库转换尚未完成')
+      expect(await database.backupRecords.get('old')).toBeDefined()
+      await other.settings.delete('local-vault-migration')
+      const otherHealth = new IndexedDbResourceHealthStorage(
+        other,
+        new IndexedDbResourceStorage(other),
+      )
+      const results = await Promise.allSettled([
+        health.clearLegacyLibraryHistory(plan),
+        otherHealth.clearLegacyLibraryHistory(plan),
+      ])
+      expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1)
+      expect(await database.backupRecords.count()).toBe(0)
+    } finally {
+      other.close()
+    }
+  })
+
   it('reports derived-index drift and repairs only the derived tables', async () => {
     const source = resource('source')
     await storage.save(source)

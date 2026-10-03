@@ -4,17 +4,23 @@ import type { ImportOptions } from '../types/ResourceOperations'
 import { RESOURCE_TYPE } from '../types/Resource'
 import { readChatArchive } from '../services/TavernChatArchiveCodec.mjs'
 import { hashBlob } from '../services/HashService'
+import { materializeNativeFile } from '../core/NativeFileSource'
 
 /** All receive/file-import entrances share this choice before any resource is written. */
 export async function confirmChatImports(
   files: File[],
   resources: ResourceService,
+  signal?: AbortSignal,
 ): Promise<ImportOptions | null> {
   const archives = files.filter((file) => /\.srlchat$/i.test(file.name))
   if (!archives.length) return {}
   const options: ImportOptions = { chatCharacterBindings: {}, saveChatCharacterHashes: [] }
   for (const file of archives) {
-    const { card, chat, avatar } = await readChatArchive(file)
+    signal?.throwIfAborted()
+    const { card, chat, avatar } = await readChatArchive(
+      await materializeNativeFile(file, { signal }),
+    )
+    signal?.throwIfAborted()
     const hash = await hashBlob(card)
     if (Object.hasOwn(options.chatCharacterBindings!, hash)) continue
     const match = await resources.findByContentHash(hash)

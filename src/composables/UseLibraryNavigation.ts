@@ -40,9 +40,12 @@ interface LibraryNavigationContext {
   isVersionRecognitionOpen: Ref<boolean, boolean>
   isVaultPanelOpen: Ref<boolean, boolean>
   openImportChooser: () => void
+  openLinkImportPanel: () => void
+  isBusy: Ref<boolean>
   resources: Ref<ResourceSummary[]>
   openResourceDetail: (resource: ResourceReference) => Promise<void>
-  openRestorePanel: (entry?: 'import' | 'export') => void
+  openSharedImport?: (token: string) => Promise<void>
+  openRestorePanel: (entry?: 'import' | 'export', resume?: boolean) => void
   cancelSearchInput: (event?: Event) => void
   saveCustomUiCss: (value: string) => void
   backStack: ReturnType<typeof useBackStack>
@@ -170,12 +173,25 @@ export function useLibraryNavigation(getContext: () => LibraryNavigationContext)
     }
     sessionStorage.removeItem('srl.native.deep-link')
     if (link.kind === 'backup') {
+      writeAppResumeState({ feature: 'featureHub', subpage: 'cloud' })
+      sessionStorage.setItem('srl.native.shortcut', 'cloud')
+      context.isFeatureHubOpen.value = true
+      window.dispatchEvent(new CustomEvent('srl:native-shortcut', { detail: 'cloud' }))
+    } else if (link.kind === 'restore') {
       context.isFeatureHubOpen.value = false
-      context.openRestorePanel('export')
+      context.openRestorePanel('export', true)
     } else if (link.kind === 'favorites') {
       selectMobileDestination('favorites')
     } else if (link.kind === 'import') {
       context.openImportChooser()
+    } else if (link.kind === 'sharedImport') {
+      if (/^discord-url-[a-f0-9-]{36}$/u.test(link.token))
+        await context.openSharedImport?.(link.token)
+    } else if (link.kind === 'inbox') {
+      writeAppResumeState({ feature: 'featureHub', subpage: 'inbox' })
+      sessionStorage.setItem('srl.native.shortcut', 'inbox')
+      context.isFeatureHubOpen.value = true
+      window.dispatchEvent(new CustomEvent('srl:native-shortcut', { detail: 'inbox' }))
     }
   }
 

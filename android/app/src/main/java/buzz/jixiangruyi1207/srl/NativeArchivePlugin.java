@@ -86,7 +86,7 @@ public class NativeArchivePlugin extends Plugin {
                     if (path == null || path.length() > 4096 || !selectedPaths.add(path)) throw new IllegalArgumentException("ZIP 选择路径无效或重复");
                 }
             }
-            call.resolve(NativeArchiveStaging.stage(getContext(), file, selectedPaths, (phase, readBytes, totalBytes, completed, entryCount, reused, stagedBytes, totalStagedBytes) -> {
+            call.resolve(NativeArchiveStaging.stage(getContext(), file, selectedPaths, requestId, (phase, readBytes, totalBytes, completed, entryCount, reused, stagedBytes, totalStagedBytes) -> {
                 JSObject progress = new JSObject();
                 progress.put("requestId", requestId);
                 progress.put("phase", phase);
@@ -100,6 +100,12 @@ public class NativeArchivePlugin extends Plugin {
                 notifyListeners("archiveProgress", progress);
             }));
         });
+    }
+
+    @PluginMethod
+    public void cancelArchiveStage(PluginCall call) {
+        NativeArchiveStaging.cancel(call.getString("requestId", ""));
+        call.resolve();
     }
 
     @PluginMethod

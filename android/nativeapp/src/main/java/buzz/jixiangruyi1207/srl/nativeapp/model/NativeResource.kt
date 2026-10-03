@@ -74,15 +74,10 @@ data class ImportReport(
 
 data class ExportReport(val resourceCount: Int, val versionCount: Int)
 
-data class NativeSnapshot(
-    val id: String,
-    val reason: String,
-    val resourceCount: Int,
-    val categoryCount: Int,
-    val size: Long,
-    val createdAt: Long,
-    val filePath: String,
-)
+data class LegacyLibraryHistoryFile(val recordJson: String, val fileName: String, val size: Long, val modifiedAt: Long)
+data class LegacyLibraryHistoryCleanup(val files: List<LegacyLibraryHistoryFile> = emptyList()) {
+    val bytes: Long get() = files.sumOf { it.size }
+}
 
 data class NativeCloudSource(
     val manifestJson: String,

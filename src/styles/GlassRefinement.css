@@ -155,14 +155,12 @@ summary:focus-visible {
 .resource-detail__summary,
 .resource-detail__tabs,
 .appearance-scope-tabs,
-.stitch-entry,
 .ai-tagging-panel__result {
   border-color: var(--glass-border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
 }
 
 .layout-option,
-.stitch-entry,
 .ai-tagging-panel__result {
   background: var(--glass-panel-muted);
 }
@@ -178,7 +176,6 @@ summary:focus-visible {
 .appearance-scope-tabs button,
 .appearance-layouts button,
 .resource-detail__tabs button,
-.stitch-entry__toggle,
 .settings-theme button,
 .cabinet-density button,
 .mobile-bottom-nav button {
@@ -232,6 +229,7 @@ summary:focus-visible {
 
 .button--primary,
 .import-button,
+.auth-form__primary,
 .appearance-code-actions .button--primary,
 .editor-form__actions .button--primary,
 .resource-detail__actions .button--primary,
@@ -248,6 +246,7 @@ summary:focus-visible {
 
 :root[data-theme='dark'] .button--primary,
 :root[data-theme='dark'] .import-button,
+:root[data-theme='dark'] .auth-form__primary,
 :root[data-theme='dark'] .appearance-code-actions .button--primary,
 :root[data-theme='dark'] .editor-form__actions .button--primary,
 :root[data-theme='dark'] .resource-detail__actions .button--primary,
@@ -348,7 +347,6 @@ summary:focus-visible {
 .feature-app__icon,
 .gallery-artwork__frame,
 .persona-app__avatar,
-.stitch-entry,
 .frontend-workshop__preview,
 .ai-tagging-panel__preview {
   border-color: color-mix(in srgb, var(--color-line-strong) 60%, var(--glass-border));

@@ -18,15 +18,19 @@ public class NativeImportKeepAliveService extends Service {
     static final String EXTRA_TITLE = "title";
     static final String EXTRA_PHASE = "phase";
     static final String EXTRA_PROGRESS = "progress";
+    static final String EXTRA_DESTINATION = "destination";
     private static final String CHANNEL = "srl_import_task";
     private static final int NOTIFICATION_ID = 2112;
     private PowerManager.WakeLock processingWakeLock;
     private static volatile boolean running;
+    private static volatile String notificationDestination = "import";
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String title = intent == null ? "SRL 正在导入资源" : intent.getStringExtra(EXTRA_TITLE);
         String phase = intent == null ? "正在处理所选资源" : intent.getStringExtra(EXTRA_PHASE);
         int progress = intent == null ? -1 : intent.getIntExtra(EXTRA_PROGRESS, -1);
+        String destination = intent == null ? "import" : intent.getStringExtra(EXTRA_DESTINATION);
+        notificationDestination = "resume".equals(destination) ? "resume" : "import";
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this, title, phase, progress),
             Build.VERSION.SDK_INT >= 29 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC : 0);
         running = true;
@@ -62,9 +66,7 @@ public class NativeImportKeepAliveService extends Service {
 
     static void notifyFinished(Context context, String title, String message, boolean successful) {
         ensureChannel(context);
-        Intent launch = new Intent(Intent.ACTION_VIEW, Uri.parse("srl://shortcut/import"), context, MainActivity.class);
-        android.app.PendingIntent pending = android.app.PendingIntent.getActivity(context, NOTIFICATION_ID + 1, launch,
-            android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+        android.app.PendingIntent pending = pendingIntent(context, NOTIFICATION_ID + 1, notificationDestination);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(successful ? android.R.drawable.stat_sys_upload_done : android.R.drawable.stat_notify_error)
             .setContentTitle(title)
@@ -76,11 +78,9 @@ public class NativeImportKeepAliveService extends Service {
         manager.notify(NOTIFICATION_ID + 1, builder.build());
     }
 
-    static void notifyAwaitingChoice(Context context, String title, String message) {
+    static void notifyAwaitingChoice(Context context, String title, String message, String destination) {
         ensureChannel(context);
-        Intent launch = new Intent(Intent.ACTION_VIEW, Uri.parse("srl://shortcut/import"), context, MainActivity.class);
-        android.app.PendingIntent pending = android.app.PendingIntent.getActivity(context, NOTIFICATION_ID + 2, launch,
-            android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+        android.app.PendingIntent pending = pendingIntent(context, NOTIFICATION_ID + 2, "resume".equals(destination) ? "resume" : "restore");
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(title)
@@ -95,9 +95,7 @@ public class NativeImportKeepAliveService extends Service {
 
     private static android.app.Notification notification(Context context, String title, String phase, int progress) {
         ensureChannel(context);
-        Intent launch = new Intent(Intent.ACTION_VIEW, Uri.parse("srl://shortcut/import"), context, MainActivity.class);
-        android.app.PendingIntent pending = android.app.PendingIntent.getActivity(context, NOTIFICATION_ID, launch,
-            android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+        android.app.PendingIntent pending = pendingIntent(context, NOTIFICATION_ID, notificationDestination);
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(title == null || title.isBlank() ? "SRL 正在导入资源" : title)
@@ -109,6 +107,18 @@ public class NativeImportKeepAliveService extends Service {
         if (progress >= 0) builder.setProgress(100, Math.min(100, progress), false);
         else builder.setProgress(0, 0, true);
         return builder.build();
+    }
+
+    private static android.app.PendingIntent pendingIntent(Context context, int requestCode, String destination) {
+        Intent launch = new Intent(context, MainActivity.class)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if ("restore".equals(destination)) {
+            launch.setAction(Intent.ACTION_VIEW).setData(Uri.parse("srl://restore"));
+        } else if (!"resume".equals(destination)) {
+            launch.setAction(Intent.ACTION_VIEW).setData(Uri.parse("srl://shortcut/import"));
+        }
+        return android.app.PendingIntent.getActivity(context, requestCode, launch,
+            android.app.PendingIntent.FLAG_IMMUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
     private static void ensureChannel(Context context) {

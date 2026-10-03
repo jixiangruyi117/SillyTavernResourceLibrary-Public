@@ -55,12 +55,37 @@ describe('computeCardFingerprints', () => {
     expect(withExtras?.core).toBe(base?.core)
   })
 
-  it('身份字段变化时两级指纹都不同', async () => {
+  it('修改或增加开场白只改变完整指纹，核心设定指纹保持一致', async () => {
     const base = await computeCardFingerprints({ card })
     const edited = await computeCardFingerprints({
-      card: { ...card, data: { ...card.data, first_mes: '改过的开场白。' } },
+      card: {
+        ...card,
+        data: {
+          ...card.data,
+          first_mes: '改过的开场白。',
+          alternate_greetings: ['备一', '新增开场白'],
+        },
+      },
     })
     expect(edited?.full).not.toBe(base?.full)
+    expect(edited?.core).toBe(base?.core)
+  })
+
+  it('设定不同的同名卡核心指纹不同', async () => {
+    const base = await computeCardFingerprints({ card })
+    const edited = await computeCardFingerprints({
+      card: { ...card, data: { ...card.data, description: '不同的人设' } },
+    })
+    expect(edited?.core).not.toBe(base?.core)
+  })
+
+  it('缺少设定内容的同名卡仍保留开场白证据', async () => {
+    const base = await computeCardFingerprints({
+      card: { name: '空白卡', description: ' ', first_mes: '你好' },
+    })
+    const edited = await computeCardFingerprints({
+      card: { name: '空白卡', description: ' ', first_mes: '另一个角色' },
+    })
     expect(edited?.core).not.toBe(base?.core)
   })
 

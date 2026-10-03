@@ -1,9 +1,13 @@
 import 'fake-indexeddb/auto'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { AppDatabase } from '../database/AppDatabase'
 import { VaultService } from '../services/VaultService'
+import { CommunitySourceService } from '../services/CommunitySourceService'
+import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { RESOURCE_GALLERY_ASSET_KIND } from '../types/ResourceGallery'
+import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
 import {
   COMMUNITY_SOURCE_MESSAGE_KIND,
   COMMUNITY_SOURCE_PLATFORM,
@@ -67,6 +71,240 @@ function createMessage(source: CommunitySource, content: string): CommunitySourc
 }
 
 describe('IndexedDbCommunitySourceStorage', () => {
+  it.each([false, true])(
+    'restores gallery and deleted-target posts without changing content (vault=%s)',
+    async (encrypted) => {
+      const database = new AppDatabase(`community-binding-repair-${crypto.randomUUID()}`)
+      const { storage, vault } = createStorage(database)
+      await vault.initialize()
+      if (encrypted) await vault.enable('binding-repair-test-password')
+      const resources = new IndexedDbResourceStorage(database, vault)
+      const service = new CommunitySourceService(storage)
+      const ordinary: Resource = {
+        id: 'normal',
+        name: '正常角色卡',
+        description: '',
+        type: RESOURCE_TYPE.CHARACTER_CARD,
+        fileName: 'card.png',
+        mimeType: 'image/png',
+        fileSize: 1,
+        contentHash: 'd'.repeat(64),
+        originalBlob: new Blob(['x']),
+        favorite: false,
+        categoryId: null,
+        tags: [],
+        metadata: {},
+        createdAt: 1,
+        updatedAt: 4,
+      }
+      const gallery: Resource = {
+        ...ordinary,
+        id: 'gallery',
+        type: RESOURCE_TYPE.OTHER,
+        metadata: { assetKind: RESOURCE_GALLERY_ASSET_KIND, galleryOwnerId: ordinary.id },
+      }
+      try {
+        await resources.save(ordinary)
+        await resources.save(gallery)
+        const sources = ['gallery-only', 'deleted-gallery', 'mixed'].map((id, index) => ({
+          ...createSource(),
+          id,
+          sourceKeyHash: String(index + 1).repeat(64),
+        }))
+        for (const source of sources) {
+          await storage.putSource(source)
+          await storage.putMessage({
+            ...createMessage(source, `完整正文-${source.id}`),
+            attachments: [
+              {
+                id: 'attachment',
+                name: 'data.json',
+                size: 1,
+                url: 'https://cdn.discordapp.com/attachments/1/2/data.json',
+              },
+            ],
+          })
+          await storage.putBinding({
+            id: `${source.id}-bad`,
+            sourceId: source.id,
+            resourceId: source.id === 'deleted-gallery' ? 'removed-gallery' : 'gallery',
+            createdAt: 5,
+          })
+        }
+        const validBinding = {
+          id: 'mixed-normal',
+          sourceId: 'mixed',
+          resourceId: 'normal',
+          note: '保留有效关联',
+          createdAt: 6,
+        }
+        await storage.putBinding(validBinding)
+        const before = await storage.exportAll()
+        expect(await storage.listUnboundSources()).toEqual([])
+        const snapshot = await resources.listResourceListSummaries()
+        expect(await service.repairInvalidResourceBindings(snapshot)).toBe(3)
+        const after = await storage.exportAll()
+        expect(after.sources).toEqual(before.sources)
+        expect(after.messages).toEqual(before.messages)
+        expect(after.bindings).toEqual([validBinding])
+        expect((await service.listPendingSources()).map((view) => view.source.id).sort()).toEqual([
+          'deleted-gallery',
+          'gallery-only',
+        ])
+        expect(await service.repairInvalidResourceBindings(snapshot)).toBe(0)
+        // Restoring an ordinary resource may preserve its timestamp; metadata must be rechecked.
+        expect(
+          await storage.repairInvalidResourceBindings(
+            new Set(),
+            new Map([['normal', ordinary.updatedAt]]),
+          ),
+        ).toBe(0)
+        expect((await storage.exportAll()).bindings).toEqual([validBinding])
+        await service.bindSource('normal', 'gallery-only')
+        expect(await service.getSourceUsage('gallery-only')).toMatchObject([
+          { resourceId: 'normal' },
+        ])
+        expect((await service.listPendingSources()).map((view) => view.source.id)).toEqual([
+          'deleted-gallery',
+        ])
+      } finally {
+        database.close()
+        await database.delete()
+      }
+    },
+  )
+
+  it('preserves restored resources, changed gallery targets and missing summary indexes', async () => {
+    const database = new AppDatabase(`community-repair-snapshot-${crypto.randomUUID()}`)
+    const { storage } = createStorage(database)
+    const source = createSource()
+    try {
+      await storage.putSource(source)
+      for (const id of ['restored', 'changed', 'missing-summary']) {
+        const resource: Resource = {
+          id,
+          name: id,
+          description: '',
+          type: RESOURCE_TYPE.OTHER,
+          fileName: 'image.png',
+          mimeType: 'image/png',
+          fileSize: 1,
+          contentHash: 'e'.repeat(64),
+          originalBlob: new Blob(['x']),
+          favorite: false,
+          categoryId: null,
+          tags: [],
+          metadata: { assetKind: RESOURCE_GALLERY_ASSET_KIND },
+          createdAt: 1,
+          updatedAt: 9,
+        }
+        await database.resources.put(resource)
+        if (id !== 'missing-summary') {
+          const { originalBlob: _blob, ...summary } = resource
+          await database.resourceSummaries.put(summary)
+        }
+        await storage.putBinding({
+          id: `binding-${id}`,
+          resourceId: id,
+          sourceId: source.id,
+          createdAt: 1,
+        })
+      }
+      expect(
+        await storage.repairInvalidResourceBindings(
+          new Set(),
+          new Map([
+            ['changed', 8],
+            ['missing-summary', 9],
+          ]),
+        ),
+      ).toBe(0)
+      expect((await storage.exportAll()).bindings).toHaveLength(3)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+
+  it('refuses binding repair while the vault is locked', async () => {
+    const database = new AppDatabase(`community-repair-locked-${crypto.randomUUID()}`)
+    const { storage, vault } = createStorage(database)
+    try {
+      await vault.initialize()
+      await vault.enable('binding-repair-test-password')
+      const source = createSource()
+      await storage.putSource(source)
+      await storage.putMessage(createMessage(source, '需要保留的正文'))
+      await storage.putBinding({
+        id: 'orphan',
+        resourceId: 'removed-gallery',
+        sourceId: source.id,
+        createdAt: 1,
+      })
+      vault.lock()
+      await expect(storage.repairInvalidResourceBindings(new Set(), new Map())).rejects.toThrow(
+        '解锁',
+      )
+      expect(await database.resourceSourceBindings.count()).toBe(1)
+      expect(await database.communitySourceMessages.count()).toBe(1)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+
+  it('rolls back removed orphan bindings if another target cannot be decoded', async () => {
+    const database = new AppDatabase(`community-repair-rollback-${crypto.randomUUID()}`)
+    const { storage, vault } = createStorage(database)
+    try {
+      await vault.initialize()
+      await vault.enable('binding-repair-test-password')
+      const source = createSource()
+      await storage.putSource(source)
+      await storage.putBinding({
+        id: 'first-orphan',
+        resourceId: 'a-missing',
+        sourceId: source.id,
+        createdAt: 1,
+      })
+      const resource: Resource = {
+        id: 'z-gallery',
+        name: '图库图',
+        description: '',
+        type: RESOURCE_TYPE.OTHER,
+        fileName: 'image.png',
+        mimeType: 'image/png',
+        fileSize: 1,
+        contentHash: 'f'.repeat(64),
+        originalBlob: new Blob(['x']),
+        favorite: false,
+        categoryId: null,
+        tags: [],
+        metadata: { assetKind: RESOURCE_GALLERY_ASSET_KIND },
+        createdAt: 1,
+        updatedAt: 4,
+      }
+      await new IndexedDbResourceStorage(database, vault).save(resource)
+      await storage.putBinding({
+        id: 'second-gallery',
+        resourceId: resource.id,
+        sourceId: source.id,
+        createdAt: 1,
+      })
+      const decode = vi
+        .spyOn(vault, 'decodeResourceSummary')
+        .mockRejectedValueOnce(new Error('解密失败'))
+      await expect(
+        storage.repairInvalidResourceBindings(new Set(), new Map([[resource.id, 4]])),
+      ).rejects.toThrow('解密失败')
+      expect(await database.resourceSourceBindings.count()).toBe(2)
+      decode.mockRestore()
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+
   it('stores sources, full message bodies and resource bindings independently', async () => {
     const database = new AppDatabase(`community-source-${crypto.randomUUID()}`)
     const { storage } = createStorage(database)

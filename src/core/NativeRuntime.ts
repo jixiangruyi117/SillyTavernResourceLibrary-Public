@@ -2,6 +2,11 @@ import { App } from '@capacitor/app'
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 import { normalizeDiscordHandoffRequest } from '../services/DiscordHandoffService'
+import {
+  checkNativeDiscordInboxTarget,
+  publishNativeDiscordInboxState,
+  readNativeDiscordInboxState,
+} from '../services/NativeDiscordInboxService'
 
 interface NativeShortcutApi {
   takePending(): Promise<{ action?: string }>
@@ -12,14 +17,33 @@ interface NativeShortcutApi {
 }
 
 interface NativeShareReceiverApi {
+  addListener(
+    eventName: 'cloudInboxReady',
+    listener: (event: { running: boolean }) => void,
+  ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'discordDownloadStarted',
+    listener: (event: { token: string; workId?: string; name?: string }) => void,
+  ): Promise<PluginListenerHandle>
   addListener(eventName: 'ready', listener: () => void): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'discordDownloadFailed',
+    listener: (event: { token: string; workId?: string }) => void,
+  ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'discordDownloadCompleted',
+    listener: (event: { token: string; workId?: string }) => void,
+  ): Promise<PluginListenerHandle>
 }
 
 export type NativeDeepLink =
   | { kind: 'resource'; resourceId: string }
   | { kind: 'backup' }
+  | { kind: 'restore' }
   | { kind: 'favorites' }
   | { kind: 'import' }
+  | { kind: 'sharedImport'; token: string }
+  | { kind: 'inbox' }
   | { kind: 'discordSource'; workerUrl: string; token: string }
 
 const NativeShortcut = registerPlugin<NativeShortcutApi>('NativeShortcut')
@@ -56,7 +80,21 @@ function publishShortcut(url?: string): void {
       return
     }
     if (parsed.hostname === 'backup') {
-      publishDeepLink({ kind: 'backup' })
+      publishShortcutAction('cloud')
+      return
+    }
+    if (parsed.hostname === 'restore') {
+      publishDeepLink({ kind: 'restore' })
+      return
+    }
+    if (parsed.hostname === 'inbox') {
+      publishDeepLink({ kind: 'inbox' })
+      return
+    }
+    if (parsed.hostname === 'shared-import') {
+      const token = parsed.pathname.slice(1)
+      if (/^discord-url-[a-f0-9-]{36}$/u.test(token))
+        publishDeepLink({ kind: 'sharedImport', token })
       return
     }
     if (parsed.hostname !== 'shortcut') return
@@ -91,8 +129,26 @@ async function installNativeShortcutListener(): Promise<void> {
 }
 
 async function installNativeShareListener(): Promise<void> {
+  window.addEventListener('srl:discord-inbox-target-changed', (event) => {
+    const detail = (event as CustomEvent<{ workerUrl: string; libraryId: string }>).detail
+    checkNativeDiscordInboxTarget(detail.workerUrl, detail.libraryId)
+  })
+  await NativeShareReceiver.addListener('cloudInboxReady', ({ running }) => {
+    publishNativeDiscordInboxState(running === true)
+    if (running) window.dispatchEvent(new Event('srl:receive-discord-inbox'))
+  })
+  await readNativeDiscordInboxState().catch(() => false)
+  await NativeShareReceiver.addListener('discordDownloadStarted', (detail) => {
+    window.dispatchEvent(new CustomEvent('srl:native-share-download-started', { detail }))
+  })
   await NativeShareReceiver.addListener('ready', () => {
     window.dispatchEvent(new Event('srl:native-share'))
+  })
+  await NativeShareReceiver.addListener('discordDownloadFailed', (detail) => {
+    window.dispatchEvent(new CustomEvent('srl:native-share-download-failed', { detail }))
+  })
+  await NativeShareReceiver.addListener('discordDownloadCompleted', (detail) => {
+    window.dispatchEvent(new CustomEvent('srl:native-share-download-completed', { detail }))
   })
 }
 

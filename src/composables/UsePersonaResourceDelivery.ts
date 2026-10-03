@@ -38,6 +38,8 @@ interface PersonaResourceDeliveryContext {
   ensureAvatarCached: (avatarId: string) => Promise<Resource | null>
   creatingPack: Ref<boolean, boolean>
   selectedAvatarId: Ref<string, string>
+  selectedVariantCharacterId: Ref<string, string>
+  selectedVariantVersionId: Ref<string, string>
   applyAvatarBindingForSave: (
     originalAvatarId: string,
     nextAvatarId: string,
@@ -46,7 +48,7 @@ interface PersonaResourceDeliveryContext {
   selectedResourceId: Ref<string, string>
   activeEntry: ComputedRef<UserPersonaEntry | undefined>
   entries: ComputedRef<UserPersonaEntry[]>
-  page: Ref<'list' | 'editor'>
+  page: Ref<'list' | 'profile-sections' | 'versions' | 'character-picker' | 'editor'>
   loading: Ref<boolean, boolean>
 }
 
@@ -61,11 +63,14 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
         resource.name,
       ]),
     )
-    const preserved = context.draft.value.connections.filter(
-      (connection) =>
-        connection.type === 'group' ||
-        (connection.type === 'character' && !knownCharacterIds.has(connection.id)),
-    )
+    const preserved = context.draft.value.connections.filter((connection) => {
+      if (connection.type === 'group') return true
+      const snapshot = context.draft.value.characterBindings[connection.id]
+      const snapshotDoesNotMatchLibrary =
+        !!snapshot &&
+        !context.characters.value.some((resource) => resource.contentHash === snapshot.hash)
+      return !knownCharacterIds.has(connection.id) || snapshotDoesNotMatchLibrary
+    })
     const selected = context.characters.value
       .filter((resource) => context.selectedCharacterIds.value.has(resource.id))
       .map((resource) => ({ type: 'character' as const, id: context.characterAvatarId(resource) }))
@@ -86,11 +91,24 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
       if (worldBook) ids.add(worldBook.id)
       for (const connection of entry.connections) {
         if (connection.type !== 'character') continue
-        const character = context.characters.value.find(
-          (resource) =>
-            context.characterAvatarId(resource) === connection.id ||
-            resource.fileName === connection.id ||
-            resource.name === connection.id,
+        const snapshot = entry.characterBindings[connection.id]
+        const character = context.characters.value.find((resource) =>
+          snapshot
+            ? resource.contentHash === snapshot.hash
+            : context.characterAvatarId(resource) === connection.id ||
+              resource.fileName === connection.id ||
+              resource.name === connection.id,
+        )
+        if (character) ids.add(character.id)
+      }
+      for (const characterId of Object.keys(entry.profile.variants)) {
+        const snapshot = entry.characterBindings[characterId]
+        const character = context.characters.value.find((resource) =>
+          snapshot
+            ? resource.contentHash === snapshot.hash
+            : context.characterAvatarId(resource) === characterId ||
+              resource.fileName === characterId ||
+              resource.name === characterId,
         )
         if (character) ids.add(character.id)
       }
@@ -137,6 +155,9 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
     const context = getContext()
 
     if (!context.currentResource.value) return
+    const selectedCharacterId = context.selectedVariantCharacterId.value
+    const selectedVersionId = context.selectedVariantVersionId.value
+    const page = context.page.value
     await userPersonaService.save(
       context.currentResource.value.id,
       backup,
@@ -147,6 +168,15 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
     )
     context.emit('library-changed')
     await context.loadResource(context.currentResource.value.id, avatarId)
+    if (
+      selectedCharacterId &&
+      selectedVersionId &&
+      context.draft.value.profile.variants[selectedCharacterId]?.versions[selectedVersionId]
+    ) {
+      context.selectedVariantCharacterId.value = selectedCharacterId
+      context.selectedVariantVersionId.value = selectedVersionId
+    }
+    context.page.value = page
   }
 
   async function saveDraft(): Promise<void> {
@@ -159,11 +189,35 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
     try {
       const nextDraft: UserPersonaDraft = {
         ...context.draft.value,
+        profile: JSON.parse(
+          JSON.stringify(context.draft.value.profile),
+        ) as UserPersonaDraft['profile'],
         name: context.draft.value.name.trim(),
         title: context.draft.value.title.trim(),
         avatarId: context.draft.value.avatarId.trim(),
         connections: connectionsForSave(),
       }
+      const characterBindingIds = new Set([
+        ...nextDraft.connections
+          .filter((connection) => connection.type === 'character')
+          .map((connection) => connection.id),
+        ...Object.keys(nextDraft.profile.variants),
+      ])
+      nextDraft.characterBindings = Object.fromEntries(
+        Object.entries(nextDraft.characterBindings).filter(([id]) => characterBindingIds.has(id)),
+      )
+      for (const character of context.characters.value) {
+        if (!context.selectedCharacterIds.value.has(character.id)) continue
+        const avatar = context.characterAvatarId(character)
+        if (!characterBindingIds.has(avatar)) continue
+        nextDraft.characterBindings[avatar] = {
+          avatar: character.fileName,
+          name: character.name || character.fileName,
+          hash: character.contentHash,
+        }
+      }
+      const baseSection = nextDraft.profile.sections[0]
+      if (baseSection) baseSection.text = nextDraft.description
       if (!nextDraft.name) throw new Error('人设名称不能为空')
       nextDraft.avatarId = normalizeUserPersonaAvatarId(nextDraft.avatarId)
       const backup = context.creatingPack.value
@@ -184,11 +238,12 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
           serializeSillyTavernPersonaBackup(context.currentBackup.value)
       ) {
         const decision = await chooseAction({
-          title: '保存人设',
-          message: '是否将修改前的人设保留为历史版本？已有历史不受影响。',
-          confirmLabel: '不保留并保存',
-          alternativeLabel: '保留并保存',
-          cancelLabel: '取消',
+          title: '资源文件版本',
+          message:
+            '是否将修改前的整份人设文件保留为资源文件版本？这与角色卡下的“人设版本”互相独立。',
+          confirmLabel: '不保留旧版并保存',
+          alternativeLabel: '保留旧版并保存',
+          cancelLabel: '取消保存',
         })
         if (decision === 'cancel') return
         preservePreviousVersion = decision === 'alternative'
@@ -231,7 +286,7 @@ export function usePersonaResourceDelivery(getContext: () => PersonaResourceDeli
       title: context.entries.value.length === 1 ? '删除人设资源' : '删除这条用户人设',
       message:
         context.entries.value.length === 1
-          ? `“${entry.name}”是文件中的最后一个人设。继续会删除整个资源，历史快照仍按资源库规则处理。`
+          ? `“${entry.name}”是文件中的最后一个人设。继续会删除整个资源，资源文件版本仍按资源库规则处理。`
           : `确定从当前人设文件中删除“${entry.name}”吗？修改前文件会收入历史版本。`,
       confirmLabel: '删除',
       danger: true,

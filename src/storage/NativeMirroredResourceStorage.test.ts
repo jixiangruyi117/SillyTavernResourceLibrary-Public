@@ -77,6 +77,21 @@ describe('NativeMirroredResourceStorage', () => {
     mirror.available.mockReturnValue(true)
   })
 
+  it('forwards the optional gallery query and leaves older delegates on the service fallback', async () => {
+    const backing = delegate(async () => undefined)
+    backing.listGalleryListSummaries = vi.fn(async () => [])
+    const storage = new NativeMirroredResourceStorage(backing, {
+      isEnabled: () => false,
+    } as VaultService)
+    await expect(storage.listGalleryListSummaries?.('owner', true)).resolves.toEqual([])
+    expect(backing.listGalleryListSummaries).toHaveBeenCalledWith('owner', true)
+    const legacy = new NativeMirroredResourceStorage(
+      delegate(async () => undefined),
+      { isEnabled: () => false } as VaultService,
+    )
+    expect(legacy.listGalleryListSummaries).toBeUndefined()
+  })
+
   it('原生文件暂存成功且 IndexedDB 保存成功后才提交镜像', async () => {
     const order: string[] = []
     mirror.stage.mockImplementation(async () => ({

@@ -1,5 +1,5 @@
 import type { EmitFn } from 'vue'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { type ActionSheetAction } from '../components/ActionSheet.vue'
 import {
   SRL_BACK_REQUEST_EVENT,
@@ -119,6 +119,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const AppearanceStudio = createRegisteredAsyncPanel('appearance')
 
   const CloudBackupCenter = createRegisteredAsyncPanel('cloud')
+  const DiscordInboxCenter = createRegisteredAsyncPanel('inbox')
 
   const TavernBridgeCenter = createRegisteredAsyncPanel('tavernBridge')
 
@@ -165,8 +166,8 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   function handleNativeShortcut(event?: Event): void {
     const detail = event instanceof CustomEvent ? String(event.detail ?? '') : ''
     const action = detail || sessionStorage.getItem('srl.native.shortcut') || ''
-    if (action !== 'cloud') return
-    activePage.value = 'cloud'
+    if (action !== 'cloud' && action !== 'inbox') return
+    activePage.value = action
     sessionStorage.removeItem('srl.native.shortcut')
   }
 
@@ -432,10 +433,6 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
       (entry) => entry.kind === 'external' && entry.app.id === appId,
     )
     if (index >= 0) setFeatureDesktopPage(Math.floor(index / FEATURE_DESKTOP_PAGE_SIZE))
-    activePage.value = 'home'
-    await nextTick()
-    window.scrollTo(0, 0)
-    window.requestAnimationFrame(() => window.scrollTo(0, 0))
   }
 
   function sendBundleToTavern(resourceIds: string[]): void {
@@ -579,7 +576,9 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     handleExternalAppsChanged,
     handleExternalAppInstalled,
     activeExternalAppId,
+    openExternalApp,
     ExternalAppHost,
     CloudBackupCenter,
+    DiscordInboxCenter,
   }
 }

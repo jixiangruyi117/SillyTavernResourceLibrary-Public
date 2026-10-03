@@ -580,6 +580,11 @@ dialog.external-app-permission {
     max-width: 52%;
   }
 
+  :global(body.external-app-fullscreen .auth-offline-note) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   .external-app-resource-picker {
     padding: var(--safe-top) max(var(--mobile-gutter), var(--safe-right)) 0
       max(var(--mobile-gutter), var(--safe-left));

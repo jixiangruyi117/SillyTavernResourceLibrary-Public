@@ -295,13 +295,45 @@
   font: var(--weight-ui) var(--text-caption)/1.35 var(--font-ui);
 }
 .frontend-workshop__api-body {
-  padding: 0 0.7rem 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.625rem;
   border-top: 1px solid var(--color-line);
 }
+.frontend-workshop__api-body label {
+  margin-top: 0;
+  gap: 0.25rem;
+}
+.frontend-workshop__api-basics,
 .frontend-workshop__api-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
+}
+.frontend-workshop__api-basics > label:last-child {
+  grid-column: 1 / -1;
+}
+.frontend-workshop__api-body :is(input, select, button) {
+  min-width: 0;
+  min-height: 44px;
+}
+.frontend-workshop__api-body input:not([type='range']),
+.frontend-workshop__api-body select {
+  font-size: 1rem;
+}
+.frontend-workshop__api-advanced {
+  border-top: 1px solid var(--color-line);
+}
+.frontend-workshop__api-advanced > summary {
+  padding: 0;
+  min-height: 44px;
+}
+.frontend-workshop__api-advanced > summary small {
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+}
+.frontend-workshop__api-advanced > label {
+  margin-bottom: 0.5rem;
 }
 .frontend-workshop__api-actions {
   display: flex;
@@ -311,7 +343,7 @@
 }
 .frontend-workshop__api-actions button {
   min-width: min(8rem, 100%);
-  min-height: var(--control-visual-secondary);
+  min-height: 44px;
   flex: 1 1 8rem;
 }
 .frontend-workshop__api-actions button:last-child {
@@ -499,8 +531,7 @@
     width: 100%;
   }
 
-  .frontend-workshop__field-table > article > div,
-  .frontend-workshop__api-pair {
+  .frontend-workshop__field-table > article > div {
     grid-template-columns: minmax(0, 1fr);
   }
 

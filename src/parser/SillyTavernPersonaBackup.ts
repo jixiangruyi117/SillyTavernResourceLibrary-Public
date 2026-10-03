@@ -3,15 +3,22 @@ import {
   USER_PERSONA_ROLES,
   type SillyTavernPersonaBackup,
   type UserPersonaBackupView,
+  type UserPersonaCharacterBindingSnapshot,
   type UserPersonaConnection,
   type UserPersonaDescriptor,
   type UserPersonaDraft,
   type UserPersonaEntry,
 } from '../types/UserPersona'
 import { isRecord } from '../utils/UnknownValue'
+import {
+  normalizeUserPersonaProfile,
+  serializeUserPersonaProfile,
+  USER_PERSONA_PROFILE_FIELD,
+} from '../utils/UserPersonaProfile'
 
 const DEFAULT_DEPTH = 2
 const DEFAULT_ROLE = USER_PERSONA_ROLES.SYSTEM
+export const USER_PERSONA_CHARACTER_BINDINGS_FIELD = 'srl_persona_character_bindings'
 
 function isObjectLike(value: unknown): value is Record<string, unknown> {
   // SillyTavern 1.18.0 的恢复入口只检查 typeof === 'object'，数组也会被接受。
@@ -48,6 +55,23 @@ function readConnections(value: unknown): {
   return { connections, invalidCount }
 }
 
+function readCharacterBindings(
+  value: unknown,
+): Record<string, UserPersonaCharacterBindingSnapshot> {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([id, item]) =>
+      isRecord(item) &&
+      typeof item.avatar === 'string' &&
+      typeof item.name === 'string' &&
+      typeof item.hash === 'string' &&
+      /^[a-f\d]{64}$/i.test(item.hash)
+        ? [[id, { avatar: item.avatar, name: item.name, hash: item.hash.toLowerCase() }]]
+        : [],
+    ),
+  )
+}
+
 export function isSillyTavernPersonaBackup(value: unknown): value is SillyTavernPersonaBackup {
   return isRecord(value) && isObjectLike(value.personas) && isObjectLike(value.persona_descriptions)
 }
@@ -78,8 +102,13 @@ export function parseSillyTavernPersonaBackup(value: unknown): UserPersonaBackup
       role: readNumber(descriptor.role, DEFAULT_ROLE),
       lorebook: readString(descriptor.lorebook),
       connections,
+      characterBindings: readCharacterBindings(descriptor[USER_PERSONA_CHARACTER_BINDINGS_FIELD]),
       invalidConnectionCount: invalidCount,
       descriptorExists: isRecord(rawDescriptor),
+      profile: normalizeUserPersonaProfile(
+        descriptor[USER_PERSONA_PROFILE_FIELD],
+        readString(descriptor.description),
+      ),
     })
   }
 
@@ -98,13 +127,15 @@ export function createEmptyPersonaBackup(draft: UserPersonaDraft): SillyTavernPe
     personas: { [avatarId]: draft.name.trim() },
     persona_descriptions: {
       [avatarId]: {
-        description: draft.description,
+        description: serializeUserPersonaProfile(draft.profile),
         position: draft.position,
         depth: draft.depth,
         role: draft.role,
         lorebook: draft.lorebook,
         connections: draft.connections,
+        [USER_PERSONA_CHARACTER_BINDINGS_FIELD]: draft.characterBindings,
         title: draft.title.trim(),
+        [USER_PERSONA_PROFILE_FIELD]: draft.profile,
       },
     },
     default_persona: avatarId,
@@ -135,13 +166,15 @@ export function updatePersonaInBackup(
   personas[avatarId] = name
   descriptions[avatarId] = {
     ...previous,
-    description: draft.description,
+    description: serializeUserPersonaProfile(draft.profile),
     position: draft.position,
     depth: draft.depth,
     role: draft.role,
     lorebook: draft.lorebook,
     connections: draft.connections.map((item) => ({ ...item })),
+    [USER_PERSONA_CHARACTER_BINDINGS_FIELD]: draft.characterBindings,
     title: draft.title.trim(),
+    [USER_PERSONA_PROFILE_FIELD]: draft.profile,
   }
 
   return {

@@ -1,4 +1,6 @@
 import type { CommunitySourceStorage } from '../storage/CommunitySourceStorage'
+import type { ResourceListSummary } from '../types/Resource'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import {
   COMMUNITY_SOURCE_ATTACHMENT_LOCAL_STATE,
   COMMUNITY_SOURCE_MESSAGE_KIND,
@@ -35,6 +37,10 @@ import {
   normalizeCapture,
   makeRevision,
   attachmentIdentityMatches,
+  discordMessageChanged,
+  olderDiscordDelivery,
+  sourceMetadataCapturedAt,
+  withDiscordSourceMetadata,
   withMessageSummary,
   sourceSummaryMatches,
 } from './CommunitySourceCapture'
@@ -52,6 +58,13 @@ type DiscordRefreshSyncState = {
   savedMessageCheckCursor?: string
 }
 
+type DiscordRefreshOptions = {
+  keepPrevious: boolean
+  includeNewMessageIds?: readonly string[]
+  missingMessageIds?: readonly string[]
+  syncState?: DiscordRefreshSyncState
+}
+
 type CommunitySourceAssetStore = {
   put(
     blob: Blob,
@@ -62,6 +75,33 @@ type CommunitySourceAssetStore = {
     },
   ): Promise<{ assetId: string }>
   getBlob(assetId: string): Promise<Blob | undefined>
+}
+
+type DiscordCaptureSaveOptions = {
+  resourceId?: string
+  kind?: CommunitySourceMessageKind
+  note?: string
+  /** Server snapshot time in milliseconds; manual capture defaults to the current time. */
+  capturedAt?: number
+  /** Persist text first, then use the existing attachment owner in the background. */
+  deferAttachmentLocalization?: boolean
+}
+
+const captureSaves = new Map<string, Promise<unknown>>()
+
+async function withCaptureSave<T>(sourceKeyHash: string, save: () => Promise<T>): Promise<T> {
+  const previous = captureSaves.get(sourceKeyHash)
+  const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() =>
+    typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks.request(`srl-community-source-capture:${sourceKeyHash}`, save)
+      : save(),
+  )
+  captureSaves.set(sourceKeyHash, pending)
+  try {
+    return await pending
+  } finally {
+    if (captureSaves.get(sourceKeyHash) === pending) captureSaves.delete(sourceKeyHash)
+  }
 }
 
 export class CommunitySourceService {
@@ -119,6 +159,17 @@ export class CommunitySourceService {
     return views
   }
 
+  async repairInvalidResourceBindings(resources: readonly ResourceListSummary[]): Promise<number> {
+    if (!this.storage.repairInvalidResourceBindings) return 0
+    const validResourceIds = new Set<string>()
+    const galleryVersions = new Map<string, number>()
+    for (const resource of resources) {
+      if (isResourceGalleryImage(resource)) galleryVersions.set(resource.id, resource.updatedAt)
+      else validResourceIds.add(resource.id)
+    }
+    return this.storage.repairInvalidResourceBindings(validResourceIds, galleryVersions)
+  }
+
   async listPendingSources(
     limit = 30,
   ): Promise<Array<{ source: CommunitySource; messages: CommunitySourceMessage[] }>> {
@@ -153,24 +204,41 @@ export class CommunitySourceService {
     return this.storage.listBindingsForSource(sourceId)
   }
 
+  async getSourceUsageByKeyHash(sourceKeyHash: string): Promise<ResourceSourceBinding[]> {
+    if (!/^[a-f0-9]{64}$/iu.test(sourceKeyHash)) throw new Error('社区来源哈希无效')
+    const source = await this.storage.getSourceByKeyHash(sourceKeyHash.toLowerCase())
+    return source ? this.storage.listBindingsForSource(source.id) : []
+  }
+
   async getAttachmentBlob(assetId: string): Promise<Blob | undefined> {
     return this.assetStore?.getBlob(assetId)
   }
 
   async saveDiscordCapture(
     captureInput: DiscordCapture,
-    options: {
-      resourceId?: string
-      kind?: CommunitySourceMessageKind
-      note?: string
-      /** 首次整帖读取可先落正文，再在后台串行缓存附件。 */
-      deferAttachmentLocalization?: boolean
-    } = {},
+    options: DiscordCaptureSaveOptions = {},
   ): Promise<ResourceCommunitySourceView> {
     const capture = normalizeCapture(captureInput)
+    const capturedAt = options.capturedAt ?? Date.now()
+    if (!Number.isFinite(capturedAt) || capturedAt < 0) throw new Error('Discord 快照时间无效')
     const sourceKeyHash = await hashIdentity(createDiscordSourceKey(capture))
+    return withCaptureSave(sourceKeyHash, () =>
+      this.persistDiscordCapture(capture, sourceKeyHash, capturedAt, options),
+    )
+  }
+
+  private async persistDiscordCapture(
+    capture: DiscordCapture,
+    sourceKeyHash: string,
+    capturedAt: number,
+    options: DiscordCaptureSaveOptions,
+  ): Promise<ResourceCommunitySourceView> {
     const now = Date.now()
     let source = await this.storage.getSourceByKeyHash(sourceKeyHash)
+    const existingMessage = source
+      ? await this.storage.getMessage(source.id, await messageKeyHash(source.id, capture.messageId))
+      : undefined
+    const stale = existingMessage && olderDiscordDelivery(existingMessage, capture, capturedAt)
 
     if (!source) {
       source = {
@@ -191,42 +259,31 @@ export class CommunitySourceService {
         starterAuthorId: capture.isStarter ? capture.authorId : undefined,
         starterAuthorName: capture.isStarter ? capture.authorName : undefined,
         forumTags: normalizeStringList(capture.forumTags),
+        metadataCapturedAt: capturedAt,
         createdAt: now,
         updatedAt: now,
       }
     } else {
-      source = {
-        ...source,
-        guildId: source.guildId ?? capture.guildId,
-        guildName: capture.guildName ?? source.guildName,
-        channelId: source.channelId || capture.channelId,
-        channelName: capture.channelName ?? source.channelName,
-        threadId: source.threadId ?? capture.threadId,
-        canonicalUrl: capture.isStarter ? capture.canonicalUrl : source.canonicalUrl,
-        title: capture.title ?? source.title,
-        forumTags: normalizeStringList([...source.forumTags, ...(capture.forumTags ?? [])]),
-        ignoredRemoteMessageIds: normalizeMessageIds(
+      source = withDiscordSourceMetadata(source, capture, capturedAt, now)
+      if (!stale) {
+        source.ignoredRemoteMessageIds = normalizeMessageIds(
           (source.ignoredRemoteMessageIds ?? []).filter(
             (messageId) => messageId !== capture.messageId,
           ),
           MAX_IGNORED_REMOTE_MESSAGE_IDS,
-        ),
-        updatedAt: now,
-      }
-      if (capture.isStarter) {
-        source.starterMessageId = capture.messageId
-        source.starterAuthorId = capture.authorId
-        source.starterAuthorName = capture.authorName
-      } else if (!source.starterMessageId && capture.starterMessageId) {
-        source.starterMessageId = capture.starterMessageId
+        )
+        source.updatedAt = now
+        if (capture.isStarter) {
+          source.starterMessageId = capture.messageId
+          source.starterAuthorId = capture.authorId
+        } else if (!source.starterMessageId && capture.starterMessageId) {
+          source.starterMessageId = capture.starterMessageId
+        }
       }
     }
 
     const sourceId = source.id
-    await this.storage.putSource(source)
-
     const keyHash = await messageKeyHash(sourceId, capture.messageId)
-    const existingMessage = await this.storage.getMessage(sourceId, keyHash)
     const inferredKind: CommunitySourceMessageKind =
       options.kind ??
       (capture.isStarter || capture.messageId === source.starterMessageId
@@ -234,17 +291,31 @@ export class CommunitySourceService {
         : source.starterAuthorId && capture.authorId === source.starterAuthorId
           ? COMMUNITY_SOURCE_MESSAGE_KIND.AUTHOR_UPDATE
           : COMMUNITY_SOURCE_MESSAGE_KIND.SELECTED_COMMENT)
-    const attachments = options.deferAttachmentLocalization
-      ? this.prepareDeferredAttachments(
-          capture.attachments ?? [],
-          existingMessage?.attachments ?? [],
-        )
-      : await this.localizeAttachments(
-          capture.attachments ?? [],
-          existingMessage?.attachments ?? [],
-          AUTO_LOCAL_ATTACHMENT_BYTES,
-        )
-    const message: CommunitySourceMessage = {
+    const unchanged = existingMessage && !discordMessageChanged(existingMessage, capture).changed
+    const needsLocalization =
+      this.assetStore &&
+      (!unchanged ||
+        (capture.attachments ?? []).some(
+          (attachment) =>
+            attachment.size <= AUTO_LOCAL_ATTACHMENT_BYTES &&
+            !existingMessage.attachments.some(
+              (previous) =>
+                previous.localAssetId && attachmentIdentityMatches(previous, attachment),
+            ),
+        ))
+    const attachments = stale
+      ? existingMessage.attachments
+      : options.deferAttachmentLocalization || !needsLocalization
+        ? this.prepareDeferredAttachments(
+            capture.attachments ?? [],
+            existingMessage?.attachments ?? [],
+          )
+        : await this.localizeAttachments(
+            capture.attachments ?? [],
+            existingMessage?.attachments ?? [],
+            AUTO_LOCAL_ATTACHMENT_BYTES,
+          )
+    let message: CommunitySourceMessage = {
       id: createCommunitySourceMessageId(sourceId, keyHash),
       sourceId,
       messageKeyHash: keyHash,
@@ -262,9 +333,18 @@ export class CommunitySourceService {
       remoteState: existingMessage?.remoteState,
       lastRemoteCheckedAt: existingMessage?.lastRemoteCheckedAt,
       capturedAt: existingMessage?.capturedAt ?? now,
+      deliveryCapturedAt: capturedAt,
       updatedAt: now,
     }
-    await this.storage.putMessage(message)
+    if (stale) {
+      message = { ...existingMessage, kind: options.kind ?? existingMessage.kind }
+    }
+    if (this.storage.putSourceWithMessages)
+      await this.storage.putSourceWithMessages(source, [message])
+    else {
+      await this.storage.putSource(source)
+      await this.storage.putMessage(message)
+    }
 
     let binding: ResourceSourceBinding
     if (options.resourceId) {
@@ -291,13 +371,35 @@ export class CommunitySourceService {
     }
 
     const messages = await this.storage.listMessages(sourceId)
+    const savedMessage = messages.find((item) => item.messageId === capture.messageId)
+    if (
+      !savedMessage ||
+      (discordMessageChanged(savedMessage, message).changed &&
+        !olderDiscordDelivery(
+          savedMessage,
+          message,
+          message.deliveryCapturedAt ?? message.updatedAt,
+        ))
+    ) {
+      throw new Error('Discord 消息保存后无法读回，请重试领取')
+    }
     source = withMessageSummary(source, messages)
     await this.storage.putSource(source)
-    return { source, messages, binding }
+    const savedSource = await this.storage.getSource(sourceId)
+    if (!savedSource) throw new Error('Discord 来源保存后无法读回，请重试领取')
+    return { source: savedSource, messages, binding }
   }
 
   async localizeSavedMessageAttachments(sourceId: string, messageId: string): Promise<void> {
     if (!this.assetStore) return
+    const source = await this.storage.getSource(sourceId)
+    if (!source) return
+    await withCaptureSave(source.sourceKeyHash, () =>
+      this.persistSavedMessageAttachments(sourceId, messageId),
+    )
+  }
+
+  private async persistSavedMessageAttachments(sourceId: string, messageId: string): Promise<void> {
     const keyHash = await messageKeyHash(sourceId, messageId)
     const message = await this.storage.getMessage(sourceId, keyHash)
     if (!message?.attachments.length) return
@@ -325,14 +427,20 @@ export class CommunitySourceService {
     const existing = (await this.storage.listBindingsForResource(resourceId)).some(
       (binding) => binding.sourceId === sourceId,
     )
-    if (existing) return
-    await this.storage.putBinding({
-      id: createResourceSourceBindingId(resourceId, sourceId),
-      resourceId,
-      sourceId,
-      note: clean(note, 2_000),
-      createdAt: Date.now(),
-    })
+    if (!existing)
+      await this.storage.putBinding({
+        id: createResourceSourceBindingId(resourceId, sourceId),
+        resourceId,
+        sourceId,
+        note: clean(note, 2_000),
+        createdAt: Date.now(),
+      })
+    if (typeof window !== 'undefined')
+      window.dispatchEvent(
+        new CustomEvent('srl:community-source-bound', {
+          detail: { sourceKeyHash: source.sourceKeyHash },
+        }),
+      )
   }
 
   async unbindSource(resourceId: string, sourceId: string): Promise<void> {
@@ -445,12 +553,19 @@ export class CommunitySourceService {
   async applyDiscordRefresh(
     sourceId: string,
     captureInputs: readonly DiscordCapture[],
-    options: {
-      keepPrevious: boolean
-      includeNewMessageIds?: readonly string[]
-      missingMessageIds?: readonly string[]
-      syncState?: DiscordRefreshSyncState
-    },
+    options: DiscordRefreshOptions,
+  ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
+    const source = await this.storage.getSource(sourceId)
+    if (!source) throw new Error('社区来源不存在')
+    return withCaptureSave(source.sourceKeyHash, () =>
+      this.persistDiscordRefresh(sourceId, captureInputs, options),
+    )
+  }
+
+  private async persistDiscordRefresh(
+    sourceId: string,
+    captureInputs: readonly DiscordCapture[],
+    options: DiscordRefreshOptions,
   ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
     const source = await this.storage.getSource(sourceId)
     if (!source) throw new Error('社区来源不存在')
@@ -526,6 +641,7 @@ export class CommunitySourceService {
       ),
       ...(options.syncState ?? {}),
       revisions,
+      metadataCapturedAt: Math.max(sourceMetadataCapturedAt(source), now),
       updatedAt: now,
     }
     delete updatedSource.discordRefreshMode
@@ -577,6 +693,7 @@ export class CommunitySourceService {
         remoteState: COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.AVAILABLE,
         lastRemoteCheckedAt: now,
         capturedAt: existing?.capturedAt ?? now,
+        deliveryCapturedAt: Math.max(existing?.deliveryCapturedAt ?? existing?.updatedAt ?? 0, now),
         updatedAt: now,
       })
     }
@@ -611,9 +728,21 @@ export class CommunitySourceService {
   ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
     const source = await this.storage.getSource(sourceId)
     if (!source) throw new Error('社区来源不存在')
+    return withCaptureSave(source.sourceKeyHash, () => this.persistRevision(sourceId, revisionId))
+  }
+
+  private async persistRevision(
+    sourceId: string,
+    revisionId: string,
+  ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
+    const source = await this.storage.getSource(sourceId)
+    if (!source) throw new Error('社区来源不存在')
     const target = source.revisions?.find((revision) => revision.id === revisionId)
     if (!target) throw new Error('历史版本不存在')
     const currentMessages = await this.storage.listMessages(sourceId)
+    const currentByMessageId = new Map(
+      currentMessages.map((message) => [message.messageId, message]),
+    )
     const now = Date.now()
     const rollbackRevision = makeRevision(source, currentMessages, now)
     let restoredSource: CommunitySource = {
@@ -630,6 +759,7 @@ export class CommunitySourceService {
       remoteScanCursor: undefined,
       savedMessageCheckCursor: undefined,
       revisions: [...(source.revisions ?? []), rollbackRevision],
+      metadataCapturedAt: Math.max(sourceMetadataCapturedAt(source), now),
       updatedAt: now,
     }
     const restoredMessages = target.messages.map((message) => ({
@@ -637,6 +767,11 @@ export class CommunitySourceService {
       sourceId,
       remoteState: undefined,
       lastRemoteCheckedAt: undefined,
+      deliveryCapturedAt: Math.max(
+        currentByMessageId.get(message.messageId)?.deliveryCapturedAt ?? 0,
+        message.deliveryCapturedAt ?? message.updatedAt,
+        now,
+      ),
       updatedAt: now,
     }))
     restoredSource = withMessageSummary(restoredSource, restoredMessages)

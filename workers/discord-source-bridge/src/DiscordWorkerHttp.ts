@@ -4,8 +4,8 @@ import { Env } from './DiscordSourceProtocol'
 
 export const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-SRL-Library-ID',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
 }
 
 export class DiscordRateLimitError extends Error {
@@ -21,6 +21,7 @@ export class DiscordRateLimitError extends Error {
 export function json(value: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers)
   headers.set('Content-Type', 'application/json; charset=utf-8')
+  headers.set('Cache-Control', 'no-store')
   for (const [key, item] of Object.entries(CORS_HEADERS)) headers.set(key, item)
   return new Response(JSON.stringify(value), { ...init, headers })
 }

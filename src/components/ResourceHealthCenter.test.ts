@@ -174,7 +174,7 @@ describe('ResourceHealthCenter recovery controls', () => {
     expect(api.repair).toHaveBeenCalledOnce()
     expect(api.scan).toHaveBeenCalledOnce()
     expect(view.text()).toContain('不能与总量相加')
-    expect(view.text()).toContain('本地安全快照')
+    expect(view.text()).toContain('本地恢复副本')
     expect(view.text()).toContain('其中缩略图')
     view.unmount()
   })

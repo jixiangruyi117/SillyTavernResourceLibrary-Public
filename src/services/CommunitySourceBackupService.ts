@@ -124,6 +124,7 @@ function isCommunitySourceMessage(value: unknown): value is CommunitySourceMessa
     (value.remoteState === undefined ||
       (typeof value.remoteState === 'string' && MESSAGE_REMOTE_STATES.has(value.remoteState))) &&
     isOptionalFiniteNumber(value.lastRemoteCheckedAt) &&
+    isOptionalNonNegativeInteger(value.deliveryCapturedAt) &&
     typeof value.capturedAt === 'number' &&
     Number.isFinite(value.capturedAt) &&
     typeof value.updatedAt === 'number' &&
@@ -189,6 +190,7 @@ function isCommunitySource(value: unknown): value is CommunitySource {
         !REFRESH_MODES.has(value.discordRefreshMode))) ||
     (value.hasRemoteUpdate !== undefined && typeof value.hasRemoteUpdate !== 'boolean') ||
     !isOptionalFiniteNumber(value.lastCheckedAt) ||
+    !isOptionalNonNegativeInteger(value.metadataCapturedAt) ||
     (value.remoteScanCursor !== undefined && !isRemoteScanCursor(value.remoteScanCursor)) ||
     !isOptionalSnowflake(value.savedMessageCheckCursor) ||
     (value.ignoredRemoteMessageIds !== undefined &&

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { IDBFactory } from 'fake-indexeddb'
 
 import type { CategoryService } from './CategoryService'
 import type { CreatedStructuredSnapshot, StructuredSnapshot } from './CloudStructuredSnapshot'
@@ -81,6 +82,7 @@ function createSnapshot(blob: Blob): CreatedStructuredSnapshot {
 describe('CloudBackupService Native Cloud fail-closed handoff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubGlobal('indexedDB', new IDBFactory())
     vi.stubGlobal('localStorage', new MemoryStorage())
     vi.stubGlobal('sessionStorage', new MemoryStorage())
     nativeCloud.isNativeCloudTransferAvailable.mockReturnValue(true)
@@ -119,6 +121,138 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
     finishSave()
     await saving
     expect(service.getSnapshot().credentials.github).toBe('valid')
+  })
+
+  it('does not scan native files for disabled or already-running automatic backups', async () => {
+    const prepare = vi.fn()
+    const service = new CloudBackupService(
+      {} as ResourceService,
+      {} as CategoryService,
+      {} as ExportService,
+      {} as RestoreService,
+      undefined,
+      undefined,
+      prepare,
+    )
+    expect(await service.runDueBackup()).toBe('disabled')
+    localStorage.setItem(
+      'srl.cloudBackup.settings.v1',
+      JSON.stringify({
+        activeProvider: 'github',
+        github: {
+          provider: 'github',
+          owner: 'owner',
+          repository: 'private-backups',
+          retention: 2,
+          autoBackup: true,
+        },
+      }),
+    )
+    await service.importPortableCredentials({ github: 'token' })
+    nativeCloud.getLatestNativeCloudJob.mockResolvedValueOnce({ status: 'running' })
+    expect(await service.runDueBackup()).toBe('waiting')
+    expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('reopens an interrupted native restore with its selected scope and clears the checkpoint only after metadata import', async () => {
+    const config = {
+      provider: 'github' as const,
+      owner: 'owner',
+      repository: 'private-backups',
+      retention: 2,
+      autoBackup: false,
+    }
+    localStorage.setItem(
+      'srl.cloudBackup.settings.v1',
+      JSON.stringify({ activeProvider: 'github', github: config }),
+    )
+    const item = {
+      id: '1',
+      objectKey: 'snapshot.srlmanifest.v3.json.gz',
+      size: 1,
+      createdAt: 1,
+      kind: 'githubSnapshot' as const,
+    }
+    const summaries = vi.fn().mockResolvedValue([{ id: 'fresh-local-summary' }])
+    const prepare = vi.fn().mockResolvedValue({ portableData: { version: 1 } })
+    const restore = vi.fn().mockResolvedValue({ restoredResources: 1 })
+    const fixture = () => {
+      const service = new CloudBackupService(
+        { listResourceListSummaries: summaries } as unknown as ResourceService,
+        { list: async () => [] } as unknown as CategoryService,
+        {} as ExportService,
+        {
+          canRestoreStructuredNative: () => true,
+          prepareStructuredNative: prepare,
+          restoreNative: restore,
+        } as unknown as RestoreService,
+      )
+      const internals = service as unknown as {
+        readGitHubStructuredSnapshot: ReturnType<typeof vi.fn>
+        buildNativeRestorePlan: ReturnType<typeof vi.fn>
+      }
+      internals.readGitHubStructuredSnapshot = vi.fn().mockResolvedValue({
+        ...createSnapshot(new Blob()).snapshot,
+        resources: [
+          { id: 'selected', type: 'other', metadata: {} },
+          { id: 'excluded', type: 'other', metadata: {} },
+        ],
+      })
+      internals.buildNativeRestorePlan = vi.fn().mockResolvedValue({ objects: [], resources: [] })
+      return service
+    }
+    const first = fixture()
+    await first.initializeCredentials()
+    await first.importPortableCredentials({ github: 'token' })
+    nativeCloud.restoreNativeStructuredObjects.mockRejectedValueOnce(
+      new Error('WebView interrupted'),
+    )
+    await expect(first.restoreBackup(item, undefined, ['selected'], false)).rejects.toThrow(
+      'WebView interrupted',
+    )
+    expect(summaries).not.toHaveBeenCalled()
+    const records = await first.pendingNativeRestores()
+    expect(records).toHaveLength(1)
+    expect(records[0]?.restore?.resourceKeys).toEqual(['selected'])
+    expect(JSON.stringify(records)).not.toContain('token')
+    nativeCloud.readNativeCloudCredential.mockResolvedValue({ state: 'valid', secret: 'token' })
+    const reopened = fixture()
+    expect(await reopened.resumeNativeRestore(records[0]!)).toBe(1)
+    expect(prepare.mock.calls[0]?.[0]).toEqual([expect.objectContaining({ id: 'selected' })])
+    expect(summaries).toHaveBeenCalledOnce()
+    expect(await reopened.pendingNativeRestores()).toEqual([])
+  })
+
+  it('prepares the native mirror once after rejecting competing native jobs and before reading resources', async () => {
+    const prepare = vi.fn().mockResolvedValue(undefined)
+    const resources = {
+      listSummaries: vi.fn().mockRejectedValue(new Error('stop after mirror')),
+      listVersions: vi.fn(),
+    } as unknown as ResourceService
+    const service = new CloudBackupService(
+      resources,
+      {} as CategoryService,
+      {} as ExportService,
+      {} as RestoreService,
+      undefined,
+      undefined,
+      prepare,
+    )
+    const config = {
+      provider: 'github' as const,
+      owner: 'owner',
+      repository: 'private-backups',
+      retention: 2,
+      autoBackup: false,
+      contentSelection: { communitySources: false },
+    }
+    nativeCloud.getLatestNativeCloudJob.mockResolvedValueOnce({ status: 'running' })
+    await expect(service.createBackup(config, 'token')).rejects.toThrow('已有 Android 原生云备份')
+    expect(prepare).not.toHaveBeenCalled()
+    nativeCloud.getLatestNativeCloudJob.mockResolvedValueOnce(null)
+    await expect(service.createBackup(config, 'token')).rejects.toThrow('stop after mirror')
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(resources.listSummaries).toHaveBeenCalledOnce()
   })
 
   it('persists a confirmed APK 401 as invalid and does not preserve the old Keystore secret', async () => {

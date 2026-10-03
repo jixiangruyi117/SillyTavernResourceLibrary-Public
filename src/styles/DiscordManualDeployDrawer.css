@@ -112,6 +112,15 @@
   font-weight: 800;
 }
 
+.discord-manual-step p code,
+.discord-manual-step li code,
+.discord-manual-step figcaption code {
+  display: inline;
+  width: auto;
+  margin-top: 0;
+  vertical-align: baseline;
+}
+
 .discord-manual-step a,
 .discord-manual-copy {
   display: inline-flex;

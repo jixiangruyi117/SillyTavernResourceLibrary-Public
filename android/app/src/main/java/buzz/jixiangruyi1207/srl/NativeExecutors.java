@@ -10,12 +10,14 @@ final class NativeExecutors {
     private static final ExecutorService IO_SERIAL = Executors.newSingleThreadExecutor(named("srl-io-serial"));
     private static final ExecutorService IO_LIMITED = Executors.newFixedThreadPool(3, named("srl-io"));
     private static final ExecutorService NETWORK = Executors.newFixedThreadPool(3, named("srl-network"));
+    private static final ExecutorService SHARE_INTAKE = Executors.newSingleThreadExecutor(named("srl-share-intake"));
 
     private NativeExecutors() {}
 
     static ExecutorService ioSerial() { return IO_SERIAL; }
     static ExecutorService ioLimited() { return IO_LIMITED; }
     static ExecutorService network() { return NETWORK; }
+    static ExecutorService shareIntake() { return SHARE_INTAKE; }
 
     private static ThreadFactory named(String prefix) {
         AtomicInteger sequence = new AtomicInteger();

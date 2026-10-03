@@ -193,6 +193,29 @@
   line-height: 1.5;
 }
 
+.cloud-backup-scope__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.cloud-backup-scope__header button {
+  display: inline-flex;
+  min-height: 44px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 0.6rem;
+  color: var(--color-accent);
+  background: var(--color-surface-raised);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .cloud-config > header,
 .cloud-operations > header {
   display: flex;
@@ -999,27 +1022,91 @@ body.tutorial-preview-open {
   gap: 0.65rem;
 }
 
-.cloud-protection__content {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
+.cloud-backup-scope__header button:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-raised));
 }
 
-.cloud-protection__content > summary {
-  cursor: pointer;
-  min-height: 44px;
+.cloud-backup-scope__header button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.cloud-scope-dialog {
+  width: min(42rem, calc(100% - 2rem));
+  max-height: min(90dvh, 48rem);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 1rem;
+  color: var(--color-ink);
+  background: var(--color-surface-raised);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 24%);
+}
+
+.cloud-scope-dialog[open] {
   display: flex;
-  align-items: center;
-  font-weight: 700;
+  flex-direction: column;
 }
 
-.cloud-protection__content > p {
+.cloud-scope-dialog::backdrop {
+  background: rgb(12 24 28 / 48%);
+}
+
+.cloud-scope-dialog > header,
+.cloud-scope-dialog > footer {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.cloud-scope-dialog > header {
+  border-bottom: 1px solid var(--color-line);
+}
+
+.cloud-scope-dialog h2 {
   margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 0.84rem;
+  font-size: 1.05rem;
+}
+
+.cloud-scope-dialog__body {
+  min-height: 0;
+  padding: 0.75rem 1rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cloud-scope-dialog__body > p {
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.72rem;
   line-height: 1.5;
+}
+
+.cloud-scope-dialog > footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-line);
+}
+
+.cloud-scope-dialog > header button,
+.cloud-scope-dialog > footer button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 0.6rem;
+  color: var(--color-ink);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+
+.cloud-scope-dialog > footer .cloud-scope-dialog__confirm {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  font-weight: 700;
 }
 
 .cloud-protection__facts {

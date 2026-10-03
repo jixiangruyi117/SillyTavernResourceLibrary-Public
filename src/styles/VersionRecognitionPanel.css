@@ -5,6 +5,29 @@
   min-height: 0;
   color: var(--color-ink);
   background: var(--color-surface);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.version-recognition__search {
+  width: calc(100% - 2rem);
+  min-width: 0;
+  min-height: 2.25rem;
+  margin: 0.5rem 1rem;
+  color: var(--color-ink);
+  background: var(--color-paper);
+}
+
+.version-recognition__pagination {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+}
+
+.version-recognition__pagination button {
+  min-height: 2.25rem;
 }
 
 .version-recognition__header {
@@ -18,8 +41,8 @@
 
 .version-recognition__header h2 {
   margin: 0.15rem 0;
-  font-family: var(--font-display);
-  font-size: 1.5rem;
+  font-family: inherit;
+  font-size: 1rem;
 }
 
 .version-recognition__header p {
@@ -314,8 +337,7 @@
   border-bottom: 1px solid var(--color-line);
 }
 
-.version-recognition__groups article > header label,
-.version-recognition__groups li label {
+.version-recognition__groups article > header label {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -340,28 +362,6 @@
   margin: 0.2rem 0 0;
   color: var(--color-ink-soft);
   font-size: 0.7rem;
-}
-
-.version-recognition__groups ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.version-recognition__groups li {
-  padding: 0.65rem 0.7rem;
-  border-bottom: 1px solid var(--color-line);
-}
-
-.version-recognition__groups li:last-child {
-  border-bottom: 0;
-}
-
-.version-recognition__groups li em {
-  color: var(--color-accent);
-  font-size: 0.68rem;
-  font-style: normal;
-  white-space: nowrap;
 }
 
 .version-recognition__workflow-pane > footer {
@@ -427,10 +427,6 @@
   .version-recognition__header {
     gap: 0.6rem;
     padding: 0.85rem 0.75rem;
-  }
-
-  .version-recognition__header h2 {
-    font-size: 1.25rem;
   }
 
   .version-recognition__header p {

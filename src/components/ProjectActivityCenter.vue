@@ -9,16 +9,21 @@ const props = withDefaults(
     suppressFocused?: boolean
     inlineTaskNames?: string[]
     hiddenTaskNames?: string[]
+    hiddenNoticeIds?: string[]
   }>(),
   {
     suppressFocused: false,
     inlineTaskNames: () => [],
     hiddenTaskNames: () => [],
+    hiddenNoticeIds: () => [],
   },
 )
 
 const tasks = ref<TaskRecord[]>([])
-const notices = ref<NoticeRecord[]>([])
+const noticeRecords = ref<NoticeRecord[]>([])
+const notices = computed(() =>
+  noticeRecords.value.filter((notice) => !props.hiddenNoticeIds.includes(notice.id)),
+)
 const open = ref(false)
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | undefined
@@ -51,7 +56,7 @@ const centeredImportTask = computed(() =>
 )
 const visibleTasks = computed(() =>
   displayedTasks.value
-    .filter((task) => task.status === 'running' || task.status === 'failed')
+    .filter((task) => task.status === 'running' || task.status === 'failed' || task.actionLabel)
     .slice(0, 8),
 )
 const visible = computed(() =>
@@ -75,7 +80,7 @@ function refreshTasks(): void {
 }
 
 function refreshNotices(): void {
-  notices.value = noticeCenter.list()
+  noticeRecords.value = noticeCenter.list()
 }
 
 function bytes(value: number): string {
@@ -127,6 +132,18 @@ watch(
 
 async function runNoticeAction(action: NoticeRecord['actions'][number]): Promise<void> {
   await action.run()
+}
+
+async function runTaskAction(task: TaskRecord): Promise<void> {
+  try {
+    await taskCenter.open(task.operationId)
+  } catch (error) {
+    noticeCenter.push({
+      id: `task-action:${task.operationId}`,
+      type: 'error',
+      message: error instanceof Error ? error.message : '无法打开任务，原任务已保留。',
+    })
+  }
 }
 
 onMounted(() => {
@@ -194,6 +211,9 @@ onUnmounted(() => {
           </p>
           <p v-if="task.error">{{ task.error }}</p>
           <footer>
+            <button v-if="task.actionLabel" type="button" @click="runTaskAction(task)">
+              {{ task.actionLabel }}
+            </button>
             <button
               v-if="task.status === 'running' && task.cancelable"
               type="button"

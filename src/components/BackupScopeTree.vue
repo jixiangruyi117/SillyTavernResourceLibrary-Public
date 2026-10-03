@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { isResourceGalleryImage, includeResourceGalleryIds } from '../types/ResourceGallery'
 
 import {
@@ -35,6 +35,11 @@ const expanded = ref(
   new Set<BackupScopeId | BackupScopeGroupId>(['tavernResources', 'manualResources']),
 )
 const activeCategoryId = ref<string | null | 'all'>('all')
+const query = ref('')
+const pages = ref<Record<string, number>>({})
+watch([query, activeCategoryId, () => props.resources], () => {
+  pages.value = {}
+})
 const disabled = computed(() => new Set(props.disabledScopeIds))
 const scopeById = (id: BackupScopeId) => BACKUP_SCOPE_REGISTRY.find((scope) => scope.id === id)
 const scopesForGroup = (group: BackupScopeGroupId) =>
@@ -49,31 +54,54 @@ const visibleGroups = computed(() =>
 const visibleResourceCount = computed(
   () => props.resources.filter((r) => !isResourceGalleryImage(r)).length,
 )
-const resourcesForScope = (id: BackupScopeId) => {
-  const type = scopeById(id)?.resourceType
-  return type
-    ? props.resources.filter(
-        (resource) => !isResourceGalleryImage(resource) && resource.type === type,
-      )
-    : []
-}
-const visibleResourcesForScope = (id: BackupScopeId) => {
-  const resources = resourcesForScope(id)
-  if (activeCategoryId.value === 'all' || scopeById(id)?.group !== 'tavernResources')
-    return resources
-  return resources.filter((resource) => {
-    const categoryIds = getResourceCategoryIds(resource)
-    return activeCategoryId.value === null
-      ? categoryIds.length === 0
-      : categoryIds.includes(activeCategoryId.value)
-  })
-}
-const categoryCount = (categoryId: string | null) =>
-  props.resources.filter((resource) => {
-    if (isResourceGalleryImage(resource)) return false
-    const categoryIds = getResourceCategoryIds(resource)
-    return categoryId === null ? categoryIds.length === 0 : categoryIds.includes(categoryId)
-  }).length
+const resourcesByScope = computed(() => {
+  const byType = new Map<string, ResourceSummary[]>()
+  for (const resource of props.resources) {
+    if (isResourceGalleryImage(resource)) continue
+    const bucket = byType.get(resource.type)
+    if (bucket) bucket.push(resource)
+    else byType.set(resource.type, [resource])
+  }
+  return new Map(
+    BACKUP_SCOPE_REGISTRY.map((scope) => [scope.id, byType.get(scope.resourceType ?? '') ?? []]),
+  )
+})
+const resourcesForScope = (id: BackupScopeId) => resourcesByScope.value.get(id) ?? []
+const visibleByScope = computed(() => {
+  const terms = query.value.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
+  return new Map(
+    BACKUP_SCOPE_REGISTRY.map((scope) => [
+      scope.id,
+      resourcesForScope(scope.id).filter((resource) => {
+        const ids = getResourceCategoryIds(resource)
+        if (
+          scope.group === 'tavernResources' &&
+          activeCategoryId.value !== 'all' &&
+          (activeCategoryId.value === null ? ids.length > 0 : !ids.includes(activeCategoryId.value))
+        )
+          return false
+        const text =
+          `${resource.name}\n${resource.fileName}\n${(resource.tags ?? []).join(' ')}`.toLocaleLowerCase()
+        return terms.every((term) => text.includes(term))
+      }),
+    ]),
+  )
+})
+const visibleResourcesForScope = (id: BackupScopeId) => visibleByScope.value.get(id) ?? []
+const pagedResourcesForScope = (id: BackupScopeId) =>
+  visibleResourcesForScope(id).slice(((pages.value[id] ?? 1) - 1) * 30, (pages.value[id] ?? 1) * 30)
+const pageCount = (id: BackupScopeId) =>
+  Math.max(1, Math.ceil(visibleResourcesForScope(id).length / 30))
+const categoryCounts = computed(() => {
+  const counts = new Map<string | null, number>()
+  for (const resource of props.resources) {
+    if (isResourceGalleryImage(resource)) continue
+    const ids = getResourceCategoryIds(resource)
+    for (const id of ids.length ? ids : [null]) counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  return counts
+})
+const categoryCount = (id: string | null) => categoryCounts.value.get(id) ?? 0
 const selectedIds = computed(() => new Set(props.modelValue.resourceIds))
 const selectedScopes = computed(() => new Set(props.modelValue.scopeIds))
 
@@ -198,6 +226,16 @@ function formatBytes(bytes: number): string {
       </div>
       <span>{{ selectedResourceCount }} 项资源 · {{ formatBytes(selectedResourceSize) }}</span>
     </header>
+    <input
+      v-model="query"
+      class="field__control backup-scope-tree__search"
+      type="search"
+      aria-label="搜索备份资源"
+      placeholder="搜索名称、文件名或标签，可组合关键词"
+    />
+    <small v-if="query.trim()" class="backup-scope-tree__hint"
+      >搜索只过滤显示；分组全选仍包含该分组的全部资源。</small
+    >
     <section v-for="group in visibleGroups" :key="group.id" class="backup-scope-tree__group">
       <header :class="{ 'is-complete': groupState(group.id) === 'all' }">
         <button
@@ -293,7 +331,7 @@ function formatBytes(bytes: number): string {
             v-if="expanded.has(scope.id) && visibleResourcesForScope(scope.id).length"
             class="backup-scope-tree__resources"
           >
-            <label v-for="resource in visibleResourcesForScope(scope.id)" :key="resource.id">
+            <label v-for="resource in pagedResourcesForScope(scope.id)" :key="resource.id">
               <input
                 type="checkbox"
                 :checked="selectedIds.has(resource.id)"
@@ -306,6 +344,32 @@ function formatBytes(bytes: number): string {
               >
             </label>
           </div>
+          <nav
+            v-if="expanded.has(scope.id) && pageCount(scope.id) > 1"
+            class="backup-scope-tree__filters"
+            :aria-label="`${scope.label}分页`"
+          >
+            <button
+              class="button button--quiet"
+              type="button"
+              :disabled="(pages[scope.id] ?? 1) === 1"
+              @click="pages[scope.id] = (pages[scope.id] ?? 1) - 1"
+            >
+              上一页
+            </button>
+            <span
+              >{{ pages[scope.id] ?? 1 }} / {{ pageCount(scope.id) }} ·
+              {{ visibleResourcesForScope(scope.id).length }} 项</span
+            >
+            <button
+              class="button button--quiet"
+              type="button"
+              :disabled="(pages[scope.id] ?? 1) === pageCount(scope.id)"
+              @click="pages[scope.id] = (pages[scope.id] ?? 1) + 1"
+            >
+              下一页
+            </button>
+          </nav>
         </article>
       </div>
     </section>
@@ -316,9 +380,19 @@ function formatBytes(bytes: number): string {
 </template>
 
 <style scoped>
+.backup-scope-tree__search {
+  min-width: 0;
+  width: calc(100% - 2rem);
+  margin: 0.5rem 1rem;
+  min-height: 2.25rem;
+  color: var(--color-ink);
+  background: var(--color-paper);
+}
 .backup-scope-tree {
   display: grid;
   gap: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 .backup-scope-tree__summary,
 .backup-scope-tree__group > header {
@@ -507,6 +581,10 @@ function formatBytes(bytes: number): string {
   background: color-mix(in srgb, var(--color-accent-soft) 44%, var(--glass-panel-muted));
   color: var(--color-ink);
   font-weight: 750;
+}
+nav.backup-scope-tree__filters button {
+  min-height: 2.25rem;
+  font-size: 0.75rem;
 }
 .backup-scope-tree__filters i {
   width: 0.42rem;

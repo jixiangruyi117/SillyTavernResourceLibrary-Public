@@ -9,8 +9,17 @@ export async function* zipArchiveChunks(
   onPlan?: (plan: { entries: number; fileEntries: number; uncompressedBytes: number }) => void,
   headersOnly = false,
   selectEntry?: (path: string) => boolean,
+  signal?: AbortSignal,
 ): AsyncGenerator<Uint8Array> {
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      const error = new Error('已停止备份识别')
+      error.name = 'AbortError'
+      throw error
+    }
+  }
   const read = async (offset: number, length: number) => {
+    throwIfAborted()
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > file.size)
       throw new Error('ZIP 边界无效')
     return new Uint8Array(await file.slice(offset, offset + length).arrayBuffer())
@@ -80,6 +89,7 @@ export async function* zipArchiveChunks(
   }> = []
   const paths = new Set<string>()
   for (let index = 0; index < count; index++) {
+    throwIfAborted()
     if (cursor + 46 > directory.length || data.getUint32(cursor, true) !== 0x02014b50)
       throw new Error('ZIP 目录损坏')
     const nameLength = data.getUint16(cursor + 28, true)
@@ -157,6 +167,7 @@ export async function* zipArchiveChunks(
     uncompressedBytes,
   })
   for (const entry of entries.sort((a, b) => a.offset - b.offset)) {
+    throwIfAborted()
     const fixed = view(await read(entry.offset, 30))
     if (
       fixed.getUint32(0, true) !== 0x04034b50 ||
@@ -190,8 +201,10 @@ export async function* zipArchiveChunks(
         offset += DEFLATE_READ_BATCH_BYTES
       ) {
         const batch = await read(offset, Math.min(DEFLATE_READ_BATCH_BYTES, previousEnd - offset))
-        for (let index = 0; index < batch.length; index += DEFLATE_PUSH_CHUNK_BYTES)
+        for (let index = 0; index < batch.length; index += DEFLATE_PUSH_CHUNK_BYTES) {
+          throwIfAborted()
           yield batch.subarray(index, Math.min(index + DEFLATE_PUSH_CHUNK_BYTES, batch.length))
+        }
       }
     } else {
       const step = 256 * 1024

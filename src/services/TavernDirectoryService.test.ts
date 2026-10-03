@@ -41,6 +41,32 @@ function fixture() {
 }
 
 describe('offline Tavern directory', () => {
+  it('lists only character-card names for persona matching without reading card files', async () => {
+    const { files, storage, service } = fixture()
+    let cardReads = 0
+    const originalRead = storage.read.bind(storage)
+    storage.read = async (path) => {
+      if (path.startsWith('characters/')) cardReads += 1
+      return originalRead(path)
+    }
+    const characters = await service.listResources('character')
+    expect(characters).toEqual([])
+    expect(cardReads).toBe(0)
+
+    files.set(
+      'settings.json',
+      new File(
+        [JSON.stringify({ personas: { 'alice.png': 'Alice' }, persona_descriptions: {} })],
+        'settings.json',
+        { type: 'application/json' },
+      ),
+    )
+    const personas = await service.listResources('userPersona')
+    expect(personas).toHaveLength(1)
+    expect(personas[0]).toMatchObject({ kind: 'userPersona', name: 'Alice' })
+    expect(cardReads).toBe(0)
+  })
+
   it('preserves character metadata and existing scoped scripts when writing a disabled script and a renamed copy', async () => {
     const { files, service, json } = fixture()
     const pixels = new Blob(

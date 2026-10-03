@@ -522,6 +522,7 @@ describe('CloudBackupService V3', () => {
       ) => Promise<unknown>
     }
     let secondContainerCreated = false
+    let nextAssetId = 0
     service.getGitHubRelease = vi.fn(async (_config, _secret, create, tag) => {
       if (tag === 'srl-cloud-snapshots') return { id: 10 }
       if (tag === 'srl-cloud-objects-0001') return { id: 20 }
@@ -542,9 +543,10 @@ describe('CloudBackupService V3', () => {
         : [],
     )
     service.uploadGitHubAsset = vi.fn(async (_config, _secret, releaseId, name, blob) => ({
-      id: Math.random(),
+      id: ++nextAssetId,
       name,
       size: blob.size,
+      state: 'uploaded',
       created_at: '2026-08-26T00:00:00Z',
       releaseId,
     }))
@@ -560,6 +562,7 @@ describe('CloudBackupService V3', () => {
         .filter((call) => String(call[3]).startsWith('srl-chunk--sha256-'))
         .map((call) => call[2]),
     ).toEqual([20, 30])
+    expect(service.confirmGitHubAssetSize).toHaveBeenCalledOnce()
   })
 
   it('never commits the GitHub manifest when the current object still fails', async () => {

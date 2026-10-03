@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import BackupScopeTree from './BackupScopeTree.vue'
 import {
@@ -8,7 +10,7 @@ import {
 } from '../composables/UseCloudBackupCenter'
 const props = defineProps<CloudBackupCenterProps>()
 const emit = defineEmits<CloudBackupCenterEvents>()
-const controller = useCloudBackupCenter(emit, props.resources)
+const controller = useCloudBackupCenter(emit, () => props.resources)
 const {
   status,
   formatTime,
@@ -36,6 +38,9 @@ const {
   restoreResourceCount,
   restoreScopeIds,
   restoreScopeModel,
+  restorePreview,
+  pendingRestores,
+  resumePendingRestore,
   formatBytes,
   download,
   restore,
@@ -64,6 +69,35 @@ const {
   tutorialPreview,
   closeTutorialPreview,
 } = controller
+const scopeDialog = ref<HTMLDialogElement>()
+const scopeDialogOpen = ref(false)
+const scopeDraft = ref({ ...cloudScopeModel.value })
+
+async function openBackupScope(): Promise<void> {
+  scopeDraft.value = {
+    resourceIds: [...cloudScopeModel.value.resourceIds],
+    scopeIds: [...cloudScopeModel.value.scopeIds],
+  }
+  scopeDialogOpen.value = true
+  await nextTick()
+  scopeDialog.value?.showModal()
+}
+
+function applyBackupScope(): void {
+  setCloudScopeModel(scopeDraft.value)
+  scopeDialog.value?.close()
+}
+
+function handleScopeBack(event: Event): void {
+  if (!scopeDialog.value?.open || !(event instanceof CustomEvent)) return
+  const detail = event.detail as SrlBackRequestDetail
+  detail.handled = true
+  event.stopImmediatePropagation()
+  scopeDialog.value.close()
+}
+
+onMounted(() => window.addEventListener(SRL_BACK_REQUEST_EVENT, handleScopeBack, true))
+onUnmounted(() => window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleScopeBack, true))
 </script>
 
 <template>
@@ -86,13 +120,21 @@ const {
                 : '还没有保存云端凭证')
           }}
         </p>
+        <p v-if="status.lastSuccessAt && status.lastResourceCount !== undefined">
+          {{ status.provider === 'webdav' ? 'Koofr' : 'GitHub' }} · 上次成功备份
+          {{ status.lastResourceCount }} 项
+        </p>
       </div>
       <time v-if="status.lastSuccessAt">{{
         new Date(status.lastSuccessAt).toLocaleString('zh-CN')
       }}</time>
     </section>
 
-    <nav class="cloud-provider-tabs" aria-label="选择云端备份方式">
+    <nav
+      class="cloud-provider-tabs"
+      aria-label="选择云端备份方式"
+      data-assistant-focus="backup-provider"
+    >
       <button
         type="button"
         :class="{ 'is-active': activeProvider === 'github' }"
@@ -123,8 +165,9 @@ const {
         <div class="cloud-primary-actions">
           <button
             class="button--primary"
+            data-assistant-focus="backup-create"
             type="button"
-            :disabled="Boolean(busyAction)"
+            :disabled="Boolean(busyAction) || nativeBackupActive"
             @click="createBackup"
           >
             {{ busyAction === 'backup' ? '生成并上传中…' : '立即备份（只传变化）' }}</button
@@ -140,43 +183,44 @@ const {
             {{ busyAction === 'list' ? '读取中…' : '刷新云端列表' }}
           </button>
         </div>
-        <section class="cloud-backup-scope" aria-label="本次云备份范围">
-          <strong>本次备份范围</strong>
-          <p>资源按下方范围树中的选中项保存；历史版本随所属资源，外观和常用偏好可单独调整。</p>
-          <p>{{ backupContentSummary }}</p>
-          <small
-            >可在右侧“备份安全与流量 → 确认备份范围”调整；保存配置后才会用于自动和手动备份。</small
-          >
-        </section>
-        <p class="cloud-operations__note">
-          自动备份只能在应用打开且本机已保存凭证时运行；关闭期间错过的备份会在下次打开后补做。云端导入采用安全合并，不会清空本机现有资源。当前
-          <strong>{{
-            nativeTransport
-              ? 'APK 已走 Android 原生 HTTP 网络栈'
-              : activeProvider === 'github'
-                ? '网页直接连接 GitHub，PAT 不经过本站服务器'
-                : '网页通过本站同源代理流式连接 Koofr'
-          }}</strong
-          >。所有备份只使用对象级差分结构；请使用私有仓库、可信 Koofr 账号和强应用密码。{{
-            nativeTransport
-              ? 'APK 的后台传输凭据由 Android Keystore 保护，不写入服务器数据库。'
-              : 'GitHub 令牌和 Koofr 应用密码由浏览器本机 non-extractable 设备密钥加密并保存在 IndexedDB，不写入服务器数据库。'
-          }}
+        <p
+          v-if="busyAction === 'backup' && message"
+          class="cloud-message cloud-message--live"
+          role="status"
+          aria-live="polite"
+        >
+          {{ message }}
         </p>
-        <details class="cloud-guide">
-          <summary>上传方式、大文件与失败保护</summary>
-          <p>
-            Cloud Backup V3 按资源建立对象快照，不生成整包 ZIP。小资源使用独立 immutable
-            对象，大资源按内容边界分块；与历史快照相同的对象按 SHA-256
-            直接复用，所以只改一张角色卡时只上传该卡的新对象和一份小清单。全部对象成功并远端校验后才提交清单；没有清单的不完整上传不会显示成可恢复备份。只有新快照完整成功后才会按“保留份数”清理旧备份，仍被保留快照引用的共享分块不会误删。
-          </p>
-          <p>
-            单个内容对象最大约 32 MiB。GitHub 会自动轮换 object container，不再把单个 Release
-            的附件数量当作总容量上限；Koofr 使用稳定的 objects / snapshots 目录。中断后已经 verified
-            的对象继续复用，只恢复未完成对象。
-          </p>
-        </details>
-        <p v-if="message" class="cloud-message" role="status">{{ message }}</p>
+        <section class="cloud-backup-scope" aria-label="本次云备份范围">
+          <div class="cloud-backup-scope__header">
+            <strong>本次备份范围</strong>
+            <button type="button" :disabled="Boolean(busyAction)" @click="openBackupScope">
+              调整范围 <span aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <p>{{ backupContentSummary }}</p>
+          <small>保存配置后生效。</small>
+        </section>
+        <div v-for="record in pendingRestores" :key="record.id" class="cloud-retention-alert">
+          <span
+            ><strong
+              >恢复尚未完成 · {{ record.restore?.resourceKeys?.length ?? '原范围' }} 项</strong
+            ><small>{{ record.restore?.item.objectKey }}</small></span
+          >
+          <button
+            type="button"
+            :disabled="Boolean(busyAction)"
+            @click="resumePendingRestore(record.id)"
+          >
+            继续恢复
+          </button>
+        </div>
+        <p class="cloud-operations__note">
+          只上传变化；恢复时合并现有资源。请使用私有仓库或未公开分享的 Koofr 目录。
+        </p>
+        <p v-if="message && busyAction !== 'backup'" class="cloud-message" role="status">
+          {{ message }}
+        </p>
         <details v-if="lastMetrics" class="cloud-metrics">
           <summary>
             <span>上次任务性能</span>
@@ -194,7 +238,7 @@ const {
               </dd>
             </div>
             <div>
-              <dt>Native 暂存</dt>
+              <dt>本机准备</dt>
               <dd>
                 {{
                   formatMetricDuration(
@@ -219,19 +263,15 @@ const {
             </div>
           </dl>
           <p>
-            本地读取 {{ formatMetricBytes(lastMetrics.localReadBytes) }} · 哈希
-            {{ formatMetricBytes(lastMetrics.hashedBytes) }} · Bridge
-            {{ formatMetricBytes(lastMetrics.bridgeBytes) }} · 上传
-            {{ formatMetricBytes(lastMetrics.uploadedBytes) }} · HTTP
-            {{ lastMetrics.httpRequestCount }} 次 · 重试
-            {{ lastMetrics.retryCount }}
-            次。任务平均值包含准备与校验，不是实时网速；请求耗时可能重叠，上传计数不等于去重后的备份大小。
+            读取 {{ formatMetricBytes(lastMetrics.localReadBytes) }} · 上传
+            {{ formatMetricBytes(lastMetrics.uploadedBytes) }} · 重试
+            {{ lastMetrics.retryCount }} 次。 平均速度包含准备和校验时间。
           </p>
         </details>
         <div v-if="excessBackupCount" class="cloud-retention-alert">
           <span>
             <strong>当前多出 {{ excessBackupCount }} 份旧备份</strong>
-            <small>新备份成功后会自动安全清理；此处用于处理此前失败或中断留下的旧快照。</small>
+            <small>新备份成功后自动清理，也可手动清理。</small>
           </span>
           <button type="button" :disabled="Boolean(busyAction)" @click="cleanupRetention">
             {{
@@ -246,14 +286,27 @@ const {
             <div>
               <strong>{{ item.objectKey }}</strong
               ><small
-                >{{ new Date(item.createdAt).toLocaleString('zh-CN') }} · {{ formatBytes(item.size)
+                >{{ new Date(item.createdAt).toLocaleString('zh-CN') }} ·
+                {{
+                  item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot'
+                    ? item.partCount !== undefined
+                      ? '资源合计'
+                      : '清单'
+                    : '归档'
+                }}
+                {{ formatBytes(item.size)
                 }}<template v-if="item.partCount"> · {{ item.partCount }} 个分卷</template></small
               >
             </div>
             <span
               ><button type="button" :disabled="Boolean(busyAction)" @click="download(item)">
                 {{ busyAction === `download:${item.id}` ? '下载中…' : '下载' }}</button
-              ><button type="button" :disabled="Boolean(busyAction)" @click="restore(item)">
+              ><button
+                v-if="restorePicker?.item.id !== item.id"
+                type="button"
+                :disabled="Boolean(busyAction)"
+                @click="restore(item)"
+              >
                 {{ busyAction === `restore:${item.id}` ? '处理中…' : '导入本机' }}
               </button></span
             >
@@ -277,14 +330,41 @@ const {
           </header>
           <BackupScopeTree
             v-model="restoreScopeModel"
+            :inert="Boolean(busyAction)"
             :resources="restorePicker.resources"
             :available-scope-ids="restoreScopeIds"
             mode="restore"
           />
+          <p>
+            当前资源预计新增 {{ restorePreview.added }} 项 · 已有内容
+            {{ restorePreview.skipped }} 项<template v-if="restorePreview.conflicts">
+              · {{ restorePreview.conflicts }} 项 ID 冲突保留两份</template
+            >。历史另行合并，实际以导入结果为准。
+          </p>
+          <div class="cloud-restore-selection__tools">
+            <button
+              type="button"
+              :disabled="Boolean(busyAction) || !selectedRestoreKeys.size"
+              @click="restore(restorePicker.item)"
+            >
+              {{
+                busyAction === `restore:${restorePicker.item.id}`
+                  ? '导入中…'
+                  : `导入所选（${selectedRestoreKeys.size} 项）`
+              }}
+            </button>
+            <button
+              type="button"
+              :disabled="Boolean(busyAction)"
+              @click="restorePicker = undefined"
+            >
+              取消
+            </button>
+          </div>
         </section>
       </section>
 
-      <form class="cloud-config" @submit.prevent="saveConfig()">
+      <form class="cloud-config" :inert="Boolean(busyAction)" @submit.prevent="saveConfig()">
         <header>
           <div>
             <small>{{
@@ -296,12 +376,9 @@ const {
         </header>
 
         <template v-if="activeProvider === 'github'">
-          <details class="cloud-beginner-guide" :open="!github.owner">
+          <details class="cloud-beginner-guide">
             <summary>
-              <span
-                ><strong>第一次用？照着 3 张图做</strong
-                ><small>不用懂 Git，也不用安装软件</small></span
-              >
+              <span><strong>GitHub 配置教程</strong><small>私有仓库与专用令牌</small></span>
               <i>约 3 分钟</i>
             </summary>
             <div class="cloud-tutorial-steps cloud-tutorial-steps--real">
@@ -441,10 +518,8 @@ const {
               placeholder="github_pat_…"
             /><small>{{
               snapshot.credentials.github === 'valid'
-                ? '旧密钥会继续有效；只有新密钥测试成功后才会原子替换。'
-                : nativeTransport
-                  ? '验证成功后由 Android Keystore 持久保护。'
-                  : '验证成功后由浏览器本机设备密钥加密并保存到 IndexedDB。'
+                ? '新密钥验证通过后替换旧密钥。'
+                : '仅保存在当前设备。'
             }}</small>
             <button
               v-if="snapshot.credentials.github === 'valid'"
@@ -458,11 +533,9 @@ const {
         </template>
 
         <template v-else>
-          <details class="cloud-beginner-guide" :open="!webdav.username">
+          <details class="cloud-beginner-guide">
             <summary>
-              <span
-                ><strong>第一次用？照着 4 步填</strong
-                ><small>只讲 Koofr，地址和文件夹已自动配置</small></span
+              <span><strong>Koofr 配置教程</strong><small>获取应用密码</small></span
               ><i>约 3 分钟</i>
             </summary>
             <nav class="webdav-official-links" aria-label="Koofr 官方教程">
@@ -611,10 +684,8 @@ const {
             }}</span
             ><input v-model="webdavPassword" type="password" autocomplete="new-password" /><small>{{
               snapshot.credentials.webdav === 'valid'
-                ? '旧应用密码会继续有效；只有新值测试成功后才会原子替换。'
-                : nativeTransport
-                  ? '验证成功后由 Android Keystore 持久保护。'
-                  : '验证成功后由浏览器本机设备密钥加密并保存到 IndexedDB。'
+                ? '新密码验证通过后替换旧密码。'
+                : '仅保存在当前设备。'
             }}</small>
             <button
               v-if="snapshot.credentials.webdav === 'valid'"
@@ -629,19 +700,6 @@ const {
             <span>备份文件夹</span><strong>{{ webdav.folder || 'SRL-Backups' }}</strong
             ><small>上传成功后由 SRL 自动创建</small>
           </div>
-          <details class="cloud-guide">
-            <summary>
-              {{ nativeTransport ? 'APK 会怎样连接 Koofr？' : '网页会怎样连接 Koofr？' }}
-            </summary>
-            <p v-if="nativeTransport">
-              APK 直接使用 Android 原生 HTTP 网络栈访问 Koofr WebDAV，不经过网页
-              CORS，也不会把应用密码写入服务器数据库。
-            </p>
-            <p v-else>
-              网页固定通过本站 <code>/api/cloud/proxy/koofr</code> 流式转发二进制对象以解决 WebDAV
-              CORS；不会把完整资源库或压缩包交给 Worker。
-            </p>
-          </details>
         </template>
 
         <div class="cloud-config__row">
@@ -653,23 +711,21 @@ const {
               inputmode="numeric"
               min="1"
               max="30"
-            /><small
-              >新备份完整上传后会自动清理超出此数量的旧快照；异常中断或资源数量骤降时不会自动删除。</small
-            ></label
+            /><small>新备份成功后清理多余旧备份；异常时暂停清理。</small></label
           >
           <label class="cloud-auto"
             ><input v-model="activeConfig.autoBackup" type="checkbox" /><span
               ><strong>自动备份</strong
               ><small>{{
                 nativeTransport
-                  ? '应用打开时检查；生成完成后可交给 Android 在后台继续上传'
-                  : '仅在网页打开时检查；错过后下次打开补做'
+                  ? '打开应用时检查，上传可在后台继续。'
+                  : '打开网页时检查，错过则下次补做。'
               }}</small></span
             ></label
           >
         </div>
         <section v-if="activeConfig.autoBackup" class="cloud-schedule" aria-label="自动备份频率">
-          <header><strong>备份频率</strong><small>完整 ZIP 备份不建议设置得过于频繁</small></header>
+          <header><strong>备份频率</strong></header>
           <div class="cloud-schedule__modes">
             <button
               type="button"
@@ -715,10 +771,8 @@ const {
             ><span>每天几点</span
             ><input type="time" :value="activeConfig.schedule.time" @input="updateScheduleTime"
           /></label>
-          <p v-if="nativeTransport">
-            分钟模式最低 15 分钟；应用打开时生成到期快照，交给 Android 后切后台仍会继续上传。
-          </p>
-          <p v-else>分钟模式最低 15 分钟；浏览器关闭或手机系统冻结页面时不会后台执行。</p>
+          <p v-if="nativeTransport">间隔最短 15 分钟；关闭期间不生成新备份。</p>
+          <p v-else>间隔最短 15 分钟；网页关闭或被系统冻结时暂停。</p>
         </section>
         <details class="cloud-protection">
           <summary>
@@ -741,32 +795,9 @@ const {
                 >
               </label>
             </div>
-            <details class="cloud-protection__content">
-              <summary>确认备份范围（默认资源始终备份）</summary>
-              <p>
-                资源、手动添加内容和额外数据共用本地导入导出选择逻辑。密钥和凭据默认关闭，选中后保存配置或开始备份时会再次确认；Discord
-                社区内容只有在目标确认私有后才会解锁。
-              </p>
-              <BackupScopeTree
-                :model-value="cloudScopeModel"
-                :resources="backupScopeResources"
-                :categories="props.categories"
-                mode="cloud"
-                :disabled-scope-ids="communitySourcesEnabled ? [] : ['extra.communitySources']"
-                :disabled-scope-reasons="{
-                  'extra.communitySources': communitySourcesDisabledReason,
-                }"
-                @update:model-value="setCloudScopeModel"
-              />
-            </details>
             <ul class="cloud-protection__facts">
-              <li><b>已启用：</b>上传文件名携带 SHA-256 摘要，下载与恢复前自动核对大小和内容。</li>
-              <li><b>失败保护：</b>新文件确认上传完整后才清理旧备份。</li>
-              <li>
-                <b>增量与失败保护：</b>4 MiB 及以下的小资源稳定聚合成最多 16 个包，大资源使用 8–32
-                MiB 内容寻址分块；云端已有相同哈希的对象会直接复用。全部对象完成后才提交经过 gzip
-                压缩的快照清单，旧 JSON 清单仍可读取。
-              </li>
+              <li>恢复前校验文件完整性；失败时保留旧备份。</li>
+              <li>中断后复用已完成部分，继续未完成内容。</li>
             </ul>
           </div>
         </details>
@@ -785,6 +816,38 @@ const {
     </div>
 
     <Teleport to="body">
+      <dialog
+        ref="scopeDialog"
+        class="cloud-scope-dialog"
+        aria-label="调整备份范围"
+        @keydown.esc.stop.prevent="scopeDialog?.close()"
+        @click.self="scopeDialog?.close()"
+        @close="scopeDialogOpen = false"
+      >
+        <header>
+          <h2>备份范围</h2>
+          <button type="button" aria-label="关闭备份范围" @click="scopeDialog?.close()">×</button>
+        </header>
+        <div v-if="scopeDialogOpen" class="cloud-scope-dialog__body">
+          <p>密钥默认不备份；社区内容只允许备份到私有目标。</p>
+          <BackupScopeTree
+            v-model="scopeDraft"
+            :resources="backupScopeResources"
+            :categories="props.categories"
+            mode="cloud"
+            :disabled-scope-ids="communitySourcesEnabled ? [] : ['extra.communitySources']"
+            :disabled-scope-reasons="{
+              'extra.communitySources': communitySourcesDisabledReason,
+            }"
+          />
+        </div>
+        <footer>
+          <button type="button" @click="scopeDialog?.close()">取消</button>
+          <button type="button" class="cloud-scope-dialog__confirm" @click="applyBackupScope">
+            确认范围
+          </button>
+        </footer>
+      </dialog>
       <div
         v-if="tutorialPreview"
         class="tutorial-preview"

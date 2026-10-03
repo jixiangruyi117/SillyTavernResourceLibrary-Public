@@ -125,6 +125,8 @@
   margin-bottom: 1rem;
   padding: clamp(0.85rem, 2vw, 1.1rem);
   border: 1px solid var(--color-line-strong);
+  font-size: 0.75rem;
+  line-height: 1.45;
   background:
     linear-gradient(
       135deg,
@@ -134,16 +136,33 @@
     var(--color-surface-raised);
 }
 
+.version-import-dialog__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.version-import-dialog__filters input,
+.version-import-dialog__filters select {
+  min-width: 0;
+  flex: 1 1 9rem;
+  min-height: 2.25rem;
+  color: var(--color-ink);
+  background: var(--color-paper);
+}
+
+.version-import-dialog__filters button {
+  min-height: 2.25rem;
+}
+
+.version-import-dialog__filters select {
+  font-size: 0.75rem;
+}
+
 .manual-version-panel__intro {
   display: grid;
   gap: 0.2rem;
-}
-
-.manual-version-panel__intro small {
-  color: var(--color-accent);
-  font-size: 0.62rem;
-  font-weight: 800;
-  letter-spacing: 0.18em;
 }
 
 .manual-version-panel__intro h4,
@@ -172,7 +191,7 @@
 .manual-version-panel select,
 .manual-version-panel input {
   min-width: 0;
-  min-height: var(--size-touch);
+  min-height: 2.25rem;
   padding: 0 0.75rem;
   border: 1px solid var(--color-line-strong);
   color: var(--color-ink);
@@ -464,6 +483,8 @@
   overflow: auto;
   border: 1px solid var(--color-line-strong);
   background: var(--color-surface-raised);
+  font-size: 0.75rem;
+  line-height: 1.45;
   box-shadow: 0 1.5rem 5rem color-mix(in srgb, var(--color-ink) 28%, transparent);
 }
 
@@ -490,9 +511,9 @@
 
 .version-import-dialog > header h2 {
   margin-top: 0.3rem;
-  font-family: var(--font-display);
-  font-size: clamp(1.65rem, 6vw, 2.6rem);
-  font-weight: 400;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .version-import-dialog > header button {
@@ -554,11 +575,11 @@
 
 .version-import-dialog__candidate-choice {
   display: grid;
-  grid-template-columns: auto 3rem minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   min-height: var(--size-touch);
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.75rem;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
   cursor: pointer;
 }
 
@@ -566,10 +587,22 @@
   margin: 0;
 }
 
-.version-import-dialog__candidate-choice > span:last-child {
+.version-import-dialog__candidate-content {
   display: grid;
   min-width: 0;
   gap: 0.15rem;
+}
+
+.version-import-dialog__candidate-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.5rem;
+}
+
+.version-import-dialog__candidate-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .version-import-dialog__candidate-choice small {
@@ -618,8 +651,9 @@
 }
 
 .version-import-dialog__score {
-  font-family: var(--font-display);
-  font-size: 1.1rem;
+  color: var(--color-accent);
+  font-size: 0.6875rem;
+  white-space: nowrap;
 }
 
 .version-import-dialog__note {
@@ -845,6 +879,20 @@
   overflow: visible;
 }
 
+.resource-relations__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--color-line);
+}
+
+.resource-relations__pagination button {
+  min-height: 2.25rem;
+}
+
 .resource-detail__file-facts {
   display: grid;
   margin: 0;
@@ -926,6 +974,9 @@
   }
 
   .resource-detail__header {
+    display: grid;
+    grid-template-columns: var(--size-touch) minmax(0, 1fr);
+    gap: 0.5rem;
     margin: 0;
     padding: max(0.75rem, var(--safe-top)) max(var(--mobile-gutter), var(--safe-right)) 0.75rem
       max(var(--mobile-gutter), var(--safe-left));
@@ -946,9 +997,8 @@
     display: none;
   }
 
-  .resource-detail__close-mobile {
-    display: inline;
-    font-size: 1.25rem;
+  .resource-detail__header .resource-detail__back {
+    display: grid;
   }
 
   .resource-detail__layout {
@@ -1154,10 +1204,6 @@
 }
 
 @media (max-width: 30rem) {
-  .resource-detail-sheet--character .resource-detail__header .editor-sheet__close {
-    order: initial;
-  }
-
   .resource-detail__actions {
     align-items: stretch;
     flex-direction: column;
@@ -1178,7 +1224,7 @@
 }
 
 /* 版本对比对话框 */
-.editor-overlay.version-diff-overlay {
+.editor-overlay.version-diff-overlay:not(.version-diff-overlay--import) {
   z-index: 25;
 }
 
@@ -1492,8 +1538,8 @@
 
 .version-diff__columns {
   display: grid;
-  grid-template-columns: repeat(2, minmax(16rem, 1fr));
-  overflow-x: auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow-x: hidden;
   border-top: 1px solid rgba(32, 42, 38, 0.12);
 }
 

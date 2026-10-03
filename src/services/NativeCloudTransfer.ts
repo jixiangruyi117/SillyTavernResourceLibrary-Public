@@ -10,6 +10,7 @@ import type { CloudObjectSource } from './CloudStructuredSnapshot'
 
 interface NativeCloudJobStatus {
   id: string
+  kind?: 'upload' | 'restore'
   provider: CloudBackupProvider
   status: 'staging' | 'queued' | 'running' | 'committing' | 'completed' | 'failed' | 'cancelled'
   completed: number
@@ -83,6 +84,9 @@ interface NativeCloudTransferPlugin {
     sourceHash: string
     minimumSize: number
   }): Promise<{ available: boolean; size: number }>
+  probeLibraryObjects?(options: {
+    sources: Array<{ sourceHash: string; minimumSize: number }>
+  }): Promise<{ available: boolean }>
   appendObject(options: { token: string; data: string }): Promise<void>
   commitObject(options: { token: string }): Promise<void>
   abortObject(options: { token: string }): Promise<void>
@@ -91,6 +95,7 @@ interface NativeCloudTransferPlugin {
   getJob(options: { jobId: string }): Promise<NativeCloudJobStatus>
   getLatestJob(options: {
     provider?: CloudBackupProvider
+    kind?: 'upload' | 'restore'
   }): Promise<(NativeCloudJobStatus & { present: true }) | { present: false }>
   cancelJob(options: { jobId: string }): Promise<{ cancelled: boolean; status: string }>
   restoreStructuredFiles(options: {
@@ -109,8 +114,8 @@ interface NativeCloudTransferPlugin {
 const nativeTransfer = registerPlugin<NativeCloudTransferPlugin>('NativeCloudTransfer')
 let activeJobId = ''
 
-/** 只有最终小型 manifest 可以 inline；所有资源对象都必须来自 NativeLibrary range/concat。 */
-export const NATIVE_CLOUD_INLINE_MAX_BYTES = 4 * 1024 * 1024
+/** 原生桥接按 512 KiB 分段写入；单对象上限与 Android 原生暂存边界一致。 */
+export const NATIVE_CLOUD_MAX_STAGED_OBJECT_BYTES = 256 * 1024 * 1024
 
 export interface NativeUploadObject {
   name: string
@@ -200,7 +205,7 @@ export async function canUseNativeStructuredSnapshotHandoff(options: {
   manifest: NativeUploadObject
 }): Promise<boolean> {
   if (!isNativeCloudTransferAvailable()) return false
-  if (!options.manifest.blob || options.manifest.blob.size > NATIVE_CLOUD_INLINE_MAX_BYTES)
+  if (!options.manifest.blob || options.manifest.blob.size > NATIVE_CLOUD_MAX_STAGED_OBJECT_BYTES)
     return false
 
   const minimumSizeByHash = new Map<string, number>()
@@ -218,13 +223,34 @@ export async function canUseNativeStructuredSnapshotHandoff(options: {
     }
   }
 
+  const sources = [...minimumSizeByHash].map(([sourceHash, minimumSize]) => ({
+    sourceHash,
+    minimumSize,
+  }))
+  if (nativeTransfer.probeLibraryObjects) {
+    try {
+      return (await nativeTransfer.probeLibraryObjects({ sources })).available
+    } catch (error) {
+      if (
+        typeof error !== 'object' ||
+        error === null ||
+        !('code' in error) ||
+        error.code !== 'UNIMPLEMENTED'
+      ) {
+        // Native source 不完整时 fail closed；APK 不再回退到 JS Blob 网络。
+        return false
+      }
+    }
+  }
+
+  // Old APK compatibility: only APKs without the bounded batch method use one
+  // bridge request per unique object. Current APKs check the whole source set once.
   try {
-    for (const [sourceHash, minimumSize] of minimumSizeByHash) {
+    for (const { sourceHash, minimumSize } of sources) {
       const result = await nativeTransfer.probeLibraryObject({ sourceHash, minimumSize })
       if (!result.available || result.size < minimumSize) return false
     }
   } catch {
-    // Native source 不完整时 fail closed；APK 不再回退到 JS Blob 网络。
     return false
   }
 
@@ -283,10 +309,10 @@ async function stageObject(
     }
     throw new Error('Android 原生资源镜像暂不可用；已阻止云对象退回 JS Blob/Base64。')
   }
-  if (!manifest || !object.blob || object.blob.size > NATIVE_CLOUD_INLINE_MAX_BYTES) {
+  if (!manifest || !object.blob || object.blob.size > NATIVE_CLOUD_MAX_STAGED_OBJECT_BYTES) {
     throw new Error(
       manifest
-        ? '快照清单超过原生 inline 上限。'
+        ? '快照清单超过原生单对象 256 MiB 上限。'
         : '云对象缺少可用的 NativeLibrary 来源；已阻止 JS Blob/Base64 回退。',
     )
   }
@@ -338,7 +364,7 @@ export async function uploadNativeStructuredSnapshot(options: {
   if (!isNativeCloudTransferAvailable()) throw new Error('当前不是 Android 原生传输环境')
   if (
     !options.manifest.blob ||
-    options.manifest.blob.size > NATIVE_CLOUD_INLINE_MAX_BYTES ||
+    options.manifest.blob.size > NATIVE_CLOUD_MAX_STAGED_OBJECT_BYTES ||
     options.objects.some((object) => !hasValidNativeSource(object))
   ) {
     throw new Error('原生云任务包含不能安全 handoff 的大型对象；禁止使用 Base64 Bridge。')
@@ -387,7 +413,9 @@ export async function uploadNativeStructuredSnapshot(options: {
         state.totalBytes && state.totalBytes > 0
           ? ` · ${(state.uploadedBytes ?? 0) / 1024 / 1024 < 10 ? ((state.uploadedBytes ?? 0) / 1024 / 1024).toFixed(1) : Math.round((state.uploadedBytes ?? 0) / 1024 / 1024)} MiB / ${state.totalBytes / 1024 / 1024 < 10 ? (state.totalBytes / 1024 / 1024).toFixed(1) : Math.round(state.totalBytes / 1024 / 1024)} MiB`
           : ''
-      options.onProgress?.(`正在上传 ${state.completed}/${state.total}（${percent}%）${transferred}${speed}；Android 切到后台也会继续…`)
+      options.onProgress?.(
+        `正在上传 ${state.completed}/${state.total}（${percent}%）${transferred}${speed}；Android 切到后台也会继续…`,
+      )
       if (state.status === 'completed') resolveCompleted(state)
       else if (state.status === 'failed' || state.status === 'cancelled') {
         rejectCompleted(
@@ -528,7 +556,9 @@ export async function readNativeRestoredCardMetadata(options: {
   return nativeTransfer.readRestoredCardMetadata(options)
 }
 
-export async function cancelActiveNativeCloudTransfer(): Promise<'cancelled' | 'committing' | undefined> {
+export async function cancelActiveNativeCloudTransfer(): Promise<
+  'cancelled' | 'committing' | undefined
+> {
   let jobId = activeJobId
   if (!jobId && isNativeCloudTransferAvailable()) {
     const latest = await nativeTransfer.getLatestJob({})
@@ -596,4 +626,10 @@ export async function getLatestNativeCloudJob(
   if (!isNativeCloudTransferAvailable()) return null
   const result = await nativeTransfer.getLatestJob({ provider })
   return result.present ? result : null
+}
+
+export async function getLatestNativeCloudRestoreJob(): Promise<NativeCloudJobStatus | null> {
+  if (!isNativeCloudTransferAvailable()) return null
+  const result = await nativeTransfer.getLatestJob({ kind: 'restore' })
+  return result.present && result.kind === 'restore' ? result : null
 }

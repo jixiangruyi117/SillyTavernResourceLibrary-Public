@@ -104,6 +104,16 @@ describe('CommunitySourceBackupService refresh history', () => {
     expect(parseCommunitySourceBackupData(data)).toEqual(data)
   })
 
+  it('preserves delivery ordering in normal and history payloads and rejects malformed watermarks', () => {
+    const data = backup()
+    data.messages[0].deliveryCapturedAt = 100
+    data.sources[0].metadataCapturedAt = 100
+    data.sources[0].revisions![0].messages[0].deliveryCapturedAt = 50
+    expect(parseCommunitySourceBackupData(data)).toEqual(data)
+    data.messages[0].deliveryCapturedAt = Number.NaN
+    expect(() => parseCommunitySourceBackupData(data)).toThrow('社区来源消息清单无效')
+  })
+
   it('rejects a history message that points at a different source', () => {
     const data = backup()
     data.sources[0].revisions![0].messages[0].sourceId = 'other-source'

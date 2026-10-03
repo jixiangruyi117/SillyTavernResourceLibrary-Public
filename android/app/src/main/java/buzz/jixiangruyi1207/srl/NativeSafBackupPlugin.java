@@ -41,12 +41,17 @@ public class NativeSafBackupPlugin extends Plugin {
         archiveIo(call, () -> {
             String data=call.getString("data","");
             if(data.length()>1400000) throw new IllegalArgumentException("导出分块过大");
-            NativeArchiveExport.appendInput(getContext(),call.getString("id"),call.getString("path"),call.getLong("offset",-1L),Base64.decode(data,Base64.NO_WRAP));
+            long offset = NativeBridgeNumber.bounded(call.getData().opt("offset"), 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "导出分块位置无效");
+            NativeArchiveExport.appendInput(getContext(),call.getString("id"),call.getString("path"),offset,Base64.decode(data,Base64.NO_WRAP));
             return new JSObject();
         });
     }
     @PluginMethod public void compressArchiveEntry(PluginCall call) {
-        archiveIo(call, () -> NativeArchiveExport.compress(getContext(),call.getString("id"),call.getString("path"),call.getString("uri"),call.getLong("size",-1L),call.getBoolean("compress",true),call.getLong("mtime",315532800000L),call.getObject("descriptor")));
+        archiveIo(call, () -> {
+            long size = NativeBridgeNumber.bounded(call.getData().opt("size"), 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "导出源文件大小无效");
+            long mtime = NativeBridgeNumber.boundedOrDefault(call.getData().opt("mtime"), 315532800000L, 0L, NativeBridgeNumber.MAX_SAFE_INTEGER, "导出源文件时间无效");
+            return NativeArchiveExport.compress(getContext(),call.getString("id"),call.getString("path"),call.getString("uri"),size,call.getBoolean("compress",true),mtime,call.getObject("descriptor"));
+        });
     }
     @PluginMethod public void assembleArchive(PluginCall call) {
         archiveIo(call, () -> {

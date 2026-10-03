@@ -9,12 +9,14 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.*;
 
 /** File-backed implementation of RestoreStagingStore, with verified entry checkpoints. */
 final class NativeArchiveStaging {
     private static final long MAX_ENTRY = 2L * 1024 * 1024 * 1024;
     private static final long MAX_TOTAL = 4L * 1024 * 1024 * 1024;
+    private static final Set<String> CANCELLED_REQUESTS = ConcurrentHashMap.newKeySet();
     interface Checkpoint {
         void progress(String phase, long readBytes, long sourceSize, int completed, int entryCount, int reused,
                       long stagedBytes, long totalStagedBytes) throws Exception;
@@ -57,11 +59,30 @@ final class NativeArchiveStaging {
     }
 
     static synchronized JSObject stage(Context context, File source, Set<String> selectedPaths, Checkpoint checkpoint) throws Exception {
+        return stage(context, source, selectedPaths, UUID.randomUUID().toString(), checkpoint);
+    }
+
+    static void cancel(String requestId) {
+        if (requestId != null && requestId.matches("[a-f0-9-]{36}")) CANCELLED_REQUESTS.add(requestId);
+    }
+
+    static synchronized JSObject stage(Context context, File source, Set<String> selectedPaths,
+                                       String requestId, Checkpoint checkpoint) throws Exception {
+        if (requestId == null || !requestId.matches("[a-f0-9-]{36}")) throw new IOException("无效的解压请求");
+        if (CANCELLED_REQUESTS.remove(requestId)) throw new IOException("已停止备份识别");
         long sourceSize = source.length();
-        String id = selectedPaths == null
-            ? NativeFileAccess.hash(source, (readBytes, totalBytes) ->
-                checkpoint.progress("hashing", readBytes, totalBytes, 0, 0, 0, 0L, 0L))
-            : UUID.randomUUID().toString().replace("-", "");
+        String id;
+        try {
+            id = selectedPaths == null
+                ? NativeFileAccess.hash(source, (readBytes, totalBytes) -> {
+                    ensureNotCancelled(requestId);
+                    checkpoint.progress("hashing", readBytes, totalBytes, 0, 0, 0, 0L, 0L);
+                })
+                : UUID.randomUUID().toString().replace("-", "");
+        } catch (Exception error) {
+            CANCELLED_REQUESTS.remove(requestId);
+            throw error;
+        }
         boolean session = selectedPaths != null;
         File job = directory(context, session ? "session-" + id : id);
         if (!job.isDirectory() && !job.mkdirs()) throw new IOException("无法创建解压检查点目录");
@@ -75,6 +96,7 @@ final class NativeArchiveStaging {
         try (ZipFile zip = new ZipFile(source)) {
             Enumeration<? extends ZipEntry> entries = zip.entries();
             while (entries.hasMoreElements()) {
+                ensureNotCancelled(requestId);
                 ZipEntry entry = entries.nextElement();
                 String path = entry.getName();
                 if (!safePath(path) || !paths.add(path)) throw new IOException("备份包含不安全或重复路径");
@@ -93,6 +115,7 @@ final class NativeArchiveStaging {
             long stagedBytes = 0L;
             long lastProgressAt = 0L;
             for (ZipEntry entry : files) {
+                ensureNotCancelled(requestId);
                 String path = entry.getName();
                 File output = payload(job, path);
                 JSObject previous = metadata(job, path);
@@ -102,8 +125,8 @@ final class NativeArchiveStaging {
                 if (previous != null && output.isFile() && output.length() == entry.getSize()
                     && previous.optLong("size", -1) == entry.getSize()
                     && NativeFileAccess.hash(output, (readBytes, totalBytes) ->
-                        checkpoint.progress("staging", readBytes, totalBytes, completedBefore, totalEntries, reusedBefore,
-                            stagedBefore + readBytes, archiveTotalBytes))
+                        { ensureNotCancelled(requestId); checkpoint.progress("staging", readBytes, totalBytes, completedBefore, totalEntries, reusedBefore,
+                            stagedBefore + readBytes, archiveTotalBytes); })
                         .equals(previous.optString("sha256"))) {
                     completed++;
                     reused++;
@@ -120,6 +143,7 @@ final class NativeArchiveStaging {
                     byte[] buffer = new byte[256 * 1024];
                     int count;
                     while ((count = input.read(buffer)) != -1) {
+                        ensureNotCancelled(requestId);
                         if (size > entry.getSize() - count || size > MAX_ENTRY - count) throw new IOException("ZIP 条目大小与目录不一致");
                         stream.write(buffer, 0, count);
                         crc.update(buffer, 0, count);
@@ -149,11 +173,14 @@ final class NativeArchiveStaging {
                 checkpoint.progress("staging", session ? stagedBytes : sourceSize,
                     session ? archiveTotalBytes : sourceSize, completed, totalEntries, reused, stagedBytes, archiveTotalBytes);
             }
+            ensureNotCancelled(requestId);
         } catch (Exception error) {
-            if (session) {
-                try { remove(context, "native-zip-session-" + id); } catch (Exception ignored) {}
+            if (session || isCancelled(requestId)) {
+                try { remove(context, (session ? "native-zip-session-" : "native-zip-") + id); } catch (Exception ignored) {}
             }
             throw error;
+        } finally {
+            CANCELLED_REQUESTS.remove(requestId);
         }
         JSObject result = new JSObject();
         result.put("jobId", (session ? "native-zip-session-" : "native-zip-") + id);
@@ -161,6 +188,14 @@ final class NativeArchiveStaging {
         result.put("completedEntries", completed);
         result.put("reusedEntries", reused);
         return result;
+    }
+
+    private static boolean isCancelled(String requestId) {
+        return CANCELLED_REQUESTS.contains(requestId);
+    }
+
+    private static void ensureNotCancelled(String requestId) throws IOException {
+        if (isCancelled(requestId)) throw new IOException("已停止备份识别");
     }
 
     static JSObject read(Context context, String jobId, String path) throws Exception {

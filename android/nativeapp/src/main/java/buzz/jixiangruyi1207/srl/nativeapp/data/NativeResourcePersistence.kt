@@ -9,7 +9,6 @@ import android.os.Environment
 import android.provider.OpenableColumns
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeCategory
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResource
-import buzz.jixiangruyi1207.srl.nativeapp.model.NativeSnapshot
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResourceBundle
 import org.json.JSONArray
 import org.json.JSONObject
@@ -108,15 +107,6 @@ abstract class NativeResourcePersistence(protected val context: Context) : SQLit
                 .put("sortOrder", category.sortOrder).put("hidden", category.hidden)
                 .put("createdAt", category.createdAt).put("updatedAt", category.updatedAt)
         })
-
-    protected fun writeSnapshots(snapshots: List<NativeSnapshot>) {
-        val values = JSONArray(snapshots.map { snapshot ->
-            JSONObject().put("id", snapshot.id).put("reason", snapshot.reason)
-                .put("resourceCount", snapshot.resourceCount).put("categoryCount", snapshot.categoryCount)
-                .put("size", snapshot.size).put("createdAt", snapshot.createdAt).put("filePath", snapshot.filePath)
-        })
-        writeState(writableDatabase, "historySnapshots", values.toString())
-    }
 
     protected fun normalizeCategoryName(value: String): String {
         val normalized = value.trim()

@@ -9,7 +9,17 @@ import {
   hasTextAttachments,
 } from './DiscordSourceCapture'
 import { DiscordInteraction, Env } from './DiscordSourceProtocol'
+import {
+  cleanupInbox,
+  createInboxDelivery,
+  handleInboxHandoff,
+  handleInboxRequest,
+  inboxCaptureFingerprint,
+  interactionUserId,
+  pairDiscordUser,
+} from './DiscordInbox'
 import { discordJson, handleSavedMessageCheck, handleSourceRead } from './DiscordSourceReader'
+import { cleanupResources, createResourceJobs, handleResourceRequest } from './DiscordResources'
 import {
   CORS_HEADERS,
   authorizedSetup,
@@ -22,6 +32,10 @@ import {
 } from './DiscordWorkerHttp'
 
 const COMMAND_NAME = '保存到资源库'
+const POST_COMMAND_NAME = '保存帖子到SRL（云端暂存）'
+const RESOURCE_COMMAND_NAME = '下载资源到SRL（云端暂存）'
+const DIRECT_RESOURCE_COMMAND_NAME = '下载直链'
+const PAIR_COMMAND_NAME = '绑定资源库'
 const INLINE_HANDOFF_MAX_BYTES = 1_800_000
 const HANDOFF_CHUNK_CHARACTERS = 250_000
 const HANDOFF_CHUNK_BATCH_SIZE = 20
@@ -36,9 +50,10 @@ function handoffTtlSeconds(env: Env): number {
 
 async function cleanupExpired(env: Env): Promise<void> {
   const now = Date.now()
-  await env.DB.batch([
-    env.DB.prepare(
-      `DELETE FROM handoffs
+  const results = await Promise.allSettled([
+    env.DB.batch([
+      env.DB.prepare(
+        `DELETE FROM handoffs
        WHERE token_hash LIKE '%:chunk:%'
          AND (
            expires_at <= ? OR
@@ -48,16 +63,25 @@ async function cleanupExpired(env: Env): Promise<void> {
                AND (expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?))
            )
          )`,
-    ).bind(now, now, now - 60_000),
-    env.DB.prepare(
-      'DELETE FROM handoffs WHERE expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?)',
-    ).bind(now, now - 60_000),
+      ).bind(now, now, now - 60_000),
+      env.DB.prepare(
+        'DELETE FROM handoffs WHERE expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?)',
+      ).bind(now, now - 60_000),
+    ]),
+    cleanupInbox(env, now),
+    cleanupResources(env, now),
   ])
+  const failures = results.filter((result) => result.status === 'rejected')
+  if (failures.length)
+    throw new AggregateError(
+      failures.map((failure) => failure.reason),
+      'Discord transport cleanup incomplete',
+    )
 }
 
 function splitHandoffPayload(payload: string): string[] {
   const chunks: string[] = []
-  for (let start = 0; start < payload.length; ) {
+  for (let start = 0; start < payload.length;) {
     let end = Math.min(start + HANDOFF_CHUNK_CHARACTERS, payload.length)
     if (end < payload.length) {
       const last = payload.charCodeAt(end - 1)
@@ -73,11 +97,11 @@ function handoffChunkKey(tokenHash: string, index: number): string {
   return `${tokenHash}:chunk:${index}`
 }
 
-async function createHandoff(env: Env, payload: unknown): Promise<string> {
+async function createHandoff(env: Env, payload: unknown, expiration?: number): Promise<string> {
   const token = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)))
   const tokenHash = await sha256Hex(token)
   const now = Date.now()
-  const expiresAt = now + handoffTtlSeconds(env) * 1_000
+  const expiresAt = expiration ?? now + handoffTtlSeconds(env) * 1_000
   const payloadText = JSON.stringify(payload)
   if (new TextEncoder().encode(payloadText).byteLength <= INLINE_HANDOFF_MAX_BYTES) {
     await env.DB.prepare(
@@ -172,26 +196,107 @@ function discordApplicationCommandsUrl(env: Env): string {
   return `https://discord.com/api/v10/applications/${encodeURIComponent(env.DISCORD_APPLICATION_ID)}/commands`
 }
 
+function discordVariableStatus(env: Env) {
+  return {
+    applicationId: Boolean(env.DISCORD_APPLICATION_ID?.trim()),
+    publicKey: Boolean(env.DISCORD_PUBLIC_KEY?.trim()),
+    botToken: Boolean(env.DISCORD_BOT_TOKEN?.trim()),
+  }
+}
+
+async function readCurrentBotApplication(env: Env): Promise<Record<string, unknown>> {
+  const response = await fetch('https://discord.com/api/v10/oauth2/applications/@me', {
+    headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
+  })
+  const application = asRecord(await discordJson(response, 'Discord bot application check'))
+  if (!application) throw new Error('Discord bot application response invalid')
+  return application
+}
+
 async function registerMessageCommand(env: Env): Promise<void> {
   if (!env.DISCORD_APPLICATION_ID || !env.DISCORD_BOT_TOKEN) {
     throw new Error('Discord Application ID / Bot Token 未配置')
   }
-  const response = await fetch(discordApplicationCommandsUrl(env), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: COMMAND_NAME,
-      type: 3,
-      integration_types: [1],
-      contexts: [0, 1, 2],
-    }),
+  const existingResponse = await fetch(discordApplicationCommandsUrl(env), {
+    headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
   })
-  if (!response.ok) {
-    const detail = (await response.text()).slice(0, 800)
-    throw new Error(`Discord command registration failed: ${response.status} ${detail}`)
+  const existing = await discordJson(existingResponse, 'Discord command migration read')
+  if (!Array.isArray(existing)) throw new Error('Discord command list invalid')
+  const renamedCommands = new Map([
+    [POST_COMMAND_NAME, '保存帖子到SRL'],
+    [RESOURCE_COMMAND_NAME, '下载资源到SRL'],
+  ])
+  const commands = [
+    { name: COMMAND_NAME, type: 3 },
+    { name: POST_COMMAND_NAME, type: 3 },
+    { name: RESOURCE_COMMAND_NAME, type: 3 },
+    {
+      name: DIRECT_RESOURCE_COMMAND_NAME,
+      type: 1,
+      description: '将 Discord 附件直链云端暂存到已配对资源库，不保存帖子',
+      options: [
+        {
+          name: '链接',
+          type: 3,
+          description: 'Discord 文件下载直链，不是消息地址',
+          required: true,
+          max_length: 4096,
+        },
+      ],
+    },
+    {
+      name: PAIR_COMMAND_NAME,
+      type: 1,
+      description: '将帖子和资源下载任务投递到当前资源库',
+      options: [{ name: 'code', type: 3, description: '资源库生成的一次性配对码', required: true }],
+    },
+  ]
+  for (const command of commands) {
+    const previousName = renamedCommands.get(command.name)
+    const oldCommand = existing
+      .map(asRecord)
+      .find(
+        (item) =>
+          previousName !== undefined &&
+          item?.name === previousName &&
+          item?.type === command.type &&
+          typeof item?.id === 'string',
+      )
+    const alreadyRenamed = existing.some((item) => {
+      const value = asRecord(item)
+      return value?.name === command.name && value?.type === command.type
+    })
+    const migrate = oldCommand && !alreadyRenamed
+    const response = await fetch(
+      discordApplicationCommandsUrl(env) +
+        (migrate ? '/' + encodeURIComponent(asString(oldCommand.id)) : ''),
+      {
+        method: migrate ? 'PATCH' : 'POST',
+        headers: {
+          Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...command,
+          integration_types: [1],
+          contexts: [0, 1, 2],
+        }),
+      },
+    )
+    if (!response.ok) {
+      throw new Error(`Discord command registration failed: ${response.status}`)
+    }
+    if (oldCommand && alreadyRenamed) {
+      const removed = await fetch(
+        discordApplicationCommandsUrl(env) + '/' + encodeURIComponent(asString(oldCommand.id)),
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
+        },
+      )
+      if (!removed.ok && removed.status !== 404)
+        throw new Error(`Discord old command removal failed: ${removed.status}`)
+    }
   }
 }
 
@@ -205,10 +310,73 @@ async function readMessageCommandStatus(env: Env): Promise<boolean> {
   })
   const payload = await discordJson(response, 'Discord command status read')
   if (!Array.isArray(payload)) throw new Error('Discord command status response invalid')
-  return payload.some((item) => {
-    const command = asRecord(item)
-    return asString(command?.name) === COMMAND_NAME && asNumber(command?.type) === 3
-  })
+  return [
+    [COMMAND_NAME, 3],
+    [POST_COMMAND_NAME, 3],
+    [RESOURCE_COMMAND_NAME, 3],
+    [DIRECT_RESOURCE_COMMAND_NAME, 1],
+    [PAIR_COMMAND_NAME, 1],
+  ].every(([name, type]) =>
+    payload.some((item) => {
+      const command = asRecord(item)
+      return asString(command?.name) === name && asNumber(command?.type) === type
+    }),
+  )
+}
+
+const inboxStore = { create: createHandoff, read: readHandoffPayload }
+
+async function finishInboxCommand(
+  interaction: DiscordInteraction,
+  env: Env,
+  requestUrl: string,
+  capturedAt: number,
+  capture?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    if (!capture) {
+      const name = await pairDiscordUser(interaction, env)
+      await updateDeferredInteraction(
+        interaction,
+        env,
+        `已绑定到「${name}」。以后使用“${POST_COMMAND_NAME}”会投递到这个资源库；原设备仍可领取之前的帖子。`,
+      )
+      return
+    }
+    const userId = interactionUserId(interaction)
+    if (!userId) throw new Error('无法确认执行命令的 Discord 用户')
+    const fingerprint = await inboxCaptureFingerprint(capture)
+    const enriched = await addTextAttachmentContent(capture)
+    const result = await createInboxDelivery(
+      env,
+      userId,
+      enriched,
+      fingerprint,
+      inboxStore,
+      capturedAt,
+    )
+    const state =
+      result.delivery.state === 'saved'
+        ? '这份帖子已保存到资源库。'
+        : result.delivery.state === 'waiting_binding'
+          ? '这份帖子已保存，等待关联资源。'
+          : result.paired
+            ? '帖子已投递，等待资源库上线领取；云端暂存 7 天。'
+            : '帖子已临时接收。尚未绑定资源库，请先生成配对码并执行 /绑定资源库；也可通过下方链接手动领取，链接 20 分钟后过期。'
+    await updateDeferredInteraction(
+      interaction,
+      env,
+      state,
+      `${new URL(requestUrl).origin}/open/${encodeURIComponent(result.token)}`,
+    )
+  } catch (error) {
+    console.error('Discord inbox command failed')
+    await updateDeferredInteraction(
+      interaction,
+      env,
+      `操作失败：${error instanceof Error ? error.message : '请稍后重试'}`,
+    )
+  }
 }
 
 async function updateDeferredInteraction(
@@ -250,7 +418,9 @@ async function finishDeferredMessageCommand(
 ): Promise<void> {
   try {
     const enrichedCapture = await addTextAttachmentContent(capture)
-    const attachments = Array.isArray(enrichedCapture.attachments) ? enrichedCapture.attachments : []
+    const attachments = Array.isArray(enrichedCapture.attachments)
+      ? enrichedCapture.attachments
+      : []
     const textAttachmentCount = attachments.filter((item) => {
       const attachment = asRecord(item)
       return asString(attachment?.name).toLowerCase().endsWith('.txt')
@@ -278,14 +448,53 @@ function openPage(request: Request, token: string): Response {
   const nativeUrl = `srl://discord-source?worker=${encodeURIComponent(origin)}&token=${encodeURIComponent(token)}`
   const handoffUrl = `${origin}/open/${encodeURIComponent(token)}`
   return html(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>打开 SRL</title>
-<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:32px 20px;color:#173641;background:#f5fafb}h1{font-size:1.35rem}p{color:#647b83;line-height:1.65}.a{display:block;width:100%;margin-top:12px;padding:12px 14px;border:1px solid #bfd0d4;border-radius:8px;color:#315e6d;text-decoration:none;font:inherit;font-weight:700;text-align:left;cursor:pointer}.hint{font-size:.82rem;color:#82949b}.handoff-fallback[hidden]{display:none}</style></head>
-<body><h1>Discord 来源已接收</h1><p>消息正在你自己的 Worker 中临时等待领取。iOS 桌面 PWA 请复制临时链接，再回到 PWA 粘贴领取，内容会保存到 PWA 自己的资源库。</p>
-<a class="a" href="${escapeHtml(nativeUrl)}">打开 SRL Android App</a>
-<button class="a" id="copy-handoff" type="button" data-handoff-url="${escapeHtml(handoffUrl)}">复制临时链接，回 PWA 粘贴领取</button>
-<input class="a handoff-fallback" id="handoff-fallback" type="url" value="${escapeHtml(handoffUrl)}" readonly aria-label="临时领取链接" hidden>
-<p class="hint" id="copy-status" role="status">领取链接仅供一次使用并会自动过期。</p>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>接收 Discord 帖子 · SRL</title>
+<style>
+:root{color-scheme:light dark;--bg:#f3f6f4;--surface:#fff;--ink:#233b37;--muted:#64766f;--line:#dbe5df;--tint:#eef5f0;--accent:#28694e;--on-accent:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.6}
+main{width:100%;max-width:480px;margin:0 auto;padding:calc(36px + env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left))}
+.brand{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;letter-spacing:.12em}.brand b{letter-spacing:0;color:var(--accent);font-size:14px}.brand i{width:1px;height:12px;background:var(--line)}
+h1{margin:25px 0 8px;font-size:27px;line-height:1.35;letter-spacing:-.03em}.intro{margin:0 0 24px;color:var(--muted);font-size:14px}
+.receipt{padding:16px 18px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.receipt-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.status-label{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px}.status-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent)}
+#delivery-state{margin:4px 0 0;font-size:14px;overflow-wrap:anywhere}.refresh{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:44px;padding:0 8px;margin:-6px -8px -6px 0;border:0;background:none;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;flex:none}
+.actions{margin-top:24px;display:grid;gap:10px}.action{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;min-height:56px;padding:14px 18px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);text-decoration:none;font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}.action span{min-width:0}.action svg,.refresh svg{flex:none;width:18px;height:18px}.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}.action:hover{filter:brightness(.97)}.action:focus-visible,.refresh:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}button:disabled{opacity:.55;cursor:wait}
+.web-help{margin:2px 3px 0;font-size:12px;color:var(--muted)}.handoff-fallback{width:100%;min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px}.handoff-fallback[hidden]{display:none}.note{margin:24px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+@media(prefers-color-scheme:dark){:root{--bg:#18211e;--surface:#222e29;--ink:#e6ede8;--muted:#a1b4a8;--line:#35473c;--tint:#293c30;--accent:#9fcab1;--on-accent:#172b20}}
+</style></head>
+<body><main>
+<div class="brand"><b>SRL</b><i aria-hidden="true"></i><span>DISCORD 帖子接收</span></div>
+<h1 id="delivery-heading">帖子已暂存</h1><p class="intro">打开资源库，接着整理这条帖子。</p>
+<section class="receipt" aria-label="接收进度"><div class="receipt-top"><span class="status-label"><i class="status-dot" aria-hidden="true"></i>接收进度</span><button class="refresh" id="refresh-state" type="button" aria-label="刷新接收进度"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 10a8 8 0 0 0-14-5L3 8m0-5v5h5M4 14a8 8 0 0 0 14 5l3-3m0 5v-5h-5"/></svg>刷新</button></div><p id="delivery-state" role="status" aria-live="polite">正在读取接收进度…</p></section>
+<div class="actions">
+<a class="action primary" id="open-native" href="${escapeHtml(nativeUrl)}"><span>打开安卓 App</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></a>
+<button class="action" id="copy-handoff" type="button" data-handoff-url="${escapeHtml(handoffUrl)}"><span>复制领取链接</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M15 8V4H4v11h4"/></svg></button>
+<p class="web-help">网页 / iOS PWA：复制后回资源库，在连接设置中粘贴领取。</p>
+<input class="handoff-fallback" id="handoff-fallback" type="url" value="${escapeHtml(handoffUrl)}" readonly aria-label="临时领取链接" hidden>
+</div><p class="note" id="copy-status" role="status">临时链接会自动过期。帖子在本机保存成功后确认接收；原直传链接仅能领取一次。</p>
+</main>
 <script>
+async function updateDeliveryState() {
+  const target = document.getElementById('delivery-state');
+  const button = document.getElementById('refresh-state');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch('/handoff/${encodeURIComponent(token)}/status', { cache: 'no-store', credentials: 'omit' });
+    const state = await response.json();
+    const labels = {
+      pending: '云端已接收，等待资源库保存。',
+      saved: '帖子已保存到资源库。',
+      waiting_binding: '帖子已保存，等待你关联到资源。',
+      expired: '临时链接已过期。请回 Discord 重新保存这条消息。'
+    };
+    const heading = document.getElementById('delivery-heading');
+    if (heading) heading.textContent = ({ pending: '帖子已暂存', saved: '帖子已保存', waiting_binding: '等待关联资源', expired: '链接已过期' })[state.state] || '接收进度';
+    if (target) target.textContent = (state.libraryName ? '目标：' + state.libraryName + '。' : '') + (labels[state.state] || '暂时无法读取状态，请稍后刷新。');
+  } catch {
+    if (target) target.textContent = '暂时无法读取状态，请稍后刷新。';
+  } finally { if (button) button.disabled = false; }
+}
+document.getElementById('refresh-state')?.addEventListener('click', updateDeliveryState);
+void updateDeliveryState();
 document.getElementById('copy-handoff')?.addEventListener('click', async (event) => {
   const button = event.currentTarget;
   const value = button instanceof HTMLButtonElement ? button.dataset.handoffUrl : '';
@@ -307,7 +516,7 @@ document.getElementById('copy-handoff')?.addEventListener('click', async (event)
   }
   const status = document.getElementById('copy-status');
   if (copied) {
-    if (status) status.textContent = '已复制。请切回桌面上的 SRL PWA，打开来源链接高级设置并粘贴领取。';
+    if (status) status.textContent = '已复制。请切回 SRL 网页 / PWA，打开收件箱的连接设置并粘贴领取。';
   } else {
     const fallback = document.getElementById('handoff-fallback');
     if (fallback instanceof HTMLInputElement) {
@@ -343,7 +552,54 @@ async function handleInteraction(
     return json({ type: 1 })
   }
 
-  if (interaction.type !== 2 || interaction.data?.type !== 3) {
+  const commandName = interaction.data?.name
+  const isPairCommand =
+    interaction.type === 2 && interaction.data?.type === 1 && commandName === PAIR_COMMAND_NAME
+  const isPostCommand =
+    interaction.type === 2 &&
+    interaction.data?.type === 3 &&
+    (commandName === POST_COMMAND_NAME || commandName === '保存帖子到SRL')
+  if (
+    interaction.type === 2 &&
+    ((interaction.data?.type === 3 &&
+      (commandName === RESOURCE_COMMAND_NAME || commandName === '下载资源到SRL')) ||
+      (interaction.data?.type === 1 && commandName === DIRECT_RESOURCE_COMMAND_NAME))
+  ) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const content = await createResourceJobs(interaction, env)
+          await updateDeferredInteraction(interaction, env, content)
+        } catch (error) {
+          await updateDeferredInteraction(
+            interaction,
+            env,
+            error instanceof Error ? error.message : '资源下载任务创建失败，请稍后重试',
+          )
+        }
+      })(),
+    )
+    ctx.waitUntil(cleanupExpired(env).catch(() => console.error('Discord resource cleanup failed')))
+    return json({ type: 5, data: { flags: 64 } })
+  }
+  if (isPairCommand || isPostCommand) {
+    try {
+      const capture = isPostCommand ? buildCapture(interaction) : undefined
+      const capturedAt = Date.now()
+      if (!interaction.token || !interactionUserId(interaction))
+        throw new Error('无法确认 Discord 命令身份')
+      ctx.waitUntil(finishInboxCommand(interaction, env, request.url, capturedAt, capture))
+      ctx.waitUntil(cleanupExpired(env).catch(() => console.error('Discord inbox cleanup failed')))
+      return json({ type: 5, data: { flags: 64 } })
+    } catch {
+      return json({
+        type: 4,
+        data: { content: 'Discord 未提供完整的命令身份或目标消息，请重新操作。', flags: 64 },
+      })
+    }
+  }
+
+  if (interaction.type !== 2 || interaction.data?.type !== 3 || commandName !== COMMAND_NAME) {
     return json({
       type: 4,
       data: { content: '这个命令只用于保存 Discord 消息。', flags: 64 },
@@ -400,36 +656,60 @@ async function readRequestedApplicationId(request: Request): Promise<string | un
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await cleanupExpired(env)
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'OPTIONS')
       return new Response(null, { status: 204, headers: CORS_HEADERS })
 
     if (url.pathname === '/health' && request.method === 'GET') {
+      const discordVariables = discordVariableStatus(env)
+      const discordConfigured = Object.values(discordVariables).every(Boolean)
       try {
-        await env.DB.prepare('SELECT 1').first()
+        await env.DB.prepare('SELECT 1 FROM handoffs LIMIT 1').first()
         return json({
           ok: true,
           database: true,
-          discordConfigured: Boolean(
-            env.DISCORD_APPLICATION_ID && env.DISCORD_PUBLIC_KEY && env.DISCORD_BOT_TOKEN,
-          ),
+          discordConfigured,
+          discordVariables,
           applicationId: env.DISCORD_APPLICATION_ID || null,
           commandName: COMMAND_NAME,
+          postCommandName: POST_COMMAND_NAME,
+          resourceCommandName: RESOURCE_COMMAND_NAME,
+          directResourceCommandName: DIRECT_RESOURCE_COMMAND_NAME,
+          pairCommandName: PAIR_COMMAND_NAME,
         })
       } catch {
-        return json({ ok: false, database: false }, { status: 503 })
+        return json(
+          {
+            ok: false,
+            database: false,
+            discordConfigured,
+            discordVariables,
+            applicationId: env.DISCORD_APPLICATION_ID || null,
+          },
+          { status: 503 },
+        )
       }
     }
 
     if (url.pathname === '/setup/status' && request.method === 'GET') {
       if (!authorizedSetup(request, env)) return json({ error: 'unauthorized' }, { status: 401 })
       try {
+        const botApplication = await readCurrentBotApplication(env)
+        const applicationIdMatches = asString(botApplication.id) === env.DISCORD_APPLICATION_ID
+        const publicKeyMatches =
+          asString(botApplication.verify_key).toLowerCase() ===
+          (env.DISCORD_PUBLIC_KEY ?? '').trim().toLowerCase()
         return json({
           ok: true,
           applicationId: env.DISCORD_APPLICATION_ID,
+          applicationIdMatches,
+          publicKeyMatches,
           commandName: COMMAND_NAME,
-          commandRegistered: await readMessageCommandStatus(env),
+          commandRegistered: applicationIdMatches ? await readMessageCommandStatus(env) : false,
         })
       } catch (error) {
         return json(
@@ -479,11 +759,57 @@ export default {
       return handleInteraction(request, env, ctx)
     }
 
+    if (url.pathname === '/inbox/resources' || url.pathname.startsWith('/inbox/resources/')) {
+      return handleResourceRequest(request, env)
+    }
+    if (url.pathname.startsWith('/inbox/')) {
+      const response = await handleInboxRequest(request, env, inboxStore)
+      if (response.ok)
+        ctx.waitUntil(
+          cleanupExpired(env).catch(() => console.error('Discord inbox cleanup failed')),
+        )
+      return response
+    }
+
     if (url.pathname.startsWith('/handoff/') && request.method === 'GET') {
-      const token = decodeURIComponent(url.pathname.slice('/handoff/'.length))
-      const response = await consumeHandoff(env, token)
+      const match = /^\/handoff\/([A-Za-z0-9_-]{30,160})(\/status)?$/u.exec(url.pathname)
+      if (!match) return json({ error: 'invalid_token' }, { status: 400 })
+      const token = match[1]!
+      const action = match[2] ? 'status' : 'read'
+      let response = await handleInboxHandoff(request, env, token, action, inboxStore)
+      if (!response && action === 'status') {
+        const row = await env.DB.prepare(
+          'SELECT created_at, expires_at, consumed_at FROM handoffs WHERE token_hash = ?',
+        )
+          .bind(await sha256Hex(token))
+          .first<{ created_at: number; expires_at: number; consumed_at: number | null }>()
+        response = json(
+          row
+            ? {
+                state:
+                  row.expires_at <= Date.now()
+                    ? 'expired'
+                    : row.consumed_at === null
+                      ? 'pending'
+                      : 'saved',
+                createdAt: row.created_at,
+                expiresAt: row.expires_at,
+              }
+            : { state: 'expired' },
+        )
+      }
+      response ??= await consumeHandoff(env, token)
       ctx.waitUntil(cleanupExpired(env).catch((error) => console.error(error)))
       return response
+    }
+
+    if (request.method === 'POST') {
+      const match = /^\/handoff\/([A-Za-z0-9_-]{30,160})\/ack$/u.exec(url.pathname)
+      if (match)
+        return (
+          (await handleInboxHandoff(request, env, match[1]!, 'ack', inboxStore)) ??
+          json({ error: 'delivery_not_found_or_expired' }, { status: 404 })
+        )
     }
 
     if (url.pathname.startsWith('/open/') && request.method === 'GET') {

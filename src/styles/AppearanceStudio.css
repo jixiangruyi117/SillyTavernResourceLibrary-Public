@@ -480,6 +480,59 @@
   font-size: 0.45rem;
   font-style: normal;
 }
+.appearance-inactive-scopes {
+  margin: 0.75rem 0.8rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.8rem;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+.appearance-inactive-scopes > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.25rem 0.75rem;
+  color: var(--color-ink);
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+.appearance-inactive-scopes > summary::-webkit-details-marker {
+  display: none;
+}
+.appearance-inactive-scopes summary svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: var(--color-ink-soft);
+  stroke-width: 1.5;
+}
+.appearance-inactive-scopes summary small {
+  padding: 0 0.375rem;
+  border-radius: 0.3rem;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 0.6875rem;
+}
+.appearance-inactive-scopes__chevron {
+  margin-left: auto;
+  color: var(--color-ink-soft);
+}
+.appearance-inactive-scopes[open] .appearance-inactive-scopes__chevron {
+  transform: rotate(180deg);
+}
+.appearance-inactive-scopes .appearance-scope-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem 0.625rem;
+}
+.appearance-inactive-scopes .appearance-scope-tabs button {
+  white-space: normal;
+  min-height: 44px;
+  font-size: 0.8125rem;
+}
 
 .appearance-advanced textarea {
   min-height: 11rem;

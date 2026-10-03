@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import ResourceSourceLinks from './ResourceSourceLinks.vue'
+import FeatureBackButton from './FeatureBackButton.vue'
+import ResourcePicker from './ResourcePicker.vue'
+import UserPersonaOverviewBindings from './UserPersonaOverviewBindings.vue'
 import { ref, useTemplateRef, watch } from 'vue'
 import ResourceCoverEditor from './ResourceCoverEditor.vue'
 import { resourceCoverId } from '../types/ResourceGallery'
@@ -92,6 +95,12 @@ const {
   relatedDownloadCount,
   relatedDownloadIds,
   relationQuery,
+  relationCategoryId,
+  relationTypeFilter,
+  relationTypeOptions,
+  relationPage,
+  relationPageCount,
+  relationCandidates,
   hideBoundRelationCandidates,
   boundElsewhereCandidateCount,
   relationGroups,
@@ -137,6 +146,11 @@ const {
         aria-labelledby="resource-detail-title"
       >
         <header class="editor-sheet__header resource-detail__header">
+          <FeatureBackButton
+            class="resource-detail__back"
+            label="返回资源库"
+            @click="requestClose"
+          />
           <div>
             <h2 id="resource-detail-title">
               {{
@@ -148,9 +162,13 @@ const {
               }}
             </h2>
           </div>
-          <button class="editor-sheet__close" type="button" aria-label="关闭" @click="requestClose">
-            <span class="resource-detail__close-desktop">×</span>
-            <span class="resource-detail__close-mobile">←</span>
+          <button
+            class="editor-sheet__close resource-detail__close-desktop"
+            type="button"
+            aria-label="关闭"
+            @click="requestClose"
+          >
+            ×
           </button>
         </header>
 
@@ -268,6 +286,12 @@ const {
                     <dd>{{ stat.value }}</dd>
                   </div>
                 </dl>
+
+                <UserPersonaOverviewBindings
+                  v-if="resource.type === RESOURCE_TYPE.USER_PERSONA"
+                  :resource="resource"
+                  :related-resources="props.boundResources"
+                />
 
                 <label class="field">
                   <span class="field__label">资源名称</span>
@@ -398,7 +422,12 @@ const {
                   @saved="handlePersonalSaved"
                   @busy="emit('personalBusy', $event)"
                 />
-                <StructuredResourceDetails v-else :resource="resource" />
+                <StructuredResourceDetails
+                  v-else
+                  :resource="resource"
+                  :related-resources="availableBoundResources"
+                  @saved="handlePersonalSaved"
+                />
               </section>
 
               <section
@@ -430,6 +459,7 @@ const {
                       <span>查找可关联资源</span>
                       <input
                         v-model="relationQuery"
+                        class="field__control"
                         type="search"
                         placeholder="搜索名称、文件名或资源类型"
                       />
@@ -443,20 +473,83 @@ const {
                         </small>
                       </span>
                     </label>
+                    <div class="resource-relations__selectors">
+                      <label class="resource-relations__search">
+                        <span>资源类型</span>
+                        <select
+                          v-model="relationTypeFilter"
+                          class="field__control"
+                          aria-label="关联资源类型"
+                        >
+                          <option value="all">全部类型</option>
+                          <option
+                            v-for="option in relationTypeOptions"
+                            :key="option.value"
+                            :value="option.value"
+                          >
+                            {{ option.label }}
+                          </option>
+                        </select>
+                      </label>
+                      <label class="resource-relations__search">
+                        <span>文件夹筛选</span>
+                        <select
+                          v-model="relationCategoryId"
+                          class="field__control"
+                          aria-label="关联资源文件夹"
+                        >
+                          <option value="all">全部文件夹</option>
+                          <option value="uncategorized">未分类</option>
+                          <option
+                            v-for="category in categories"
+                            :key="category.id"
+                            :value="category.id"
+                          >
+                            {{ category.name }}
+                          </option>
+                        </select>
+                      </label>
+                    </div>
                   </div>
+                  <nav
+                    v-if="relationPageCount > 1"
+                    class="resource-relations__pagination"
+                    aria-label="关联资源分页"
+                  >
+                    <button
+                      class="button button--quiet"
+                      type="button"
+                      :disabled="relationPage === 1"
+                      @click="relationPage -= 1"
+                    >
+                      上一页
+                    </button>
+                    <small
+                      >{{ relationPage }} / {{ relationPageCount }} ·
+                      {{ relationCandidates.length }} 项</small
+                    >
+                    <button
+                      class="button button--quiet"
+                      type="button"
+                      :disabled="relationPage === relationPageCount"
+                      @click="relationPage += 1"
+                    >
+                      下一页
+                    </button>
+                  </nav>
                   <div v-if="relationGroups.length" class="resource-relations__groups">
                     <section v-for="group in relationGroups" :key="group.type">
                       <header>
                         <strong>{{ group.label }}</strong>
                         <small>
-                          {{ group.items.length }} 项{{
+                          本页 {{ group.visibleItems.length }} / {{ group.items.length }} 项{{
                             group.selectedCount ? ' · 已关联 ' + group.selectedCount : ''
                           }}
                         </small>
                       </header>
                       <div class="resource-relations__list">
                         <article
-                          v-for="candidate in group.items"
+                          v-for="candidate in group.visibleItems"
                           :key="candidate.id"
                           class="resource-relation"
                           :class="{
@@ -550,25 +643,21 @@ const {
 
                 <section class="manual-version-panel" aria-labelledby="manual-version-title">
                   <div class="manual-version-panel__intro">
-                    <small>MANUAL MERGE</small>
                     <h4 id="manual-version-title">手动加入版本</h4>
                     <p>
                       如果系统没有识别出同一资源的不同版本，可以从库里选择一个同类型资源，把它收入当前资源的历史版本。
                     </p>
                   </div>
-                  <label>
-                    <span>选择库内资源</span>
-                    <select v-model="manualVersionResourceId" :disabled="busy">
-                      <option value="">选择同类型资源</option>
-                      <option
-                        v-for="candidate in manualVersionCandidates"
-                        :key="candidate.id"
-                        :value="candidate.id"
-                      >
-                        {{ candidate.name }} · {{ candidate.fileName }}
-                      </option>
-                    </select>
-                  </label>
+                  <ResourcePicker
+                    title="选择库内资源"
+                    :resources="manualVersionCandidates"
+                    :model-value="manualVersionResourceId ? [manualVersionResourceId] : []"
+                    :categories="categories"
+                    :multiple="false"
+                    :show-actions="false"
+                    :disabled="busy"
+                    @update:model-value="manualVersionResourceId = $event[0] ?? ''"
+                  />
                   <label>
                     <span>版本备注</span>
                     <input

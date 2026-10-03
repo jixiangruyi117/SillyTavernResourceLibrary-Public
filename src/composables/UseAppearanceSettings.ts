@@ -24,7 +24,7 @@ import { readStoredTheme, writeStoredTheme, type ThemeValue } from '../utils/Lib
 const CUSTOM_UI_STYLE_ID = 'srl-custom-ui-style'
 const CUSTOM_UI_CSS_LIMIT = 200_000
 const SCRIPT_PREVIEW_CONFIRM =
-  '开启后，导入资源中的完整 JavaScript（包括内联、远程脚本和动态代码）会在隔离 iframe 中运行，并可加载远程图片、音频、字体及发起联网请求。\n\n脚本仍不能读取资源库、IndexedDB 或主页面，但可能暴露 IP、诱导跳转、持续占用 CPU 或导致当前页面卡顿。只应预览你信任来源的文件。'
+  '开启后，导入资源中的完整 JavaScript（包括内联、远程脚本和动态代码）会在隔离 iframe 中运行，并可加载远程图片、音频、字体及发起联网请求。\n\n脚本仍不能读取资源库、IndexedDB、登录信息或主页面，但可能暴露 IP、诱导跳转、持续占用 CPU 或导致当前页面卡顿。只应预览你信任来源的文件。'
 
 /**
  * 外观与预览安全策略。
@@ -78,6 +78,16 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   const hideChatDisplayRegex = ref(browserStorageService.getHideChatDisplayRegex())
   const hideCharacterAssets = ref(browserStorageService.getHideCharacterAssets())
   const blurThumbnails = ref(browserStorageService.getBlurThumbnails())
+  const autoDownloadDiscordShareLinks = ref(
+    browserStorageService.getAutoDownloadDiscordShareLinks(),
+  )
+  const persistResourceVersionMatchCache = ref(
+    browserStorageService.getPersistResourceVersionMatchCache(),
+  )
+  const skipVersionComparisonOnImport = ref(
+    browserStorageService.getSkipVersionComparisonOnImport(),
+  )
+  const sameNameVersionCandidates = ref(browserStorageService.getSameNameVersionCandidates())
   // 设置面板使用受控开关，取消确认后需要重建面板才能让开关回到实际状态。
   const settingsPanelKey = ref(0)
 
@@ -95,6 +105,26 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
   function applyMobileCardOrientation(value: MobileCardOrientation): void {
     mobileCardOrientation.value = browserStorageService.setMobileCardOrientation(value)
     document.documentElement.dataset.mobileCardOrientation = mobileCardOrientation.value
+  }
+
+  function applyAutoDownloadDiscordShareLinks(enabled: boolean): void {
+    autoDownloadDiscordShareLinks.value = enabled
+    browserStorageService.setAutoDownloadDiscordShareLinks(enabled)
+  }
+
+  function applyPersistResourceVersionMatchCache(enabled: boolean): void {
+    persistResourceVersionMatchCache.value = enabled
+    browserStorageService.setPersistResourceVersionMatchCache(enabled)
+  }
+
+  function applySkipVersionComparisonOnImport(enabled: boolean): void {
+    skipVersionComparisonOnImport.value = enabled
+    browserStorageService.setSkipVersionComparisonOnImport(enabled)
+  }
+
+  function applySameNameVersionCandidates(enabled: boolean): void {
+    sameNameVersionCandidates.value = enabled
+    browserStorageService.setSameNameVersionCandidates(enabled)
   }
 
   function applyMobileCardFitMode(value: MobileCardFitMode): void {
@@ -248,6 +278,11 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     hideChatDisplayRegex.value = browserStorageService.getHideChatDisplayRegex()
     hideCharacterAssets.value = browserStorageService.getHideCharacterAssets()
     blurThumbnails.value = browserStorageService.getBlurThumbnails()
+    autoDownloadDiscordShareLinks.value = browserStorageService.getAutoDownloadDiscordShareLinks()
+    persistResourceVersionMatchCache.value =
+      browserStorageService.getPersistResourceVersionMatchCache()
+    skipVersionComparisonOnImport.value = browserStorageService.getSkipVersionComparisonOnImport()
+    sameNameVersionCandidates.value = browserStorageService.getSameNameVersionCandidates()
   }
 
   return {
@@ -265,10 +300,18 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     hideChatDisplayRegex,
     showManuallyBoundResources,
     blurThumbnails,
+    autoDownloadDiscordShareLinks,
+    persistResourceVersionMatchCache,
+    skipVersionComparisonOnImport,
+    sameNameVersionCandidates,
     settingsPanelKey,
     applyTheme,
     applyLayoutMode,
     applyMobileCardOrientation,
+    applyAutoDownloadDiscordShareLinks,
+    applyPersistResourceVersionMatchCache,
+    applySkipVersionComparisonOnImport,
+    applySameNameVersionCandidates,
     applyMobileCardFitMode,
     applyResourceCardHeightMode,
     applyNoImageResourceCoverMode,

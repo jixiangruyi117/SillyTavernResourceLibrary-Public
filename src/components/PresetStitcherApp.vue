@@ -3,7 +3,9 @@ import PresetWorkbenchTools from './PresetWorkbenchTools.vue'
 import PresetSourcePane from './PresetSourcePane.vue'
 import PresetCandidateSheet from './PresetCandidateSheet.vue'
 import PresetStitchEditorPortal from './PresetStitchEditorPortal.vue'
-import { proxyRefs } from 'vue'
+import PresetStitchEntryEditor from './PresetStitchEntryEditor.vue'
+import { computed, proxyRefs, ref } from 'vue'
+import { renderPromptReviewContent } from '../utils/PresetStitcher'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import {
   usePresetStitcherApp,
@@ -14,15 +16,44 @@ const props = defineProps<PresetStitcherAppProps>()
 const emit = defineEmits<PresetStitcherAppEvents>()
 const controller = usePresetStitcherApp(props, emit)
 const panelModel = proxyRefs(controller)
+const sourceShare = ref(40)
+const resizingColumns = ref(false)
+function resizeColumns(event: PointerEvent): void {
+  if (!resizingColumns.value) return
+  const separator = event.currentTarget as HTMLElement
+  const bounds = separator.parentElement!.getBoundingClientRect()
+  const leftShare = ((event.clientX - bounds.left) / bounds.width) * 100
+  sourceShare.value = Math.round(
+    Math.max(30, Math.min(60, mainSide.value === 'left' ? 100 - leftShare : leftShare)),
+  )
+}
+function startColumnResize(event: PointerEvent): void {
+  if (!event.isPrimary || event.button !== 0) return
+  resizingColumns.value = true
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+}
+function resizeColumnsWithKeyboard(event: KeyboardEvent): void {
+  const direction = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0
+  if (!direction && event.key !== 'Home' && event.key !== 'End') return
+  event.preventDefault()
+  sourceShare.value =
+    event.key === 'Home'
+      ? 30
+      : event.key === 'End'
+        ? 60
+        : Math.max(
+            30,
+            Math.min(60, sourceShare.value + direction * (mainSide.value === 'left' ? -2 : 2)),
+          )
+}
+function reviewContent(content: string): string {
+  return renderPromptReviewContent(content)
+}
 const {
-  setEditorTextarea,
   fullWorkspaceActive,
   step,
   requestBack,
-  readingMode,
-  toggleReadingMode,
   mainSide,
-  toggleMainSide,
   baseSummary,
   errorMessage,
   notice,
@@ -42,23 +73,17 @@ const {
   sourceDrag,
   singleColumn,
   sourceDrawerOpen,
-  toggleSingleColumn,
   startSourceDrag,
   guardDragTouch,
   sourcePickerOpen,
   toggleExpanded,
   editor,
-  editorOverlayStyle,
   mobileEditorOverlay,
-  ROLE_OPTIONS,
-  rememberEditorSelection,
-  QUICK_VARIABLES,
-  insertVariable,
-  openVariableWriter,
-  unreadWrittenVariables,
-  insertUnreadWrittenVariable,
-  saveEdit,
-  cancelEdit,
+  insertPromptSlot,
+  slotName,
+  slotId,
+  slotWriterError,
+  slotWriterOpen,
   getPromptDisplayTokens,
   copyEntryContent,
   favorites,
@@ -78,27 +103,18 @@ const {
   getEntryChangeKind,
   expandedTargetKeys,
   beginTargetEdit,
+  beginNewEntry,
+  promptSlotCount,
   moveEntry,
   assembly,
   removePickByKey,
   targetPageCount,
-  canUndo,
-  undoWorkbench,
-  canRedo,
-  redoWorkbench,
-  saveCheckpoint,
-  checkpoint,
-  restoreCheckpoint,
   blockingPromptIssues,
   reviewItems,
   openReview,
   reviewGroups,
-  reviewAddedLines,
-  reviewRemovedLines,
   reviewAddedMacros,
   reviewRemovedMacros,
-  reviewVariableReads,
-  reviewVariableWrites,
   productName,
   baseIsStitched,
   saveAsVersion,
@@ -115,6 +131,57 @@ const {
   chooseSource,
   sourcePresetPageCount,
 } = controller
+const reviewChangedPage = ref(1)
+const reviewChangedPageInput = ref('1')
+const reviewChangedPageSize = ref(5)
+const reviewChangedSearch = ref('')
+const reviewChangedFilteredItems = computed(() => {
+  const query = reviewChangedSearch.value.trim().toLocaleLowerCase()
+  if (!query) return reviewGroups.value.changed
+  return reviewGroups.value.changed.filter((item) =>
+    `${item.title} ${item.detail}`.toLocaleLowerCase().includes(query),
+  )
+})
+const reviewChangedPageCount = computed(() =>
+  Math.max(1, Math.ceil(reviewChangedFilteredItems.value.length / reviewChangedPageSize.value)),
+)
+const reviewChangedPageItems = computed(() => {
+  const start = (reviewChangedPage.value - 1) * reviewChangedPageSize.value
+  return reviewChangedFilteredItems.value.slice(start, start + reviewChangedPageSize.value)
+})
+const reviewChangedRangeStart = computed(() =>
+  reviewChangedFilteredItems.value.length
+    ? (reviewChangedPage.value - 1) * reviewChangedPageSize.value + 1
+    : 0,
+)
+const reviewChangedRangeEnd = computed(() =>
+  Math.min(
+    reviewChangedPage.value * reviewChangedPageSize.value,
+    reviewChangedFilteredItems.value.length,
+  ),
+)
+function resetReviewChangedPage(): void {
+  reviewChangedPage.value = 1
+  reviewChangedPageInput.value = '1'
+}
+function openReviewFromWorkbench(): void {
+  reviewChangedSearch.value = ''
+  reviewChangedPageSize.value = 5
+  resetReviewChangedPage()
+  openReview()
+}
+function setReviewChangedPage(page: number): void {
+  reviewChangedPage.value = Math.max(1, Math.min(page, reviewChangedPageCount.value))
+  reviewChangedPageInput.value = String(reviewChangedPage.value)
+}
+function jumpToReviewChangedPage(): void {
+  const requestedPage = Number.parseInt(reviewChangedPageInput.value, 10)
+  if (!Number.isFinite(requestedPage)) {
+    reviewChangedPageInput.value = String(reviewChangedPage.value)
+    return
+  }
+  setReviewChangedPage(requestedPage)
+}
 </script>
 
 <template>
@@ -125,63 +192,30 @@ const {
   >
     <FeatureAppHeader title="缝了么" back-label="返回功能桌面" @back="requestBack">
       <template #actions>
-        <button
-          v-if="step === 'workbench'"
-          type="button"
-          class="feature-header-action feature-header-action--icon stitch__header-action"
-          :aria-label="readingMode ? '退出全屏工作区' : '进入全屏工作区'"
-          :aria-pressed="readingMode"
-          :title="readingMode ? '退出全屏工作区' : '全屏工作区：保留全部操作'"
-          @click="toggleReadingMode"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" />
-          </svg>
-        </button>
-        <button
-          v-if="step === 'workbench'"
-          type="button"
-          class="feature-header-action feature-header-action--icon stitch__header-action"
-          :aria-label="`将主预设调到${mainSide === 'right' ? '左侧' : '右侧'}`"
-          :title="`主预设调到${mainSide === 'right' ? '左侧' : '右侧'}`"
-          @click="toggleMainSide"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 7h12l-3-3m3 3-3 3M20 17H8l3 3m-3-3 3-3" />
-          </svg>
-        </button>
+        <PresetWorkbenchTools
+          v-if="step === 'workbench' && !fullWorkspaceActive"
+          :model="panelModel"
+        />
       </template>
     </FeatureAppHeader>
 
-    <div v-if="baseSummary && step !== 'done' && !fullWorkspaceActive" class="stitch__contextbar">
+    <div v-if="baseSummary && step === 'review'" class="stitch__contextbar">
       <span>当前主预设</span>
       <strong :title="baseSummary.name">{{ baseSummary.name }}</strong>
     </div>
 
     <div v-if="fullWorkspaceActive" class="stitch__focus-toolbar">
-      <button
-        v-if="readingMode"
-        type="button"
-        class="button button--quiet stitch__focus-exit"
-        aria-label="退出全屏工作区"
-        @click="toggleReadingMode"
-      >
-        退出
-      </button>
-      <button
-        type="button"
-        class="button button--quiet stitch__focus-swap"
-        :aria-label="`将主预设调到${mainSide === 'right' ? '左侧' : '右侧'}`"
-        @click="toggleMainSide"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h12l-3-3m3 3-3 3M20 17H8l3 3m-3-3 3-3" />
-        </svg>
-      </button>
+      <PresetWorkbenchTools :model="panelModel" />
     </div>
 
     <p v-if="errorMessage" class="stitch__error" role="alert">{{ errorMessage }}</p>
-    <p v-else-if="notice" class="stitch__notice" role="status">{{ notice }}</p>
+    <p
+      v-else-if="notice && (step === 'base' || step === 'workbench')"
+      class="stitch__notice"
+      role="status"
+    >
+      {{ notice }}
+    </p>
 
     <template v-if="step === 'base'">
       <div class="stitch-entry-layout">
@@ -210,26 +244,33 @@ const {
               </button>
             </div>
           </div>
-          <div class="stitch__intro">
-            <span>01</span>
-            <div>
-              <strong>选择主预设</strong>
-              <p>采样参数、未知字段和整体结构以它为准；编辑只发生在工作副本。</p>
-            </div>
-          </div>
+          <p class="stitch__hint">选一份预设作为底板，保留其采样设置；原文件不会被修改。</p>
           <label class="stitch__search">
-            <span aria-hidden="true">⌕</span>
-            <input v-model="presetSearch" type="search" placeholder="搜索主预设" />
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input
+              v-model="presetSearch"
+              type="search"
+              aria-label="搜索主预设"
+              data-assistant-focus="stitch-search"
+              placeholder="搜索主预设"
+            />
           </label>
         </div>
         <section class="stitch-entry-layout__presets" aria-labelledby="stitch-entry-presets-title">
           <header>
-            <strong id="stitch-entry-presets-title">已有预设</strong>
-            <small>选择后进入双预设工作台</small>
+            <strong id="stitch-entry-presets-title">我的预设</strong>
           </header>
           <ul v-if="presetPageItems.length" class="stitch__preset-list">
             <li v-for="resource in presetPageItems" :key="resource.id">
-              <button type="button" :disabled="busy" @click="chooseBase(resource)">
+              <button
+                type="button"
+                data-assistant-focus="stitch-base"
+                :disabled="busy"
+                @click="chooseBase(resource)"
+              >
                 <span>
                   <strong>{{ resource.name }}</strong>
                   <em v-if="Array.isArray(resource.metadata.stitchedFrom)">我的自缝版</em>
@@ -273,6 +314,10 @@ const {
     <template v-else-if="step === 'workbench'">
       <div
         class="stitch-workbench"
+        :style="{
+          '--stitch-source-share': `${sourceShare}%`,
+          '--stitch-target-share': `${100 - sourceShare}%`,
+        }"
         :class="{
           'is-main-left': mainSide === 'left',
           'is-dragging': sourceDrag?.picked,
@@ -296,6 +341,24 @@ const {
           :model="panelModel"
           :class="{ 'is-source-drawer': singleColumn }"
         />
+        <div
+          v-if="!singleColumn"
+          class="stitch-column-separator"
+          role="separator"
+          tabindex="0"
+          aria-label="调整填充区宽度"
+          aria-orientation="vertical"
+          :aria-valuenow="sourceShare"
+          aria-valuemin="30"
+          aria-valuemax="60"
+          :aria-valuetext="`填充区 ${sourceShare}%，主预设 ${100 - sourceShare}%`"
+          @pointerdown="startColumnResize"
+          @pointermove="resizeColumns"
+          @pointerup="resizingColumns = false"
+          @pointercancel="resizingColumns = false"
+          @lostpointercapture="resizingColumns = false"
+          @keydown="resizeColumnsWithKeyboard"
+        />
 
         <section
           class="stitch-pane stitch-pane--target"
@@ -305,8 +368,16 @@ const {
           <header class="stitch-pane__header">
             <span class="stitch-pane__preset-name" :title="baseSummary?.name">
               <strong>{{ baseSummary?.name }}</strong
-              ><small class="stitch-pane__kind">（主）</small>
+              ><small class="stitch-pane__kind">主</small>
             </span>
+            <button
+              type="button"
+              class="button button--quiet stitch-pane__add-entry"
+              aria-label="新建主预设条目"
+              @click="beginNewEntry"
+            >
+              ＋ 新建
+            </button>
           </header>
           <section class="stitch-pane__filter-disclosure">
             <button
@@ -400,7 +471,9 @@ const {
                         :class="`is-${getEntryChangeKind(entry)}`"
                         >{{ getEntryChangeKind(entry) === 'inserted' ? '新增' : '修改' }}</span
                       >
-                      {{ entry.origin === 'base' ? '' : `${entry.sourceName} · ` }}
+                      {{
+                        entry.origin === 'base' || !entry.sourceName ? '' : `${entry.sourceName} · `
+                      }}
                       {{ entry.marker ? '结构项' : `${entry.charCount} 字` }}
                     </small>
                   </button>
@@ -414,75 +487,7 @@ const {
                 </div>
                 <div v-if="expandedTargetKeys.has(entry.key)" class="stitch-entry__detail">
                   <template v-if="editor?.scope === 'target' && editor.key === entry.key">
-                    <PresetStitchEditorPortal :active="mobileEditorOverlay">
-                      <div class="stitch-editor" :style="editorOverlayStyle">
-                        <label
-                          >名称<input v-model="editor.name" type="text" maxlength="160"
-                        /></label>
-                        <label
-                          >角色<select v-model="editor.role">
-                            <option
-                              v-for="role in ROLE_OPTIONS"
-                              :key="role.value"
-                              :value="role.value"
-                            >
-                              {{ role.label }}
-                            </option>
-                          </select></label
-                        >
-                        <label
-                          >正文<textarea
-                            :ref="setEditorTextarea"
-                            v-model="editor.content"
-                            rows="8"
-                            @click="rememberEditorSelection"
-                            @focus="rememberEditorSelection"
-                            @input="rememberEditorSelection"
-                            @keyup="rememberEditorSelection"
-                            @select="rememberEditorSelection"
-                          ></textarea>
-                        </label>
-                        <div class="stitch-editor__macros">
-                          <button
-                            v-for="item in QUICK_VARIABLES"
-                            :key="item.value"
-                            class="button button--quiet"
-                            type="button"
-                            @click="insertVariable(item.value, item.placeholder, $event)"
-                          >
-                            {{ item.label }}
-                          </button>
-                          <button
-                            class="button button--quiet"
-                            type="button"
-                            @click="openVariableWriter"
-                          >
-                            写入聊天变量
-                          </button>
-                          <select
-                            v-if="unreadWrittenVariables.length"
-                            aria-label="读取尚未使用的已写变量"
-                            @change="insertUnreadWrittenVariable"
-                          >
-                            <option value="">读取未使用的已写变量</option>
-                            <option
-                              v-for="variable in unreadWrittenVariables"
-                              :key="`${variable.scope}:${variable.name}`"
-                              :value="`${variable.scope}:${variable.name}`"
-                            >
-                              {{ variable.label }}
-                            </option>
-                          </select>
-                        </div>
-                        <div class="stitch-editor__actions">
-                          <button type="button" class="button button--primary" @click="saveEdit">
-                            保存修改</button
-                          ><button class="button button--quiet" type="button" @click="cancelEdit">
-                            取消
-                          </button>
-                        </div>
-                      </div>
-                    </PresetStitchEditorPortal>
+                    <PresetStitchEntryEditor :model="panelModel" />
                   </template>
                   <template v-else>
                     <!-- eslint-disable-next-line vue/no-v-html -- 高亮函数先转义正文，仅插入固定 span。 -->
@@ -581,18 +586,7 @@ const {
         <div v-if="editor" class="stitch-editor-backdrop" aria-hidden="true"></div>
       </PresetStitchEditorPortal>
 
-      <PresetWorkbenchTools
-        :hidden="Boolean(editor || sourcePickerOpen || candidateSheetOpen || variableWriterOpen)"
-        :can-undo="canUndo"
-        :can-redo="canRedo"
-        :has-checkpoint="Boolean(checkpoint)"
-        :single-column="singleColumn"
-        @undo="undoWorkbench"
-        @redo="redoWorkbench"
-        @save="saveCheckpoint"
-        @restore="restoreCheckpoint"
-        @single="toggleSingleColumn"
-      />
+      <PresetStitchEntryEditor v-if="editor?.scope === 'new'" :model="panelModel" />
 
       <details v-if="blockingPromptIssues.length" class="stitch-audit" open>
         <summary>生成前检查 · {{ blockingPromptIssues.length }} 个错误</summary>
@@ -612,132 +606,193 @@ const {
         <span
           ><strong>{{ reviewItems.length }}</strong> 项变更 · 草稿自动保存</span
         >
-        <button type="button" class="button button--primary" @click="openReview">
+        <button type="button" class="button button--primary" @click="openReviewFromWorkbench">
           查看变更并导出
         </button>
       </footer>
     </template>
 
     <template v-else-if="step === 'review'">
-      <div class="stitch-review__hero">
-        <span>03</span>
-        <div>
-          <strong>导出前确认</strong>
-          <p>这里只列出相对主预设的变化；原文件不会被覆盖。</p>
-        </div>
+      <div class="stitch-review__overview" aria-label="差异概览">
+        <span class="stitch-review__count stitch-review__count--added"
+          >新增 {{ reviewGroups.added.length }} 条目</span
+        >
+        <span class="stitch-review__count stitch-review__count--removed"
+          >删除 {{ reviewGroups.removed.length }} 条目</span
+        >
+        <span class="stitch-review__count stitch-review__count--changed"
+          >修改 {{ reviewGroups.changed.length }} 条目</span
+        >
       </div>
       <div class="stitch-review">
-        <section v-if="reviewGroups.added.length">
-          <header>
-            <strong>新增条目与正则</strong><em>{{ reviewGroups.added.length }}</em>
-          </header>
-          <ul>
+        <p v-if="!reviewItems.length" class="stitch-review__empty">尚未修改，将保留主预设内容。</p>
+        <details
+          v-if="reviewGroups.added.length"
+          class="stitch-review__group stitch-review__group--added"
+          :open="reviewGroups.added.length <= 3"
+        >
+          <summary>
+            <strong>新增 {{ reviewGroups.added.length }} 条目</strong>
+          </summary>
+          <ul v-if="reviewGroups.added.length">
             <li v-for="item in reviewGroups.added" :key="item.key">
-              <b>{{ item.kind === 'regex' ? '正则' : '新增' }}</b
-              ><span
-                ><strong>{{ item.title }}</strong
-                ><small
+              <span>
+                <strong>{{ item.title }}</strong>
+                <small
                   >{{ item.detail
                   }}<template v-if="item.sourceName">
                     · 来源：{{ item.sourceName }}</template
                   ></small
-                ></span
+                >
+              </span>
+              <pre
+                v-if="item.afterContent !== undefined"
+                class="stitch-review__content"
+                data-op="added"
+                >{{ item.afterContent ? reviewContent(item.afterContent) : '（空内容）' }}</pre>
+            </li>
+          </ul>
+        </details>
+        <details
+          v-if="reviewGroups.removed.length"
+          class="stitch-review__group stitch-review__group--removed"
+          :open="reviewGroups.removed.length > 0 && reviewGroups.removed.length <= 3"
+        >
+          <summary>
+            <strong>删除 {{ reviewGroups.removed.length }} 条目</strong>
+          </summary>
+          <ul v-if="reviewGroups.removed.length">
+            <li v-for="item in reviewGroups.removed" :key="item.key">
+              <span>
+                <strong>{{ item.title }}</strong>
+                <small>{{ item.detail }}</small>
+              </span>
+              <pre
+                v-if="item.beforeContent !== undefined"
+                class="stitch-review__content"
+                data-op="removed"
+                >{{ item.beforeContent ? reviewContent(item.beforeContent) : '（空内容）' }}</pre>
+            </li>
+          </ul>
+        </details>
+        <details
+          v-if="reviewGroups.changed.length"
+          class="stitch-review__group stitch-review__group--changed"
+          :open="reviewGroups.changed.length > 0 && reviewGroups.changed.length <= 3"
+        >
+          <summary>
+            <strong>修改 {{ reviewGroups.changed.length }} 条目</strong>
+          </summary>
+          <div v-if="reviewGroups.changed.length > 5" class="stitch-review__controls">
+            <input
+              v-model="reviewChangedSearch"
+              type="search"
+              aria-label="按名称筛选修改条目"
+              placeholder="按条目名称筛选"
+              @input="resetReviewChangedPage"
+            />
+            <label>
+              每页
+              <select v-model.number="reviewChangedPageSize" @change="resetReviewChangedPage">
+                <option :value="5">5 条</option>
+                <option :value="10">10 条</option>
+                <option :value="20">20 条</option>
+              </select>
+            </label>
+            <small v-if="reviewChangedSearch.trim()"
+              >筛选后 {{ reviewChangedFilteredItems.length }} /
+              {{ reviewGroups.changed.length }} 条</small
+            >
+          </div>
+          <ul v-if="reviewChangedPageItems.length">
+            <li v-for="item in reviewChangedPageItems" :key="item.key">
+              <span>
+                <strong>{{ item.title }}</strong>
+                <small v-if="item.detail">{{ item.detail }}</small>
+              </span>
+              <div
+                v-if="item.beforeContent !== undefined || item.afterContent !== undefined"
+                class="stitch-review__content-transition"
               >
+                <div v-if="item.beforeContent !== undefined" data-op="removed">
+                  <small>修改前</small>
+                  <pre>{{
+                    item.beforeContent ? reviewContent(item.beforeContent) : '（空内容）'
+                  }}</pre>
+                </div>
+                <div v-if="item.afterContent !== undefined" data-op="added">
+                  <small>修改后</small>
+                  <pre>{{
+                    item.afterContent ? reviewContent(item.afterContent) : '（空内容）'
+                  }}</pre>
+                </div>
+              </div>
             </li>
           </ul>
-        </section>
-        <section v-if="reviewGroups.changed.length">
-          <header>
-            <strong>修改内容</strong><em>{{ reviewGroups.changed.length }}</em>
-          </header>
-          <ul>
-            <li v-for="item in reviewGroups.changed" :key="item.key">
-              <b>修改</b
-              ><span
-                ><strong>{{ item.title }}</strong
-                ><small>{{ item.detail }}</small></span
-              >
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewGroups.moved.length">
-          <header>
-            <strong>顺序变化</strong><em>{{ reviewGroups.moved.length }}</em>
-          </header>
-          <ul>
-            <li v-for="item in reviewGroups.moved" :key="item.key">
-              <b>顺序</b
-              ><span
-                ><strong>{{ item.title }}</strong
-                ><small>{{ item.detail }}</small></span
-              >
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewAddedLines.length">
-          <header>
-            <strong>具体增加的行</strong><em>{{ reviewAddedLines.length }}</em>
-          </header>
-          <ul class="stitch-review__code-list">
-            <li v-for="(line, index) in reviewAddedLines" :key="`line-add:${index}:${line}`">
-              <b>增加</b>
-              <pre>{{ line }}</pre>
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewRemovedLines.length">
-          <header>
-            <strong>具体删除的行</strong><em>{{ reviewRemovedLines.length }}</em>
-          </header>
-          <ul class="stitch-review__code-list">
-            <li v-for="(line, index) in reviewRemovedLines" :key="`line-remove:${index}:${line}`">
-              <b>删除</b>
-              <pre>{{ line }}</pre>
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewAddedMacros.length || reviewRemovedMacros.length">
-          <header>
-            <strong>宏变化</strong
-            ><em>{{ reviewAddedMacros.length + reviewRemovedMacros.length }}</em>
-          </header>
-          <ul class="stitch-review__code-list">
-            <li v-for="macro in reviewAddedMacros" :key="`macro-add:${macro}`">
-              <b>增加</b>
-              <pre>{{ macro }}</pre>
-            </li>
-            <li v-for="macro in reviewRemovedMacros" :key="`macro-remove:${macro}`">
-              <b>删除</b>
-              <pre>{{ macro }}</pre>
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewVariableReads.length">
-          <header>
-            <strong>新增变量读取</strong><em>{{ reviewVariableReads.length }}</em>
-          </header>
-          <ul>
-            <li v-for="variable in reviewVariableReads" :key="`read:${variable}`">
-              <b>读取</b
-              ><span
-                ><strong>{{ variable }}</strong></span
-              >
-            </li>
-          </ul>
-        </section>
-        <section v-if="reviewVariableWrites.length">
-          <header>
-            <strong>新增变量写入</strong><em>{{ reviewVariableWrites.length }}</em>
-          </header>
-          <ul>
-            <li v-for="variable in reviewVariableWrites" :key="`write:${variable}`">
-              <b>写入</b
-              ><span
-                ><strong>{{ variable }}</strong></span
-              >
-            </li>
-          </ul>
-        </section>
+          <p v-else-if="reviewChangedFilteredItems.length" class="stitch-review__empty">
+            当前页没有修改条目
+          </p>
+          <p v-else class="stitch-review__empty">
+            {{ reviewGroups.changed.length ? '没有符合条件的修改条目' : '没有修改条目' }}
+          </p>
+          <nav
+            v-if="reviewChangedFilteredItems.length > reviewChangedPageSize"
+            class="stitch-review__pagination"
+            aria-label="修改条目分页"
+          >
+            <span class="stitch-review__range"
+              >{{ reviewChangedRangeStart }}–{{ reviewChangedRangeEnd }} /
+              {{ reviewChangedFilteredItems.length }}</span
+            >
+            <button
+              type="button"
+              :disabled="reviewChangedPage <= 1"
+              @click="setReviewChangedPage(reviewChangedPage - 1)"
+            >
+              上一页
+            </button>
+            <label class="stitch-review__page-jump">
+              第
+              <input
+                v-model="reviewChangedPageInput"
+                type="number"
+                min="1"
+                :max="reviewChangedPageCount"
+                aria-label="跳转到指定页"
+                @change="jumpToReviewChangedPage"
+                @keydown.enter.prevent="jumpToReviewChangedPage"
+              />
+              / {{ reviewChangedPageCount }} 页
+            </label>
+            <button
+              type="button"
+              :disabled="reviewChangedPage >= reviewChangedPageCount"
+              @click="setReviewChangedPage(reviewChangedPage + 1)"
+            >
+              下一页
+            </button>
+          </nav>
+        </details>
+        <details
+          v-if="reviewAddedMacros.length || reviewRemovedMacros.length"
+          class="stitch-review__technical"
+        >
+          <summary>
+            宏变化<em>{{ reviewAddedMacros.length + reviewRemovedMacros.length }}</em>
+          </summary>
+          <div class="stitch-review__technical-content">
+            <ul class="stitch-review__code-list">
+              <li v-for="macro in reviewAddedMacros" :key="`macro-add:${macro}`">
+                <b>增加</b>
+                <pre>{{ macro }}</pre>
+              </li>
+              <li v-for="macro in reviewRemovedMacros" :key="`macro-remove:${macro}`">
+                <b>删除</b>
+                <pre>{{ macro }}</pre>
+              </li>
+            </ul>
+          </div>
+        </details>
       </div>
       <div class="stitch__generate">
         <label
@@ -753,15 +808,17 @@ const {
           ><span>版本备注（可选）</span
           ><input v-model="versionNote" type="text" maxlength="240" placeholder="这次改了什么"
         /></label>
-        <p>
-          格式仍是 SillyTavern generation preset
-          JSON；“我的自缝版”只是资源库元数据分类，不改变导入和酒馆互传。
+        <p>保存为标准 SillyTavern 预设 JSON，可下载或通过酒馆互传使用。</p>
+        <p v-if="promptSlotCount" class="stitch__slot-dependency">
+          含
+          {{ promptSlotCount }}
+          个角色卡填写占位；酒馆端需安装支持该格式的互传扩展，未支持时占位宏会原样保留。
         </p>
         <div>
           <button class="button button--quiet" type="button" @click="step = 'workbench'">
             返回修改</button
           ><button type="button" class="button button--primary" :disabled="busy" @click="generate">
-            {{ busy ? '正在生成并入库' : '确认生成并放入资源库' }}
+            {{ busy ? '正在生成并入库' : '生成并入库' }}
           </button>
         </div>
       </div>
@@ -819,6 +876,52 @@ const {
       </div>
 
       <div
+        v-if="slotWriterOpen"
+        class="stitch-sheet mobile-dialog-viewport"
+        role="dialog"
+        aria-modal="true"
+        aria-label="创建填写占位"
+        @click.self="slotWriterOpen = false"
+      >
+        <section class="stitch-sheet__panel stitch-variable-writer stitch-slot-writer">
+          <header>
+            <span
+              ><strong>{{ slotId ? '修改填写占位' : '创建填写占位' }}</strong></span
+            >
+            <button
+              class="button button--quiet"
+              type="button"
+              aria-label="关闭"
+              @click="slotWriterOpen = false"
+            >
+              ×
+            </button>
+          </header>
+          <label
+            ><span>占位名称</span
+            ><input
+              v-model="slotName"
+              type="text"
+              maxlength="80"
+              placeholder="例如：文风、状态栏、角色服装"
+              autofocus
+          /></label>
+          <p>进入酒馆后按角色卡填写；留空时自动隐藏包含该项的整条提示词。</p>
+          <p v-if="slotWriterError" class="stitch__error" role="alert">
+            {{ slotWriterError }}
+          </p>
+          <div class="stitch-variable-writer__actions">
+            <button class="button button--quiet" type="button" @click="slotWriterOpen = false">
+              取消
+            </button>
+            <button type="button" class="button button--primary" @click="insertPromptSlot($event)">
+              {{ slotId ? '更新占位' : '插入占位' }}
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <div
         v-if="sourcePickerOpen"
         class="stitch-sheet mobile-dialog-viewport"
         role="dialog"
@@ -828,7 +931,7 @@ const {
       >
         <section class="stitch-sheet__panel">
           <header>
-            <span><strong>更换填充内容</strong></span
+            <span><strong>选择填充内容</strong></span
             ><button
               class="button button--quiet"
               type="button"
@@ -838,15 +941,21 @@ const {
               ×
             </button>
           </header>
-          <div class="stitch-sheet__favorites">
+          <div v-if="favorites.length" class="stitch-sheet__favorites">
             <button type="button" @click="chooseFavoriteSource">
               <strong>已收藏预设条目</strong
               ><small>{{ favorites.length }} 条 · 跨预设直接复用</small>
             </button>
           </div>
           <label class="stitch__search"
-            ><span aria-hidden="true">⌕</span
-            ><input v-model="presetSearch" type="search" placeholder="搜索填充预设"
+            ><svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" />
+              <path d="m16 16 4 4" /></svg
+            ><input
+              v-model="presetSearch"
+              type="search"
+              aria-label="搜索填充预设"
+              placeholder="搜索填充预设"
           /></label>
           <ul class="stitch__preset-list">
             <li v-for="resource in sourcePresetPageItems" :key="resource.id">
@@ -861,7 +970,9 @@ const {
                 >
               </button>
             </li>
-            <li v-if="!sourcePresetPageItems.length" class="stitch__empty">没有其他可用预设。</li>
+            <li v-if="!sourcePresetPageItems.length" class="stitch__empty">
+              {{ presetSearch ? '没有匹配的填充预设' : '没有其他可用预设。' }}
+            </li>
           </ul>
           <nav v-if="sourcePresetPageCount > 1" class="stitch-pagination">
             <button

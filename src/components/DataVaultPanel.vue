@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
-import type { BackupRecord } from '../types/Resource'
 import type { VaultStatus } from '../types/Vault'
 import FeatureBackButton from './FeatureBackButton.vue'
 
 defineProps<{
   status: VaultStatus
-  snapshots: BackupRecord[]
   busy: boolean
   required?: boolean
 }>()
@@ -17,9 +15,6 @@ const emit = defineEmits<{
   enable: [password: string]
   disable: []
   lock: []
-  snapshot: []
-  restore: [id: string]
-  delete: [id: string]
 }>()
 
 const password = ref('')
@@ -55,19 +50,6 @@ function submitEnable(): void {
   finishKeyboardInput()
   emit('enable', password.value)
 }
-
-function formatDate(value: number): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
-}
-
-function formatBytes(value = 0): string {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`
-}
 </script>
 
 <template>
@@ -92,7 +74,7 @@ function formatBytes(value = 0): string {
           />
           <div>
             <h2 id="vault-panel-title">
-              {{ status.locked ? '解锁本地保险库' : '加密与历史版本' }}
+              {{ status.locked ? '解锁本地保险库' : '本地保险库' }}
             </h2>
           </div>
           <button
@@ -148,7 +130,7 @@ function formatBytes(value = 0): string {
 
             <template v-if="status.enabled">
               <p class="vault-section__description">
-                资源名称、标签、解析内容、原文件、缩略图和历史快照均已加密。内容指纹仅用于本机去重。
+                资源名称、标签、解析内容、原文件和缩略图均已加密。内容指纹仅用于本机去重。
               </p>
               <div class="vault-section__actions">
                 <button
@@ -177,7 +159,7 @@ function formatBytes(value = 0): string {
             >
               <p class="vault-section__description">
                 开启后使用 PBKDF2 从密码派生密钥，再以 AES-256-GCM
-                加密数据。迁移在单个本地事务中完成。
+                加密数据。迁移分批保存检查点，中断后解锁可继续。
               </p>
               <div class="vault-password-form__pair">
                 <label>
@@ -211,57 +193,6 @@ function formatBytes(value = 0): string {
               </button>
               <p class="vault-warning">密码不会上传或保存。忘记密码后，加密数据无法找回。</p>
             </form>
-          </section>
-
-          <section class="vault-section vault-history" aria-labelledby="history-title">
-            <div class="vault-section__heading">
-              <div>
-                <h3 id="history-title">历史版本</h3>
-              </div>
-              <button
-                class="button button--quiet"
-                type="button"
-                :disabled="busy"
-                @click="emit('snapshot')"
-              >
-                创建快照
-              </button>
-            </div>
-            <p class="vault-section__description">
-              最多保留 8 个完整快照。整库恢复和保险库转换前会自动留存版本；日常删除可在回收站恢复。
-            </p>
-
-            <div v-if="snapshots.length" class="vault-history__list">
-              <article v-for="snapshot in snapshots" :key="snapshot.id" class="vault-history__item">
-                <div class="vault-history__copy">
-                  <strong>{{ snapshot.reason || '本地快照' }}</strong>
-                  <span>{{ formatDate(snapshot.createdAt) }}</span>
-                  <small>
-                    {{ snapshot.resourceCount }} 项资源 · {{ snapshot.categoryCount || 0 }} 个文件夹
-                    ·
-                    {{ formatBytes(snapshot.size) }}
-                    <template v-if="snapshot.encrypted"> · 已加密</template>
-                  </small>
-                </div>
-                <div class="vault-history__actions">
-                  <button type="button" :disabled="busy" @click="emit('restore', snapshot.id)">
-                    恢复
-                  </button>
-                  <button
-                    class="vault-history__delete"
-                    type="button"
-                    :disabled="busy"
-                    @click="emit('delete', snapshot.id)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            </div>
-            <div v-else class="vault-history__empty">
-              <strong>还没有历史版本</strong>
-              <span>创建第一个快照，以后可以将整个资源库回退到此时。</span>
-            </div>
           </section>
         </div>
       </section>

@@ -8,8 +8,8 @@ import { hashBytes } from '../services/HashService'
  * 对卡数据做规范化（递归键排序）后取 SHA-256，可得到与封装无关的
  * 内容指纹，用于版本匹配与「同卡不同封装」查重：
  * - 完整指纹：整个卡对象一致 → 内容完全相同；
- * - 核心指纹：仅身份字段子集（名称、描述、性格、场景、开场白等）一致
- *   → 内容一致但导出工具附加了 create_date 等易变字段。
+ * - 核心指纹：名称、描述、性格、场景、示例对话一致 → 同一设定的版本候选；
+ *   开场白变化仍由完整指纹区分，不会被当作重复内容。
  * 指纹只写入资源 metadata，不修改卡数据本身。
  */
 
@@ -18,18 +18,10 @@ export interface CharacterCardFingerprints {
   core: string
 }
 
-export const CHARACTER_CARD_FINGERPRINT_VERSION = 2
+export const CHARACTER_CARD_FINGERPRINT_VERSION = 3
 
 /** 参与核心指纹的身份字段（v2/v3 通用）。 */
-const CORE_FIELDS = [
-  'name',
-  'description',
-  'personality',
-  'scenario',
-  'first_mes',
-  'mes_example',
-  'alternate_greetings',
-] as const
+const CORE_FIELDS = ['name', 'description', 'personality', 'scenario', 'mes_example'] as const
 
 /** 递归键排序的规范化 JSON：键顺序差异不影响指纹。 */
 export function canonicalizeCardJson(value: unknown): string {
@@ -66,6 +58,16 @@ export async function computeCardFingerprints(
   const core: Record<string, unknown> = {}
   for (const field of CORE_FIELDS) {
     if (data[field] !== undefined) core[field] = data[field]
+  }
+  // 只有名称的空白卡缺少设定证据，不能因排除开场白而变成同一身份。
+  if (
+    !CORE_FIELDS.some(
+      (field) => field !== 'name' && typeof data[field] === 'string' && data[field].trim(),
+    )
+  ) {
+    for (const field of ['first_mes', 'alternate_greetings']) {
+      if (data[field] !== undefined) core[field] = data[field]
+    }
   }
   const [full, coreHash] = await Promise.all([
     // v1 把卡字段放在根节点，v2/v3 使用 { spec, spec_version, data } 包装。

@@ -12,6 +12,9 @@ describe('Discord manual deployment bundle', () => {
     const statements: string[] = []
     const env = {
       DB: {
+        async batch(pending: Array<{ run: () => Promise<{ success: boolean }> }>) {
+          return Promise.all(pending.map((statement) => statement.run()))
+        },
         prepare(sql: string) {
           statements.push(sql)
           return { run: async () => ({ success: true }) }
@@ -24,13 +27,20 @@ describe('Discord manual deployment bundle', () => {
       {},
     )
     expect(response.status).toBe(401)
-    expect(statements).toHaveLength(2)
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('CREATE TABLE IF NOT EXISTS handoffs'),
+        expect.stringContaining('CREATE TABLE IF NOT EXISTS inbox_endpoints'),
+        expect.stringContaining('CREATE TABLE IF NOT EXISTS inbox_resources'),
+      ]),
+    )
+    const initializedStatements = [...statements]
     const again = await worker.fetch(
       new Request('https://bridge.example/source/read', { method: 'POST' }),
       env,
       {},
     )
     expect(again.status).toBe(401)
-    expect(statements).toHaveLength(2)
+    expect(statements).toEqual(initializedStatements)
   })
 })

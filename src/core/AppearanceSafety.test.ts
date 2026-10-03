@@ -12,6 +12,7 @@ import {
 
 describe('AppearanceSafety', () => {
   afterEach(() => {
+    appearanceTransaction.rollback()
     vi.useRealTimers()
     localStorage.clear()
     sessionStorage.clear()
@@ -52,6 +53,43 @@ describe('AppearanceSafety', () => {
       JSON.stringify({ previousCss: '.safe{}', nextCss: '.bad{}', expiresAt: Date.now() + 1000 }),
     )
     expect(recoverInterruptedAppearance()).toBe('.safe{}')
+  })
+  it('AI edits persist automatically and can be undone once after the guard closes', async () => {
+    vi.useFakeTimers()
+    const apply = vi.fn(),
+      persist = vi.fn()
+    appearanceTransaction.begin({
+      previousCss: '.old{}',
+      nextCss: '.ai{}',
+      autoKeep: true,
+      durationMs: 1000,
+      apply,
+      persist,
+    })
+    const root = document.getElementById('srl-appearance-safe-layer')!.shadowRoot!
+    expect(root.querySelector('strong')!.textContent).toBe('美化已应用')
+    expect(root.querySelector('[data-rollback]')!.textContent).toBe('撤销')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(document.getElementById('srl-appearance-safe-layer')).toBeNull()
+    expect(persist).toHaveBeenLastCalledWith('.ai{}')
+    expect(appearanceTransaction.undo()).toBe(true)
+    expect(persist).toHaveBeenLastCalledWith('.old{}')
+    expect(appearanceTransaction.undo()).toBe(false)
+  })
+  it('clearing CSS invalidates the undo record rather than restoring an obsolete edit', () => {
+    const apply = vi.fn(),
+      persist = vi.fn()
+    appearanceTransaction.begin({
+      previousCss: '.old{}',
+      nextCss: '.ai{}',
+      autoKeep: true,
+      apply,
+      persist,
+    })
+    appearanceTransaction.keep()
+    appearanceTransaction.clear('', apply, persist)
+    expect(appearanceTransaction.undo()).toBe(false)
+    expect(persist).toHaveBeenLastCalledWith('')
   })
 })
 

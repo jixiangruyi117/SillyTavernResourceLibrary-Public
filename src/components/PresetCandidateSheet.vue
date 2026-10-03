@@ -61,10 +61,11 @@ const {
         </button>
       </header>
       <p class="stitch-candidates__summary">
-        将加入 <strong>{{ candidates.length }}</strong> 条 · 预计 +{{ candidateCharacterCount }}
-        字
+        <strong>{{ candidates.length }} 条候选</strong> · {{ candidateCharacterCount }} 字
       </p>
-      <p class="stitch__hint">选中主预设插入位置后，可逐条加入；批量加入保持候选顺序。</p>
+      <p v-if="candidates.length" class="stitch__hint">
+        加入到当前插入位置，批量加入保持下列顺序。
+      </p>
       <ul class="stitch-candidates__list">
         <li v-for="candidate in candidates" :key="candidate.id">
           <div>
@@ -86,7 +87,8 @@ const {
             <button
               type="button"
               class="button button--quiet"
-              @click="compareCandidateId = candidate.id"
+              :aria-pressed="compareCandidateId === candidate.id"
+              @click="compareCandidateId = compareCandidateId === candidate.id ? '' : candidate.id"
             >
               对比
             </button>
@@ -124,10 +126,20 @@ const {
           </article>
         </div>
       </section>
-      <section class="stitch-candidates__templates">
-        <header><strong>候选模板</strong><small>只保存本机，不影响预设文件</small></header>
+      <details class="stitch-candidates__templates">
+        <summary>
+          <strong>候选模板</strong
+          ><span v-if="stitchTemplates.length">{{ stitchTemplates.length }}</span>
+        </summary>
+        <p class="stitch__hint">把常用组合保存在本机，下次可一键加入候选。</p>
         <div class="stitch-candidates__template-save">
-          <input v-model="templateName" type="text" maxlength="80" placeholder="例如：常用文风包" />
+          <input
+            v-model="templateName"
+            type="text"
+            maxlength="80"
+            aria-label="候选模板名称"
+            placeholder="例如：常用文风包"
+          />
           <button
             type="button"
             class="button button--quiet"
@@ -160,7 +172,7 @@ const {
             </div>
           </li>
         </ul>
-      </section>
+      </details>
       <button
         type="button"
         class="button button--primary stitch-candidates__all"

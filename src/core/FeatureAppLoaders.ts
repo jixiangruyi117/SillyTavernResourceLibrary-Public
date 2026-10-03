@@ -26,6 +26,8 @@ export function getFeatureAppLoader(
       return () => import('../components/AppearanceStudio.vue')
     case 'cloud':
       return () => import('../components/CloudBackupCenter.vue')
+    case 'inbox':
+      return () => import('../components/DiscordInboxCenter.vue')
     case 'extensions':
       return () => import('../components/ExternalAppManager.vue')
     default:

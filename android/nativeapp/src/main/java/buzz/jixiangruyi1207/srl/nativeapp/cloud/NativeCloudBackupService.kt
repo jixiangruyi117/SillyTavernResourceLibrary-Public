@@ -193,8 +193,7 @@ class NativeCloudBackupService(
                     else throw IllegalArgumentException("不支持的旧版云备份格式")
                 }
             }
-            if (replace) store.captureSnapshot("云端恢复前自动保存")
-            onProgress(NativeCloudProgress(if (replace) "恢复前快照已保存，正在安全替换本机资源…" else "校验完成，正在安全合并到本机资源…"))
+            onProgress(NativeCloudProgress(if (replace) "校验完成，正在安全替换本机资源…" else "校验完成，正在安全合并到本机资源…"))
             return store.importArchiveFile(archive, replace)
         } finally {
             if (archive != null && archive != downloaded) archive.delete()
@@ -274,8 +273,7 @@ class NativeCloudBackupService(
                     prepared += NativePreparedCloudResource(record, original, isVersion)
                 }
             }
-            if (replace) store.captureSnapshot("云端恢复前自动保存")
-            onProgress(NativeCloudProgress(if (replace) "恢复前快照已保存，正在原生流式替换本机资源…" else "校验完成，正在原生流式合并到本机资源…"))
+            onProgress(NativeCloudProgress(if (replace) "校验完成，正在原生流式替换本机资源…" else "校验完成，正在原生流式合并到本机资源…"))
             return store.importCloudSnapshot(snapshot, prepared, replace)
         } finally {
             prepared.forEach { it.file.delete() }

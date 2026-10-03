@@ -188,11 +188,32 @@ describe('ImageGenerationApp', () => {
     await click(wrapper, 'OpenAI')
     await click(wrapper, '模型 / 连接')
     const endpoint = wrapper.get('input[type="url"]')
+    expect(wrapper.findAll('summary').some((summary) => summary.text().startsWith('模板'))).toBe(
+      false,
+    )
     expect(endpoint.attributes('readonly')).toBeUndefined()
     await endpoint.setValue('https://relay.test/v1/images/generations')
     await wrapper.get('input[type="password"]').setValue('relay-key')
     await wrapper.get('.image-generation-connection input[type="text"]').setValue('future-model')
     expect(wrapper.get('[aria-label="模型列表"]').element).toHaveProperty('value', 'future-model')
+    const advanced = wrapper.get('.image-generation-connection__advanced')
+    expect((advanced.element as HTMLDetailsElement).open).toBe(false)
+    ;(advanced.element as HTMLDetailsElement).open = true
+    await advanced.trigger('toggle')
+    await advanced.get('select').setValue('session')
+    await click(wrapper, '保存连接')
+    await flushPromises()
+    expect(wrapper.get('.image-generation-connection [role="status"]').text()).toContain(
+      '连接已保存',
+    )
+    expect(saveConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        endpoint: 'https://relay.test/v1/images/generations',
+        apiKey: 'relay-key',
+        model: 'future-model',
+        credentialPersistence: 'session',
+      }),
+    )
     await click(wrapper, '恢复默认地址')
     expect(endpoint.element).toHaveProperty('value', 'https://api.openai.com/v1/images/generations')
     expect(wrapper.get('input[type="password"]').element).toHaveProperty('value', 'relay-key')

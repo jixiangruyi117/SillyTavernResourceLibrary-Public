@@ -1,7 +1,9 @@
 import {
   getRelatedResourceIds,
+  getResourceCategoryIds,
   RESOURCE_TYPE_LABELS,
   type ResourceSummary,
+  type ResourceType,
 } from '../types/Resource'
 
 import { isResourceGalleryImage } from '../types/ResourceGallery'
@@ -11,6 +13,8 @@ export interface ResourceRelationCandidateOptions {
   selectedResourceIds: ReadonlySet<string>
   query: string
   hideBoundElsewhere: boolean
+  categoryId?: string | null
+  resourceType?: ResourceType
 }
 
 export function isResourceBoundElsewhere(
@@ -28,6 +32,12 @@ export function filterResourceRelationCandidates(
   return resources
     .filter((resource) => !isResourceGalleryImage(resource))
     .filter((resource) => resource.id !== options.currentResourceId)
+    .filter((resource) => !options.resourceType || resource.type === options.resourceType)
+    .filter((resource) => {
+      if (options.categoryId === undefined) return true
+      const ids = getResourceCategoryIds(resource)
+      return options.categoryId === null ? ids.length === 0 : ids.includes(options.categoryId)
+    })
     .filter(
       (resource) =>
         !options.hideBoundElsewhere ||

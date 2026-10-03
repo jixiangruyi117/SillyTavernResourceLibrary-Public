@@ -323,6 +323,16 @@ export async function uploadGitHubStructuredBackup(
             undefined,
             1,
           )
+          if (
+            Number.isSafeInteger(uploaded.id) &&
+            uploaded.id > 0 &&
+            uploaded.name === name &&
+            uploaded.size === blob.size &&
+            uploaded.state === 'uploaded'
+          ) {
+            completed = true
+            break
+          }
           if (await context.confirmGitHubAssetSize(config, secret, uploaded, blob.size)) {
             completed = true
             break

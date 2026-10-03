@@ -1,10 +1,9 @@
-import { createResourceArchiveSource } from '../services/ExportService'
-import type { Ref, ShallowRef } from 'vue'
-import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
+import { ref, type Ref, type ShallowRef } from 'vue'
+import type { LegacyLibraryHistoryCleanup } from '../storage/IndexedDbResourceHealthStorage'
+import { confirmAction } from '../composables/UseConfirmDialog'
 import {
   browserStorageService,
   communitySourceStorage,
-  historyService,
   resourceService,
   vaultService,
 } from '../core/AppContainer'
@@ -29,9 +28,6 @@ interface LibraryProtectionContext {
   isClearingNativeCache: Ref<boolean, boolean>
   showNotice: (message: string, duration?: number, preserveRecycleUndo?: boolean) => void
   isRequestingPersistence: Ref<boolean, boolean>
-  historySnapshots: Ref<BackupRecord[]>
-  historySnapshotLimit: Ref<number, number>
-  settingsPanelKey: Ref<number, number>
   categories: Ref<Category[]>
   isDataProtectionOpen: Ref<boolean, boolean>
   isVaultPanelOpen: Ref<boolean, boolean>
@@ -46,12 +42,52 @@ interface LibraryProtectionContext {
   resources: Ref<ResourceSummary[]>
   recycleBinEntries: ShallowRef<BackupRecord[], BackupRecord[]>
   recycleUndoEntry: ShallowRef<BackupRecord | undefined, BackupRecord | undefined>
-  clearBrowsingState: () => void
 }
 
 export function useLibraryProtection(getContext: () => LibraryProtectionContext) {
-  let historySnapshotsLoaded = false
-  let historySnapshotsLoad: Promise<void> | undefined
+  const legacyLibraryHistory = ref<LegacyLibraryHistoryCleanup>({ records: [], bytes: 0 })
+  const isClearingLegacyLibraryHistory = ref(false)
+
+  async function refreshLegacyLibraryHistory(): Promise<void> {
+    try {
+      legacyLibraryHistory.value = await browserStorageService.legacyLibraryHistoryCleanup()
+    } catch (error) {
+      getContext().showNotice('无法读取旧整库快照占用')
+      throw error
+    }
+  }
+
+  async function clearLegacyLibraryHistory(): Promise<void> {
+    const context = getContext()
+    if (isClearingLegacyLibraryHistory.value || context.isVaultBusy.value) return
+    isClearingLegacyLibraryHistory.value = true
+    try {
+      await refreshLegacyLibraryHistory()
+      const plan = {
+        records: legacyLibraryHistory.value.records.map((record) => ({ ...record })),
+        bytes: legacyLibraryHistory.value.bytes,
+      }
+      if (!plan.records.length) return
+      const confirmed = await confirmAction({
+        title: '清理旧整库快照',
+        message: `永久删除 ${plan.records.length} 份旧整库快照（${formatBytes(plan.bytes)}），无法撤销。当前资源、单资源版本、回收站和云备份不受影响。`,
+        confirmLabel: '永久清理',
+      })
+      if (!confirmed) return
+      const bytes = await browserStorageService.clearLegacyLibraryHistory(plan)
+      legacyLibraryHistory.value = { records: [], bytes: 0 }
+      context.showNotice(
+        `已清理 ${plan.records.length} 份旧整库快照（${formatBytes(bytes)}）；系统回收磁盘空间可能稍有延迟`,
+      )
+      await refreshStorageHealth()
+    } catch (error) {
+      context.showNotice(error instanceof Error ? error.message : '旧整库快照清理失败')
+      await refreshLegacyLibraryHistory().catch(() => undefined)
+    } finally {
+      isClearingLegacyLibraryHistory.value = false
+    }
+  }
+
   async function refreshStorageHealth(): Promise<void> {
     const context = getContext()
 
@@ -67,15 +103,15 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     const context = getContext()
 
     if (!context.isNativeApk || context.isClearingNativeCache.value) return
-    const confirmed = await confirmAction({
-      title: '清理 APK 临时缓存',
-      message:
-        '清空 APK 的临时缓存和代码缓存，不会删除资源、历史版本、云端备份或网页数据库。请先完成上传、下载、导入和恢复任务。',
-      confirmLabel: '清理缓存',
-    })
-    if (!confirmed) return
     context.isClearingNativeCache.value = true
     try {
+      const confirmed = await confirmAction({
+        title: '清理 APK 临时缓存',
+        message:
+          '清空 APK 的临时缓存和代码缓存，不会删除资源、历史版本、云端备份、网页数据库或登录信息。请先完成上传、下载、导入和恢复任务。',
+        confirmLabel: '清理缓存',
+      })
+      if (!confirmed) return
       const clearedBytes = await clearNativeTemporaryCaches()
       await refreshStorageHealth()
       domainEvents.emit('NativeTemporaryCachesCleared', {
@@ -110,83 +146,24 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
     }
   }
 
-  function loadHistorySnapshots(): Promise<void> {
-    if (historySnapshotsLoad) return historySnapshotsLoad
-    historySnapshotsLoad = (async () => {
-      const context = getContext()
-      const [snapshots, limit] = await Promise.all([
-        historyService.list(),
-        historyService.getSnapshotLimit(),
-      ])
-      context.historySnapshots.value = snapshots
-      context.historySnapshotLimit.value = limit
-      historySnapshotsLoaded = true
-    })().finally(() => {
-      historySnapshotsLoad = undefined
-    })
-    return historySnapshotsLoad
-  }
-
-  async function handleHistorySnapshotLimit(value: number): Promise<void> {
-    const context = getContext()
-
-    const nextLimit = Math.min(30, Math.max(1, Math.round(value)))
-    const removedCount = Math.max(0, context.historySnapshots.value.length - nextLimit)
-    if (
-      removedCount > 0 &&
-      !(await confirmAction({
-        title: '缩减历史快照',
-        message: `保存后将永久删除最旧的 ${removedCount} 个历史快照，确定继续吗？`,
-        confirmLabel: '保存并删除',
-        danger: true,
-      }))
-    ) {
-      context.settingsPanelKey.value += 1
-      return
-    }
-    try {
-      context.historySnapshotLimit.value = await historyService.setSnapshotLimit(nextLimit)
-      await loadHistorySnapshots()
-      context.settingsPanelKey.value += 1
-      context.showNotice(`历史快照将保留最近 ${context.historySnapshotLimit.value} 个`)
-    } catch {
-      context.showNotice('历史快照数量保存失败')
-    }
-  }
-
-  async function captureHistory(
-    reason: string,
-    protectedSnapshotIds: readonly string[] = [],
-  ): Promise<void> {
-    const context = getContext()
-
-    await historyService.capture(
-      await createResourceArchiveSource(resourceService),
-      context.categories.value,
-      reason,
-      protectedSnapshotIds,
-    )
-    await loadHistorySnapshots()
-  }
-
   async function openVaultPanel(): Promise<void> {
     const context = getContext()
 
     context.isDataProtectionOpen.value = false
     context.isVaultPanelOpen.value = true
-    if (!context.vaultStatus.value.locked && !historySnapshotsLoaded) await loadHistorySnapshots()
   }
 
   async function handleVaultUnlock(password: string): Promise<void> {
     const context = getContext()
 
+    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
     context.isVaultBusy.value = true
     try {
       await vaultService.unlock(password)
       await communitySourceStorage.migrateVaultMode('encrypted')
       context.vaultStatus.value = vaultService.getStatus()
       window.dispatchEvent(new Event('srl:vault-unlocked'))
-      await Promise.all([context.loadLibrary(), loadHistorySnapshots(), context.loadRecycleBin()])
+      await Promise.all([context.loadLibrary(), context.loadRecycleBin()])
       context.isVaultPanelOpen.value = false
       context.scheduleLibraryMaintenance()
       context.showNotice('本地保险库已解锁')
@@ -198,31 +175,32 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   }
 
   async function handleVaultEnable(password: string): Promise<void> {
-    const choice = await chooseAction({
-      title: '开启本地保险库',
-      message:
-        '加密会转换当前设备上的全部资源与历史快照。完整快照可能很大，也可能超过浏览器存储上限。请选择是否先创建完整安全快照。',
-      confirmLabel: '创建完整快照',
-      alternativeLabel: '不建快照继续',
-      cancelLabel: '取消',
-      danger: true,
-    })
-    if (choice === 'cancel') return
-    return mutationGuard.run('vault:enable', () =>
-      performVaultEnable(password, choice === 'confirm'),
-    )
+    const context = getContext()
+    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    context.isVaultBusy.value = true
+    try {
+      const confirmed = await confirmAction({
+        title: '开启本地保险库',
+        message:
+          '加密会转换当前设备上的全部资源。密码不会保存，忘记密码无法恢复。建议先导出完整备份。',
+        confirmLabel: '开启加密',
+        danger: true,
+      })
+      if (!confirmed) return
+      await mutationGuard.run('vault:enable', () => performVaultEnable(password))
+    } finally {
+      context.isVaultBusy.value = false
+    }
   }
 
-  async function performVaultEnable(password: string, createSafetySnapshot = false): Promise<void> {
+  async function performVaultEnable(password: string): Promise<void> {
     const context = getContext()
 
-    context.isVaultBusy.value = true
     const operationId = taskCenter.start({
       name: '开启本地保险库',
-      phase: createSafetySnapshot ? '创建用户选择的完整快照' : '准备加密',
+      phase: '准备加密',
     })
     try {
-      if (createSafetySnapshot) await captureHistory('开启加密前用户选择的完整快照')
       taskCenter.update(operationId, { phase: '整理缩略图存储' })
       await resourceService.repairThumbnailAssets()
       taskCenter.update(operationId, { phase: '分批加密本地数据' })
@@ -230,152 +208,82 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
       await communitySourceStorage.migrateVaultMode('encrypted')
       context.vaultStatus.value = vaultService.getStatus()
       context.clearSearchHistory()
-      await Promise.all([context.loadResources(), loadHistorySnapshots(), context.loadRecycleBin()])
+      await Promise.all([context.loadResources(), context.loadRecycleBin()])
       taskCenter.complete(operationId)
       context.showNotice('本地数据已完成 AES-256-GCM 加密')
     } catch (error) {
       taskCenter.fail(operationId, error)
       context.showNotice(error instanceof Error ? error.message : '开启加密失败')
+    }
+  }
+
+  async function handleVaultDisable(): Promise<void> {
+    const context = getContext()
+    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    context.isVaultBusy.value = true
+    try {
+      const confirmed = await confirmAction({
+        title: '关闭本地加密',
+        message: '关闭后，本机资源将恢复为明文存储。确定继续吗？',
+        confirmLabel: '关闭并解密',
+        danger: true,
+      })
+      if (!confirmed) return
+      await mutationGuard.run('vault:disable', () => performVaultDisable())
     } finally {
       context.isVaultBusy.value = false
     }
   }
 
-  async function handleVaultDisable(): Promise<void> {
-    const choice = await chooseAction({
-      title: '关闭本地加密',
-      message:
-        '确定关闭本地加密吗？资源和历史快照将恢复为明文存储。完整快照可能很大，也可能超过浏览器存储上限。请选择是否先创建完整安全快照。',
-      confirmLabel: '创建快照并关闭',
-      alternativeLabel: '不建快照，关闭加密',
-      cancelLabel: '取消',
-      danger: true,
-    })
-    if (choice === 'cancel') return
-    return mutationGuard.run('vault:disable', () => performVaultDisable(choice === 'confirm'))
-  }
-
-  async function performVaultDisable(createSafetySnapshot = false): Promise<void> {
+  async function performVaultDisable(): Promise<void> {
     const context = getContext()
 
-    context.isVaultBusy.value = true
     const operationId = taskCenter.start({
       name: '关闭本地保险库',
-      phase: createSafetySnapshot ? '创建用户选择的完整快照' : '准备关闭加密',
+      phase: '准备关闭加密',
     })
     try {
-      if (createSafetySnapshot) await captureHistory('关闭加密前用户选择的完整快照')
       taskCenter.update(operationId, { phase: '整理缩略图存储' })
       await resourceService.repairThumbnailAssets()
       taskCenter.update(operationId, { phase: '分批恢复明文数据' })
       await communitySourceStorage.migrateVaultMode('plain')
       await vaultService.disable()
       context.vaultStatus.value = vaultService.getStatus()
-      await Promise.all([context.loadResources(), loadHistorySnapshots(), context.loadRecycleBin()])
+      await Promise.all([context.loadResources(), context.loadRecycleBin()])
       taskCenter.complete(operationId)
       context.showNotice('本地加密已关闭')
     } catch (error) {
       taskCenter.fail(operationId, error)
       context.showNotice(error instanceof Error ? error.message : '关闭加密失败')
-    } finally {
-      context.isVaultBusy.value = false
     }
   }
 
   function handleVaultLock(): void {
     const context = getContext()
 
+    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
     vaultService.lock()
-    historySnapshotsLoaded = false
     context.vaultStatus.value = vaultService.getStatus()
     context.resetSearchState()
     context.resources.value = []
     context.categories.value = []
-    context.historySnapshots.value = []
     context.recycleBinEntries.value = []
     context.recycleUndoEntry.value = undefined
     context.isVaultPanelOpen.value = true
   }
 
-  async function handleCreateSnapshot(): Promise<void> {
-    const context = getContext()
-
-    context.isVaultBusy.value = true
-    try {
-      await captureHistory('手动快照')
-      context.showNotice('历史版本已创建')
-    } catch (error) {
-      context.showNotice(error instanceof Error ? error.message : '创建历史版本失败')
-    } finally {
-      context.isVaultBusy.value = false
-    }
-  }
-
-  async function handleRestoreSnapshot(id: string): Promise<void> {
-    const context = getContext()
-
-    const snapshot = context.historySnapshots.value.find((item) => item.id === id)
-    if (!snapshot) return
-    const choice = await chooseAction({
-      title: '恢复历史版本',
-      message: `确定恢复“${snapshot.reason || '本地快照'}”吗？当前整个资源库会被替换。恢复失败时数据库事务会回滚；成功后无法自动撤销。完整快照可能很大，请选择是否先保存当前状态。`,
-      confirmLabel: '创建完整快照并恢复',
-      alternativeLabel: '不建快照，直接恢复',
-      cancelLabel: '取消',
-      danger: true,
-    })
-    if (choice === 'cancel') return
-    context.isVaultBusy.value = true
-    try {
-      if (choice === 'confirm') await captureHistory('历史恢复前用户选择的完整快照', [id])
-      await historyService.restore(id)
-      await Promise.all([context.loadLibrary(), loadHistorySnapshots(), refreshStorageHealth()])
-      context.isVaultPanelOpen.value = false
-      context.clearBrowsingState()
-      context.showNotice('已恢复到选定的历史版本')
-    } catch (error) {
-      context.showNotice(error instanceof Error ? error.message : '历史版本恢复失败')
-    } finally {
-      context.isVaultBusy.value = false
-    }
-  }
-
-  async function handleDeleteSnapshot(id: string): Promise<void> {
-    const context = getContext()
-
-    const deleteSnapshotConfirmed = await confirmAction({
-      title: '删除历史版本',
-      message: '确定删除这个历史版本吗？',
-      confirmLabel: '删除',
-      danger: true,
-    })
-    if (!deleteSnapshotConfirmed) return
-    context.isVaultBusy.value = true
-    try {
-      await historyService.delete(id)
-      await loadHistorySnapshots()
-    } catch {
-      context.showNotice('历史版本删除失败')
-    } finally {
-      context.isVaultBusy.value = false
-    }
-  }
   return {
+    legacyLibraryHistory,
+    isClearingLegacyLibraryHistory,
+    refreshLegacyLibraryHistory,
+    clearLegacyLibraryHistory,
     refreshStorageHealth,
     clearNativeTemporaryStorage,
     requestPersistentStorage,
-    loadHistorySnapshots,
-    handleHistorySnapshotLimit,
-    captureHistory,
     openVaultPanel,
     handleVaultUnlock,
     handleVaultEnable,
-    performVaultEnable,
     handleVaultDisable,
-    performVaultDisable,
     handleVaultLock,
-    handleCreateSnapshot,
-    handleRestoreSnapshot,
-    handleDeleteSnapshot,
   }
 }

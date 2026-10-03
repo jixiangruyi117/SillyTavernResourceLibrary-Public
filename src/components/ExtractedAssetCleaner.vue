@@ -49,16 +49,16 @@ function formatDate(value: number): string {
 async function cleanSelected(): Promise<void> {
   const ids = selectedIds.value
   if (!ids.length || isBusy.value) return
-  const confirmed = await confirmAction({
-    title: '清理拆分副本',
-    message: `确定删除选中的 ${ids.length} 个拆分副本吗？\n只会删除独立副本，角色卡内嵌的世界书与正则不受任何影响；删除前会自动创建快照，可随时恢复。`,
-    confirmLabel: '清理',
-    danger: true,
-  })
-  if (!confirmed) return
   isBusy.value = true
-  message.value = ''
   try {
+    const confirmed = await confirmAction({
+      title: '清理拆分副本',
+      message: `确定将选中的 ${ids.length} 个拆分副本移入回收站吗？\n只会移除独立副本，角色卡内嵌的世界书与正则不受影响；可在回收站保留期内恢复。`,
+      confirmLabel: '清理',
+      danger: true,
+    })
+    if (!confirmed) return
+    message.value = ''
     await recycleBinService.moveToRecycleBin(ids)
     overrides.value = {}
     message.value = `已清理 ${ids.length} 项拆分副本；角色卡内嵌内容与关联已同步整理。`

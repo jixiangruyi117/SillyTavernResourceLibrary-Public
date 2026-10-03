@@ -2,6 +2,7 @@ import * as versionOperations from './ResourceVersionOperations'
 import { JSON_RESOURCE_PARSER_VERSION } from '../parser/JsonResourceParser'
 import type { ResourceParserRegistry } from '../parser/ResourceParser'
 import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
+import type { ResourceVersionMatchFingerprintCache } from '../storage/ResourceStorageAdapter'
 import type { ImportResult, ParsedResource } from '../types/Import'
 import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
@@ -25,10 +26,14 @@ import {
 import {
   CHARACTER_CARD_FINGERPRINT_VERSION,
   computeCardFingerprints,
+  readStoredFingerprints,
 } from '../utils/CharacterCardFingerprint'
+import { isRecord } from '../utils/UnknownValue'
+import { isResourceGalleryImage } from '../types/ResourceGallery'
 import { createImageThumbnail } from '../utils/createImageThumbnail'
 import { hashFile } from './HashService'
 import { importPipeline, type ImportFileContext } from './ImportPipeline'
+import { hashNativeFile, materializeNativeFile, nativeFileSource } from '../core/NativeFileSource'
 import {
   inspectGitHubResource,
   type GitHubResourceInspection,
@@ -39,6 +44,7 @@ import {
   type CharacterCardOverrides,
 } from '../utils/CharacterCardCustomization'
 import {
+  createVersionCandidateIndex,
   createVersionMatchEntries,
   findVersionCandidates,
   type VersionMatchEntry,
@@ -98,6 +104,69 @@ export interface ParsedTagProgress {
   failed: number
 }
 
+interface VersionMatchIndexCache {
+  membershipSignature: string
+  current: Map<string, ResourceSummary>
+  versions: Map<string, ResourceSummary>
+  entries: VersionMatchEntry[]
+}
+
+function versionMatchFingerprintSignature(resource: ResourceSummary): string {
+  const metadata = resource.metadata
+  const card = isRecord(metadata.card) ? metadata.card : undefined
+  const cardData = card && isRecord(card.data) ? card.data : card
+  const identity = (value: Record<string, unknown> | undefined): unknown[] =>
+    value
+      ? [
+          value.uuid,
+          value.character_id,
+          value.characterId,
+          value.source_id,
+          value.sourceId,
+          value.source,
+          value.creator,
+        ]
+      : []
+  const stored = readStoredFingerprints(metadata)
+  return JSON.stringify([
+    CHARACTER_CARD_FINGERPRINT_VERSION,
+    resource.id,
+    resource.type,
+    resource.name,
+    resource.description,
+    resource.fileName,
+    resource.mimeType,
+    resource.contentHash,
+    resource.createdAt,
+    resource.updatedAt,
+    resource.versionGroupId,
+    metadata.creator,
+    metadata.source,
+    ...identity(metadata),
+    ...identity(card),
+    ...identity(cardData),
+    stored.full,
+    stored.core,
+    metadata.cardFingerprintVersion,
+  ])
+}
+
+function isVersionMatchFingerprintCache(
+  value: unknown,
+): value is ResourceVersionMatchFingerprintCache {
+  if (!isRecord(value) || value.schemaVersion !== 1) return false
+  const isFingerprintMap = (records: unknown): boolean =>
+    isRecord(records) &&
+    Object.values(records).every(
+      (record) =>
+        isRecord(record) &&
+        typeof record.signature === 'string' &&
+        typeof record.full === 'string' &&
+        typeof record.core === 'string',
+    )
+  return isFingerprintMap(value.resources) && isFingerprintMap(value.versions)
+}
+
 async function createContentHash(file: File): Promise<string> {
   return hashFile(file)
 }
@@ -106,8 +175,17 @@ export class ResourceService {
   private readonly storage: ResourceStorageAdapter
   private readonly parserRegistry: ResourceParserRegistry
   private readonly linkInspector: GitHubResourceInspector
+  private fileImportQueue: Promise<void> = Promise.resolve()
   // Only names and hashes from the current scan; never retain original files here.
   private readonly parsedTagCache = new Map<string, { hash: string; tags: string[] }>()
+  private versionMatchIndexCache?: VersionMatchIndexCache
+  private versionMatchFingerprintCache: ResourceVersionMatchFingerprintCache = {
+    schemaVersion: 1,
+    resources: {},
+    versions: {},
+  }
+  private persistedVersionMatchCacheLoaded = false
+  private versionMatchFingerprintCacheDirty = false
 
   constructor(
     storage: ResourceStorageAdapter,
@@ -233,8 +311,33 @@ export class ResourceService {
   private async createVersionMatchIndex(
     resources: ResourceSummary[],
     versions: ResourceSummary[],
+    persistCache: boolean,
   ): Promise<VersionMatchEntry[]> {
-    const withFingerprints = async (resource: ResourceSummary): Promise<ResourceSummary> => {
+    if (persistCache && !this.persistedVersionMatchCacheLoaded) {
+      try {
+        const saved = await this.storage.getVersionMatchFingerprintCache?.()
+        if (isVersionMatchFingerprintCache(saved)) {
+          this.versionMatchFingerprintCache = saved
+        } else if (saved) {
+          await this.storage.clearVersionMatchFingerprintCache?.()
+        }
+      } catch {
+        // 派生缓存不可读时仅重新计算，不阻断资源导入。
+      }
+      this.persistedVersionMatchCacheLoaded = true
+    } else if (!persistCache) {
+      try {
+        await this.storage.clearVersionMatchFingerprintCache?.()
+      } catch {
+        // 清理派生缓存失败不应阻断资源导入。
+      }
+      this.persistedVersionMatchCacheLoaded = true
+    }
+
+    const withFingerprints = async (
+      resource: ResourceSummary,
+      scope: 'resources' | 'versions',
+    ): Promise<ResourceSummary> => {
       if (
         resource.type !== RESOURCE_TYPE.CHARACTER_CARD ||
         (typeof resource.metadata.cardContentHash === 'string' &&
@@ -242,24 +345,88 @@ export class ResourceService {
       ) {
         return resource
       }
+      const signature = versionMatchFingerprintSignature(resource)
+      const cached = this.versionMatchFingerprintCache[scope][resource.id]
+      if (cached?.signature === signature && cached.full && cached.core) {
+        return {
+          ...resource,
+          metadata: {
+            ...resource.metadata,
+            cardContentHash: cached.full,
+            cardCoreHash: cached.core,
+            cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
+          },
+        }
+      }
       const fingerprints = await computeCardFingerprints(resource.metadata)
-      return fingerprints
-        ? {
-            ...resource,
-            metadata: {
-              ...resource.metadata,
-              cardContentHash: fingerprints.full,
-              cardCoreHash: fingerprints.core,
-              cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
-            },
-          }
-        : resource
+      if (!fingerprints) return resource
+      this.versionMatchFingerprintCache[scope][resource.id] = {
+        signature,
+        full: fingerprints.full,
+        core: fingerprints.core,
+      }
+      this.versionMatchFingerprintCacheDirty = true
+      return {
+        ...resource,
+        metadata: {
+          ...resource.metadata,
+          cardContentHash: fingerprints.full,
+          cardCoreHash: fingerprints.core,
+          cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
+        },
+      }
     }
     const [activeResources, historicalVersions] = await Promise.all([
-      Promise.all(resources.map(withFingerprints)),
-      Promise.all(versions.map(withFingerprints)),
+      Promise.all(resources.map((resource) => withFingerprints(resource, 'resources'))),
+      Promise.all(versions.map((resource) => withFingerprints(resource, 'versions'))),
     ])
-    return createVersionMatchEntries(activeResources, historicalVersions)
+    const currentIds = new Set(activeResources.map((resource) => resource.id))
+    const historyIds = new Set(historicalVersions.map((resource) => resource.id))
+    for (const id of Object.keys(this.versionMatchFingerprintCache.resources)) {
+      if (!currentIds.has(id)) {
+        delete this.versionMatchFingerprintCache.resources[id]
+        this.versionMatchFingerprintCacheDirty = true
+      }
+    }
+    for (const id of Object.keys(this.versionMatchFingerprintCache.versions)) {
+      if (!historyIds.has(id)) {
+        delete this.versionMatchFingerprintCache.versions[id]
+        this.versionMatchFingerprintCacheDirty = true
+      }
+    }
+    const membershipSignature = JSON.stringify([
+      activeResources.map((resource) => resource.id),
+      historicalVersions.map((resource) => [resource.id, resource.versionGroupId]),
+    ])
+    const current = new Map(activeResources.map((resource) => [resource.id, resource]))
+    const history = new Map(historicalVersions.map((resource) => [resource.id, resource]))
+    if (this.versionMatchIndexCache?.membershipSignature === membershipSignature) {
+      for (const entry of this.versionMatchIndexCache.entries) {
+        const resource = entry.historical
+          ? history.get(entry.resource.id)
+          : current.get(entry.resource.id)
+        if (!resource) continue
+        entry.resource = resource
+        entry.groupResource = entry.historical
+          ? (current.get(resource.versionGroupId ?? '') ?? resource)
+          : resource
+      }
+      this.versionMatchIndexCache.current = current
+      this.versionMatchIndexCache.versions = history
+      return this.versionMatchIndexCache.entries
+    }
+
+    const entries = createVersionMatchEntries(activeResources, historicalVersions)
+    this.versionMatchIndexCache = { membershipSignature, current, versions: history, entries }
+    return entries
+  }
+
+  async clearVersionMatchFingerprintCache(): Promise<void> {
+    this.versionMatchFingerprintCache = { schemaVersion: 1, resources: {}, versions: {} }
+    this.versionMatchFingerprintCacheDirty = false
+    this.versionMatchIndexCache = undefined
+    this.persistedVersionMatchCacheLoaded = true
+    await this.storage.clearVersionMatchFingerprintCache?.()
   }
 
   private async createImportedResource(
@@ -742,24 +909,44 @@ export class ResourceService {
     }
   }
 
-  async importLinks(urls: string[]): Promise<ImportResult[]> {
+  async importLinks(
+    urls: string[],
+    options: Pick<ImportOptions, 'signal' | 'onItemComplete'> = {},
+  ): Promise<ImportResult[]> {
+    options.signal?.throwIfAborted()
     const results: ImportResult[] = []
-    const knownResources = await this.storage.list()
+    if (!urls.length) return results
+    const knownResources = await (this.storage.listResourceListSummaries?.() ??
+      this.storage.listSummaries())
+    options.signal?.throwIfAborted()
+    const resourceIdsByUrl = new Map<string, string>()
+    const duplicateResources = new Map<string, Resource>()
+    // Keep this index within one import: edits and deletions are reflected on the next run.
+    const rememberSourceLinks = (resource: ResourceReference): void => {
+      for (const link of normalizeResourceLinks(resource.sourceLinks)) {
+        const key = link.url.toLocaleLowerCase()
+        if (!resourceIdsByUrl.has(key)) resourceIdsByUrl.set(key, resource.id)
+      }
+    }
+    knownResources.forEach(rememberSourceLinks)
 
     for (const rawUrl of urls) {
+      const resultCount = results.length
       const displayUrl = rawUrl.trim() || '空链接'
       try {
+        options.signal?.throwIfAborted()
         const now = Date.now()
         const linkDraft = createResourceLinkDraftFromUrl(rawUrl, now)
         if (!linkDraft) throw new Error('资源链接仅支持 http/https 地址')
 
-        const duplicate = knownResources.find((resource) =>
-          normalizeResourceLinks(resource.sourceLinks).some(
-            (sourceLink) =>
-              sourceLink.url.toLocaleLowerCase() === linkDraft.url.toLocaleLowerCase(),
-          ),
-        )
+        const linkKey = linkDraft.url.toLocaleLowerCase()
+        const duplicateId = resourceIdsByUrl.get(linkKey)
+        const duplicate = duplicateId
+          ? (duplicateResources.get(duplicateId) ?? (await this.storage.get(duplicateId)))
+          : undefined
+        options.signal?.throwIfAborted()
         if (duplicate) {
+          duplicateResources.set(duplicate.id, duplicate)
           results.push({
             status: 'duplicate',
             fileName: linkDraft.url,
@@ -769,10 +956,12 @@ export class ResourceService {
           })
           continue
         }
+        if (duplicateId) resourceIdsByUrl.delete(linkKey)
 
-        const inspection = await this.linkInspector(linkDraft).catch(
+        const inspection = await this.linkInspector(linkDraft, undefined, options.signal).catch(
           (): GitHubResourceInspection | undefined => undefined,
         )
+        options.signal?.throwIfAborted()
         const link = normalizeResourceLinks([
           {
             ...linkDraft,
@@ -849,36 +1038,111 @@ export class ResourceService {
         }
         resource.versionLabel = resourceVersionLabel(resource)
         const normalizedResource = normalizeResource(resource)
+        options.signal?.throwIfAborted()
         await this.storage.save(normalizedResource)
-        knownResources.push(normalizedResource)
+        rememberSourceLinks(normalizedResource)
+        duplicateResources.set(normalizedResource.id, normalizedResource)
         results.push({
           status: 'imported',
           fileName: link.url,
           resource: normalizedResource,
         })
       } catch (error) {
+        if (options.signal?.aborted) throw error
         results.push({
           status: 'failed',
           fileName: displayUrl,
           message: error instanceof Error ? error.message : '链接导入失败',
         })
+      } finally {
+        if (results.length > resultCount) {
+          const result = results.at(-1)
+          if (result) await options.onItemComplete?.(result)
+        }
       }
     }
 
     return results
   }
 
-  async importFiles(files: File[], options: ImportOptions = {}): Promise<ImportResult[]> {
+  importFiles(files: File[], options: ImportOptions = {}): Promise<ImportResult[]> {
+    const run = () => {
+      options.signal?.throwIfAborted()
+      const importCurrent = () => this.importFilesSerial(files, options)
+      // Hash lookup and commit must share one boundary, including imports from other tabs.
+      return typeof navigator !== 'undefined' && navigator.locks
+        ? navigator.locks.request(
+            'srl-resource-file-import',
+            { signal: options.signal },
+            importCurrent,
+          )
+        : importCurrent()
+    }
+    const pending = this.fileImportQueue.then(run)
+    this.fileImportQueue = pending.then(
+      () => undefined,
+      () => undefined,
+    )
+    return pending
+  }
+
+  private async importFilesSerial(files: File[], options: ImportOptions): Promise<ImportResult[]> {
+    options.signal?.throwIfAborted()
     const results: ImportResult[] = []
-    const detectVersions =
-      options.detectVersions !== false && files.some((file) => !/\.srlchat$/i.test(file.name))
-    const knownResources = !detectVersions ? [] : await this.storage.listSummaries()
-    const knownVersions = !detectVersions ? [] : await this.storage.listVersionSummaries()
-    const versionMatchIndex = !detectVersions
+    const completedContentHashes = new Set(
+      options.completedContentHashes?.map((hash) => hash.toLowerCase()) ?? [],
+    )
+    const resourceFileCount = files.filter((file) => !/\.srlchat$/i.test(file.name)).length
+    const hasResourceFiles = resourceFileCount > 0
+    const batchHashLookup = resourceFileCount > 1
+    const compareVersions =
+      options.detectVersions !== false && options.skipVersionComparison !== true && hasResourceFiles
+    const knownResources =
+      compareVersions || batchHashLookup ? await this.storage.listSummaries() : []
+    const knownVersions =
+      compareVersions || batchHashLookup ? await this.storage.listVersionSummaries() : []
+    const activeByHash = new Map<string, ResourceSummary>()
+    const versionsByHash = new Map<string, ResourceSummary>()
+    const knownResourceIds = new Set(knownResources.map((resource) => resource.id))
+    const rememberActive = (resource: ResourceSummary): void => {
+      if (resource.contentHash && !isResourceGalleryImage(resource)) {
+        if (!activeByHash.has(resource.contentHash))
+          activeByHash.set(resource.contentHash, resource)
+      }
+      if (!knownResourceIds.has(resource.id)) {
+        knownResources.push(resource)
+        knownResourceIds.add(resource.id)
+      }
+    }
+    if (batchHashLookup) {
+      for (const resource of knownResources) {
+        if (
+          resource.contentHash &&
+          !isResourceGalleryImage(resource) &&
+          !activeByHash.has(resource.contentHash)
+        ) {
+          activeByHash.set(resource.contentHash, resource)
+        }
+      }
+      for (const version of knownVersions) {
+        if (version.contentHash && !versionsByHash.has(version.contentHash)) {
+          versionsByHash.set(version.contentHash, version)
+        }
+      }
+    }
+    const versionMatchIndex = !compareVersions
       ? []
-      : await this.createVersionMatchIndex(knownResources, knownVersions)
+      : await this.createVersionMatchIndex(
+          knownResources,
+          knownVersions,
+          options.persistVersionMatchCache !== false,
+        )
+    const candidateIndex = compareVersions
+      ? createVersionCandidateIndex(versionMatchIndex)
+      : undefined
 
     for (const [fileIndex, file] of files.entries()) {
+      const resultCount = results.length
       const reportProgress = (phase: string, completed = fileIndex): void =>
         options.onProgress?.({
           completed,
@@ -887,26 +1151,93 @@ export class ResourceService {
           phase,
         })
       try {
+        options.signal?.throwIfAborted()
         reportProgress('正在准备文件')
+        const sourceHash = options.originalContentHashes?.get(file)
+        const committedHash = sourceHash && options.completedImportAliases?.[sourceHash]
+        if (committedHash) {
+          const committed =
+            (await this.storage.findByHash(committedHash)) ??
+            (await this.storage.findVersionByHash(committedHash))
+          if (committed) {
+            results.push({
+              status: 'duplicate',
+              fileName: file.name,
+              message: '此前的导入任务已成功保存此资源',
+              resource: committed,
+              reclassified: false,
+            })
+            continue
+          }
+        }
         if (/\.srlchat$/i.test(file.name)) {
           const { importTavernChat } = await import('./TavernChatImport')
           results.push(await importTavernChat(file, this, this.parserRegistry, options))
           continue
         }
-        const context = importPipeline.intake<ParsedResource>(file)
         reportProgress('正在读取并计算校验值')
-        const contentHash = await context.hash()
+        let importFile = file
+        let context: ImportFileContext<ParsedResource> | undefined
+        let contentHash: string
+        if (nativeFileSource(file)) {
+          const nativeHash = await hashNativeFile(file, options.signal)
+          if (nativeHash) contentHash = nativeHash
+          else {
+            importFile = await materializeNativeFile(file, {
+              detachFromNativeSource: true,
+              signal: options.signal,
+            })
+            context = importPipeline.intake<ParsedResource>(importFile)
+            contentHash = await context.hash()
+          }
+        } else {
+          context = importPipeline.intake<ParsedResource>(file)
+          contentHash = await context.hash()
+        }
+        options.signal?.throwIfAborted()
+        if (completedContentHashes.has(contentHash.toLowerCase())) {
+          const committed =
+            (await this.storage.findByHash(contentHash)) ??
+            (await this.storage.findVersionByHash(contentHash))
+          if (committed) {
+            results.push({
+              status: 'duplicate',
+              fileName: file.name,
+              message: '此前的导入任务已成功保存此资源',
+              resource: committed,
+              reclassified: false,
+            })
+            continue
+          }
+        }
         reportProgress('正在检查重复资源')
-        const activeDuplicate = await this.storage.findByHash(contentHash)
+        const activeDuplicateSummary = batchHashLookup ? activeByHash.get(contentHash) : undefined
+        const versionDuplicateSummary =
+          batchHashLookup && !activeDuplicateSummary ? versionsByHash.get(contentHash) : undefined
+        const activeDuplicate = batchHashLookup
+          ? activeDuplicateSummary
+            ? ((await this.storage.get(activeDuplicateSummary.id)) ??
+              (await this.storage.findByHash(contentHash)))
+            : undefined
+          : await this.storage.findByHash(contentHash)
         const versionDuplicate = activeDuplicate
           ? undefined
-          : await this.storage.findVersionByHash(contentHash)
-        const duplicate = activeDuplicate ?? versionDuplicate
+          : batchHashLookup
+            ? versionDuplicateSummary
+              ? ((versionDuplicateSummary.versionGroupId
+                  ? await this.storage.get(versionDuplicateSummary.versionGroupId)
+                  : undefined) ??
+                (await this.storage.getVersion?.(versionDuplicateSummary.id)) ??
+                (await this.storage.findVersionByHash(contentHash)))
+              : undefined
+            : await this.storage.findVersionByHash(contentHash)
+        const duplicateResource = activeDuplicate ?? versionDuplicate
+        const matchedHistoricalVersion = Boolean(
+          versionDuplicateSummary?.versionGroupId ??
+          (!batchHashLookup ? versionDuplicate?.versionGroupId : undefined),
+        )
 
-        if (duplicate) {
-          const duplicateResource = versionDuplicate?.versionGroupId
-            ? ((await this.storage.get(versionDuplicate.versionGroupId)) ?? versionDuplicate)
-            : duplicate
+        if (duplicateResource) {
           const upgraded = activeDuplicate
             ? await this.upgradeJsonResource(duplicateResource)
             : undefined
@@ -917,21 +1248,30 @@ export class ResourceService {
           results.push({
             status: 'duplicate',
             fileName: file.name,
-            message: versionDuplicate?.versionGroupId
+            message: matchedHistoricalVersion
               ? `与「${duplicateResource.name}」的历史版本文件完全相同`
               : `与「${duplicateResource.name}」文件内容完全相同`,
             resource: extracted.resource,
             reclassified: Boolean(upgraded),
             extractedResources: extracted.created,
           })
+          for (const resource of extracted.created) rememberActive(toResourceSummary(resource))
           continue
         }
 
         reportProgress('正在解析资源内容')
+        if (nativeFileSource(importFile)) {
+          importFile = await materializeNativeFile(importFile, {
+            detachFromNativeSource: true,
+            signal: options.signal,
+          })
+        }
+        context ??= importPipeline.intake<ParsedResource>(importFile)
         const parsed = await context.parse((source) => this.parserRegistry.parse(source))
+        options.signal?.throwIfAborted()
         await this.ensureParsedFingerprints(parsed)
-        if (options.detectVersions !== false) {
-          const candidates = findVersionCandidates(parsed, file.name, versionMatchIndex)
+        if (candidateIndex) {
+          const candidates = findVersionCandidates(parsed, file.name, candidateIndex, options)
           const exactContentMatches = candidates.filter(
             (candidate) => candidate.matchKind === 'contentDuplicate',
           )
@@ -952,30 +1292,49 @@ export class ResourceService {
                 reclassified: false,
                 extractedResources: extracted.created,
               })
+              for (const resource of extracted.created) rememberActive(toResourceSummary(resource))
               continue
             }
           }
           if (candidates.length) {
-            results.push({ status: 'versionCandidate', fileName: file.name, file, candidates })
+            results.push({
+              status: 'versionCandidate',
+              fileName: file.name,
+              file: importFile,
+              candidates,
+            })
             continue
           }
         }
-        let resource = await this.createImportedResource(file, parsed, contentHash, context)
+        let resource = await this.createImportedResource(importFile, parsed, contentHash, context)
 
+        options.signal?.throwIfAborted()
         reportProgress('正在写入资源库')
         await this.storage.save(resource)
         context.mark('commit')
         const summary = toResourceSummary(resource)
-        knownResources.push(summary)
-        versionMatchIndex.push({
+        rememberActive(summary)
+        const matchEntry: VersionMatchEntry = {
           resource: summary,
           groupResource: summary,
           historical: false,
-        })
+        }
+        versionMatchIndex.push(matchEntry)
+        candidateIndex?.add(matchEntry)
+        if (this.versionMatchIndexCache) {
+          this.versionMatchIndexCache.current.set(summary.id, summary)
+          // The batch-local index is updated above. Mark the reusable index
+          // stale in O(1); rebuilding a signature over every ID for each
+          // imported file would make large batches quadratic.
+          this.versionMatchIndexCache.membershipSignature = ''
+        }
         const extracted = options.extractCharacterAssets
           ? await this.extractEmbeddedAssets(resource)
           : { resource, created: [], assetCount: 0 }
         resource = extracted.resource
+        for (const extractedResource of extracted.created) {
+          rememberActive(toResourceSummary(extractedResource))
+        }
         results.push({
           status: 'imported',
           fileName: file.name,
@@ -983,6 +1342,7 @@ export class ResourceService {
           extractedResources: extracted.created,
         })
       } catch (error) {
+        if (options.signal?.aborted) throw error
         results.push({
           status: 'failed',
           fileName: file.name,
@@ -990,9 +1350,26 @@ export class ResourceService {
         })
       } finally {
         reportProgress(`已处理 ${fileIndex + 1}/${files.length}`, fileIndex + 1)
+        if (results.length > resultCount) {
+          const result = results.at(-1)
+          if (result) {
+            if (result.status !== 'failed')
+              result.sourceContentHash = options.originalContentHashes?.get(file)
+            await options.onItemComplete?.(result)
+          }
+          if (options.discardCompletedResults) results.pop()
+        }
       }
     }
 
+    if (options.persistVersionMatchCache !== false && this.versionMatchFingerprintCacheDirty) {
+      try {
+        await this.storage.setVersionMatchFingerprintCache?.(this.versionMatchFingerprintCache)
+        this.versionMatchFingerprintCacheDirty = false
+      } catch {
+        // 指纹缓存只是性能优化；写入失败后下次导入重新计算即可。
+      }
+    }
     return results
   }
 

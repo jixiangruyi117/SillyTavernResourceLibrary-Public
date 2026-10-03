@@ -4,7 +4,16 @@ defineProps<{ name: string }>()
 
 <template>
   <svg
-    v-if="name === 'reader'"
+    v-if="name === 'plaza'"
+    class="feature-app__svg"
+    viewBox="0 0 48 48"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path d="M8 12h13v13H8zM27 12h13v13H27zM8 31h13v9H8zM27 31h13v9H27zM14 8v4m20-4v4" />
+  </svg>
+  <svg
+    v-else-if="name === 'reader'"
     class="feature-app__svg"
     viewBox="0 0 48 48"
     fill="none"
@@ -13,6 +22,19 @@ defineProps<{ name: string }>()
     <path
       d="M24 13C19 10 13 10 7 12v25c6-2 12-2 17 1 5-3 11-3 17-1V12c-6-2-12-2-17 1Zm0 0v25M12 18h7m-7 7h7m10-7h7m-7 7h7"
     />
+  </svg>
+  <svg
+    v-else-if="name === 'assistant'"
+    class="feature-app__svg"
+    viewBox="0 0 48 48"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M12 11h24a5 5 0 0 1 5 5v17a5 5 0 0 1-5 5H23l-9 5v-5h-2a5 5 0 0 1-5-5V16a5 5 0 0 1 5-5ZM17 30h14M24 5v6"
+    />
+    <circle cx="17" cy="22" r="2" fill="currentColor" />
+    <circle cx="31" cy="22" r="2" fill="currentColor" />
   </svg>
   <svg
     v-else-if="name === 'draw'"
@@ -50,6 +72,15 @@ defineProps<{ name: string }>()
   >
     <path d="M8 17h32v21H8zM11 13h12l3 4H8v-2a2 2 0 0 1 3-2Z" />
     <path d="M8 25h32M27 31h7" />
+  </svg>
+  <svg
+    v-else-if="name === 'inbox'"
+    class="feature-app__svg"
+    viewBox="0 0 48 48"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path d="M9 15h30l4 19v6H5v-6l4-19ZM6 32h12l3 5h6l3-5h12M24 8v17m-6-6 6 6 6-6" />
   </svg>
   <svg
     v-else-if="name === 'cloud'"

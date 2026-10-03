@@ -1,13 +1,12 @@
 import {
   COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE,
-  type CommunitySourceMessage,
-  type DiscordAttachmentMeta,
   type DiscordCapture,
   type DiscordSourceRemoteScanCursor,
   type ResourceCommunitySourceView,
 } from '../types/CommunitySource'
 import { parseDiscordCapture } from './DiscordHandoffService'
 import { loadDiscordSourceConnectionSettings } from './DiscordSourceSettingsService'
+import { discordMessageChanged } from './CommunitySourceCapture'
 
 const MAX_SAVED_MESSAGE_HEALTH_IDS = 12
 const DISCORD_SNOWFLAKE_PATTERN = /^\d{5,32}$/u
@@ -137,22 +136,6 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function attachmentSignature(attachment: DiscordAttachmentMeta): string {
-  return stableJson({
-    id: attachment.id,
-    name: attachment.name,
-    size: attachment.size,
-    contentType: attachment.contentType ?? '',
-    textContent: attachment.textContent ?? '',
-    width: attachment.width ?? null,
-    height: attachment.height ?? null,
-  })
-}
-
-function attachmentsSignature(attachments: readonly DiscordAttachmentMeta[]): string {
-  return attachments.map(attachmentSignature).sort().join('\n')
-}
-
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
   const a = Array.from(new Set(left)).sort()
   const b = Array.from(new Set(right)).sort()
@@ -191,27 +174,6 @@ function relevantCaptures(
     if (relevant) seen.add(capture.messageId)
     return relevant
   })
-}
-
-function messageChanged(
-  existing: CommunitySourceMessage,
-  capture: DiscordCapture,
-): {
-  changed: boolean
-  content: boolean
-  embeds: boolean
-  attachments: boolean
-} {
-  const content =
-    existing.content !== capture.content ||
-    existing.authorName !== capture.authorName ||
-    Boolean(existing.authorBot) !== Boolean(capture.authorBot) ||
-    existing.timestamp !== capture.timestamp ||
-    (existing.editedTimestamp ?? '') !== (capture.editedTimestamp ?? '')
-  const embeds = stableJson(existing.embeds) !== stableJson(capture.embeds ?? [])
-  const attachments =
-    attachmentsSignature(existing.attachments) !== attachmentsSignature(capture.attachments ?? [])
-  return { changed: content || embeds || attachments, content, embeds, attachments }
 }
 
 function normalizeMessageIds(value: unknown, maxItems = 64): string[] {
@@ -529,7 +491,7 @@ export function compareDiscordSourceRefresh(
         summary: preview(capture.content),
       })
     }
-    const changed = messageChanged(existing, capture)
+    const changed = discordMessageChanged(existing, capture)
     if (changed.changed) {
       changedMessages += 1
       changes.push({

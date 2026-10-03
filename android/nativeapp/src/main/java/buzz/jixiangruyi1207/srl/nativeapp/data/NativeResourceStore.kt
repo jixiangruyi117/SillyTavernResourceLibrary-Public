@@ -7,7 +7,6 @@ import buzz.jixiangruyi1207.srl.nativeapp.model.ExportReport
 import buzz.jixiangruyi1207.srl.nativeapp.model.ImportReport
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeCategory
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResource
-import buzz.jixiangruyi1207.srl.nativeapp.model.NativeSnapshot
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeCloudSource
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeBackupSelection
 import buzz.jixiangruyi1207.srl.nativeapp.model.NativeResourceBundle
@@ -23,6 +22,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.util.UUID
+import buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryFile
+import buzz.jixiangruyi1207.srl.nativeapp.model.LegacyLibraryHistoryCleanup
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -34,6 +35,53 @@ data class NativePreparedCloudResource(
 )
 
 class NativeResourceStore(context: Context) : NativeResourcePersistence(context) {
+    @Synchronized
+    fun legacyLibraryHistoryCleanup(): LegacyLibraryHistoryCleanup {
+        val history = File(resourceRoot(), "history").absoluteFile
+        if (history.canonicalFile != history || (history.exists() && !history.isDirectory)) {
+            throw IllegalStateException("旧快照目录异常，已停止清理")
+        }
+        val stored = readState("historySnapshots")?.let(::JSONArray) ?: JSONArray()
+        val files = (0 until stored.length()).mapNotNull { index ->
+            val record = stored.optJSONObject(index) ?: return@mapNotNull null
+            val id = record.optString("id")
+            if (!Regex("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$").matches(id)) return@mapNotNull null
+            val file = File(history, "$id.zip")
+            // Only indexed archives at their original exact path. Unknown files and links stay.
+            if (record.optString("filePath") != file.absolutePath || file.canonicalFile != file) return@mapNotNull null
+            if (file.exists() && !file.isFile) return@mapNotNull null
+            LegacyLibraryHistoryFile(record.toString(), file.name, file.length(), file.lastModified())
+        }
+        return LegacyLibraryHistoryCleanup(files.distinctBy { it.fileName }.sortedBy { it.fileName })
+    }
+
+    @Synchronized
+    fun clearLegacyLibraryHistory(plan: LegacyLibraryHistoryCleanup): Long {
+        val database = writableDatabase
+        // SQLite serializes separate Store instances too; no stale index can put deleted entries back.
+        database.beginTransaction()
+        try {
+            require(plan == legacyLibraryHistoryCleanup()) { "旧整库快照范围已变化，请重新确认清理" }
+            var stored = readState(database, "historySnapshots")?.let(::JSONArray) ?: JSONArray()
+            var bytes = 0L
+            for (entry in plan.files) {
+                val file = File(File(resourceRoot(), "history"), entry.fileName)
+                if (file.exists() && !file.delete()) {
+                    // File deletion cannot roll back. Commit only completed entries before reporting failure.
+                    database.setTransactionSuccessful()
+                    throw IllegalStateException("旧快照删除失败；已清理的部分无法撤销，请刷新后重试")
+                }
+                bytes += entry.size
+                stored = JSONArray((0 until stored.length()).map { stored.get(it) }.filterNot {
+                    it is JSONObject && it.optString("id") + ".zip" == entry.fileName && it.toString() == entry.recordJson
+                })
+                writeState(database, "historySnapshots", stored.toString())
+            }
+            database.setTransactionSuccessful()
+            return bytes
+        } finally { database.endTransaction() }
+    }
+
     @Synchronized
     fun loadResources(): List<NativeResource> = loadRows(false).map(::toResource)
 
@@ -214,8 +262,7 @@ class NativeResourceStore(context: Context) : NativeResourcePersistence(context)
     @Synchronized
     fun deleteCategory(categoryId: String) {
         val categories = loadCategories()
-        val target = categories.find { it.id == categoryId } ?: throw IllegalArgumentException("文件夹不存在")
-        captureSnapshot("删除文件夹“${target.name}”前自动快照")
+        require(categories.any { it.id == categoryId }) { "文件夹不存在" }
         val database = writableDatabase
         database.beginTransaction()
         try {
@@ -238,7 +285,6 @@ class NativeResourceStore(context: Context) : NativeResourcePersistence(context)
     @Synchronized
     fun deleteResource(resourceId: String) {
         val current = readRow(resourceId)?.takeIf { !it.isVersion } ?: throw IllegalArgumentException("资源已经不存在")
-        captureSnapshot("删除资源“${JSONObject(current.manifestJson).optString("name", "未命名资源")}”前自动快照")
         val ownedVersions = loadRows(true).filter { JSONObject(it.manifestJson).optString("versionGroupId") == resourceId }
         val database = writableDatabase
         database.beginTransaction()
@@ -699,59 +745,6 @@ class NativeResourceStore(context: Context) : NativeResourcePersistence(context)
         if (replace) backupDirectory.deleteRecursively()
         writePortableIndex()
         return imported to skipped
-    }
-
-    @Synchronized
-    fun listSnapshots(): List<NativeSnapshot> {
-        val stored = readState("historySnapshots")?.let(::JSONArray) ?: JSONArray()
-        return (0 until stored.length()).mapNotNull { index ->
-            stored.optJSONObject(index)?.let { value ->
-                val file = File(value.optString("filePath"))
-                if (!file.isFile) null else NativeSnapshot(
-                    id = value.optString("id"), reason = value.optString("reason", "本地快照"),
-                    resourceCount = value.optInt("resourceCount"), categoryCount = value.optInt("categoryCount"),
-                    size = file.length(), createdAt = value.optLong("createdAt"), filePath = file.absolutePath,
-                )
-            }
-        }.sortedByDescending { it.createdAt }
-    }
-
-    @Synchronized
-    fun captureSnapshot(reason: String): NativeSnapshot {
-        val id = UUID.randomUUID().toString()
-        val createdAt = System.currentTimeMillis()
-        val history = File(resourceRoot(), "history").apply { if (!exists() && !mkdirs()) throw IllegalStateException("无法创建历史快照目录") }
-        val temporary = File(history, "$id.zip.tmp")
-        val target = File(history, "$id.zip")
-        val report = try { FileOutputStream(temporary).use { writeArchive(it) } } catch (error: Exception) { temporary.delete(); throw error }
-        if (!temporary.renameTo(target)) { temporary.delete(); throw IllegalStateException("无法提交历史快照") }
-        val snapshot = NativeSnapshot(id, reason.trim().ifBlank { "手动快照" }, report.resourceCount, loadCategories().size, target.length(), createdAt, target.absolutePath)
-        val retained = (listOf(snapshot) + listSnapshots()).sortedByDescending { it.createdAt }.take(8)
-        val retainedIds = retained.mapTo(mutableSetOf()) { it.id }
-        listSnapshots().filterNot { retainedIds.contains(it.id) }.forEach { File(it.filePath).delete() }
-        writeSnapshots(retained)
-        return snapshot
-    }
-
-    @Synchronized
-    fun deleteSnapshot(snapshotId: String) {
-        val snapshots = listSnapshots()
-        val target = snapshots.find { it.id == snapshotId } ?: throw IllegalArgumentException("历史快照不存在")
-        if (!File(target.filePath).delete()) throw IllegalStateException("历史快照删除失败")
-        writeSnapshots(snapshots.filterNot { it.id == snapshotId })
-    }
-
-    @Synchronized
-    fun restoreSnapshot(snapshotId: String) {
-        val snapshot = listSnapshots().find { it.id == snapshotId } ?: throw IllegalArgumentException("历史快照不存在")
-        val protectedCopy = File(context.cacheDir, "snapshot-restore-${UUID.randomUUID()}.zip")
-        copyFile(File(snapshot.filePath), protectedCopy)
-        try {
-            captureSnapshot("恢复历史快照前自动保存")
-            importArchiveFile(protectedCopy, replace = true)
-        } finally {
-            protectedCopy.delete()
-        }
     }
 
     private fun writeArchive(output: OutputStream, selection: NativeBackupSelection = NativeBackupSelection()): ExportReport {

@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
-import { categoryService, historyService, resourceService } from '../core/AppContainer'
+import { confirmAction } from '../composables/UseConfirmDialog'
+import { resourceService } from '../core/AppContainer'
 import {
   isUserPersonaAvatarAttachment,
   RESOURCE_TYPE_LABELS,
   type ResourceSummary,
 } from '../types/Resource'
-import { createResourceArchiveSource } from '../services/ExportService'
 import { findContainerVariantGroups, findDuplicateGroups } from '../utils/DuplicateGroups'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 
@@ -55,25 +54,16 @@ async function cleanGroup(contentHash: string): Promise<void> {
   const keepId = keeperOf(contentHash, group.resources)
   const keeper = group.resources.find((item) => item.id === keepId) ?? group.resources[0]
   const removeIds = group.resources.filter((item) => item.id !== keeper.id).map((item) => item.id)
-  const choice = await chooseAction({
-    title: '清理重复副本',
-    message: `保留「${keeper.name}」，删除其余 ${removeIds.length} 个内容相同的副本吗？\n副本的标签、文件夹、关联和收藏会先合并到保留项。整库快照可能很大，请选择是否额外创建。`,
-    confirmLabel: '创建完整快照并清理',
-    alternativeLabel: '不建快照，直接清理',
-    cancelLabel: '取消',
-    danger: true,
-  })
-  if (choice === 'cancel') return
   isBusy.value = true
-  message.value = ''
   try {
-    if (choice === 'confirm') {
-      await historyService.capture(
-        await createResourceArchiveSource(resourceService),
-        await categoryService.list(),
-        '查重清理前用户选择的完整快照',
-      )
-    }
+    const confirmed = await confirmAction({
+      title: '清理重复副本',
+      message: `保留「${keeper.name}」，删除其余 ${removeIds.length} 个内容相同的副本吗？\n副本的标签、文件夹、关联和收藏会先合并到保留项。删除后无法自动撤销，建议先导出备份。`,
+      confirmLabel: '清理重复副本',
+      danger: true,
+    })
+    if (!confirmed) return
+    message.value = ''
     const removed = await resourceService.mergeDuplicates(keeper.id, removeIds)
     message.value = `已保留「${keeper.name}」，删除 ${removed} 个重复副本；标签与文件夹已合并。`
     emit('library-changed')
@@ -91,15 +81,15 @@ async function mergeVariantGroup(cardContentHash: string): Promise<void> {
   const keepId = keepChoices.value[`variant:${cardContentHash}`] ?? group.resources[0].id
   const keeper = group.resources.find((item) => item.id === keepId) ?? group.resources[0]
   const others = group.resources.filter((item) => item.id !== keeper.id)
-  const confirmed = await confirmAction({
-    title: '合并封装为历史版本',
-    message: `保留「${keeper.name}」（${keeper.fileName}），把其余 ${others.length} 个封装并入它的历史版本吗？\n原文件全部保留在版本历史里，可随时切换或单独下载。`,
-    confirmLabel: '并入历史',
-  })
-  if (!confirmed) return
   isBusy.value = true
-  message.value = ''
   try {
+    const confirmed = await confirmAction({
+      title: '合并封装为历史版本',
+      message: `保留「${keeper.name}」（${keeper.fileName}），把其余 ${others.length} 个封装并入它的历史版本吗？\n原文件全部保留在版本历史里，可随时切换或单独下载。`,
+      confirmLabel: '并入历史',
+    })
+    if (!confirmed) return
+    message.value = ''
     for (const other of others) {
       await resourceService.mergeExistingResourceAsVersion(keeper.id, other.id, '同卡不同封装合并')
     }

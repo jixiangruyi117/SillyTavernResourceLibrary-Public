@@ -89,6 +89,29 @@ export class RestoreDuplicateIndex {
   }
 }
 
+/** Read-only estimate for current resources; history and portable settings are merged separately. */
+export function summarizeRestoreSelection(
+  existing: ResourceSummary[],
+  incoming: ResourceSummary[],
+) {
+  const duplicates = new RestoreDuplicateIndex(existing, incoming)
+  const ids = new Set(existing.map((resource) => resource.id))
+  let added = 0
+  let skipped = 0
+  let conflicts = 0
+  for (const resource of incoming) {
+    if (duplicates.find(resource)) {
+      skipped += 1
+      continue
+    }
+    if (ids.has(resource.id)) conflicts += 1
+    ids.add(resource.id)
+    duplicates.add(resource, resource.id)
+    added += 1
+  }
+  return { added, skipped, conflicts }
+}
+
 /** Preserve separate timeline entries, labels, and carriers, while ignoring restore-generated IDs. */
 export function restoreVersionKey(
   resource: ResourceSummary,

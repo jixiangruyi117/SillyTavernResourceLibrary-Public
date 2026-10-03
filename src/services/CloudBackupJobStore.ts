@@ -1,7 +1,14 @@
-import type { CloudBackupProvider } from '../types/CloudBackup'
+import type { CloudBackupConfig, CloudBackupItem, CloudBackupProvider } from '../types/CloudBackup'
 
 const DATABASE_NAME = 'srl-cloud-jobs-v3'
-const DATABASE_VERSION = 2
+const DATABASE_VERSION = 3
+
+export interface NativeCloudRestoreRecovery {
+  item: CloudBackupItem
+  target: CloudBackupConfig
+  resourceKeys: string[]
+  includeGallery: boolean
+}
 
 export type CloudBackupObjectJobState = 'pending' | 'verified' | 'failed'
 
@@ -14,6 +21,8 @@ export interface CloudBackupJobRecord {
   manifestName?: string
   error?: string
   updatedAt: number
+  kind?: 'restore'
+  restore?: NativeCloudRestoreRecovery
 }
 
 interface CloudBackupOrphanRecord {
@@ -49,6 +58,9 @@ export class CloudBackupJobStore {
         if (!request.result.objectStoreNames.contains('jobs')) {
           request.result.createObjectStore('jobs', { keyPath: 'id' })
         }
+        const jobs = request.transaction!.objectStore('jobs')
+        if (!jobs.indexNames.contains('kind-status'))
+          jobs.createIndex('kind-status', ['kind', 'status'])
         if (!request.result.objectStoreNames.contains('orphans')) {
           request.result.createObjectStore('orphans', { keyPath: 'id' })
         }
@@ -61,6 +73,37 @@ export class CloudBackupJobStore {
 
   private id(provider: CloudBackupProvider, planHash: string): string {
     return `${provider}:${planHash}`
+  }
+
+  async beginRestore(
+    planHash: string,
+    restore: NativeCloudRestoreRecovery,
+  ): Promise<CloudBackupJobRecord> {
+    const record: CloudBackupJobRecord = {
+      id: `${restore.target.provider}:restore:${planHash}`,
+      provider: restore.target.provider,
+      planHash,
+      kind: 'restore',
+      status: 'running',
+      objects: {},
+      // UI selections may contain Vue proxies; persist an independent JSON snapshot.
+      restore: JSON.parse(JSON.stringify(restore)) as NativeCloudRestoreRecovery,
+      updatedAt: Date.now(),
+    }
+    await this.put(record)
+    return record
+  }
+
+  async pendingRestores(): Promise<CloudBackupJobRecord[]> {
+    const database = await this.open()
+    const index = database.transaction('jobs', 'readonly').objectStore('jobs').index('kind-status')
+    const [running, failed] = await Promise.all([
+      requestResult(index.getAll(['restore', 'running'])),
+      requestResult(index.getAll(['restore', 'failed'])),
+    ])
+    return (running.concat(failed) as CloudBackupJobRecord[]).sort(
+      (a, b) => b.updatedAt - a.updatedAt,
+    )
   }
 
   async begin(

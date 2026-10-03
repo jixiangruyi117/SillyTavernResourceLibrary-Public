@@ -99,6 +99,7 @@ public class NativeCloudUploadWorker extends Worker {
             if ("cancelled".equals(initial.optString("status"))) return Result.failure();
             provider = initial.getString("provider");
             config = initial.getJSONObject("config");
+            NativeCloudJobStore.reconcileCompleted(root, initial);
             completed = initial.optInt("completed", 0);
             total = initial.optInt("total", initial.optInt("expectedTotal", 0));
             uploadedBytes = initial.optLong("uploadedBytes", 0);
@@ -137,7 +138,7 @@ public class NativeCloudUploadWorker extends Worker {
             try {
                 JSONObject latest = NativeCloudTransferPlugin.readJob(root);
                 cancelled = "cancelled".equals(latest.optString("status"));
-                if (!cancelled && hasCause(error, IOException.class)) {
+                if (!cancelled && (isStopped() || (hasCause(error, IOException.class) && !hasCause(error, LocalSourceException.class)))) {
                     clearJobSecret = false;
                     persistStatus("queued", rootMessage(error), null, null);
                     notifyFinished("云备份等待网络恢复", rootMessage(error));
@@ -154,18 +155,28 @@ public class NativeCloudUploadWorker extends Worker {
     }
 
     private JSONObject drainContentsUntilSealed() throws Exception {
+        int nextObjectIndex = 0;
+        JSONObject manifest = null;
         while (true) {
-            throwIfCancelled();
+            long observedStagingRevision = NativeCloudTransferPlugin.stagingRevision();
+            if (isStopped() || Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("云备份已取消");
+            }
             JSONObject latest = NativeCloudTransferPlugin.readJob(root);
             if ("cancelled".equals(latest.optString("status"))) throw new IllegalStateException("云备份已取消");
             total = latest.optInt("total", total);
             completed = latest.optInt("completed", completed);
 
-            JSONArray entries = latest.getJSONArray("objects");
+            int stagedCount = NativeCloudJobStore.objectCount(latest);
+            List<JSONObject> entries = NativeCloudJobStore.readRange(
+                root,
+                latest,
+                nextObjectIndex,
+                64
+            );
+            nextObjectIndex += entries.size();
             List<JSONObject> pendingContents = new ArrayList<>();
-            JSONObject manifest = null;
-            for (int index = 0; index < entries.length(); index++) {
-                JSONObject entry = entries.getJSONObject(index);
+            for (JSONObject entry : entries) {
                 if (entry.optBoolean("manifest")) {
                     manifest = entry;
                 } else if (!entry.optBoolean("uploaded", false)) {
@@ -202,13 +213,22 @@ public class NativeCloudUploadWorker extends Worker {
                 continue;
             }
 
+            int plannedTotal = latest.optInt("expectedTotal", 0);
+            if (!latest.optBoolean("sealed", false) && plannedTotal > 0 && stagedCount == plannedTotal
+                && manifest != null && nextObjectIndex >= stagedCount) {
+                latest = NativeCloudTransferPlugin.mutateJob(root, job -> {
+                    NativeCloudJobStore.validate(root, job, plannedTotal);
+                    job.put("sealed", true);
+                });
+            }
             if (latest.optBoolean("sealed", false)) {
                 int expectedTotal = latest.optInt("expectedTotal", total);
-                if (expectedTotal > 0 && entries.length() != expectedTotal) {
+                if (expectedTotal > 0 && stagedCount != expectedTotal) {
                     throw new IllegalStateException(
-                        "原生云任务封口后的对象数量不完整：" + entries.length() + " / " + expectedTotal
+                        "原生云任务封口后的对象数量不完整：" + stagedCount + " / " + expectedTotal
                     );
                 }
+                if (nextObjectIndex < stagedCount) continue;
                 if (manifest == null) throw new IllegalStateException("原生云任务缺少最终清单");
                 return manifest;
             }
@@ -220,7 +240,7 @@ public class NativeCloudUploadWorker extends Worker {
             if (System.currentTimeMillis() - lastStagedAt > STAGING_IDLE_TIMEOUT_MS) {
                 throw new IllegalStateException("原生云任务等待网页暂存超时");
             }
-            cancellableSleep(100L);
+            NativeCloudTransferPlugin.awaitStagingChange(observedStagingRevision, 1_000L);
         }
     }
 
@@ -232,6 +252,7 @@ public class NativeCloudUploadWorker extends Worker {
                 return "github".equals(provider) ? uploadGitHub(entry) : uploadWebDav(entry);
             } catch (Exception error) {
                 last = error;
+                if (hasCause(error, LocalSourceException.class)) throw error;
                 if (hasHttpStatus(error, 401)) {
                     new NativeSecretStore(getApplicationContext()).invalidateCredential(
                         "cloud-" + provider, "cloud-" + provider + "-invalid"
@@ -262,8 +283,15 @@ public class NativeCloudUploadWorker extends Worker {
         if (uploaded.code == 401) throw new CloudHttpException(401, "GitHub 凭据已失效");
         boolean uploadedNow = uploaded.code >= 200 && uploaded.code < 300;
         String id;
+        long verifyStarted = System.nanoTime();
         if (uploadedNow) {
-            id = new JSONObject(uploaded.body).get("id").toString();
+            JSONObject uploadResponse = new JSONObject(uploaded.body);
+            id = uploadResponse.get("id").toString();
+            if (uploadResponse.optLong("size", -1L) == entry.getLong("size")
+                && "uploaded".equals(uploadResponse.optString("state", ""))) {
+                addMetric("verifyMs", elapsedMs(verifyStarted));
+                return new UploadResult(id);
+            }
         } else if (uploaded.code == 422) {
             id = findExistingGitHubAsset(api, releaseId, entry.getString("name"), entry.getLong("size"));
             if (id == null) {
@@ -272,7 +300,6 @@ public class NativeCloudUploadWorker extends Worker {
         } else {
             throw new IllegalStateException("GitHub 上传失败（" + uploaded.code + "）：" + uploaded.body);
         }
-        long verifyStarted = System.nanoTime();
         try {
             for (int poll = 0; poll < 4; poll++) {
                 HttpResult confirmed = request("GET", api + "/releases/assets/" + id, githubHeaders(), null, 0L, 404);
@@ -428,7 +455,7 @@ public class NativeCloudUploadWorker extends Worker {
                                 while (remaining > 0) {
                                     if (isStopped()) throw new IOException("云备份已取消");
                                     int count = input.read(buffer, 0, (int)Math.min(buffer.length, remaining));
-                                    if (count < 0) throw new IOException("NativeLibrary 对象来源在上传期间被截断");
+                                    if (count < 0) throw new LocalSourceException("NativeLibrary 对象来源在上传期间被截断");
                                     sink.write(buffer, 0, count);
                                     digest.update(buffer, 0, count);
                                     remaining -= count;
@@ -440,12 +467,13 @@ public class NativeCloudUploadWorker extends Worker {
                     String expectedHash = entry.optString("sha256", "");
                     String actualHash = hex(digest.digest());
                     if (written != size || (!expectedHash.isBlank() && !expectedHash.equals(actualHash))) {
-                        throw new IOException("NativeLibrary 流的大小或 SHA-256 与对象计划不一致");
+                        throw new LocalSourceException("NativeLibrary 流的大小或 SHA-256 与对象计划不一致");
                     }
                 } catch (IOException error) {
+                    if (error instanceof java.io.FileNotFoundException) throw new LocalSourceException("NativeLibrary 对象来源已丢失", error);
                     throw error;
                 } catch (Exception error) {
-                    throw new IOException("无法读取 NativeLibrary 对象来源", error);
+                    throw new LocalSourceException("无法读取 NativeLibrary 对象来源", error);
                 }
             }
         };
@@ -478,27 +506,12 @@ public class NativeCloudUploadWorker extends Worker {
     private long parseContentRange(String value) { if (value == null) return -1; try { return Long.parseLong(value.substring(value.lastIndexOf('/') + 1)); } catch (Exception ignored) { return -1; } }
 
     private synchronized void markCompleted(JSONObject entry, UploadResult result) throws Exception {
-        String token = entry.getString("token");
         String name = entry.getString("name");
         JSONObject latest = NativeCloudTransferPlugin.mutateJob(root, current -> {
             if ("cancelled".equals(current.optString("status"))) {
                 throw new IllegalStateException("云备份已取消");
             }
-            JSONArray objects = current.getJSONArray("objects");
-            JSONObject stored = null;
-            for (int index = 0; index < objects.length(); index++) {
-                JSONObject candidate = objects.getJSONObject(index);
-                if (token.equals(candidate.optString("token"))) {
-                    stored = candidate;
-                    break;
-                }
-            }
-            if (stored == null) throw new IllegalStateException("原生云任务找不到已上传对象");
-            if (!stored.optBoolean("uploaded", false)) {
-                stored.put("uploaded", true);
-                if (result != null && result.id != null) stored.put("resultId", result.id);
-                current.put("completed", current.optInt("completed", 0) + 1);
-            }
+            NativeCloudJobStore.markUploaded(root, current, entry, result == null ? null : result.id);
             current.put("currentObject", name);
             applyMetrics(current);
         });
@@ -600,6 +613,10 @@ public class NativeCloudUploadWorker extends Worker {
     private boolean hasCause(Throwable error, Class<? extends Throwable> type) { Throwable current = error; while (current != null) { if (type.isInstance(current)) return true; current = current.getCause(); } return false; }
     private boolean hasHttpStatus(Throwable error, int status) { Throwable current = error; while (current != null) { if (current instanceof CloudHttpException && ((CloudHttpException) current).status == status) return true; current = current.getCause(); } return false; }
     private static final class UploadResult { final String id; UploadResult(String id) { this.id = id; } }
+    private static final class LocalSourceException extends IOException {
+        LocalSourceException(String message) { super(message); }
+        LocalSourceException(String message, Throwable cause) { super(message, cause); }
+    }
     private static final class HttpResult { final int code; final String body, contentRange; final long contentLength; HttpResult(int code, String body, String contentRange, long contentLength) { this.code=code; this.body=body; this.contentRange=contentRange; this.contentLength=contentLength; } }
     private static final class CloudHttpException extends Exception { final int status; CloudHttpException(int status, String message) { super(message + "（" + status + "）"); this.status = status; } }
 }

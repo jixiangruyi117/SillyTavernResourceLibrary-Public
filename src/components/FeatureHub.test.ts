@@ -8,6 +8,7 @@ import FeatureHub from './FeatureHub.vue'
 import FolderLibraryView from './FolderLibraryView.vue'
 import ActionSheet from './ActionSheet.vue'
 vi.mock('../core/OfficialAppRuntime', () => ({
+  ensurePreinstalledOfficialApps: async () => undefined,
   officialAppService: { ready: async () => true, list: () => listOfficialApps() },
   acquireOfficialAppUse: async () => () => {},
   loadOfficialApp: async (id: string) => {
@@ -33,6 +34,14 @@ vi.mock('./GeneratedImageAlbumApp.vue', () => ({
   },
 }))
 
+vi.mock('./DiscordInboxCenter.vue', () => ({
+  default: {
+    emits: ['back'],
+    template:
+      '<div data-testid="inbox-page">收件箱<button @click="$emit(\'back\')">返回功能桌面</button></div>',
+  },
+}))
+
 const { loadDrawState, listExternalApps, listOfficialApps } = vi.hoisted(() => ({
   listOfficialApps: vi.fn(async () =>
     [
@@ -52,6 +61,8 @@ const { loadDrawState, listExternalApps, listOfficialApps } = vi.hoisted(() => (
 
 vi.mock('../core/AppContainer', () => ({
   browserStorageService: {
+    getPreviewPolicy: vi.fn(() => ({ allowScripts: false, allowRemoteResources: false })),
+    onPreviewPolicyChange: vi.fn(() => () => {}),
     getDrawShowNames: vi.fn(() => false),
     setDrawShowNames: vi.fn(),
     getChatLoadouts: vi.fn(() => []),
@@ -217,14 +228,17 @@ describe('FeatureHub', () => {
     const wrapper = render()
     await flushPromises()
 
+    const firstPage = wrapper.findAll('.feature-desktop > .feature-app')
+    await wrapper.get('button[aria-label="下一页应用"]').trigger('click')
     expect(
-      wrapper
-        .findAll('.feature-desktop > .feature-app')
-        .map((app) => app.classes().find((className) => className.startsWith('feature-app--'))),
+      [...firstPage, ...wrapper.findAll('.feature-desktop > .feature-app')].map((app) =>
+        app.classes().find((className) => className.startsWith('feature-app--')),
+      ),
     ).toEqual([
       'feature-app--draw',
       'feature-app--appearance',
       'feature-app--folders',
+      'feature-app--inbox',
       'feature-app--cloud',
       'feature-app--bridge',
       'feature-app--stitch',
@@ -235,6 +249,24 @@ describe('FeatureHub', () => {
       'feature-app--bundle',
       'feature-app--extensions',
     ])
+    expect(wrapper.find('.feature-app--extensions').exists()).toBe(true)
+  })
+
+  it('opens the inbox from the first desktop page without choosing a resource', async () => {
+    const wrapper = render()
+    try {
+      await flushPromises()
+      expect(wrapper.get('.feature-app--inbox').text()).toContain('收件箱')
+      await wrapper.get('.feature-app--inbox').trigger('click')
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="inbox-page"]').exists()).toBe(true))
+      expect(wrapper.attributes('data-feature-page')).toBe('inbox')
+      expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(false)
+      await wrapper.get('[data-testid="inbox-page"] button').trigger('click')
+      expect(wrapper.attributes('data-feature-page')).toBe('home')
+      expect(wrapper.emitted('openResource')).toBeUndefined()
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('removes uninstalled apps from the desktop while keeping management available', async () => {
@@ -294,6 +326,9 @@ describe('FeatureHub', () => {
     const wrapper = render()
     await flushPromises()
 
+    if (!wrapper.find('.feature-app--persona').exists())
+      await wrapper.get('button[aria-label="下一页应用"]').trigger('click')
+
     expect(wrapper.get('.feature-app--persona').text()).toContain('user才是老大')
     await wrapper.get('.feature-app--persona').trigger('click')
 
@@ -304,6 +339,8 @@ describe('FeatureHub', () => {
   it('opens the resource bundle app from the feature desktop', async () => {
     const wrapper = render()
     await flushPromises()
+    if (!wrapper.find('.feature-app--bundle').exists())
+      await wrapper.get('button[aria-label="下一页应用"]').trigger('click')
 
     expect(wrapper.get('.feature-app--bundle').text()).toContain('配了么')
     await wrapper.get('.feature-app--bundle').trigger('click')

@@ -1,62 +1,51 @@
 <script setup lang="ts">
 import { toRef, type ShallowUnwrapRef } from 'vue'
-import PresetStitchEditorPortal from './PresetStitchEditorPortal.vue'
+import PresetStitchEntryEditor, { type PresetEntryEditorModel } from './PresetStitchEntryEditor.vue'
 import type { usePresetStitcherApp } from '../composables/UsePresetStitcherApp'
 
-type PanelModel = Pick<
-  ShallowUnwrapRef<ReturnType<typeof usePresetStitcherApp>>,
-  | 'sourcePickerOpen'
-  | 'sourceMode'
-  | 'sourceSummary'
-  | 'favoritePageItems'
-  | 'expandedSourceKeys'
-  | 'toggleExpanded'
-  | 'startSourceDrag'
-  | 'guardDragTouch'
-  | 'insertFavoriteFromAction'
-  | 'editor'
-  | 'editorOverlayStyle'
-  | 'mobileEditorOverlay'
-  | 'ROLE_OPTIONS'
-  | 'setEditorTextarea'
-  | 'rememberEditorSelection'
-  | 'QUICK_VARIABLES'
-  | 'insertVariable'
-  | 'openVariableWriter'
-  | 'unreadWrittenVariables'
-  | 'insertUnreadWrittenVariable'
-  | 'saveEdit'
-  | 'cancelEdit'
-  | 'getPromptDisplayTokens'
-  | 'beginFavoriteEdit'
-  | 'copyEntryContent'
-  | 'isCandidate'
-  | 'toggleCandidateFromFavorite'
-  | 'removeFavorite'
-  | 'favorites'
-  | 'favoritePageCount'
-  | 'favoritePage'
-  | 'setPage'
-  | 'segmentSearch'
-  | 'roleFiltersOpen'
-  | 'ROLE_FILTERS'
-  | 'roleFilter'
-  | 'sourcePageItems'
-  | 'pickedKeys'
-  | 'roleLabels'
-  | 'findSourceEntry'
-  | 'toggleSegmentFromAction'
-  | 'sourceKey'
-  | 'beginSourceEdit'
-  | 'isFavorite'
-  | 'toggleFavorite'
-  | 'toggleCandidateFromSource'
-  | 'sourceRegexScripts'
-  | 'sourceRegexPicked'
-  | 'toggleRegexGroup'
-  | 'sourcePageCount'
-  | 'sourcePage'
->
+type PanelModel = PresetEntryEditorModel &
+  Pick<
+    ShallowUnwrapRef<ReturnType<typeof usePresetStitcherApp>>,
+    | 'sourcePickerOpen'
+    | 'sourceMode'
+    | 'sourceSummary'
+    | 'favoritePageItems'
+    | 'expandedSourceKeys'
+    | 'toggleExpanded'
+    | 'startSourceDrag'
+    | 'guardDragTouch'
+    | 'insertFavoriteFromAction'
+    | 'editor'
+    | 'getPromptDisplayTokens'
+    | 'beginFavoriteEdit'
+    | 'copyEntryContent'
+    | 'isCandidate'
+    | 'toggleCandidateFromFavorite'
+    | 'removeFavorite'
+    | 'favorites'
+    | 'favoritePageCount'
+    | 'favoritePage'
+    | 'setPage'
+    | 'segmentSearch'
+    | 'roleFiltersOpen'
+    | 'ROLE_FILTERS'
+    | 'roleFilter'
+    | 'sourcePageItems'
+    | 'pickedKeys'
+    | 'roleLabels'
+    | 'findSourceEntry'
+    | 'toggleSegmentFromAction'
+    | 'sourceKey'
+    | 'beginSourceEdit'
+    | 'isFavorite'
+    | 'toggleFavorite'
+    | 'toggleCandidateFromSource'
+    | 'sourceRegexScripts'
+    | 'sourceRegexPicked'
+    | 'toggleRegexGroup'
+    | 'sourcePageCount'
+    | 'sourcePage'
+  >
 const input = defineProps<{ model: PanelModel }>()
 const sourcePickerOpen = toRef(input.model, 'sourcePickerOpen')
 const sourceMode = toRef(input.model, 'sourceMode')
@@ -68,18 +57,6 @@ const guardDragTouch = toRef(input.model, 'guardDragTouch')
 const startSourceDrag = toRef(input.model, 'startSourceDrag')
 const insertFavoriteFromAction = toRef(input.model, 'insertFavoriteFromAction')
 const editor = toRef(input.model, 'editor')
-const editorOverlayStyle = toRef(input.model, 'editorOverlayStyle')
-const mobileEditorOverlay = toRef(input.model, 'mobileEditorOverlay')
-const ROLE_OPTIONS = toRef(input.model, 'ROLE_OPTIONS')
-const setEditorTextarea = toRef(input.model, 'setEditorTextarea')
-const rememberEditorSelection = toRef(input.model, 'rememberEditorSelection')
-const QUICK_VARIABLES = toRef(input.model, 'QUICK_VARIABLES')
-const insertVariable = toRef(input.model, 'insertVariable')
-const openVariableWriter = toRef(input.model, 'openVariableWriter')
-const unreadWrittenVariables = toRef(input.model, 'unreadWrittenVariables')
-const insertUnreadWrittenVariable = toRef(input.model, 'insertUnreadWrittenVariable')
-const saveEdit = toRef(input.model, 'saveEdit')
-const cancelEdit = toRef(input.model, 'cancelEdit')
 const getPromptDisplayTokens = toRef(input.model, 'getPromptDisplayTokens')
 const beginFavoriteEdit = toRef(input.model, 'beginFavoriteEdit')
 const copyEntryContent = toRef(input.model, 'copyEntryContent')
@@ -125,7 +102,7 @@ const sourcePage = toRef(input.model, 'sourcePage')
         <strong>{{
           sourceMode === 'favorites' ? '已收藏条目' : (sourceSummary?.name ?? '选择填充预设')
         }}</strong>
-        <small class="stitch-pane__kind">（填）</small>
+        <small class="stitch-pane__kind">填</small>
         <b>⌄</b>
       </button>
     </header>
@@ -164,65 +141,7 @@ const sourcePage = toRef(input.model, 'sourcePage')
             class="stitch-entry__detail"
           >
             <template v-if="editor?.scope === 'favorite' && editor.key === favorite.id">
-              <PresetStitchEditorPortal :active="mobileEditorOverlay">
-                <div class="stitch-editor" :style="editorOverlayStyle">
-                  <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
-                  <label
-                    >角色<select v-model="editor.role">
-                      <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
-                        {{ role.label }}
-                      </option>
-                    </select></label
-                  >
-                  <label
-                    >正文<textarea
-                      :ref="setEditorTextarea"
-                      v-model="editor.content"
-                      rows="8"
-                      @click="rememberEditorSelection"
-                      @focus="rememberEditorSelection"
-                      @input="rememberEditorSelection"
-                      @keyup="rememberEditorSelection"
-                      @select="rememberEditorSelection"
-                    ></textarea>
-                  </label>
-                  <div class="stitch-editor__macros">
-                    <button
-                      v-for="item in QUICK_VARIABLES"
-                      :key="item.value"
-                      class="button button--quiet"
-                      type="button"
-                      @click="insertVariable(item.value, item.placeholder, $event)"
-                    >
-                      {{ item.label }}
-                    </button>
-                    <button class="button button--quiet" type="button" @click="openVariableWriter">
-                      写入聊天变量
-                    </button>
-                    <select
-                      v-if="unreadWrittenVariables.length"
-                      aria-label="读取尚未使用的已写变量"
-                      @change="insertUnreadWrittenVariable"
-                    >
-                      <option value="">读取未使用的已写变量</option>
-                      <option
-                        v-for="variable in unreadWrittenVariables"
-                        :key="`${variable.scope}:${variable.name}`"
-                        :value="`${variable.scope}:${variable.name}`"
-                      >
-                        {{ variable.label }}
-                      </option>
-                    </select>
-                  </div>
-                  <div class="stitch-editor__actions">
-                    <button type="button" class="button button--primary" @click="saveEdit">
-                      保存修改</button
-                    ><button class="button button--quiet" type="button" @click="cancelEdit">
-                      取消
-                    </button>
-                  </div>
-                </div>
-              </PresetStitchEditorPortal>
+              <PresetStitchEntryEditor :model="model" />
             </template>
             <template v-else>
               <!-- eslint-disable-next-line vue/no-v-html -- 高亮函数先转义正文，仅插入固定 span。 -->
@@ -290,8 +209,15 @@ const sourcePage = toRef(input.model, 'sourcePage')
 
     <template v-else-if="sourceSummary">
       <label class="stitch__search"
-        ><span aria-hidden="true">⌕</span
-        ><input v-model="segmentSearch" type="search" placeholder="搜索条目名称或正文" /><button
+        ><svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m16 16 4 4" /></svg
+        ><input
+          v-model="segmentSearch"
+          type="search"
+          aria-label="搜索条目名称或正文"
+          placeholder="搜索条目名称或正文"
+        /><button
           type="button"
           class="button button--quiet stitch__search-filter"
           :aria-expanded="roleFiltersOpen"
@@ -358,65 +284,7 @@ const sourcePage = toRef(input.model, 'sourcePage')
           </div>
           <div v-if="expandedSourceKeys.has(segment.identifier)" class="stitch-entry__detail">
             <template v-if="editor?.scope === 'source' && editor.key === sourceKey(segment)">
-              <PresetStitchEditorPortal :active="mobileEditorOverlay">
-                <div class="stitch-editor" :style="editorOverlayStyle">
-                  <label>名称<input v-model="editor.name" type="text" maxlength="160" /></label>
-                  <label
-                    >角色<select v-model="editor.role">
-                      <option v-for="role in ROLE_OPTIONS" :key="role.value" :value="role.value">
-                        {{ role.label }}
-                      </option>
-                    </select></label
-                  >
-                  <label
-                    >正文<textarea
-                      :ref="setEditorTextarea"
-                      v-model="editor.content"
-                      rows="8"
-                      @click="rememberEditorSelection"
-                      @focus="rememberEditorSelection"
-                      @input="rememberEditorSelection"
-                      @keyup="rememberEditorSelection"
-                      @select="rememberEditorSelection"
-                    ></textarea>
-                  </label>
-                  <div class="stitch-editor__macros">
-                    <button
-                      v-for="item in QUICK_VARIABLES"
-                      :key="item.value"
-                      class="button button--quiet"
-                      type="button"
-                      @click="insertVariable(item.value, item.placeholder, $event)"
-                    >
-                      {{ item.label }}
-                    </button>
-                    <button class="button button--quiet" type="button" @click="openVariableWriter">
-                      写入聊天变量
-                    </button>
-                    <select
-                      v-if="unreadWrittenVariables.length"
-                      aria-label="读取尚未使用的已写变量"
-                      @change="insertUnreadWrittenVariable"
-                    >
-                      <option value="">读取未使用的已写变量</option>
-                      <option
-                        v-for="variable in unreadWrittenVariables"
-                        :key="`${variable.scope}:${variable.name}`"
-                        :value="`${variable.scope}:${variable.name}`"
-                      >
-                        {{ variable.label }}
-                      </option>
-                    </select>
-                  </div>
-                  <div class="stitch-editor__actions">
-                    <button type="button" class="button button--primary" @click="saveEdit">
-                      保存修改</button
-                    ><button class="button button--quiet" type="button" @click="cancelEdit">
-                      取消
-                    </button>
-                  </div>
-                </div>
-              </PresetStitchEditorPortal>
+              <PresetStitchEntryEditor :model="model" />
             </template>
             <template v-else>
               <!-- eslint-disable-next-line vue/no-v-html -- 高亮函数先转义正文，仅插入固定 span。 -->

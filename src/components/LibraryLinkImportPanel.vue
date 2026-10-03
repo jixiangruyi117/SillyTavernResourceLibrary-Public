@@ -26,12 +26,17 @@ const linkImportPreview = toRef(input.model, 'linkImportPreview')
       <textarea
         id="link-import-text"
         v-model="linkImportText"
+        data-assistant-focus="import-links"
         rows="4"
         placeholder="每行一个链接，或用空格 / 逗号分隔&#10;https://github.com/owner/repo&#10;https://raw.githubusercontent.com/owner/repo/main/script.js"
       ></textarea>
       <div class="link-import-panel__footer">
         <span>{{ linkImportUrls.length }} 个待识别链接</span>
-        <button type="submit" :disabled="isBusy || !linkImportUrls.length">
+        <button
+          type="submit"
+          data-assistant-focus="import-links-start"
+          :disabled="isBusy || !linkImportUrls.length"
+        >
           {{ isBusy ? '正在读取并保存' : '读取说明并保存' }}
         </button>
       </div>

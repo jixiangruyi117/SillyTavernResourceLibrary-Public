@@ -125,8 +125,22 @@ export function useResourceOrganizer(
   const relatedDownloadIds = ref(new Set<string>())
 
   const relationQuery = ref('')
-
+  const relationCategoryId = ref('all')
+  const relationTypeFilter = ref<ResourceType | 'all'>('all')
+  const relationPage = ref(1)
   const hideBoundRelationCandidates = ref(false)
+  watch(
+    [
+      relationQuery,
+      relationCategoryId,
+      relationTypeFilter,
+      hideBoundRelationCandidates,
+      () => props.resources,
+    ],
+    () => {
+      relationPage.value = 1
+    },
+  )
 
   const tagText = ref('')
 
@@ -335,6 +349,13 @@ export function useResourceOrganizer(
       selectedResourceIds: relatedResourceIds.value,
       query: relationQuery.value,
       hideBoundElsewhere: hideBoundRelationCandidates.value,
+      resourceType: relationTypeFilter.value === 'all' ? undefined : relationTypeFilter.value,
+      categoryId:
+        relationCategoryId.value === 'all'
+          ? undefined
+          : relationCategoryId.value === 'uncategorized'
+            ? null
+            : relationCategoryId.value,
     })
   })
 
@@ -348,22 +369,40 @@ export function useResourceOrganizer(
       ).length,
   )
 
-  const relationGroups = computed(() =>
-    Object.values(RESOURCE_TYPE).flatMap((type) => {
-      const items = relationCandidates.value.filter((resource) => resource.type === type)
-      return items.length
-        ? [
-            {
-              type,
-              label: RESOURCE_TYPE_LABELS[type],
-              items,
-              selectedCount: items.filter((resource) => relatedResourceIds.value.has(resource.id))
-                .length,
-            },
-          ]
-        : []
-    }),
+  const relationTypeOptions = computed(() => {
+    const types = new Set(
+      props.resources
+        .filter(
+          (resource) => resource.id !== props.resource.id && !isResourceGalleryImage(resource),
+        )
+        .map((resource) => resource.type),
+    )
+    return typeOptions.filter((option) => types.has(option.value))
+  })
+  const relationPageCount = computed(() =>
+    Math.max(1, Math.ceil(relationCandidates.value.length / 30)),
   )
+  const relationGroups = computed(() => {
+    const visible = relationCandidates.value.slice(
+      (relationPage.value - 1) * 30,
+      relationPage.value * 30,
+    )
+    return Object.values(RESOURCE_TYPE).flatMap((type) => {
+      const visibleItems = visible.filter((resource) => resource.type === type)
+      if (!visibleItems.length) return []
+      const items = relationCandidates.value.filter((resource) => resource.type === type)
+      return [
+        {
+          type,
+          label: RESOURCE_TYPE_LABELS[type],
+          items,
+          visibleItems,
+          selectedCount: items.filter((resource) => relatedResourceIds.value.has(resource.id))
+            .length,
+        },
+      ]
+    })
+  })
 
   const manualVersionCandidates = computed(() => {
     const versionIds = new Set(props.versions.map((version) => version.resource.id))
@@ -442,6 +481,9 @@ export function useResourceOrganizer(
       )
       relatedDownloadIds.value = new Set(getRelatedResourceIds(resource))
       relationQuery.value = ''
+      relationCategoryId.value = 'all'
+      relationTypeFilter.value = 'all'
+      relationPage.value = 1
       manualVersionResourceId.value = ''
       manualVersionNote.value = ''
       diffTarget.value = undefined
@@ -627,6 +669,12 @@ export function useResourceOrganizer(
     relatedDownloadCount,
     relatedDownloadIds,
     relationQuery,
+    relationCategoryId,
+    relationTypeFilter,
+    relationTypeOptions,
+    relationPage,
+    relationPageCount,
+    relationCandidates,
     hideBoundRelationCandidates,
     boundElsewhereCandidateCount,
     relationGroups,

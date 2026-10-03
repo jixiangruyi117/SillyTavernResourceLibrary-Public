@@ -9,7 +9,15 @@ import { chromium, webkit } from 'playwright-core'
 const PROJECT_ROOT = process.cwd()
 const ENGINE = process.env.SRL_STITCH_BROWSER_ENGINE || 'chromium'
 const BASE_URL = process.env.SRL_STITCH_AUDIT_BASE_URL || 'http://127.0.0.1:4173/'
-const OUTPUT_DIR = path.join(PROJECT_ROOT, 'artifacts', 'preset-stitcher-browser-ci', ENGINE)
+const RUN_NAME = process.env.SRL_STITCH_AUDIT_RUN || 'preset-stitcher-browser-ci'
+const VIEWPORT_WIDTH = Number(process.env.SRL_STITCH_AUDIT_WIDTH || 390)
+const VIEWPORT_HEIGHT = Number(process.env.SRL_STITCH_AUDIT_HEIGHT || 844)
+const OUTPUT_DIR = path.join(
+  PROJECT_ROOT,
+  'artifacts',
+  RUN_NAME,
+  `${ENGINE}-${VIEWPORT_WIDTH}x${VIEWPORT_HEIGHT}`,
+)
 const browserTypes = { chromium, webkit }
 const browserType = browserTypes[ENGINE]
 
@@ -26,14 +34,20 @@ const browserStorageSource = await readFile(
 const noticeVersion = browserStorageSource.match(/PROJECT_NOTICE_VERSION\s*=\s*'([^']+)'/)?.[1]
 if (!noticeVersion) throw new Error('无法读取 PROJECT_NOTICE_VERSION')
 
-function presetFile(name, prefix) {
+function presetFile(name, prefix, additionalPromptCount = 0) {
   const prompts = [
     {
       identifier: `${prefix}-main`,
       name: `${name}条目 1`,
       role: 'system',
-      content: `${name}原始正文 {{user}}`,
+      content: `${name}原始正文 {{user}} {{char}}`,
     },
+    ...Array.from({ length: additionalPromptCount }, (_, index) => ({
+      identifier: `${prefix}-bulk-${index + 1}`,
+      name: `${name}条目 ${index + 2}`,
+      role: 'system',
+      content: `${name}批量正文 ${index + 2}`,
+    })),
     { identifier: `${prefix}-marker`, name: 'Chat History', marker: true },
   ]
   return {
@@ -119,7 +133,7 @@ const httpErrors = []
 
 try {
   const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
+    viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
     deviceScaleFactor: ENGINE === 'webkit' ? 3 : 1,
     hasTouch: true,
     isMobile: true,
@@ -178,8 +192,8 @@ try {
   await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 45_000 })
   await page.locator('.app-shell').waitFor({ timeout: 20_000 })
   await page
-    .locator('input.import-button__input[aria-label="批量选择资源文件或备份包"]')
-    .setInputFiles([presetFile('主门禁预设', 'main'), presetFile('填充门禁预设', 'fill')])
+    .locator('input.import-button__input[aria-label="选择单个资源文件，可多选"]')
+    .setInputFiles([presetFile('主门禁预设', 'main', 98), presetFile('填充门禁预设', 'fill')])
   await page.getByText('主门禁预设', { exact: true }).first().waitFor({ timeout: 20_000 })
   const importButton = page.locator('.mobile-bottom-nav > button').nth(2)
   await importButton.waitFor({ state: 'visible', timeout: 20_000 })
@@ -205,6 +219,14 @@ try {
   await page.getByRole('dialog', { name: '选择填充内容' }).waitFor()
   await tap(page, page.getByRole('button', { name: /填充门禁预设/ }))
   await page.locator('.stitch-workbench').waitFor()
+
+  await tap(page, page.getByRole('button', { name: '工作台悬浮工具' }))
+  const toolMenu = page.locator('.stitch-tools__menu')
+  const toolMenuText = await toolMenu.innerText()
+  if (/预览|token/i.test(toolMenuText) || (await page.locator('.stitch-prompt-card').count())) {
+    throw new Error(`悬浮工具仍显示提示词或 token 功能：${toolMenuText}`)
+  }
+  await tap(page, page.getByRole('button', { name: '工作台悬浮工具' }))
 
   const sourceRow = page.locator('.stitch-pane--source .stitch-entry').first()
   await tap(page, sourceRow.locator('.stitch-entry__copy'))
@@ -251,8 +273,58 @@ try {
     throw new Error(`保存编辑后主预设正文未更新：${targetContent}`)
   }
 
+  await tap(page, page.getByRole('button', { name: '新建主预设条目' }))
+  await page.locator('.stitch-editor').waitFor()
+  const newEntryEditor = page.locator('.stitch-editor')
+  await tap(page, newEntryEditor.getByRole('button', { name: '插入填写占位', exact: true }))
+  const slotDialog = page.locator('.stitch-slot-writer')
+  await slotDialog.waitFor()
+  await slotDialog.locator('input').fill('文风')
+  await page.screenshot({
+    path: path.join(OUTPUT_DIR, 'slot-name-dialog.png'),
+    animations: 'disabled',
+    fullPage: false,
+  })
+  await tap(page, slotDialog.getByRole('button', { name: '插入占位', exact: true }))
+  const slotMacro = await newEntryEditor.locator('textarea').inputValue()
+  if (!/^\{\{srl_slot::[a-f\d-]{36}::文风\}\}$/u.test(slotMacro)) {
+    throw new Error(`占位宏未按名称插入：${slotMacro}`)
+  }
+  await tap(page, newEntryEditor.locator('input'))
+  await newEntryEditor.locator('input').fill('文风')
+  await tap(page, newEntryEditor.getByRole('button', { name: '添加到主预设', exact: true }))
+  await page.locator('.stitch-editor').waitFor({ state: 'detached' })
+  if (!(await page.locator('.stitch-pane--target').innerText()).includes('文风')) {
+    throw new Error('带命名占位的新条目未加入主预设')
+  }
+
   await page.screenshot({
     path: path.join(OUTPUT_DIR, 'passed.png'),
+    animations: 'disabled',
+    fullPage: false,
+  })
+
+  await page.getByRole('button', { name: '查看变更并导出', exact: true }).click()
+  const reviewOverview = page.locator('.stitch-review__overview')
+  await reviewOverview.waitFor({ state: 'visible' })
+  const overviewText = await reviewOverview.innerText()
+  for (const category of ['新增 1', '删除 0', '修改 1']) {
+    if (!overviewText.includes(category)) {
+      throw new Error(`导出差异分类不正确：${overviewText}`)
+    }
+  }
+  if (!(await page.locator('.stitch-review__content-transition').innerText()).includes('修改前')) {
+    throw new Error('导出差异没有显示修改前后的正文')
+  }
+  if (
+    !(await page.locator('.stitch-review__content[data-op="added"]').innerText()).includes(
+      '【填写：文风】',
+    )
+  ) {
+    throw new Error('新增条目没有把填写宏显示成易懂占位名')
+  }
+  await page.screenshot({
+    path: path.join(OUTPUT_DIR, 'export-review.png'),
     animations: 'disabled',
     fullPage: false,
   })

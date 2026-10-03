@@ -83,6 +83,47 @@ describe('TavernBridgeService', () => {
     expect(await (await readChatArchive((await pending)[0]!)).chat.text()).toBe('原文')
     service.destroy()
   })
+  it('requests only characters from peers that support filtered catalogs and falls back for older peers', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      removeEventListener: vi.fn(),
+      addEventListener: vi.fn(),
+      location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+    })
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['catalog-pages-v1', 'catalog-kind-filter-v1'],
+      }),
+    )
+    const filtered = service.listResources('character')
+    const filteredRequest = port.postMessage.mock.calls.at(-1)![0]
+    expect(filteredRequest.kind).toBe('character')
+    await access.handlePortMessage(
+      tavernEnvelope('list-response', { requestId: filteredRequest.requestId, items: [] }),
+    )
+    await expect(filtered).resolves.toEqual([])
+
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['catalog-pages-v1'],
+      }),
+    )
+    const fallback = service.listResources('character')
+    const fallbackRequest = port.postMessage.mock.calls.at(-1)![0]
+    expect(fallbackRequest.kind).toBeUndefined()
+    await access.handlePortMessage(
+      tavernEnvelope('list-response', { requestId: fallbackRequest.requestId, items: [] }),
+    )
+    await expect(fallback).resolves.toEqual([])
+    service.destroy()
+  })
   it('acknowledges identical repeated chunks without counting them twice and rejects invalid indices', async () => {
     const service = new TavernBridgeService()
     const access = service as unknown as BridgeServiceTestAccess & {

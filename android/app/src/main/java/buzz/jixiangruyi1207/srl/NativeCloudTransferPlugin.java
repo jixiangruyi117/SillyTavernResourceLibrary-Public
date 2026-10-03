@@ -1,7 +1,6 @@
 package buzz.jixiangruyi1207.srl;
 
 import static buzz.jixiangruyi1207.srl.NativeCloudRestoreTransport.validateRestoreUri;
-import static buzz.jixiangruyi1207.srl.NativeCloudRestoreTransport.downloadRestoreObject;
 import static buzz.jixiangruyi1207.srl.NativeCloudRestoreTransport.verifyFile;
 import static buzz.jixiangruyi1207.srl.NativeCloudRestoreTransport.hex;
 import static buzz.jixiangruyi1207.srl.NativeCloudRestoreTransport.CloudHttpStatusException;
@@ -36,10 +35,12 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import org.json.JSONObject;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
@@ -50,6 +51,8 @@ import org.json.JSONObject;
 @CapacitorPlugin(name = "NativeCloudTransfer")
 public class NativeCloudTransferPlugin extends Plugin {
     static final String JOB_WORK_PREFIX = "srl-cloud-upload-";
+    private static final Object STAGING_MONITOR = new Object();
+    private static long stagingRevision;
     // 原生任务直连 GitHub / WebDAV，并以 512 KiB 分段写入应用缓存，不经过 64 MiB 的 Worker 代理。
     // 与资源库现有单文件导入上限保持一致；普通内容对象仍由网页层控制在 32 MiB 内。
     private static final long MAX_OBJECT_BYTES = 256L * 1024L * 1024L;
@@ -217,14 +220,13 @@ public class NativeCloudTransferPlugin extends Plugin {
             }
 
             String webDavHost = "";
-            String webDavUsername = "";
             if ("webdav".equals(provider)) {
                 URI baseUri = URI.create(required(config.optString("baseUrl", ""), "WebDAV 地址", 8192));
                 if (!"https".equalsIgnoreCase(baseUri.getScheme()) || baseUri.getHost() == null) {
                     throw new IllegalArgumentException("WebDAV 原生恢复只允许 HTTPS 地址");
                 }
                 webDavHost = baseUri.getHost();
-                webDavUsername = required(config.optString("username", ""), "WebDAV 用户名", 1024);
+                required(config.optString("username", ""), "WebDAV 用户名", 1024);
             }
 
             java.util.List<NativeCloudRestoreTransport.RestoreObject> objectPlan = new java.util.ArrayList<>();
@@ -259,24 +261,35 @@ public class NativeCloudTransferPlugin extends Plugin {
                 }
                 resourcePlan.add(new NativeCloudRestoreTransport.RestoreResource(hash, size, ranges));
             }
-            final String username = webDavUsername;
-            NativeCloudRestoreTransport.RestoreCounts counts = NativeCloudRestoreTransport.restoreFiles(
-                new File(NativeLibraryPlugin.libraryRoot(getContext()), ".restore-pending"),
-                objectPlan, resourcePlan,
-                hash -> NativeLibraryPlugin.objectFile(getContext(), hash),
-                (object, temporary) -> downloadRestoreObject(
-                    provider, object.url, secret, username, object.hash, object.size, temporary
-                )
-            );
+            NativeCloudRestoreTransport.validatePlan(objectPlan, resourcePlan);
+            NativeCloudRestoreWorker.Handle handle = NativeCloudRestoreWorker.enqueue(getContext(), config, secret, objects, resources);
             new NativeSecretStore(getContext()).saveCredential(
                 "cloud-" + provider, "cloud-" + provider + "-invalid", secret
             );
-            JSObject result = new JSObject();
-            result.put("downloaded", counts.downloaded);
-            result.put("reused", counts.reused);
-            result.put("assembled", counts.assembled);
-            call.resolve(result);
+            observeRestore(call, handle);
         });
+    }
+
+    private void observeRestore(PluginCall call, NativeCloudRestoreWorker.Handle handle) {
+        LiveData<WorkInfo> liveData = WorkManager.getInstance(getContext()).getWorkInfoByIdLiveData(handle.workId);
+        final Observer<WorkInfo>[] holder = new Observer[1];
+        holder[0] = info -> {
+            if (info == null || !info.getState().isFinished()) return;
+            liveData.removeObserver(holder[0]);
+            NativeExecutors.ioLimited().execute(() -> {
+                try {
+                    JSONObject job = readJob(handle.root);
+                    if (!"completed".equals(job.optString("status"))) {
+                        call.reject(job.optString("error", "原生云恢复未完成"), job.optString("errorCode", "RESTORE_FAILED"));
+                        return;
+                    }
+                    JSObject result = new JSObject();
+                    for (String key : new String[]{"downloaded", "reused", "assembled"}) result.put(key, job.optInt(key, 0));
+                    call.resolve(result);
+                } catch (Exception error) { call.reject("读取原生恢复结果失败", error); }
+            });
+        };
+        getActivity().runOnUiThread(() -> liveData.observe(getActivity(), holder[0]));
     }
 
     /** One card per bridge response; never accumulate a snapshot's bodies or thumbnails. */
@@ -318,7 +331,7 @@ public class NativeCloudTransferPlugin extends Plugin {
             if (!root.mkdirs()) throw new IllegalStateException("无法创建原生云任务目录");
             long now = System.currentTimeMillis();
             JSONObject job = new JSONObject();
-            job.put("version", 2);
+            job.put("version", 3);
             job.put("id", jobId);
             job.put("provider", provider);
             job.put("status", "staging");
@@ -328,7 +341,9 @@ public class NativeCloudTransferPlugin extends Plugin {
             job.put("wifiOnly", call.getBoolean("wifiOnly", false));
             job.put("chargingOnly", call.getBoolean("chargingOnly", false));
             job.put("config", new JSONObject(config.toString()));
-            job.put("objects", new JSONArray());
+            job.put("objectCount", 0);
+            job.put("totalBytes", 0L);
+            job.put("manifestStaged", false);
             job.put("sealed", false);
             job.put("expectedTotal", expectedTotal);
             job.put("completed", 0);
@@ -391,7 +406,7 @@ public class NativeCloudTransferPlugin extends Plugin {
         runIo(call, () -> {
             String sourceHash = requiredHash(call.getString("sourceHash"));
             long minimumSize = NativeBridgeNumber.bounded(
-                call.getData().opt("minimumSize"), 0L, MAX_OBJECT_BYTES,
+                call.getData().opt("minimumSize"), 0L, MAX_RESOURCE_BYTES,
                 "原生对象预检大小无效"
             );
             File source = NativeLibraryPlugin.objectFile(getContext(), sourceHash);
@@ -399,6 +414,31 @@ public class NativeCloudTransferPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("available", source.isFile() && size >= minimumSize);
             result.put("size", size);
+            call.resolve(result);
+        });
+    }
+
+    /** Checks the distinct NativeLibrary source set in one JS/native bridge call. */
+    @PluginMethod
+    public void probeLibraryObjects(PluginCall call) {
+        runIo(call, () -> {
+            JSArray requested = call.getArray("sources");
+            if (requested == null || requested.length() > 100_000) {
+                throw new IllegalArgumentException("原生对象预检清单无效");
+            }
+            boolean available = true;
+            for (int index = 0; index < requested.length(); index++) {
+                JSONObject source = requested.getJSONObject(index);
+                String sourceHash = requiredHash(source.getString("sourceHash"));
+                long minimumSize = NativeBridgeNumber.bounded(
+                    source.opt("minimumSize"), 0L, MAX_RESOURCE_BYTES,
+                    "原生对象预检大小无效"
+                );
+                File file = NativeLibraryPlugin.objectFile(getContext(), sourceHash);
+                if (!file.isFile() || file.length() < minimumSize) available = false;
+            }
+            JSObject result = new JSObject();
+            result.put("available", available);
             call.resolve(result);
         });
     }
@@ -546,7 +586,7 @@ public class NativeCloudTransferPlugin extends Plugin {
                 }
                 if (current.optInt("expectedTotal", 0) <= 0) {
                     // 兼容旧 Web 资源：旧调用方仍然在 startJob 前完成全部暂存。
-                    sealLegacyJob(current);
+                    sealLegacyJob(root, current);
                 }
                 current.put("status", "queued");
                 current.put("error", JSONObject.NULL);
@@ -575,13 +615,15 @@ public class NativeCloudTransferPlugin extends Plugin {
         runIo(call, () -> {
             String jobId = safeId(call.getString("jobId"));
             JSONObject job = mutateJob(jobRoot(jobId), current -> {
+                if (current.optBoolean("sealed", false)) return;
                 ensureJobAccepting(current);
                 int expectedTotal = current.optInt("expectedTotal", 0);
                 if (expectedTotal <= 0) throw new IllegalStateException("旧版原生云任务不支持流水封口");
-                validateStagedObjects(current, expectedTotal);
+                validateStagedObjects(jobRoot(jobId), current, expectedTotal);
                 current.put("sealed", true);
                 current.put("lastStagedAt", System.currentTimeMillis());
             });
+            signalStagingChanged();
             call.resolve(jobSummary(job));
         });
     }
@@ -611,11 +653,13 @@ public class NativeCloudTransferPlugin extends Plugin {
     public void getLatestJob(PluginCall call) {
         runIo(call, () -> {
             String requestedProvider = call.getString("provider", "");
+            String requestedKind = call.getString("kind", "upload");
             JSONObject latest = null;
             File[] roots = jobsRoot(getContext()).listFiles(File::isDirectory);
             if (roots != null) for (File candidate : roots) {
                 try {
                     JSONObject value = readJob(candidate);
+                    if (!requestedKind.equals(value.optString("kind", "upload"))) continue;
                     if (!requestedProvider.isBlank() && !requestedProvider.equals(value.optString("provider"))) continue;
                     if (latest == null || value.optLong("updatedAt") > latest.optLong("updatedAt")) latest = value;
                 } catch (Exception ignored) {}
@@ -649,11 +693,14 @@ public class NativeCloudTransferPlugin extends Plugin {
     }
 
     static synchronized JSONObject requestCancellation(File root) throws Exception {
-        return mutateJob(root, job -> {
+        JSONObject result = mutateJob(root, job -> {
             String status = job.optString("status");
             if ("completed".equals(status) || "failed".equals(status) || "cancelled".equals(status)) return;
             JSONArray objects = job.optJSONArray("objects");
-            if (objects != null) {
+            if (NativeCloudJobStore.usesPerObjectFiles(job) && job.optBoolean("manifestCommitStarted", false)) {
+                job.put("status", "committing");
+                return;
+            } else if (objects != null) {
                 for (int index = 0; index < objects.length(); index++) {
                     JSONObject object = objects.optJSONObject(index);
                     if (object != null && object.optBoolean("manifest") && object.optBoolean("uploaded")) {
@@ -667,6 +714,27 @@ public class NativeCloudTransferPlugin extends Plugin {
                 job.put("status", "cancelled");
             }
         });
+        signalStagingChanged();
+        return result;
+    }
+
+    static long stagingRevision() {
+        synchronized (STAGING_MONITOR) {
+            return stagingRevision;
+        }
+    }
+
+    static void awaitStagingChange(long revision, long timeoutMs) throws InterruptedException {
+        synchronized (STAGING_MONITOR) {
+            if (stagingRevision == revision) STAGING_MONITOR.wait(timeoutMs);
+        }
+    }
+
+    private static void signalStagingChanged() {
+        synchronized (STAGING_MONITOR) {
+            stagingRevision++;
+            STAGING_MONITOR.notifyAll();
+        }
     }
 
     static synchronized void beginManifestCommit(File root) throws Exception {
@@ -677,10 +745,9 @@ public class NativeCloudTransferPlugin extends Plugin {
             if (!job.optBoolean("sealed", false)) {
                 throw new IllegalStateException("云备份对象尚未封口，不能提交最终清单");
             }
-            JSONArray objects = job.getJSONArray("objects");
+            List<JSONObject> objects = NativeCloudJobStore.readAll(root, job);
             JSONObject manifest = null;
-            for (int index = 0; index < objects.length(); index++) {
-                JSONObject entry = objects.getJSONObject(index);
+            for (JSONObject entry : objects) {
                 if (entry.optBoolean("manifest")) manifest = entry;
                 else if (!entry.optBoolean("uploaded", false)) {
                     throw new IllegalStateException("内容对象尚未全部上传，不能提交最终清单");
@@ -698,10 +765,17 @@ public class NativeCloudTransferPlugin extends Plugin {
         return root;
     }
 
-    static JSONObject readJob(File root) throws Exception {
-        File file = new File(root, "job.json");
-        if (!file.isFile()) file = new File(root, "job.json.bak");
-        if (!file.isFile() || file.length() > 1024 * 1024) throw new IllegalStateException("原生云任务清单不存在或异常");
+    static synchronized JSONObject readJob(File root) throws Exception {
+        try { return readJobFile(new File(root, "job.json")); }
+        catch (Exception primaryError) {
+            File backup = new File(root, "job.json.bak");
+            if (!backup.isFile()) throw primaryError;
+            return readJobFile(backup);
+        }
+    }
+
+    private static JSONObject readJobFile(File file) throws Exception {
+        if (!file.isFile() || file.length() > 16L * 1024L * 1024L) throw new IllegalStateException("原生云任务清单不存在或异常");
         byte[] bytes = new byte[(int) file.length()];
         try (FileInputStream input = new FileInputStream(file)) {
             int offset = 0;
@@ -718,8 +792,10 @@ public class NativeCloudTransferPlugin extends Plugin {
         }
         File target = new File(root, "job.json");
         File backup = new File(root, "job.json.bak");
-        if (backup.exists() && !backup.delete()) throw new IllegalStateException("无法轮换原生云任务清单");
-        if (target.exists() && !target.renameTo(backup)) throw new IllegalStateException("无法备份原生云任务清单");
+        if (target.exists()) {
+            if (backup.exists() && !backup.delete()) throw new IllegalStateException("无法轮换原生云任务清单");
+            if (!target.renameTo(backup)) throw new IllegalStateException("无法备份原生云任务清单");
+        }
         if (!temporary.renameTo(target)) {
             if (backup.exists()) backup.renameTo(target);
             throw new IllegalStateException("无法提交原生云任务清单");
@@ -736,26 +812,40 @@ public class NativeCloudTransferPlugin extends Plugin {
     }
 
     private void appendStagedEntry(File root, JSONObject entry) throws Exception {
-        mutateJob(root, job -> {
+        synchronized (NativeCloudTransferPlugin.class) {
+            JSONObject job = readJob(root);
             ensureJobAccepting(job);
-            JSONArray objects = job.getJSONArray("objects");
-            int expectedTotal = job.optInt("expectedTotal", 0);
-            if (expectedTotal > 0 && objects.length() >= expectedTotal) {
-                throw new IllegalStateException("原生云任务暂存对象超过预期数量");
-            }
-            for (int index = 0; index < objects.length(); index++) {
-                JSONObject existing = objects.getJSONObject(index);
-                if (entry.getString("name").equals(existing.optString("name"))) {
-                    throw new IllegalStateException("原生云任务包含重复对象名称");
+            if (NativeCloudJobStore.usesPerObjectFiles(job)) {
+                NativeCloudJobStore.append(root, job, entry);
+                job.put("lastStagedAt", System.currentTimeMillis());
+                try {
+                    writeJob(root, job);
+                } catch (Exception error) {
+                    NativeCloudJobStore.rollbackLastAppend(root, job, entry);
+                    throw error;
                 }
-                if (entry.optBoolean("manifest") && existing.optBoolean("manifest")) {
-                    throw new IllegalStateException("原生云任务只能暂存一个最终清单");
+            } else {
+                JSONArray objects = job.getJSONArray("objects");
+                int expectedTotal = job.optInt("expectedTotal", 0);
+                if (expectedTotal > 0 && objects.length() >= expectedTotal) {
+                    throw new IllegalStateException("原生云任务暂存对象超过预期数量");
                 }
+                for (int index = 0; index < objects.length(); index++) {
+                    JSONObject existing = objects.getJSONObject(index);
+                    if (entry.getString("name").equals(existing.optString("name"))) {
+                        throw new IllegalStateException("原生云任务包含重复对象名称");
+                    }
+                    if (entry.optBoolean("manifest") && existing.optBoolean("manifest")) {
+                        throw new IllegalStateException("原生云任务只能暂存一个最终清单");
+                    }
+                }
+                objects.put(entry);
+                if (expectedTotal <= 0) job.put("total", objects.length());
+                job.put("lastStagedAt", System.currentTimeMillis());
+                writeJob(root, job);
             }
-            objects.put(entry);
-            if (expectedTotal <= 0) job.put("total", objects.length());
-            job.put("lastStagedAt", System.currentTimeMillis());
-        });
+        }
+        signalStagingChanged();
     }
 
     private static void ensureJobAccepting(JSONObject job) {
@@ -766,6 +856,14 @@ public class NativeCloudTransferPlugin extends Plugin {
         ) {
             throw new IllegalStateException("原生云任务已结束暂存");
         }
+    }
+
+    private static void validateStagedObjects(File root, JSONObject job, int expectedTotal) throws Exception {
+        if (NativeCloudJobStore.usesPerObjectFiles(job)) {
+            NativeCloudJobStore.validate(root, job, expectedTotal);
+            return;
+        }
+        validateStagedObjects(job, expectedTotal);
     }
 
     private static void validateStagedObjects(JSONObject job, int expectedTotal) throws Exception {
@@ -782,26 +880,26 @@ public class NativeCloudTransferPlugin extends Plugin {
         if (manifests != 1) throw new IllegalStateException("原生云任务必须且只能有一个最终清单");
     }
 
-    private static void sealLegacyJob(JSONObject job) throws Exception {
-        JSONArray objects = job.getJSONArray("objects");
-        validateStagedObjects(job, objects.length());
-        job.put("expectedTotal", objects.length());
-        job.put("total", objects.length());
+    private static void sealLegacyJob(File root, JSONObject job) throws Exception {
+        int count = NativeCloudJobStore.objectCount(job);
+        validateStagedObjects(root, job, count);
+        job.put("expectedTotal", count);
+        job.put("total", count);
         job.put("sealed", true);
         job.put("lastStagedAt", System.currentTimeMillis());
     }
 
     private JSObject jobSummary(JSONObject job) {
         JSObject result = new JSObject();
-        for (String key : new String[]{"id", "provider", "status", "error", "resultId", "resultName"})
+        for (String key : new String[]{"id", "kind", "provider", "status", "error", "resultId", "resultName"})
             if (job.has(key)) result.put(key, job.opt(key));
         result.put("completed", job.optInt("completed", 0));
         result.put("total", job.optInt("total", 0));
         result.put("updatedAt", job.optLong("updatedAt", 0));
         result.put("uploadedBytes", job.optLong("uploadedBytes", 0));
-        long totalBytes = 0L;
+        long totalBytes = job.optLong("totalBytes", 0L);
         JSONArray stagedObjects = job.optJSONArray("objects");
-        if (stagedObjects != null) {
+        if (!NativeCloudJobStore.usesPerObjectFiles(job) && stagedObjects != null) {
             for (int index = 0; index < stagedObjects.length(); index++) {
                 long size = stagedObjects.optJSONObject(index) == null ? 0L : stagedObjects.optJSONObject(index).optLong("size", 0L);
                 if (size > 0L && totalBytes <= Long.MAX_VALUE - size) totalBytes += size;

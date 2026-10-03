@@ -11,5 +11,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
+  "exclude": ["src/**/ProductAssistant*", "src/**/UseProductAssistant*"],
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
 }

@@ -11,6 +11,7 @@ interface LibraryOverlayNavigationContext {
   organizingResource: Ref<Resource | undefined>
   isOrganizing: Ref<boolean, boolean>
   isImportChooserOpen: Ref<boolean, boolean>
+  closeImportChooser: () => Promise<void> | void
   isSettingsOpen: Ref<boolean, boolean>
   isDuplicateCleanerOpen: Ref<boolean, boolean>
   isSimilarNameGroupsOpen: Ref<boolean, boolean>
@@ -82,7 +83,7 @@ export function useLibraryOverlayNavigation(context: LibraryOverlayNavigationCon
       isOpen: () => context.isImportChooserOpen.value,
       close: () => {
         if (context.isLinkImportOpen.value) context.isLinkImportOpen.value = false
-        else context.isImportChooserOpen.value = false
+        else void context.closeImportChooser()
       },
     },
     {

@@ -21,7 +21,6 @@ import {
 import { CommunitySourceRestoreService } from '../services/CommunitySourceRestoreService'
 import { CommunitySourceService } from '../services/CommunitySourceService'
 import { ExportService } from '../services/ExportService'
-import { HistoryService } from '../services/HistoryService'
 import { ArchiveRecoveryService } from '../services/ArchiveRecoveryService'
 import { MainApiService } from '../services/MainApiService'
 import { NativeResourceRecoveryService } from '../services/NativeResourceRecoveryService'
@@ -100,7 +99,7 @@ export const communitySourceService = new CommunitySourceService(
 )
 export const userPersonaService = new UserPersonaService(resourceService)
 export const categoryService = new CategoryService(categoryStorage)
-export const browserStorageService = new BrowserStorageService()
+export const browserStorageService = new BrowserStorageService(resourceHealthStorage)
 export const externalAppService = new ExternalAppService(externalAppStorage)
 export const externalAppSdkService = new ExternalAppSdkService(externalAppService, resourceService)
 export const characterDrawService = new CharacterDrawService(database)
@@ -114,12 +113,6 @@ export const restoreService = new CommunitySourceRestoreService(
   communitySourceService,
   (entries) => restoreCommunitySourceLocalAttachments(assetStore, entries),
 )
-export const historyService = new HistoryService(
-  database,
-  exportService,
-  restoreService,
-  vaultService,
-)
 export const recycleBinService = new RecycleBinService(
   database,
   resourceService,
@@ -127,6 +120,7 @@ export const recycleBinService = new RecycleBinService(
   exportService,
   restoreService,
   vaultService,
+  userPersonaService,
 )
 export const mainApiService = new MainApiService()
 export const aiTaggingService = new AiTaggingService(mainApiService, resourceService)
@@ -151,10 +145,7 @@ export const cloudBackupService = new CloudBackupService(
       : {}),
     ...(selection.generalPreferences
       ? {
-          generalPreferences: {
-            ...browserStorageService.exportGeneralPreferences(),
-            historySnapshotLimit: await historyService.getSnapshotLimit(),
-          },
+          generalPreferences: browserStorageService.exportGeneralPreferences(),
         }
       : {}),
     ...(selection.resourceGallery
@@ -189,7 +180,6 @@ export const cloudBackupService = new CloudBackupService(
     }
     if (data.generalPreferences) {
       browserStorageService.importGeneralPreferences(data.generalPreferences)
-      await historyService.setSnapshotLimit(data.generalPreferences.historySnapshotLimit)
     }
     if (data.mainApiProfiles) {
       mainApiService.importProfilesState(data.mainApiProfiles)
@@ -208,6 +198,7 @@ export const cloudBackupService = new CloudBackupService(
       await restorePlainSecretCopies(data.plaintextSecretCopies)
     }
   },
+  syncNativeResourceFiles,
 )
 
 export async function initializeCredentialServices(): Promise<void> {
@@ -273,8 +264,20 @@ export async function importPortableCredentialBundle(
   if (value.cloudBackup) await cloudBackupService.importPortableCredentials(value.cloudBackup)
 }
 
+let nativeResourceSync: Promise<void> | undefined
+
 /** 首次切换到内置 Vue APK 时，把旧 IndexedDB 原件逐项补入 Android 文件目录。 */
-export async function syncNativeResourceFiles(): Promise<void> {
+export function syncNativeResourceFiles(): Promise<void> {
+  if (nativeResourceSync) return nativeResourceSync
+  const pending = syncNativeResourceFilesOnce()
+  const shared = pending.finally(() => {
+    if (nativeResourceSync === shared) nativeResourceSync = undefined
+  })
+  nativeResourceSync = shared
+  return shared
+}
+
+async function syncNativeResourceFilesOnce(): Promise<void> {
   const nativeStorage = await getNativeResourceStorageInfo()
   if (!nativeStorage) return
   // A partially migrated vault can still reference native-only originals. Only

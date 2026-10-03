@@ -209,9 +209,6 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  .frontend-workshop__api-pair {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .frontend-workshop__mode-grid {
     grid-auto-columns: minmax(13rem, 86%);
     grid-auto-flow: column;

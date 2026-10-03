@@ -152,6 +152,94 @@ export function attachmentIdentityMatches(
   )
 }
 
+function attachmentSignature(attachment: DiscordAttachmentMeta): string {
+  return JSON.stringify({
+    id: attachment.id,
+    name: attachment.name,
+    size: attachment.size,
+    contentType: attachment.contentType ?? '',
+    textContent: attachment.textContent ?? '',
+    width: attachment.width ?? null,
+    height: attachment.height ?? null,
+  })
+}
+
+function attachmentsSignature(attachments: readonly DiscordAttachmentMeta[]): string {
+  return attachments.map(attachmentSignature).sort().join('\n')
+}
+
+export function discordMessageChanged(
+  existing: CommunitySourceMessage,
+  capture: Pick<
+    DiscordCapture,
+    | 'content'
+    | 'authorName'
+    | 'authorBot'
+    | 'timestamp'
+    | 'editedTimestamp'
+    | 'embeds'
+    | 'attachments'
+  >,
+): {
+  changed: boolean
+  content: boolean
+  embeds: boolean
+  attachments: boolean
+} {
+  const content =
+    existing.content !== capture.content ||
+    existing.authorName !== capture.authorName ||
+    Boolean(existing.authorBot) !== Boolean(capture.authorBot) ||
+    existing.timestamp !== capture.timestamp ||
+    (existing.editedTimestamp ?? '') !== (capture.editedTimestamp ?? '')
+  const embeds = JSON.stringify(existing.embeds) !== JSON.stringify(capture.embeds ?? [])
+  const attachments =
+    attachmentsSignature(existing.attachments) !== attachmentsSignature(capture.attachments ?? [])
+  return { changed: content || embeds || attachments, content, embeds, attachments }
+}
+
+export function olderDiscordDelivery(
+  existing: CommunitySourceMessage,
+  capture: Pick<DiscordCapture, 'editedTimestamp'>,
+  capturedAt: number,
+): boolean {
+  const previousEdit = Date.parse(existing.editedTimestamp ?? '')
+  const incomingEdit = Date.parse(capture.editedTimestamp ?? '')
+  if (Number.isFinite(previousEdit)) {
+    if (!Number.isFinite(incomingEdit) || incomingEdit < previousEdit) return true
+    if (incomingEdit > previousEdit) return false
+  } else if (Number.isFinite(incomingEdit)) return false
+  return capturedAt < (existing.deliveryCapturedAt ?? existing.updatedAt)
+}
+
+export function sourceMetadataCapturedAt(source: CommunitySource): number {
+  return source.metadataCapturedAt ?? source.updatedAt
+}
+
+export function withDiscordSourceMetadata(
+  source: CommunitySource,
+  capture: DiscordCapture,
+  capturedAt: number,
+  updatedAt: number,
+): CommunitySource {
+  const watermark = sourceMetadataCapturedAt(source)
+  if (capturedAt < watermark) return { ...source, metadataCapturedAt: watermark }
+  return {
+    ...source,
+    guildId: source.guildId ?? capture.guildId,
+    guildName: capture.guildName ?? source.guildName,
+    channelId: source.channelId || capture.channelId,
+    channelName: capture.channelName ?? source.channelName,
+    threadId: source.threadId ?? capture.threadId,
+    canonicalUrl: capture.isStarter ? capture.canonicalUrl : source.canonicalUrl,
+    title: capture.title ?? source.title,
+    starterAuthorName: capture.isStarter ? capture.authorName : source.starterAuthorName,
+    forumTags: normalizeStringList([...source.forumTags, ...(capture.forumTags ?? [])]),
+    metadataCapturedAt: capturedAt,
+    updatedAt,
+  }
+}
+
 export function withMessageSummary(
   source: CommunitySource,
   messages: readonly CommunitySourceMessage[],

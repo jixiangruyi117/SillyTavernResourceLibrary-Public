@@ -15,6 +15,9 @@ import { RestoreService } from './RestoreService'
 import { VaultService } from './VaultService'
 import { RecycleBinService } from './RecycleBinService'
 import { ResourceGalleryService } from './ResourceGalleryService'
+import { JsonResourceParser } from '../parser/JsonResourceParser'
+import { UserPersonaService } from './UserPersonaService'
+import type { UserPersonaDraft } from '../types/UserPersona'
 
 const databases: AppDatabase[] = []
 
@@ -65,7 +68,11 @@ async function createServices() {
   const vault = new VaultService(database)
   await vault.initialize()
   const resourceStorage = new IndexedDbResourceStorage(database, vault)
-  const resourceService = new ResourceService(resourceStorage, new ResourceParserRegistry([]))
+  const resourceService = new ResourceService(
+    resourceStorage,
+    new ResourceParserRegistry([new JsonResourceParser()]),
+  )
+  const userPersonaService = new UserPersonaService(resourceService)
   const categoryService = new CategoryService(new IndexedDbCategoryStorage(database, vault))
   const restoreService = new RestoreService(new IndexedDbArchiveStorage(database, vault))
   const recycleBin = new RecycleBinService(
@@ -75,11 +82,127 @@ async function createServices() {
     new ExportService(),
     restoreService,
     vault,
+    userPersonaService,
   )
-  return { database, recycleBin, resourceService, resourceStorage, vault }
+  return { database, recycleBin, resourceService, resourceStorage, vault, userPersonaService }
 }
 
 describe('RecycleBinService', () => {
+  it('moves a nested persona version to recycle bin and restores it without resource history snapshots', async () => {
+    const { recycleBin, resourceService, userPersonaService } = await createServices()
+    const draft: UserPersonaDraft = {
+      avatarId: 'me.png',
+      name: '同一个我',
+      title: '',
+      description: '全局人设',
+      position: 0,
+      depth: 2,
+      role: 0,
+      lorebook: '',
+      connections: [],
+      characterBindings: {},
+      profile: {
+        version: 1,
+        sections: [{ id: 'base', name: '基础设定', text: '全局人设' }],
+        variants: {
+          'detective.png': {
+            defaultVersionId: 'v1',
+            chatVersions: { chatA: 'v1', chatB: 'v2' },
+            versions: {
+              v1: { name: '初遇', overrides: {}, addition: '初遇补充' },
+              v2: { name: '重逢', overrides: {}, addition: '重逢补充' },
+            },
+          },
+        },
+      },
+    }
+    const resource = await userPersonaService.create(draft)
+
+    const recycled = await recycleBin.movePersonaVersionToRecycleBin({
+      resourceId: resource.id,
+      avatarId: draft.avatarId,
+      characterId: 'detective.png',
+      characterName: '雨夜侦探',
+      versionId: 'v1',
+    })
+
+    expect(recycled.itemKind).toBe('persona-version')
+    expect(recycled.reason).toContain('雨夜侦探')
+    expect(await resourceService.listVersions(resource.id)).toHaveLength(1)
+    let current = await userPersonaService.load(resource.id)
+    expect(current.view.entries[0]?.profile.variants['detective.png']?.versions).toEqual({
+      v2: { name: '重逢', overrides: {}, addition: '重逢补充' },
+    })
+    expect((await recycleBin.list()).map((entry) => entry.id)).toContain(recycled.id)
+
+    await recycleBin.restore(recycled.id)
+
+    current = await userPersonaService.load(resource.id)
+    expect(current.view.entries[0]?.profile.variants['detective.png']).toMatchObject({
+      defaultVersionId: 'v1',
+      chatVersions: { chatA: 'v1', chatB: 'v2' },
+      versions: {
+        v1: { name: '初遇', addition: '初遇补充' },
+        v2: { name: '重逢', addition: '重逢补充' },
+      },
+    })
+    expect(await resourceService.listVersions(resource.id)).toHaveLength(1)
+    expect(await recycleBin.list()).toEqual([])
+  })
+
+  it('moves a whole character persona and all its versions to recycle bin without resource history snapshots', async () => {
+    const { recycleBin, resourceService, userPersonaService } = await createServices()
+    const draft: UserPersonaDraft = {
+      avatarId: 'me.png',
+      name: '同一个我',
+      title: '',
+      description: '全局人设',
+      position: 0,
+      depth: 2,
+      role: 0,
+      lorebook: '',
+      connections: [],
+      characterBindings: {},
+      profile: {
+        version: 1,
+        sections: [{ id: 'base', name: '基础设定', text: '全局人设' }],
+        variants: {
+          'detective.png': {
+            defaultVersionId: 'v1',
+            chatVersions: { chatA: 'v1', chatB: 'v2' },
+            versions: {
+              v1: { name: '初遇', overrides: {}, addition: '初遇补充' },
+              v2: { name: '重逢', overrides: {}, addition: '重逢补充' },
+            },
+          },
+        },
+      },
+    }
+    const resource = await userPersonaService.create(draft)
+
+    const recycled = await recycleBin.movePersonaCharacterToRecycleBin({
+      resourceId: resource.id,
+      avatarId: draft.avatarId,
+      characterId: 'detective.png',
+      characterName: '雨夜侦探',
+    })
+
+    expect(recycled.itemKind).toBe('persona-character')
+    expect(await resourceService.listVersions(resource.id)).toHaveLength(1)
+    let current = await userPersonaService.load(resource.id)
+    expect(current.view.entries[0]?.profile.variants['detective.png']).toBeUndefined()
+    expect((await recycleBin.list()).map((entry) => entry.id)).toContain(recycled.id)
+
+    await recycleBin.restore(recycled.id)
+
+    current = await userPersonaService.load(resource.id)
+    expect(current.view.entries[0]?.profile.variants['detective.png']).toEqual(
+      draft.profile.variants['detective.png'],
+    )
+    expect(await resourceService.listVersions(resource.id)).toHaveLength(1)
+    expect(await recycleBin.list()).toEqual([])
+  })
+
   it('restores gallery categories and custom cover together with the deleted resource', async () => {
     const { recycleBin, resourceStorage, resourceService } = await createServices()
     const owner = await createResource('gallery-owner', '图库资源', '{}')

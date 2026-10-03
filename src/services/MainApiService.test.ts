@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { MainApiService } from './MainApiService'
+import { MainApiService, type MainApiTool, type MainApiMessage } from './MainApiService'
 import type { LocalCredentialRepository } from './LocalCredentialStore'
 
 class MemoryStorage implements Storage {
@@ -37,6 +37,269 @@ class MemoryCredentialStore implements LocalCredentialRepository {
     this.values.delete(identifier)
   }
 }
+
+describe('native tool calling transport', () => {
+  const config = { url: 'https://example.com/v1', model: 'test', maxTokens: 1000, stream: true }
+  const tools: MainApiTool[] = [
+    {
+      name: 'read_css',
+      description: '读取样式',
+      parameters: {
+        type: 'object',
+        properties: { scope: { type: 'string' } },
+        required: ['scope'],
+        additionalProperties: false,
+      },
+    },
+  ]
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', new MemoryStorage())
+    vi.restoreAllMocks()
+  })
+  it('uses query-only Responses search with actual tool evidence and cited sources', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'completed',
+          usage: { input_tokens: 20, output_tokens: 30 },
+          output: [
+            { type: 'web_search_call', status: 'completed' },
+            {
+              type: 'message',
+              content: [
+                {
+                  type: 'output_text',
+                  text: '公开资料',
+                  annotations: [
+                    { type: 'url_citation', url: 'https://example.com/docs', title: '资料' },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetcher)
+    const service = new MainApiService()
+    const reply = await service.completeWithUsage(
+      [{ role: 'user', content: '公开查询' }],
+      { ...config, url: 'https://example.com/v1/chat/completions' },
+      { webSearch: true },
+    )
+    expect(fetcher.mock.lastCall![0]).toBe('https://example.com/v1/responses')
+    const body = JSON.parse(fetcher.mock.lastCall![1].body)
+    expect(body).toMatchObject({
+      store: false,
+      stream: false,
+      tool_choice: 'required',
+      tools: [{ type: 'web_search' }],
+    })
+    expect(reply.sources).toEqual([{ title: '资料', url: 'https://example.com/docs' }])
+    expect(reply.usage.totalTokens).toBe(50)
+    expect(reply.toolCalls).toBeUndefined()
+    expect(service.getConfig().stream).toBe(false)
+  })
+  it('preserves the Anthropic Messages endpoint and native search citations', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          stop_reason: 'end_turn',
+          content: [
+            { type: 'server_tool_use', name: 'web_search' },
+            {
+              type: 'web_search_tool_result',
+              content: [{ type: 'web_search_result', url: 'https://example.com/docs' }],
+            },
+            {
+              type: 'text',
+              text: '资料',
+              citations: [
+                {
+                  type: 'web_search_result_location',
+                  url: 'https://example.com/docs',
+                  title: '资料',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetcher)
+    const reply = await new MainApiService().completeWithUsage(
+      [{ role: 'user', content: '公开查询' }],
+      { ...config, protocol: 'anthropic-compatible' },
+      { webSearch: true },
+    )
+    expect(fetcher.mock.lastCall![0]).toBe('https://example.com/v1/messages')
+    expect(JSON.parse(fetcher.mock.lastCall![1].body).tools).toEqual([
+      { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+    ])
+    expect(reply.sources).toHaveLength(1)
+  })
+  it('never claims an ordinary model answer is searched and does not retry unsupported search', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: '我想当然的回答' }] }],
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetcher)
+    await expect(
+      new MainApiService().completeWithUsage([{ role: 'user', content: '公开查询' }], config, {
+        webSearch: true,
+      }),
+    ).rejects.toThrow('未执行搜索')
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+  it('accepts tool-only OpenAI replies and preserves call IDs and native tool results', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'tool_calls',
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call1',
+                      type: 'function',
+                      function: { name: 'read_css', arguments: '{"scope":"library"}' },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '已读取' } }] }),
+        ),
+      )
+    vi.stubGlobal('fetch', fetcher)
+    const service = new MainApiService()
+    const messages: MainApiMessage[] = [{ role: 'user', content: '读取资源库样式' }]
+    const result = await service.completeWithUsage(messages, config, { tools })
+    expect(result.toolCalls).toEqual([
+      { id: 'call1', name: 'read_css', arguments: '{"scope":"library"}' },
+    ])
+    expect(result.usage.source).toBe('estimated')
+    await service.completeWithUsage(
+      [
+        ...messages,
+        { role: 'assistant', content: '', toolCalls: result.toolCalls },
+        { role: 'tool', content: '{"ok":true}', toolCallId: 'call1' },
+      ],
+      config,
+      { tools },
+    )
+    const body = JSON.parse(fetcher.mock.calls[1]![1].body)
+    expect(body).toMatchObject({ stream: false, tool_choice: 'auto', parallel_tool_calls: false })
+    expect(body.tools[0].function).toMatchObject({
+      name: 'read_css',
+      strict: true,
+      parameters: { additionalProperties: false },
+    })
+    expect(body.messages.slice(-2)).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'read_css', arguments: '{"scope":"library"}' },
+          },
+        ],
+      },
+      { role: 'tool', content: '{"ok":true}', tool_call_id: 'call1' },
+    ])
+  })
+  it('preserves signed Anthropic blocks and groups all results into one user message', async () => {
+    const content = [
+      { type: 'thinking', thinking: 'thinking', signature: 'signed' },
+      { type: 'tool_use', id: 'a', name: 'read_css', input: { scope: 'library' } },
+      { type: 'tool_use', id: 'b', name: 'read_css', input: { scope: 'details' } },
+    ]
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ stop_reason: 'tool_use', content })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: '完成' }] }),
+        ),
+      )
+    vi.stubGlobal('fetch', fetcher)
+    const service = new MainApiService()
+    const override = { ...config, protocol: 'anthropic-compatible' as const }
+    const first = await service.completeWithUsage([{ role: 'user', content: '读取' }], override, {
+      tools,
+    })
+    await service.completeWithUsage(
+      [
+        { role: 'user', content: '读取' },
+        {
+          role: 'assistant',
+          content: first.text,
+          toolCalls: first.toolCalls,
+          providerContent: first.providerContent,
+        },
+        { role: 'tool', toolCallId: 'a', content: '读取成功' },
+        { role: 'tool', toolCallId: 'b', content: '区域不存在', toolError: true },
+      ],
+      override,
+      { tools },
+    )
+    const body = JSON.parse(fetcher.mock.calls[1]![1].body)
+    expect(body.tools[0]).toEqual({
+      name: tools[0]!.name,
+      description: tools[0]!.description,
+      input_schema: tools[0]!.parameters,
+    })
+    expect(body.messages[1].content).toEqual(content)
+    expect(body.messages[2]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'a', content: '读取成功' },
+        { type: 'tool_result', tool_use_id: 'b', content: '区域不存在', is_error: true },
+      ],
+    })
+    expect(body.stream).toBe(false)
+  })
+  it.each(['', 'duplicate'])(
+    'rejects incomplete/duplicate OpenAI call IDs (%s) before execution',
+    async (invalid) => {
+      const entry = {
+        id: invalid ? 'same' : '',
+        type: 'function',
+        function: { name: 'read_css', arguments: '{}' },
+      }
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { tool_calls: invalid ? [entry, entry] : [entry] } }],
+            }),
+          ),
+        ),
+      )
+      await expect(
+        new MainApiService().completeWithUsage([{ role: 'user', content: '读' }], config, {
+          tools,
+        }),
+      ).rejects.toThrow('工具调用')
+    },
+  )
+})
 
 describe('MainApiService', () => {
   it('reports partial stream text before unexpected EOF and marks the reply incomplete', async () => {

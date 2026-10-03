@@ -17,7 +17,7 @@ let lastShownAt = 0
 function explain(message: string): string {
   const text = message.toLocaleLowerCase()
   if (text.includes('quota') || text.includes('exceeded')) {
-    return '浏览器存储空间不足。请先导出完整备份，再删除部分资源或历史快照。'
+    return '浏览器存储空间不足。请先导出完整备份，再清理回收站或不需要的资源。'
   }
   if (text.includes('indexeddb') || text.includes('database') || text.includes('dexie')) {
     return '本地数据库无法访问。若使用隐私模式或浏览器刚清理过站点数据，请换回普通窗口重试。'

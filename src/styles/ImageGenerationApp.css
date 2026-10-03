@@ -718,3 +718,53 @@ summary {
     display: none;
   }
 }
+
+.image-generation-connection {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+.image-generation-connection .head {
+  margin-bottom: 8px;
+}
+.image-generation-connection__fields {
+  display: grid;
+  gap: 8px;
+}
+.image-generation-connection__fields label {
+  min-width: 0;
+  gap: 4px;
+  font-size: 13px;
+}
+.image-generation-connection__fields :is(input, select, button) {
+  min-height: 44px;
+}
+.image-generation-connection__fields :is(input, select) {
+  padding: 6px 10px;
+  font-size: 1rem;
+}
+.image-generation-connection__model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+.image-generation-connection__advanced {
+  border-top: 1px solid var(--line);
+}
+.image-generation-connection__advanced > summary,
+.image-generation-connection__capabilities > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.image-generation-connection__advanced > summary small,
+.image-generation-connection__capabilities > summary span {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.image-generation-connection__advanced > button {
+  width: 100%;
+}

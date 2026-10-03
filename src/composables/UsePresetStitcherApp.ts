@@ -26,6 +26,7 @@ import {
   getPromptDisplayTokens,
   listPresetRegexScripts,
   listPresetSegments,
+  readPresetPromptSlots,
   type AssemblyEntry,
   type PresetFavoriteSnapshot,
   type RegexGroupPick,
@@ -55,6 +56,7 @@ export function usePresetStitcherApp(
     findSourceEntry,
     buildCurrentSourceEntry,
     insertFavorite,
+    insertManualEntry,
     selectInsertionIndex,
     toggleRegexGroup,
     toggleExpanded,
@@ -99,6 +101,14 @@ export function usePresetStitcherApp(
     successName,
     emit,
   }))
+  const promptSlotCount = computed(
+    () =>
+      new Set(
+        assembly.value.flatMap((entry) =>
+          readPresetPromptSlots(entry.content).map((slot) => slot.id),
+        ),
+      ).size,
+  )
 
   const { loadPresetJson, chooseBase, chooseSource, chooseFavoriteSource } = usePresetSelection(
     () => ({
@@ -153,11 +163,14 @@ export function usePresetStitcherApp(
 
   const {
     beginSourceEdit,
+    beginNewEntry,
     beginTargetEdit,
     beginFavoriteEdit,
     rememberEditorSelection,
     insertVariable,
     openVariableWriter,
+    openSlotWriter,
+    insertPromptSlot,
     insertVariableWrite,
     insertUnreadWrittenVariable,
     copyEntryContent,
@@ -174,6 +187,10 @@ export function usePresetStitcherApp(
     variableName,
     variableValue,
     variableWriterOpen,
+    slotName,
+    slotId,
+    slotWriterError,
+    slotWriterOpen,
     unreadWrittenVariables,
     notice,
     errorMessage,
@@ -182,6 +199,7 @@ export function usePresetStitcherApp(
     favorites,
     sourceSummary,
     buildCurrentSourceEntry,
+    insertNewEntry: insertManualEntry,
   }))
 
   const {
@@ -301,6 +319,14 @@ export function usePresetStitcherApp(
   const mobileEditorOverlay = ref(false)
 
   const variableWriterOpen = ref(false)
+
+  const slotWriterOpen = ref(false)
+
+  const slotName = ref('')
+
+  const slotId = ref('')
+
+  const slotWriterError = ref('')
 
   const variableName = ref('')
 
@@ -552,12 +578,8 @@ export function usePresetStitcherApp(
     targetPageCount,
     targetPageItems,
     blockingPromptIssues,
-    reviewAddedLines,
-    reviewRemovedLines,
     reviewAddedMacros,
     reviewRemovedMacros,
-    reviewVariableReads,
-    reviewVariableWrites,
   } = usePresetAssemblyAnalysis({
     assembly,
     candidates,
@@ -648,6 +670,8 @@ export function usePresetStitcherApp(
     successName.value = ''
     editor.value = undefined
     variableWriterOpen.value = false
+    slotWriterOpen.value = false
+    slotWriterError.value = ''
     showEnabledOnly.value = false
     showModifiedOnly.value = false
     showVariableReadsOnly.value = false
@@ -683,6 +707,7 @@ export function usePresetStitcherApp(
     }
     if (readingMode.value) readingMode.value = false
     else if (variableWriterOpen.value) variableWriterOpen.value = false
+    else if (slotWriterOpen.value) slotWriterOpen.value = false
     else if (sourcePickerOpen.value) sourcePickerOpen.value = false
     else if (candidateSheetOpen.value) candidateSheetOpen.value = false
     else if (editor.value) cancelEdit()
@@ -731,11 +756,11 @@ export function usePresetStitcherApp(
   )
 
   watch(
-    [sourcePickerOpen, candidateSheetOpen, editor, variableWriterOpen],
-    ([sourceOpen, candidateOpen, activeEditor, variableOpen]) => {
+    [sourcePickerOpen, candidateSheetOpen, editor, variableWriterOpen, slotWriterOpen],
+    ([sourceOpen, candidateOpen, activeEditor, variableOpen, slotOpen]) => {
       document.body.classList.toggle(
         'modal-open',
-        sourceOpen || candidateOpen || Boolean(activeEditor) || variableOpen,
+        sourceOpen || candidateOpen || Boolean(activeEditor) || variableOpen || slotOpen,
       )
     },
   )
@@ -868,6 +893,12 @@ export function usePresetStitcherApp(
     QUICK_VARIABLES,
     insertVariable,
     openVariableWriter,
+    openSlotWriter,
+    slotName,
+    slotId,
+    slotWriterError,
+    slotWriterOpen,
+    insertPromptSlot,
     unreadWrittenVariables,
     insertUnreadWrittenVariable,
     saveEdit,
@@ -916,8 +947,10 @@ export function usePresetStitcherApp(
     getEntryChangeKind,
     expandedTargetKeys,
     beginTargetEdit,
+    beginNewEntry,
     moveEntry,
     assembly,
+    promptSlotCount,
     removePickByKey,
     targetPageCount,
     canUndo,
@@ -931,12 +964,8 @@ export function usePresetStitcherApp(
     reviewItems,
     openReview,
     reviewGroups,
-    reviewAddedLines,
-    reviewRemovedLines,
     reviewAddedMacros,
     reviewRemovedMacros,
-    reviewVariableReads,
-    reviewVariableWrites,
     productName,
     baseIsStitched,
     saveAsVersion,

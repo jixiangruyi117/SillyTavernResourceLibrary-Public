@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { RESOURCE_TYPE_LABELS, type ResourceSummary, type ResourceType } from '../types/Resource'
+import { computed, ref, watch } from 'vue'
+import {
+  getResourceCategoryIds,
+  RESOURCE_TYPE_LABELS,
+  type Category,
+  type ResourceSummary,
+  type ResourceType,
+} from '../types/Resource'
 import FeatureStateView from './FeatureStateView.vue'
+import { resourceAuthorSearchText, resourceAuthorLabel } from '../utils/ResourceAuthors'
 
 const props = withDefaults(
   defineProps<{
@@ -10,8 +17,18 @@ const props = withDefaults(
     title?: string
     multiple?: boolean
     allowedTypes?: readonly ResourceType[]
+    categories?: readonly Category[]
+    disabled?: boolean
+    showActions?: boolean
   }>(),
-  { title: '选择资源', multiple: true, allowedTypes: undefined },
+  {
+    title: '选择资源',
+    multiple: true,
+    allowedTypes: undefined,
+    categories: undefined,
+    disabled: false,
+    showActions: true,
+  },
 )
 
 const emit = defineEmits<{
@@ -22,6 +39,9 @@ const emit = defineEmits<{
 
 const query = ref('')
 const typeFilter = ref<ResourceType | 'all'>('all')
+const categoryFilter = ref('all')
+const page = ref(1)
+const pageSize = 30
 const selected = computed(() => new Set(props.modelValue))
 const typeOptions = computed(() => {
   const allowed = props.allowedTypes ? new Set(props.allowedTypes) : undefined
@@ -30,19 +50,37 @@ const typeOptions = computed(() => {
   )
 })
 const filteredResources = computed(() => {
-  const normalized = query.value.trim().toLocaleLowerCase()
+  const terms = query.value.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
   const allowed = props.allowedTypes ? new Set(props.allowedTypes) : undefined
   return props.resources.filter((resource) => {
     if (allowed && !allowed.has(resource.type)) return false
     if (typeFilter.value !== 'all' && resource.type !== typeFilter.value) return false
-    if (!normalized) return true
-    return `${resource.name}\n${resource.fileName}\n${resource.tags.join('\n')}`
-      .toLocaleLowerCase()
-      .includes(normalized)
+    const categoryIds = getResourceCategoryIds(resource)
+    if (categoryFilter.value === 'uncategorized' && categoryIds.length) return false
+    if (
+      categoryFilter.value !== 'all' &&
+      categoryFilter.value !== 'uncategorized' &&
+      !categoryIds.includes(categoryFilter.value)
+    )
+      return false
+    const text =
+      `${resource.name}\n${resource.fileName}\n${resource.tags.join('\n')}\n${resourceAuthorSearchText(resource)}`.toLocaleLowerCase()
+    return terms.every((term) => text.includes(term))
   })
+})
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredResources.value.length / pageSize)))
+const visibleResources = computed(() =>
+  filteredResources.value.slice((page.value - 1) * pageSize, page.value * pageSize),
+)
+const selectedResource = computed(() =>
+  !props.multiple ? props.resources.find((resource) => selected.value.has(resource.id)) : undefined,
+)
+watch(filteredResources, () => {
+  page.value = 1
 })
 
 function toggle(id: string): void {
+  if (props.disabled) return
   if (!props.multiple) {
     emit('update:modelValue', [id])
     return
@@ -59,14 +97,42 @@ function toggle(id: string): void {
     <header>
       <div>
         <h2>{{ title }}</h2>
-        <small>已选 {{ modelValue.length }} 项</small>
+        <small>{{
+          selectedResource ? `已选：${selectedResource.name}` : `已选 ${modelValue.length} 项`
+        }}</small>
       </div>
       <div class="resource-picker__toolbar">
-        <input v-model="query" type="search" placeholder="搜索名称、文件名或标签" />
-        <select v-model="typeFilter" aria-label="资源类型">
+        <input
+          v-model="query"
+          class="field__control"
+          type="search"
+          aria-label="搜索资源"
+          placeholder="搜索名称、文件名、标签或作者"
+          :disabled="disabled"
+        />
+        <select
+          v-if="typeOptions.length > 1"
+          v-model="typeFilter"
+          class="field__control"
+          aria-label="资源类型"
+          :disabled="disabled"
+        >
           <option value="all">全部类型</option>
           <option v-for="type in typeOptions" :key="type" :value="type">
             {{ RESOURCE_TYPE_LABELS[type] }}
+          </option>
+        </select>
+        <select
+          v-if="categories"
+          v-model="categoryFilter"
+          class="field__control"
+          aria-label="文件夹分类"
+          :disabled="disabled"
+        >
+          <option value="all">全部文件夹</option>
+          <option value="uncategorized">未分类</option>
+          <option v-for="category in categories" :key="category.id" :value="category.id">
+            {{ category.name }}
           </option>
         </select>
       </div>
@@ -76,15 +142,16 @@ function toggle(id: string): void {
       v-if="!filteredResources.length"
       state="empty"
       title="没有匹配的资源"
-      description="调整搜索词或资源类型后再试。"
+      description="调整搜索词或分类后再试。"
     />
     <div v-else class="resource-picker__list" role="listbox" :aria-multiselectable="multiple">
       <button
-        v-for="resource in filteredResources"
+        v-for="resource in visibleResources"
         :key="resource.id"
         type="button"
         role="option"
         :aria-selected="selected.has(resource.id)"
+        :disabled="disabled"
         @click="toggle(resource.id)"
       >
         <span class="resource-picker__check" aria-hidden="true">
@@ -93,15 +160,43 @@ function toggle(id: string): void {
         <span>
           <strong>{{ resource.name }}</strong>
           <small>{{ RESOURCE_TYPE_LABELS[resource.type] }} · {{ resource.fileName }}</small>
+          <small v-if="resourceAuthorLabel(resource)">{{ resourceAuthorLabel(resource) }}</small>
         </span>
       </button>
     </div>
 
-    <footer>
-      <button type="button" @click="emit('cancel')">取消</button>
+    <nav v-if="pageCount > 1" class="resource-picker__pagination" aria-label="资源分页">
+      <button
+        class="button button--quiet"
+        type="button"
+        :disabled="disabled || page === 1"
+        @click="page -= 1"
+      >
+        上一页
+      </button>
+      <small>{{ page }} / {{ pageCount }} · {{ filteredResources.length }} 项</small>
+      <button
+        class="button button--quiet"
+        type="button"
+        :disabled="disabled || page === pageCount"
+        @click="page += 1"
+      >
+        下一页
+      </button>
+    </nav>
+    <footer v-if="showActions">
+      <button
+        class="button button--quiet"
+        type="button"
+        :disabled="disabled"
+        @click="emit('cancel')"
+      >
+        取消
+      </button>
       <button
         type="button"
-        class="resource-picker__primary"
+        class="button button--primary"
+        :disabled="disabled"
         @click="emit('confirm', [...modelValue])"
       >
         确认选择
@@ -114,8 +209,9 @@ function toggle(id: string): void {
 .resource-picker {
   display: grid;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .resource-picker header,
@@ -126,9 +222,29 @@ function toggle(id: string): void {
   align-items: center;
 }
 
+.resource-picker__toolbar {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.resource-picker__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.resource-picker__pagination button {
+  min-height: 2.25rem;
+}
+
 .resource-picker header,
 .resource-picker footer {
   justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.resource-picker header > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .resource-picker h2,
@@ -136,20 +252,42 @@ function toggle(id: string): void {
   margin: 0;
 }
 
+.resource-picker h2 {
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.resource-picker small {
+  color: var(--color-ink-soft);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
 .resource-picker__toolbar input {
-  min-width: min(17rem, 50vw);
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 12rem;
 }
 
 .resource-picker__toolbar input,
 .resource-picker__toolbar select,
 .resource-picker footer button {
-  min-height: 2.75rem;
+  min-height: 2.25rem;
+}
+
+.resource-picker__toolbar select {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.75rem;
 }
 
 .resource-picker__list {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 0.4rem;
   overflow: auto;
+  max-height: 22rem;
 }
 
 .resource-picker__list > button {
@@ -158,12 +296,14 @@ function toggle(id: string): void {
   gap: 0.7rem;
   align-items: center;
   min-height: 3.25rem;
-  padding: 0.6rem 0.75rem;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--color-line);
   border-radius: 0.75rem;
   background: transparent;
   color: inherit;
   text-align: left;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .resource-picker__list > button[aria-selected='true'] {
@@ -173,6 +313,8 @@ function toggle(id: string): void {
 
 .resource-picker__list span:last-child {
   display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .resource-picker__check {
@@ -188,20 +330,20 @@ function toggle(id: string): void {
   justify-content: flex-end;
 }
 
-.resource-picker__primary {
-  background: var(--color-accent) !important;
-  color: white;
-}
-
 @media (max-width: 640px) {
   .resource-picker header {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .resource-picker__toolbar > * {
-    min-width: 0;
-    flex: 1;
+  .resource-picker__toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .resource-picker__toolbar input {
+    grid-column: 1 / -1;
   }
 }
 </style>

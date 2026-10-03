@@ -61,6 +61,7 @@ import type { ExportService } from './ExportService'
 import {
   cancelActiveNativeCloudTransfer,
   getLatestNativeCloudJob,
+  getLatestNativeCloudRestoreJob,
   isNativeCloudTransferAvailable,
   restoreNativeStructuredObjects,
   type NativeRestoreObject,
@@ -74,6 +75,7 @@ import {
 } from './BackupRestoreSelection'
 import type { RestoreService } from './RestoreService'
 import type { ResourceSummary } from '../types/Resource'
+import type { CloudBackupJobRecord } from './CloudBackupJobStore'
 export type { CloudBackupProgressCallback } from './CloudBackupTransportContext'
 
 export { readCloudResponseText } from './CloudBackupHttp'
@@ -97,6 +99,8 @@ export class CloudBackupService extends CloudBackupTransport {
     selection: CloudBackupContentSelection,
   ) => Promise<ArchivePortableData>
   private readonly portableDataImporter?: (data: ArchivePortableData) => Promise<void>
+  private readonly prepareNativeBackup?: () => Promise<void>
+  private nativeRestoreInFlight = false
 
   constructor(
     resourceService: ResourceService,
@@ -105,6 +109,7 @@ export class CloudBackupService extends CloudBackupTransport {
     restoreService: RestoreService,
     portableDataFactory?: (selection: CloudBackupContentSelection) => Promise<ArchivePortableData>,
     portableDataImporter?: (data: ArchivePortableData) => Promise<void>,
+    prepareNativeBackup?: () => Promise<void>,
   ) {
     super()
     this.resourceService = resourceService
@@ -113,6 +118,7 @@ export class CloudBackupService extends CloudBackupTransport {
     this.restoreService = restoreService
     this.portableDataFactory = portableDataFactory
     this.portableDataImporter = portableDataImporter
+    this.prepareNativeBackup = prepareNativeBackup
     this.configuration = new CloudBackupConfiguration((config, secret) =>
       this.testConnection(config, secret),
     )
@@ -155,6 +161,52 @@ export class CloudBackupService extends CloudBackupTransport {
     return Boolean(latest && ['staging', 'queued', 'running', 'committing'].includes(latest.status))
   }
 
+  async getNativeRestoreProgress() {
+    return getLatestNativeCloudRestoreJob().catch(() => null)
+  }
+
+  async pendingNativeRestores(): Promise<CloudBackupJobRecord[]> {
+    return isNativeCloudTransferAvailable() ? this.transportState.jobStore.pendingRestores() : []
+  }
+
+  async resumeNativeRestore(
+    record: CloudBackupJobRecord,
+    filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
+  ): Promise<number> {
+    if (!record.restore) throw new Error('云恢复记录不完整')
+    await this.initializeCredentials()
+    if (
+      JSON.stringify(record.restore.target) !==
+      JSON.stringify(this.restoreTarget(this.getActiveConfig()))
+    )
+      throw new Error('请先切回此恢复任务原来的云端目标，再继续导入')
+    return this.restoreBackup(
+      record.restore.item,
+      filterPortableData,
+      record.restore.resourceKeys,
+      record.restore.includeGallery,
+    )
+  }
+
+  private restoreTarget(config: CloudBackupConfig): CloudBackupConfig {
+    return config.provider === 'github'
+      ? {
+          provider: 'github',
+          owner: config.owner.toLowerCase(),
+          repository: config.repository.toLowerCase(),
+          retention: 1,
+          autoBackup: false,
+        }
+      : {
+          provider: 'webdav',
+          baseUrl: config.baseUrl.trim().replace(/\/+$/u, ''),
+          folder: normalizeFolder(config.folder),
+          username: config.username,
+          retention: 1,
+          autoBackup: false,
+        }
+  }
+
   async getActiveNativeBackupProgress(): Promise<{
     status: 'staging' | 'queued' | 'running' | 'committing'
     completed: number
@@ -164,7 +216,8 @@ export class CloudBackupService extends CloudBackupTransport {
     networkMs: number
   } | null> {
     const latest = await getLatestNativeCloudJob().catch(() => null)
-    if (!latest || !['staging', 'queued', 'running', 'committing'].includes(latest.status)) return null
+    if (!latest || !['staging', 'queued', 'running', 'committing'].includes(latest.status))
+      return null
     return {
       status: latest.status as 'staging' | 'queued' | 'running' | 'committing',
       completed: latest.completed,
@@ -309,6 +362,10 @@ export class CloudBackupService extends CloudBackupTransport {
       lastWarning: undefined,
     })
     try {
+      if (isNativeCloudTransferAvailable() && this.prepareNativeBackup) {
+        onProgress?.('正在核对 Android 本机原件镜像…')
+        await metrics.measure('prepareMs', this.prepareNativeBackup)
+      }
       onProgress?.('正在读取资源与历史版本…')
       const contentSelection = normalizeContentSelection(resolved.contentSelection)
       if (contentSelection.communitySources && resolved.provider === 'github') {
@@ -642,29 +699,52 @@ export class CloudBackupService extends CloudBackupTransport {
       includeGallery,
     )
     const nativeRestore = isNativeCloudTransferAvailable() && snapshot.version === 3
-    const [existingResources, existingCategories] = await Promise.all([
-      this.resourceService.listResourceListSummaries(),
-      this.categoryService.list(),
-    ])
     if (nativeRestore) {
       if (!this.restoreService.canRestoreStructuredNative()) {
         throw new Error('本地保险箱开启时不能从云端导入，请先通过保险箱设置切回普通存储。')
       }
       const plan = await this.buildNativeRestorePlan(snapshot, config, secret)
-      await restoreNativeStructuredObjects({ config, secret, ...plan })
-      const prepared = await this.restoreService.prepareStructuredNative(
-        snapshot.resources,
-        snapshot.versions,
-        snapshot.categories,
-        snapshot.portableData,
-        existingResources,
-        existingCategories,
-        structuredSnapshotArchiveName(item.objectKey.split('/').at(-1) ?? item.objectKey),
-      )
-      const report = await this.restoreService.restoreNative(prepared)
-      await this.importPreparedPortableData(prepared.portableData, filterPortableData)
-      return report.restoredResources
+      if (this.nativeRestoreInFlight) throw new Error('已有云恢复正在导入，请等待当前任务完成')
+      this.nativeRestoreInFlight = true
+      let recovery: CloudBackupJobRecord | undefined
+      try {
+        const selection = {
+          item,
+          target: this.restoreTarget(config),
+          resourceKeys: snapshot.resources.map((resource) => resource.id),
+          includeGallery,
+        }
+        const planHash = await hashCloudBlob(new Blob([JSON.stringify(selection)]))
+        recovery = await this.transportState.jobStore.beginRestore(planHash, selection)
+        await restoreNativeStructuredObjects({ config, secret, ...plan })
+        const [existingResources, existingCategories] = await Promise.all([
+          this.resourceService.listResourceListSummaries(),
+          this.categoryService.list(),
+        ])
+        const prepared = await this.restoreService.prepareStructuredNative(
+          snapshot.resources,
+          snapshot.versions,
+          snapshot.categories,
+          snapshot.portableData,
+          existingResources,
+          existingCategories,
+          structuredSnapshotArchiveName(item.objectKey.split('/').at(-1) ?? item.objectKey),
+        )
+        const report = await this.restoreService.restoreNative(prepared)
+        await this.importPreparedPortableData(prepared.portableData, filterPortableData)
+        await this.transportState.jobStore.complete(recovery, item.objectKey)
+        return report.restoredResources
+      } catch (error) {
+        if (recovery) await this.transportState.jobStore.fail(recovery, error)
+        throw error
+      } finally {
+        this.nativeRestoreInFlight = false
+      }
     }
+    const [existingResources, existingCategories] = await Promise.all([
+      this.resourceService.listResourceListSummaries(),
+      this.categoryService.list(),
+    ])
     const providerReader =
       config.provider === 'github'
         ? await this.createGitHubObjectReader(config, secret)

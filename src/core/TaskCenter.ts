@@ -22,6 +22,7 @@ export interface TaskRecord {
   transfer?: TaskTransferProgress
   cancelable: boolean
   retryable?: boolean
+  actionLabel?: string
   background: boolean
   status: TaskStatus
   error?: string
@@ -37,11 +38,16 @@ export interface StartTaskOptions {
   background?: boolean
   cancel?: () => void
   retry?: () => Promise<unknown>
+  action?: { label: string; run: () => void | Promise<void> }
 }
 
 export class TaskCenter {
   private readonly tasks = new Map<string, TaskRecord>()
-  private readonly actions = new Map<string, Pick<StartTaskOptions, 'cancel' | 'retry'>>()
+  private readonly actions = new Map<
+    string,
+    Pick<StartTaskOptions, 'cancel' | 'retry' | 'action'>
+  >()
+  private readonly opening = new Set<string>()
   private readonly listeners = new Set<() => void>()
   private readonly transferSamples = new Map<string, Array<{ at: number; bytes: number }>>()
   private readonly transferPublishedAt = new Map<string, number>()
@@ -57,12 +63,17 @@ export class TaskCenter {
       phase: options.phase ?? '准备中',
       cancelable: options.cancelable === true,
       retryable: typeof options.retry === 'function',
+      actionLabel: options.action?.label,
       background: options.background === true,
       status: 'running',
       startedAt: now,
       updatedAt: now,
     })
-    this.actions.set(operationId, { cancel: options.cancel, retry: options.retry })
+    this.actions.set(operationId, {
+      cancel: options.cancel,
+      retry: options.retry,
+      action: options.action,
+    })
     this.publish()
     return operationId
   }
@@ -184,6 +195,18 @@ export class TaskCenter {
 
   list(): TaskRecord[] {
     return [...this.tasks.values()].sort((left, right) => right.updatedAt - left.updatedAt)
+  }
+
+  async open(operationId: string): Promise<boolean> {
+    const action = this.actions.get(operationId)?.action
+    if (!this.tasks.has(operationId) || !action || this.opening.has(operationId)) return false
+    this.opening.add(operationId)
+    try {
+      await action.run()
+      return true
+    } finally {
+      this.opening.delete(operationId)
+    }
   }
 
   active(): TaskRecord[] {

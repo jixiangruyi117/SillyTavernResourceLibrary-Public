@@ -32,16 +32,32 @@ export async function stageArchive(
   staging: RestoreStagingStore,
   selectEntry?: (path: string) => boolean,
   onProgress?: (progress: ArchiveStageProgress) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      const error = new Error('已停止备份识别')
+      error.name = 'AbortError'
+      throw error
+    }
+  }
+  throwIfAborted()
   if (staging.stageNativeArchive) {
     let selectedPaths: string[] | undefined
     if (selectEntry) {
       const nativePaths = await staging.listNativeArchiveEntries?.(file)
       if (nativePaths) selectedPaths = nativePaths.filter(selectEntry)
     }
+    throwIfAborted()
     if (!selectEntry || selectedPaths) {
-      const nativeJob = await staging.stageNativeArchive(file, selectedPaths, onProgress)
-      if (nativeJob) return nativeJob
+      const nativeJob = await staging.stageNativeArchive(file, selectedPaths, onProgress, signal)
+      if (nativeJob) {
+        if (signal?.aborted) {
+          await staging.deleteJob(nativeJob)
+          throwIfAborted()
+        }
+        return nativeJob
+      }
     }
   }
   const jobId = crypto.randomUUID()
@@ -191,7 +207,9 @@ export async function stageArchive(
       },
       false,
       shouldSelect,
+      signal,
     )) {
+      throwIfAborted()
       readBytes = Math.min(file.size, readBytes + chunk.byteLength)
       archive.push(chunk, false)
       if (pendingWrites.size) await Promise.all(Array.from(pendingWrites))
@@ -219,6 +237,7 @@ export async function stageArchive(
     })
     archive.push(new Uint8Array(), true)
     await Promise.all(entries)
+    throwIfAborted()
     onProgress?.({
       phase: 'complete',
       readBytes: file.size,
@@ -233,6 +252,11 @@ export async function stageArchive(
   } catch (error) {
     await Promise.allSettled([...pendingWrites])
     await staging.deleteJob(jobId)
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      const cancelled = new Error('已停止备份识别')
+      cancelled.name = 'AbortError'
+      throw cancelled
+    }
     if (
       error instanceof Error &&
       (error.message.startsWith('备份包含') || error.message.startsWith('备份解压后超过'))

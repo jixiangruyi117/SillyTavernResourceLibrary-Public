@@ -9,7 +9,7 @@ import {
   parseSillyTavernPersonaBackup,
 } from './SillyTavernPersonaBackup'
 
-export const JSON_RESOURCE_PARSER_VERSION = 8
+export const JSON_RESOURCE_PARSER_VERSION = 10
 
 interface Detection {
   type: ResourceType
@@ -174,6 +174,24 @@ function detectRecord(record: Record<string, unknown>, fallbackName: string): De
   if (isSillyTavernPersonaBackup(record)) {
     const personaBackup = parseSillyTavernPersonaBackup(record)
     const names = personaBackup.entries.map((entry) => entry.name).filter(Boolean)
+    const nativeCharacterIds = Array.from(
+      new Set(
+        personaBackup.entries.flatMap((entry) =>
+          entry.connections
+            .filter((connection) => connection.type === 'character')
+            .map((connection) => connection.id),
+        ),
+      ),
+    )
+    const profileCharacterIds = Array.from(
+      new Set(personaBackup.entries.flatMap((entry) => Object.keys(entry.profile.variants))),
+    )
+    const characterNames = (ids: string[]) =>
+      ids.map(
+        (id) =>
+          personaBackup.entries.find((entry) => entry.characterBindings[id])?.characterBindings[id]
+            ?.name ?? id,
+      )
     return {
       type: RESOURCE_TYPE.USER_PERSONA,
       variant: 'sillyTavernPersonaBackup',
@@ -182,6 +200,11 @@ function detectRecord(record: Record<string, unknown>, fallbackName: string): De
       itemCount: personaBackup.entries.length,
       metadata: {
         personaNames: names.slice(0, 50),
+        personaNativeCharacterNames: characterNames(nativeCharacterIds).slice(0, 50),
+        personaProfileCharacterNames: characterNames(profileCharacterIds).slice(0, 50),
+        personaCharacterNames: Array.from(
+          new Set([...characterNames(nativeCharacterIds), ...characterNames(profileCharacterIds)]),
+        ).slice(0, 50),
         defaultPersonaAvatarId: personaBackup.defaultPersona,
         warningCount: personaBackup.warnings.length,
       },

@@ -694,6 +694,7 @@ export interface AppSetting {
 export interface BackupRecord {
   id: string
   adapter: string
+  itemKind?: 'persona-version' | 'persona-character'
   objectKey: string
   resourceCount: number
   createdAt: number

@@ -12,17 +12,24 @@ const props = defineProps<{
   prepared?: PreparedRestore
   report?: RestoreReport
   busy: boolean
+  preflightBusy?: boolean
   entry?: 'import' | 'export'
   completedMode?: RestoreMode
 }>()
 const { prepared, report, busy, entry, completedMode } = toRefs(props)
 const emit = defineEmits<{
   close: []
+  stop: []
   inspect: [file: File]
   confirm: [mode: RestoreMode, resourceIds: string[], includeGallery: boolean]
 }>()
 
 const restoreMode = ref<RestoreMode>('merge')
+const stopRequested = ref(false)
+function stopPreflight() {
+  stopRequested.value = true
+  emit('stop')
+}
 const selectedResourceIds = ref(new Set<string>())
 const selectedScopeIds = ref<BackupScopeId[]>([])
 const portableOnly = computed(() => {
@@ -74,6 +81,13 @@ watch(
     selectedScopeIds.value = [...scopeIds.value]
   },
   { immediate: true },
+)
+
+watch(
+  () => props.preflightBusy,
+  (active) => {
+    if (!active) stopRequested.value = false
+  },
 )
 
 const selectedResources = computed(() =>
@@ -196,6 +210,16 @@ function formatDate(value: string): string {
 
           <ProjectActivityCenter v-if="busy" :inline-task-names="['备份预检', '恢复备份']" />
 
+          <button
+            v-if="preflightBusy"
+            class="button restore-sheet__stop"
+            type="button"
+            :disabled="stopRequested"
+            @click="stopPreflight"
+          >
+            {{ stopRequested ? '正在停止并清理…' : '停止识别并清理' }}
+          </button>
+
           <template v-if="prepared && !busy">
             <section class="restore-source">
               <div>
@@ -297,7 +321,7 @@ function formatDate(value: string): string {
                   <strong>整库覆盖</strong>
                   <small v-if="prepared.preview.mode === 'full'">{{
                     allResourcesSelected
-                      ? '将用备份完整替换当前资源库；确认后可选择是否先创建完整快照。'
+                      ? '将用备份完整替换当前资源库，成功后无法自动撤销，建议先导出当前库。'
                       : '整库覆盖必须选择全部资源；部分选择请使用安全新增。'
                   }}</small>
                   <small v-else>分包/部分备份不能用于整库覆盖，避免误删未包含的资源。</small>
@@ -309,7 +333,7 @@ function formatDate(value: string): string {
               <span>
                 {{
                   restoreMode === 'replace'
-                    ? '当前资源库会被完整替换；下一步可选择创建快照或直接覆盖。'
+                    ? '当前资源库会被完整替换；下一步将确认覆盖，建议先导出当前库。'
                     : selectedResources.length
                       ? '现有资源会保留，只写入上方选中的备份内容。'
                       : portableOnly

@@ -166,9 +166,14 @@
             android:name=".NativeImportKeepAliveService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service android:name=".NativeDiscordInboxService" android:exported="false" android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".NativeBackupNotificationReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".NativeDiscordDownloadNotificationReceiver"
             android:exported="false" />
     </application>
 

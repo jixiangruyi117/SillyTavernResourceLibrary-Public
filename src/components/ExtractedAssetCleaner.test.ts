@@ -103,14 +103,37 @@ describe('ExtractedAssetCleaner', () => {
     expect(wrapper.text()).toContain('已选 0 项')
   })
 
-  it('清理只删除选中的副本：先快照、再删除、后通知刷新', async () => {
+  it('确认后只将选中的副本移入回收站并通知刷新', async () => {
     const wrapper = render([character, freshCopy, editedCopy])
     await wrapper.find('.duplicate-cleaner__clean').trigger('click')
     await flushPromises()
     expect(confirmApi).toHaveBeenCalledTimes(1)
+    expect(confirmApi).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('回收站保留期内恢复') }),
+    )
     expect(recycleBinApi.moveToRecycleBin).toHaveBeenCalledWith(['copy-fresh'])
     expect(wrapper.emitted('library-changed')).toBeTruthy()
     expect(wrapper.text()).toContain('已清理 1 项拆分副本')
+  })
+
+  it('等待确认时不会重复提交清理，取消后仍可操作', async () => {
+    let resolve!: (confirmed: boolean) => void
+    confirmApi.mockReturnValue(
+      new Promise<boolean>((done) => {
+        resolve = done
+      }),
+    )
+    const wrapper = render([character, freshCopy])
+    const button = wrapper.get('.duplicate-cleaner__clean')
+    await button.trigger('click')
+    await button.trigger('click')
+    const count = confirmApi.mock.calls.length
+    resolve(false)
+    await flushPromises()
+    expect(count).toBe(1)
+    expect(recycleBinApi.moveToRecycleBin).not.toHaveBeenCalled()
+    expect(button.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('确认弹窗取消时不执行删除', async () => {
