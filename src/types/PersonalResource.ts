@@ -1,6 +1,7 @@
 import { RESOURCE_TYPE } from './Resource'
 import { isRecord } from '../utils/UnknownValue'
 import { isValidFolderCoverImage } from '../utils/FolderCover'
+import { plazaImportSourceSchema } from './PlazaImportSource'
 
 export type PhoneIconSource = 'website' | 'source' | 'apk' | 'image' | 'url'
 export interface PhoneIcon {
@@ -23,6 +24,7 @@ export interface SecretEnvelope {
   data: string
 }
 export interface PersonalResourceDocument {
+  plazaSource?: import('./PlazaImportSource').PlazaImportSource
   format: 'srl-personal-resource'
   version: 1
   kind: PersonalResourceKind
@@ -133,5 +135,10 @@ export function parsePersonalResource(value: unknown): PersonalResourceDocument 
     throw new Error('私密字段只能保存在密钥资源中')
   if (value.kind !== 'pocketPhone' && value.attachments.length)
     throw new Error('仅小手机资源支持附件')
+  if (
+    value.plazaSource !== undefined &&
+    !plazaImportSourceSchema.safeParse(value.plazaSource).success
+  )
+    throw new Error('资源来源与授权格式无效')
   return value as unknown as PersonalResourceDocument
 }

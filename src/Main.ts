@@ -32,7 +32,6 @@ import {
 import './styles/Foundation.css'
 import './styles/DesignSystemRefinement.css'
 import './styles/ProjectNoticeDialog.css'
-import './Auth.css'
 import './styles/IOSStandaloneSafeAreaSurface.css'
 
 let viewportFrame: number | undefined

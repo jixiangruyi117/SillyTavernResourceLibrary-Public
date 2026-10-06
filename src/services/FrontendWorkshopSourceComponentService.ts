@@ -1,6 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 
 import type { FrontendWorkshopSourceComponentStorage } from '../storage/FrontendWorkshopSourceComponentStorage'
+import { plazaSourceDescription } from '../types/PlazaImportSource'
 import {
   createFrontendWorkshopSourceComponent,
   FRONTEND_WORKSHOP_SOURCE_COMPONENT_SCHEMA_VERSION,
@@ -553,6 +554,7 @@ export class FrontendWorkshopSourceComponentService {
     options: {
       id?: string
       now?: number
+      plazaSource?: import('../types/PlazaImportSource').PlazaImportSource
     } = {},
   ): Promise<FrontendWorkshopSourceComponent> {
     if (!(blob instanceof Blob) || blob.size < 1) throw new Error('组件包文件不能为空')
@@ -568,7 +570,27 @@ export class FrontendWorkshopSourceComponentService {
         ...manifest.component,
         provenance: {
           origin: 'imported',
+          ...(options.plazaSource ? { plazaSource: options.plazaSource } : {}),
         },
+        ...(options.plazaSource
+          ? {
+              sharePolicy: {
+                license: 'custom' as const,
+                allowShare:
+                  manifest.component.sharePolicy.allowShare &&
+                  options.plazaSource.license?.repost === true,
+                allowDerivatives:
+                  manifest.component.sharePolicy.allowDerivatives &&
+                  options.plazaSource.license?.modify === true,
+                notice: [
+                  manifest.component.sharePolicy.notice,
+                  plazaSourceDescription(options.plazaSource),
+                ]
+                  .filter(Boolean)
+                  .join('\\n'),
+              },
+            }
+          : {}),
         projectIds: [],
       },
       { id: options.id, now },

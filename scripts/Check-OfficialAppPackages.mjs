@@ -161,7 +161,7 @@ const retainedRoot = resolve('public/official-apps')
 let retainedPackages = 0
 let needsLegacyWorkbenchCover = false
 for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
-  assert.ok(build.isDirectory() && /^srl-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
+  assert.ok(build.isDirectory() && /^srl(?:-public)?-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
   const catalogPath = `official-apps/${build.name}/catalog.json`
   const sourceCatalog = readFileSync(resolve('public', catalogPath))
   assert.deepEqual(read(catalogPath), sourceCatalog, `Retained catalog changed: ${build.name}`)

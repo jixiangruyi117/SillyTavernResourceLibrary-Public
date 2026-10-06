@@ -325,7 +325,8 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
         const retainedRoot = resolve(publicRoot, 'official-apps')
         if (existsSync(retainedRoot)) {
           for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
-            if (!build.isDirectory() || !/^srl-\d+\.\d+\.\d+-v\d+$/u.test(build.name)) continue
+            if (!build.isDirectory() || !/^srl(?:-public)?-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
+              continue
             const catalogPath = resolve(retainedRoot, build.name, 'catalog.json')
             if (!existsSync(catalogPath)) continue
             const previous = JSON.parse(readFileSync(catalogPath, 'utf8')) as {
@@ -389,12 +390,13 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
               file.type === 'asset' &&
               /^assets\/frontend-workbench-cover-v1-[^/]+\.jpg$/u.test(file.fileName),
           )
-          if (!cover || cover.type !== 'asset')
-            throw new Error('Retained workbench cover compatibility asset missing')
           this.emitFile({
             type: 'asset',
             fileName: 'images/frontend-workbench-cover-v1.jpg',
-            source: cover.source,
+            source:
+              cover?.type === 'asset'
+                ? cover.source
+                : readFileSync(resolve('src/assets/frontend-workbench-cover-v1.jpg')),
           })
         }
         for (const candidates of Object.values(compatibleApps)) {
