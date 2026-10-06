@@ -1,0 +1,8 @@
+```html
+<body>
+  <style>
+    [data-fixture="style"] { display: grid; gap: 4px; }
+  </style>
+  <main data-fixture="style">anonymous style</main>
+</body>
+```

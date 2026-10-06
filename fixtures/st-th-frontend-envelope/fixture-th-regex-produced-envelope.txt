@@ -1,0 +1,3 @@
+```html
+<body><main data-fixture="regex-produced">anonymous regex result</main></body>
+```

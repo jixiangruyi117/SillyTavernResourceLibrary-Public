@@ -1,0 +1,167 @@
+/* Presentation restored from the pre-refactor project bar; canvas Owners handle every action. */
+.frontend-workbench__projectbar {
+  z-index: 12;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-rows: minmax(2.5rem, auto) minmax(2.5rem, auto);
+  align-items: center;
+  gap: 0.2rem 0.25rem;
+  min-width: 0;
+  padding: 0.28rem 0.45rem;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface-raised);
+}
+.project-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+.project-title input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.5rem;
+  padding: 0.25rem 0.2rem;
+  border: 0;
+  background: transparent;
+  font: 600 0.9rem var(--font-ui);
+  color: inherit;
+  text-overflow: ellipsis;
+}
+svg {
+  width: 1.28rem;
+  height: 1.28rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+.project-title svg {
+  display: none;
+}
+.frontend-workbench__viewport-row {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+}
+.project-device {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+button {
+  cursor: pointer;
+  font: var(--weight-ui) var(--text-caption)/1.2 var(--font-ui);
+  color: inherit;
+}
+.project-device button {
+  min-width: 3.2rem;
+  min-height: var(--control-visual);
+  padding: 0.15rem 0.35rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-soft);
+}
+.project-device .is-active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.viewport-tools {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.28rem;
+  overflow-x: auto;
+  padding: 0.18rem 0;
+  scrollbar-width: none;
+}
+.viewport-tools button,
+.viewport-tools output {
+  flex: 0 0 auto;
+  min-width: var(--control-visual);
+  min-height: var(--control-visual);
+  padding: 0.25rem 0.48rem;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  white-space: nowrap;
+}
+.viewport-tools output {
+  display: grid;
+  min-width: 3.25rem;
+  place-items: center;
+  color: var(--color-accent);
+  font: var(--weight-title) var(--text-caption)/1.2 var(--font-ui);
+}
+.project-saved {
+  color: var(--color-accent);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.project-preview,
+.project-delivery,
+.project-compatibility {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 4px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+}
+.project-compatibility {
+  border-radius: 50%;
+  color: var(--color-accent);
+}
+.project-preview span,
+.project-delivery span,
+.project-compatibility span {
+  display: none;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+@media (min-width: 56rem) {
+  .frontend-workbench__projectbar {
+    grid-template-columns: auto minmax(10rem, 1fr) auto auto auto auto;
+    grid-template-rows: minmax(3.25rem, auto);
+    gap: 0.3rem;
+  }
+  .frontend-workbench__viewport-row {
+    grid-row: 1;
+    grid-column: 3;
+  }
+  .project-title {
+    border-right: 1px solid var(--color-line);
+    padding-right: 0.45rem;
+  }
+  .project-title svg {
+    display: block;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+  .project-preview,
+  .project-delivery,
+  .project-compatibility {
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .project-preview span,
+  .project-delivery span,
+  .project-compatibility span {
+    display: inline;
+  }
+}

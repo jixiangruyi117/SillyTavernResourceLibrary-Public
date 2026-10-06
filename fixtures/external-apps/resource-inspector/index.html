@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>资源查看器</title>
+    <style>
+      :root {
+        color: #173a42;
+        background: #edf8f7;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 1rem;
+      }
+      main {
+        display: grid;
+        gap: 1rem;
+        max-width: 40rem;
+        margin: auto;
+      }
+      small {
+        color: #37757a;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+      }
+      h1,
+      p,
+      pre {
+        margin: 0;
+      }
+      section {
+        display: grid;
+        gap: 0.8rem;
+        padding: 1rem;
+        border: 1px solid #b8deda;
+        border-radius: 1rem;
+        background: white;
+      }
+      button {
+        min-height: 3rem;
+        border: 0;
+        border-radius: 0.8rem;
+        color: white;
+        background: #19777a;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      pre {
+        min-height: 7rem;
+        overflow: auto;
+        padding: 0.8rem;
+        border-radius: 0.7rem;
+        background: #f4f8f8;
+        font-size: 0.75rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <small>SRL SDK v1 EXAMPLE</small>
+        <h1>资源查看器</h1>
+        <p>点击后，由你决定是否交给 APP 一项资源；也可演示修改一项资源的标签。</p>
+      </header>
+      <section>
+        <button id="pick" type="button">选择一项资源</button
+        ><button id="update" type="button">给第一项资源加标签</button>
+        <pre id="output">尚未选择资源</pre>
+      </section>
+    </main>
+    <script>
+      const output = document.querySelector('#output')
+      document.querySelector('#pick').addEventListener('click', async () => {
+        try {
+          const resource = await window.srlApp.resources.pick()
+          output.textContent = JSON.stringify(resource, null, 2)
+        } catch (error) {
+          output.textContent = error instanceof Error ? error.message : '未选择资源'
+        }
+      })
+      document.querySelector('#update').addEventListener('click', async () => {
+        try {
+          const page = await window.srlApp.resources.list({ limit: 1 })
+          const resource = page.items[0]
+          if (!resource) throw new Error('资源库中还没有可整理的资源')
+          const result = await window.srlApp.resources.update({
+            id: resource.id,
+            tags: [...resource.tags, '已检查'],
+          })
+          output.textContent = `已更新：${JSON.stringify(result, null, 2)}`
+        } catch (error) {
+          output.textContent = error instanceof Error ? error.message : '资源未更新'
+        }
+      })
+    </script>
+  </body>
+</html>

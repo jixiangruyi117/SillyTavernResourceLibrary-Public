@@ -1,0 +1,224 @@
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { secretResourceService } from '../services/SecretResourceService'
+import {
+  clearNativeSecretRecovery,
+  getNativeSecretRecoveryState,
+  isNativeSecurityAvailable,
+  type NativeSecretRecoveryState,
+} from '../core/NativeSecurity'
+const native = isNativeSecurityAvailable()
+const configured = ref(false)
+const unlocked = ref(false)
+const editing = ref(false)
+const password = ref('')
+const confirmation = ref('')
+const recovered = ref('')
+const busy = ref(true)
+const message = ref('')
+const recovery = ref<NativeSecretRecoveryState | null>(null)
+async function refresh() {
+  configured.value = await secretResourceService.hasPassword()
+  unlocked.value = secretResourceService.isUnlocked()
+  if (native) recovery.value = await getNativeSecretRecoveryState().catch(() => null)
+}
+async function run(action: () => Promise<void>) {
+  if (busy.value) return
+  busy.value = true
+  message.value = ''
+  recovered.value = ''
+  try {
+    await action()
+    await refresh()
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '操作未完成'
+  } finally {
+    busy.value = false
+  }
+}
+onMounted(async () => {
+  try {
+    await refresh()
+  } catch {
+    message.value = '读取密码设置失败'
+  } finally {
+    busy.value = false
+  }
+})
+onBeforeUnmount(() => {
+  password.value = ''
+  confirmation.value = ''
+  recovered.value = ''
+})
+function lock() {
+  secretResourceService.lock()
+  unlocked.value = false
+  recovered.value = ''
+  password.value = ''
+  message.value = '统一密码已锁定'
+}
+async function save() {
+  await run(async () => {
+    if (!configured.value && password.value !== confirmation.value)
+      throw new Error('两次密码不一致')
+    if (configured.value) await secretResourceService.unlock(password.value)
+    else await secretResourceService.setPassword(password.value)
+    password.value = ''
+    confirmation.value = ''
+    editing.value = false
+    message.value = '统一密码已解锁，本次使用有效；关闭页面后需重新解锁。'
+  })
+}
+async function enableRecovery() {
+  await run(async () => {
+    await secretResourceService.enableRecovery(password.value)
+    password.value = ''
+    message.value = '已开启本机指纹找回'
+  })
+}
+async function recover() {
+  await run(async () => {
+    recovered.value = await secretResourceService.recoverPassword()
+    message.value = '已找回原统一密码并解锁。离开设置后不再显示。'
+  })
+}
+</script>
+<template>
+  <section class="settings-section secret-protection-settings" aria-label="密钥统一密码">
+    <header>
+      <h3>密钥统一密码</h3>
+      <span>{{ configured ? '已设置' : '未设置' }}</span>
+    </header>
+    <p>所有密钥资料共用一个密码。私密字段加密保存，导出和云备份的加密原件也使用它。</p>
+    <div class="secret-protection-settings__actions">
+      <button
+        class="button button--quiet"
+        type="button"
+        :disabled="busy"
+        @click="editing = !editing"
+      >
+        {{ editing ? '收起' : configured ? '解锁统一密码' : '设置统一密码' }}
+      </button>
+      <button
+        v-if="unlocked"
+        class="button button--quiet"
+        type="button"
+        :disabled="busy"
+        @click="lock"
+      >
+        锁定统一密码
+      </button>
+    </div>
+    <form v-if="editing" @submit.prevent="save">
+      <label class="field"
+        ><span>{{ configured ? '统一密码' : '设置统一密码' }}</span
+        ><input
+          v-model="password"
+          class="field__control"
+          type="password"
+          minlength="8"
+          maxlength="512"
+          :autocomplete="configured ? 'current-password' : 'new-password'"
+          required
+          :disabled="busy"
+      /></label>
+      <label v-if="!configured" class="field"
+        ><span>再次输入统一密码</span
+        ><input
+          v-model="confirmation"
+          class="field__control"
+          type="password"
+          minlength="8"
+          maxlength="512"
+          autocomplete="new-password"
+          required
+          :disabled="busy"
+      /></label>
+      <p v-if="!configured">至少 8 位。请保存好密码；网页端不能通过指纹找回。</p>
+      <button class="button button--primary" type="submit" :disabled="busy">
+        {{ configured ? '解锁' : '保存统一密码' }}
+      </button>
+    </form>
+    <template v-if="native && configured">
+      <p>
+        指纹找回仅限此
+        APK、此设备。需提前开启；卸载应用或更改系统指纹后可能失效。恢复材料不进入云备份。
+      </p>
+      <template v-if="recovery">
+        <p v-if="recovery.status === 'invalid'" role="status">
+          本机指纹恢复记录不完整或密钥不可用，请使用原统一密码重新绑定。原密码和资料未修改。
+        </p>
+        <div
+          v-if="!recovery.enabled && recovery.available"
+          class="secret-protection-settings__recovery"
+        >
+          <label v-if="!editing" class="field"
+            ><span>验证原统一密码以开启指纹找回</span
+            ><input
+              v-model="password"
+              class="field__control"
+              type="password"
+              autocomplete="current-password"
+              :disabled="busy"
+          /></label>
+          <button
+            class="button button--quiet"
+            type="button"
+            :disabled="busy || !password"
+            @click="enableRecovery"
+          >
+            开启指纹找回
+          </button>
+        </div>
+        <div v-if="recovery.enabled" class="secret-protection-settings__actions">
+          <button
+            class="button button--primary"
+            type="button"
+            :disabled="busy || !recovery.available"
+            @click="recover"
+          >
+            忘记密码？指纹找回
+          </button>
+          <button
+            class="button button--quiet"
+            type="button"
+            :disabled="busy"
+            @click="
+              run(async () => {
+                await clearNativeSecretRecovery()
+                message = '已关闭本机指纹找回，统一密码不变'
+              })
+            "
+          >
+            关闭指纹找回
+          </button>
+        </div>
+        <p v-if="!recovery.available">请先在安卓系统中录入可用的指纹或强生物识别。</p>
+      </template>
+      <p v-else>当前 APK 尚不支持指纹找回，请更新 APK。</p>
+    </template>
+    <label v-if="recovered" class="field"
+      ><span>找回的统一密码</span
+      ><input :value="recovered" class="field__control" readonly autocomplete="off"
+    /></label>
+    <p v-if="message" role="status">{{ message }}</p>
+  </section>
+</template>
+<style scoped>
+.secret-protection-settings form,
+.secret-protection-settings__recovery {
+  display: grid;
+  gap: 12px;
+}
+.secret-protection-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.secret-protection-settings p {
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+</style>

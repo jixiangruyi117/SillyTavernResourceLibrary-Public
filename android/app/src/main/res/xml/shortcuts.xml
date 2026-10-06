@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="import" android:enabled="true" android:icon="@drawable/ic_shortcut_import" android:shortcutShortLabel="@string/shortcut_import_short" android:shortcutLongLabel="@string/shortcut_import_long">
+        <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=public-shortcut-import-target -->
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.srl.publicedition" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/import" />
+        <!-- SRL-PUBLIC-SYNC: END REPLACE id=public-shortcut-import-target -->
+    </shortcut>
+    <shortcut android:shortcutId="backup" android:enabled="true" android:icon="@drawable/ic_shortcut_backup" android:shortcutShortLabel="@string/shortcut_backup_short" android:shortcutLongLabel="@string/shortcut_backup_long">
+        <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=public-shortcut-backup-target -->
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.srl.publicedition" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/cloud" />
+        <!-- SRL-PUBLIC-SYNC: END REPLACE id=public-shortcut-backup-target -->
+    </shortcut>
+    <shortcut android:shortcutId="favorites" android:enabled="true" android:icon="@drawable/ic_shortcut_favorite" android:shortcutShortLabel="@string/shortcut_favorites_short" android:shortcutLongLabel="@string/shortcut_favorites_long">
+        <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=public-shortcut-favorites-target -->
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.srl.publicedition" android:targetClass="buzz.jixiangruyi1207.srl.MainActivity" android:data="srl://shortcut/favorites" />
+        <!-- SRL-PUBLIC-SYNC: END REPLACE id=public-shortcut-favorites-target -->
+    </shortcut>
+</shortcuts>

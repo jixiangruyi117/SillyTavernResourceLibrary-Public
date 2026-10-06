@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>离线计数器</title>
+    <style>
+      :root {
+        color: #173a42;
+        background: #edf8f7;
+        font-family: Georgia, 'Noto Serif SC', serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        padding: 1rem;
+        background: radial-gradient(circle at 90% 0, #ccece7, transparent 32%), #edf8f7;
+      }
+      main {
+        display: grid;
+        gap: 1rem;
+        max-width: 34rem;
+        margin: 0 auto;
+      }
+      header {
+        display: grid;
+        gap: 0.3rem;
+        padding: 0.4rem 0.15rem;
+      }
+      header small {
+        color: #37757a;
+        font:
+          700 0.65rem/1.2 ui-monospace,
+          monospace;
+        letter-spacing: 0.16em;
+      }
+      h1,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: clamp(1.65rem, 8vw, 2.35rem);
+        font-weight: 500;
+      }
+      .counter {
+        display: grid;
+        min-height: 13rem;
+        place-items: center;
+        padding: 1.5rem;
+        border: 1px solid #b8deda;
+        border-radius: 1.4rem;
+        background: rgba(255, 255, 255, 0.86);
+        box-shadow: 0 1rem 2.5rem rgba(39, 99, 98, 0.12);
+        text-align: center;
+      }
+      .counter p {
+        color: #5a7375;
+        font:
+          0.8rem/1.5 ui-sans-serif,
+          sans-serif;
+      }
+      output {
+        display: block;
+        margin: 0.45rem 0 1rem;
+        color: #176b6d;
+        font-size: clamp(4.5rem, 22vw, 6.5rem);
+        font-weight: 500;
+        line-height: 1;
+      }
+      button {
+        min-width: 9rem;
+        min-height: 3rem;
+        border: 0;
+        border-radius: 999px;
+        color: white;
+        background: #19777a;
+        box-shadow: 0 0.6rem 1.4rem rgba(25, 119, 122, 0.23);
+        font:
+          700 0.9rem ui-sans-serif,
+          sans-serif;
+        cursor: pointer;
+      }
+      button:active {
+        transform: translateY(1px);
+        box-shadow: none;
+      }
+      footer {
+        color: #5a7375;
+        font:
+          0.72rem/1.55 ui-sans-serif,
+          sans-serif;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <small>LOCAL ONLY / EXAMPLE APP</small>
+        <h1>离线计数器</h1>
+      </header>
+      <section class="counter" aria-live="polite">
+        <div>
+          <p>这个数字只保存在此 APP 内</p>
+          <output id="count">—</output><button id="increment" type="button">记录一次</button>
+        </div>
+      </section>
+      <footer>不读取资源库内容 · 不联网 · 可随时卸载</footer>
+    </main>
+    <script>
+      const output = document.querySelector('#count')
+      const button = document.querySelector('#increment')
+      let count = 0
+      async function save() {
+        output.textContent = count
+        await window.srlApp.storage.set('count', count)
+        await window.srlApp.notify(`已记录第 ${count} 次`)
+      }
+      window.addEventListener('DOMContentLoaded', async () => {
+        await window.srlApp.ready()
+        count = Number((await window.srlApp.storage.get('count')) || 0)
+        output.textContent = count
+        button.addEventListener('click', async () => {
+          count += 1
+          await save()
+        })
+      })
+    </script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+````HTML
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>anonymous</title></head>
+  <body><main data-fixture="full-document">匿名完整文档</main></body>
+</html>
+````

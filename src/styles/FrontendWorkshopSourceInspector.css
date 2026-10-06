@@ -1,0 +1,244 @@
+.frontend-workshop-source-inspector {
+  position: absolute;
+  /* Same overlay layer as the existing inspector dock: above canvas tools (25), below popovers. */
+  z-index: 30;
+  inset: auto 0 0;
+  display: flex;
+  flex-direction: column;
+  height: var(--inspector-size, 300px);
+  max-height: min(95%, calc(var(--visual-viewport-height, 100dvh) - 64px));
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--color-line-strong);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  box-shadow: 0 -6px 24px rgb(0 0 0 / 12%);
+}
+.frontend-workshop-source-inspector.is-collapsed {
+  inset: auto auto var(--safe-bottom, 0px) calc(50% - 32px);
+  width: 64px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.is-collapsed .source-inspector-handle {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  justify-content: center;
+}
+.is-collapsed .source-inspector-handle__grip {
+  position: static;
+}
+.source-inspector-handle {
+  position: relative;
+  flex: 0 0 48px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  touch-action: none;
+  cursor: ns-resize;
+  user-select: none;
+}
+.source-inspector-handle__grip {
+  position: absolute;
+  top: 5px;
+  left: calc(50% - 16px);
+  width: 32px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--color-ink-soft);
+}
+.source-inspector-handle small {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-ink-soft);
+}
+.source-inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px max(12px, var(--safe-bottom, 0px));
+}
+.source-inspector-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 10px 0 4px;
+}
+.source-inspector-body button {
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+}
+.source-inspector-body button:disabled {
+  opacity: 0.5;
+}
+.source-inspector-actions > button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 4px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.source-inspector-body button.is-primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent, #fff);
+  border-color: transparent;
+}
+.source-inspector-hint,
+.source-inspector-empty,
+.source-inspector-utility p,
+.source-inspector-utility small,
+.source-inspector-interactions {
+  font-size: var(--text-caption);
+  line-height: 1.6;
+  color: var(--color-ink-soft);
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.source-inspector-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px 0;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-line);
+}
+.source-inspector-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 6px 2px;
+}
+.source-inspector-tabs button.is-active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.source-inspector-advanced {
+  border-top: 1px solid var(--color-line);
+}
+.source-inspector-advanced summary {
+  cursor: pointer;
+  padding: 14px 0;
+  font-size: var(--text-caption);
+}
+.source-inspector-utility {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.source-inspector-utility dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  width: 100%;
+  margin: 0;
+  font-size: var(--text-caption);
+}
+.source-inspector-utility dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.source-inspector-utility label {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+.source-inspector-utility input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+}
+.source-inspector-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  padding: 8px;
+  background: var(--color-accent-soft);
+  overflow-wrap: anywhere;
+}
+.source-inspector-feedback > span {
+  flex: 1;
+  min-width: 0;
+}
+@media (min-width: 48rem) {
+  .frontend-workshop-source-inspector {
+    inset: 0 0 0 auto;
+    width: var(--inspector-size, 360px);
+    max-width: 95%;
+    height: auto;
+    max-height: none;
+    border: 0;
+    border-left: 1px solid var(--color-line-strong);
+    border-radius: 0;
+    box-shadow: -6px 0 24px rgb(0 0 0 / 12%);
+  }
+  .source-inspector-handle {
+    cursor: ew-resize;
+    padding: 8px 12px 8px 22px;
+  }
+  .source-inspector-handle__grip {
+    left: 7px;
+    top: calc(50% - 12px);
+    width: 3px;
+    height: 24px;
+  }
+  .frontend-workshop-source-inspector.is-collapsed {
+    inset: calc(50% - 32px) 0 auto auto;
+    height: 64px;
+    width: 24px;
+  }
+}
+.source-inspector-content-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+}
+.source-inspector-content-field :is(input, textarea) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+  resize: vertical;
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "apiVersion": "srl-app-api@1",
+  "id": "com.srl.example.resource-inspector",
+  "name": "资源查看器",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "author": "SRL 示例",
+  "description": "读取资源快照，并演示修改普通资源字段。",
+  "permissions": [
+    "resources.selected.read",
+    "resources.content.read",
+    "resources.library.read",
+    "resources.write"
+  ]
+}

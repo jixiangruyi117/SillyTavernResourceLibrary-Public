@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "apps": {
+    "draw": {
+      "owner": "src/services/CharacterDrawService.ts",
+      "tests": ["src/services/CharacterDrawService.test.ts"],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["extra.characterDraw"]
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "chatReader": {
+      "owner": "src/services/ChatReaderService.ts",
+      "tests": ["src/services/ChatReaderService.test.ts"],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["resource.chat", "extra.chatReader"]
+      },
+      "starter": "none",
+      "starterReason": "阅读外观使用读了么自身设置；当前通用示例映射没有阅读器样式",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "appearance": {
+      "owner": "src/services/AppearanceScopeService.ts",
+      "tests": ["src/services/AppearanceScopeService.test.ts"],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["extra.appearance"]
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "not-applicable",
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
+      }
+    },
+    "folders": {
+      "owner": "src/services/ExportService.ts",
+      "tests": [
+        "src/services/ExportService.test.ts",
+        "src/composables/UseLibraryArchive.test.ts",
+        "src/composables/UseLibraryProtection.test.ts",
+        "src/components/RestorePanel.test.ts",
+        "src/components/DuplicateCleaner.test.ts",
+        "src/components/ExtractedAssetCleaner.test.ts",
+        "src/components/VersionRecognitionPanel.test.ts",
+        "src/services/BrowserStorageService.test.ts",
+        "src/storage/IndexedDbResourceHealthStorage.test.ts"
+      ],
+      "backup": {
+        "policy": "archive-core",
+        "scopes": [],
+        "reason": "分类与文件夹随核心归档清单保存，不属于额外可选范围"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "not-applicable",
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
+      }
+    },
+    "inbox": {
+      "owner": "src/services/CommunitySourceService.ts",
+      "tests": [
+        "src/services/CommunitySourceRestoreService.test.ts",
+        "src/components/DiscordPendingSources.test.ts",
+        "src/composables/UseDiscordResourceInbox.test.ts",
+        "src/composables/UseAppSharedIntake.test.ts",
+        "src/services/NativeDiscordInboxService.test.ts",
+        "src/components/DiscordNativeInboxMode.test.ts",
+        "src/services/DiscordInboxWorkerBehavior.test.ts",
+        "src/services/DiscordResourceInboxService.test.ts",
+        "src/composables/UseLibraryRefresh.test.ts"
+      ],
+      "backup": {
+        "policy": "partial",
+        "scopes": ["extra.communitySources"],
+        "reason": "已保存社区内容可归档；云端短期收件任务与 Android 当前收件会话不作为本机恢复副本"
+      },
+      "starter": "none",
+      "starterReason": "收件箱已有运行样式，尚未登记通用 CSS 示例来源",
+      "cleanup": {
+        "policy": "not-applicable",
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
+      }
+    },
+    "cloud": {
+      "owner": "src/services/CloudBackupService.ts",
+      "tests": [
+        "src/services/CloudBackupService.test.ts",
+        "src/composables/UseCloudBackupCenter.test.ts",
+        "src/core/TaskCenter.test.ts",
+        "src/services/RestoreService.identity.test.ts"
+      ],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["extra.cloudBackup", "extra.credentials"]
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "not-applicable",
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
+      }
+    },
+    "tavernBridge": {
+      "owner": "src/services/TavernBridgeService.ts",
+      "tests": ["src/services/TavernBridgeService.test.ts"],
+      "backup": {
+        "policy": "partial",
+        "scopes": ["resource.characterCard", "resource.worldBook", "resource.preset"],
+        "reason": "已落库资源沿核心归档保存；临时互传会话不随备份恢复"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "retain",
+        "reason": "互传会话随页面关闭结束；已归档资源和共用设置保留"
+      }
+    },
+    "stitch": {
+      "owner": "src/services/BrowserStorageService.ts",
+      "tests": ["src/services/BrowserStorageService.test.ts"],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["resource.preset", "extra.stitchWork"]
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "frontendWorkshop": {
+      "owner": "src/services/FrontendWorkshopProjectService.ts",
+      "tests": ["src/services/FrontendWorkshopProjectService.test.ts"],
+      "backup": {
+        "policy": "partial",
+        "scopes": ["resource.beautification", "resource.regex"],
+        "reason": "落库资源可归档；现有 ZIP 选择合同未单独包含 Source 项目与组件库，不宣称整库归档覆盖工作台全部项目"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "imageGeneration": {
+      "owner": "src/services/FrontendWorkshopImageGenerationService.ts",
+      "tests": [
+        "src/services/FrontendWorkshopImageGenerationService.test.ts",
+        "src/components/ImageGenerationApp.test.ts"
+      ],
+      "backup": {
+        "policy": "partial",
+        "scopes": [],
+        "reason": "现有 ZIP 选择合同未单独声明生图配置与草稿；生成结果的导出复用相册专属流程"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "imageAlbum": {
+      "owner": "src/services/GeneratedImageAlbumService.ts",
+      "tests": ["src/services/GeneratedImageAlbumService.test.ts"],
+      "backup": {
+        "policy": "unsupported",
+        "scopes": [],
+        "reason": "现有 ZIP 选择合同没有生图相册范围；相册专属导出不能冒充资源库整库备份覆盖"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "userPersona": {
+      "owner": "src/services/UserPersonaService.ts",
+      "tests": ["src/services/UserPersonaService.test.ts"],
+      "backup": {
+        "policy": "partial",
+        "scopes": ["resource.userPersona"],
+        "reason": "已保存人设原件可归档；本机模板偏好未在现有额外范围中独立声明"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "resourceBundle": {
+      "owner": "src/components/ResourceBundleApp.vue",
+      "tests": ["src/components/ResourceBundleApp.test.ts"],
+      "backup": {
+        "policy": "partial",
+        "scopes": [],
+        "reason": "资源原件沿核心归档保存；配套模板与装配偏好需独立恢复验收，当前范围表未声明"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "app-owned",
+        "owner": "src/storage/OfficialAppDataStorage.ts"
+      }
+    },
+    "extensions": {
+      "owner": "src/services/ExternalAppService.ts",
+      "tests": ["src/services/ExternalAppService.test.ts"],
+      "backup": {
+        "policy": "supported",
+        "scopes": ["extra.externalApps"],
+        "reason": "恢复后保持禁用，授权复用既有扩展合同"
+      },
+      "starter": "available",
+      "cleanup": {
+        "policy": "not-applicable",
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+/* NovelAI V4/V4.5 suppresses legacy SMEA flags at the service boundary.
+ * Hide the legacy controls only when a built-in V4 model is explicitly selected.
+ */
+.frontend-workbench__generator-model:has(option[value^='nai-diffusion-4']:checked)
+  ~ .frontend-workbench__generator-parameters
+  .frontend-workbench__generator-check:nth-of-type(n + 6) {
+  display: none;
+}

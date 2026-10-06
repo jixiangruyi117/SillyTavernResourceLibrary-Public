@@ -1,0 +1,162 @@
+/* 所有功能 App 的顶部骨架只在此处定义；业务页只能通过 status/actions 插槽扩展内容。 */
+.feature-app-header {
+  --feature-header-row-height: 56px;
+  --feature-header-viewport-gutter: clamp(1rem, 5vw, 5rem);
+  --feature-header-viewport-width: min(
+    calc(100dvw - var(--feature-header-viewport-gutter) - var(--feature-header-viewport-gutter)),
+    72rem
+  );
+  position: relative;
+  left: 50%;
+  display: grid;
+  box-sizing: border-box;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  width: var(--feature-header-viewport-width);
+  min-width: var(--feature-header-viewport-width);
+  height: var(--feature-header-row-height);
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: translateX(calc(-50% - var(--feature-header-parent-inline-offset, 0px)));
+}
+
+.feature-app-header > * {
+  min-width: 0;
+}
+
+/* Fullscreen tool panels consume their own safe insets; their header follows container width. */
+.feature-app-header--panel {
+  --feature-header-row-height: 48px;
+  --feature-header-viewport-width: 100%;
+  left: auto;
+  transform: none;
+}
+
+.feature-app-header--panel h1 {
+  font-size: 16px;
+}
+
+.feature-header-action:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.feature-app-header__copy {
+  min-width: 0;
+}
+
+.feature-app-header h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-title-md);
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feature-app-header__trailing {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.feature-header-action {
+  --feature-header-action-visual-height: 34px;
+  --feature-header-action-background: transparent;
+  --feature-header-action-border: transparent;
+  position: relative;
+  display: inline-flex;
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 0;
+  color: var(--color-ink);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  isolation: isolate;
+}
+
+.feature-header-action::before {
+  position: absolute;
+  z-index: -1;
+  inset-block: calc((44px - var(--feature-header-action-visual-height)) / 2);
+  inset-inline: 0;
+  border: 1px solid var(--feature-header-action-border);
+  border-radius: 10px;
+  background: var(--feature-header-action-background);
+  content: '';
+  pointer-events: none;
+}
+
+.feature-header-action--primary {
+  --feature-header-action-background: var(--color-accent);
+  --feature-header-action-border: var(--color-accent);
+  color: var(--color-on-accent, #fff);
+}
+
+.feature-header-action--ghost {
+  --feature-header-action-background: var(--color-surface, transparent);
+  --feature-header-action-border: var(--color-line);
+}
+
+.feature-header-action--icon {
+  width: 44px;
+  padding: 0;
+}
+
+.feature-header-action--icon svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.feature-header-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.feature-header-status {
+  max-width: 12rem;
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: var(--text-caption);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 53.75rem) {
+  .feature-app-header {
+    --feature-header-viewport-gutter: var(--mobile-gutter);
+  }
+}
+
+@media (max-width: 30rem) {
+  .feature-app-header {
+    gap: 0.375rem;
+  }
+
+  .feature-app-header__trailing {
+    gap: 0;
+  }
+}

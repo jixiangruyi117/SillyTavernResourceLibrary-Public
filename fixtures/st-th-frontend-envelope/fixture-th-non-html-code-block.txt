@@ -1,0 +1,3 @@
+```json
+{"fixture":"non-html-code","value":1}
+```

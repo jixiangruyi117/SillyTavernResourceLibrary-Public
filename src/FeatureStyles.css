@@ -1,0 +1,13 @@
+/* 非启动面板复用原域样式；保留末尾正式精修层的级联优先级。 */
+@import './styles/DataTransferPanels.css';
+@import './styles/FolderLibrary.css';
+@import './styles/ResourceDetails.css';
+@import './styles/RecycleBin.css';
+@import './styles/CloudBackup.css';
+@import './styles/AppearanceStudio.css';
+@import './styles/AppearanceOriginalCssActions.css';
+@import './styles/VersionArchive.css';
+@import './styles/AiTagging.css';
+@import './styles/FrontendWorkshopNovelAiCompatibility.css';
+@import './styles/GlassRefinement.css';
+@import './styles/DesignSystemRefinement.css';

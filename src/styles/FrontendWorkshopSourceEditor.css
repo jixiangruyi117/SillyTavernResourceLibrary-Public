@@ -1,0 +1,107 @@
+.frontend-workshop-source-editor {
+  position: fixed;
+  z-index: 2147482500;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--safe-top) max(8px, var(--safe-right)) max(4px, var(--safe-bottom))
+    max(8px, var(--safe-left));
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-sizing: border-box;
+}
+.frontend-workshop-source-editor__header {
+  min-width: 0;
+}
+.frontend-workshop-source-editor__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding-block: 4px;
+}
+.frontend-workshop-source-editor__tools {
+  position: relative;
+}
+.frontend-workshop-source-editor__tools summary,
+.frontend-workshop-source-editor__header .button,
+.frontend-workshop-source-editor__envelope button,
+.frontend-workshop-source-editor__envelope select {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.frontend-workshop-source-editor__tools summary {
+  color: var(--color-ink);
+  border-radius: var(--radius-control);
+}
+.frontend-workshop-source-editor__tool-menu {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  right: 0;
+  display: grid;
+  gap: 4px;
+  width: min(248px, calc(100vw - 96px));
+  max-height: calc(var(--app-viewport-height) - var(--safe-top) - var(--safe-bottom) - 64px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--glass-shadow);
+}
+.frontend-workshop-source-editor__tool-menu small {
+  font-size: 12px;
+  color: var(--color-ink-soft);
+}
+.frontend-workshop-source-editor__envelope {
+  flex: 0 0 auto;
+  max-height: 35%;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+.frontend-workshop-source-editor__envelope small {
+  display: block;
+}
+.frontend-workshop-source-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 64px;
+  resize: none;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  padding: 8px;
+  background: var(--color-surface);
+  color: inherit;
+  font:
+    16px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  tab-size: 2;
+}
+.frontend-workshop-source-editor__state,
+.frontend-workshop-source-editor__transfer,
+.frontend-workshop-source-editor__error {
+  flex: 0 0 auto;
+  max-height: 25%;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  font-size: 12px;
+}
+.frontend-workshop-source-editor__error {
+  color: var(--color-danger);
+}

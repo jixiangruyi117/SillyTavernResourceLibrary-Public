@@ -1,0 +1,11 @@
+/*
+ * 全局样式入口。
+ *
+ * 资源库启动样式；按需面板样式由 FeatureStyles.css 沿原 Owner 装配。
+ * 基础令牌由 Main.ts 唯一装配；新增规则写进对应域文件。
+ */
+@import './styles/AppShell.css';
+@import './styles/ResourceList.css';
+@import './styles/LayoutAndResponsive.css';
+@import './styles/GlassRefinement.css';
+@import './styles/DesignSystemRefinement.css';

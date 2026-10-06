@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "com.srl.example.offline-counter",
+  "name": "离线计数器",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "author": "SRL 示例",
+  "description": "一个只使用自身本地存储的轻量计数工具。",
+  "permissions": ["app.storage"]
+}

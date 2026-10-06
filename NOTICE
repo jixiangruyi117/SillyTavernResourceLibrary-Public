@@ -1,0 +1,21 @@
+SillyTavern Resource Library
+Copyright (C) 2026 jixiangruyi117
+
+This program is licensed under the Aladdin Free Public License (AFPL), Version 9.
+See LICENSE for the complete license text, redistribution conditions, source-code
+requirements, commercial-distribution restrictions, and warranty disclaimer.
+
+`src/utils/RichContentPreview.ts` retains modified TavernHelper integration
+portions derived from TavernHelper / JS-Slash-Runner 4.8.19
+(https://github.com/N0VI028/JS-Slash-Runner), including frontend third-party
+dependency composition, message/script iframe document composition, and
+TH-render/message plus companion-script iframe mounting structure. The
+corresponding upstream source is distributed under the Aladdin Free Public
+License, Version 9. Those tagged `AFPL-TH-INTEGRATION` portions remain under
+AFPL v9 and were modified for SRL by jixiangruyi117 on 2026-08-09. The complete
+source corresponding to the distributed SRL work is provided in this
+repository; see LICENSE for the applicable redistribution conditions.
+
+`src/utils/RenderCompatibilityRuntime.ts` and
+`src/utils/RenderCompatibilityFrontend.ts` are independent behavior-contract
+Owners and are not included in the preceding derived-portions designation.

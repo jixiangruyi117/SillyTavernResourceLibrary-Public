@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=public-native-app-name -->
+    <string name="app_name">SRL_Pubilc</string>
+    <!-- SRL-PUBLIC-SYNC: END REPLACE id=public-native-app-name -->
+</resources>

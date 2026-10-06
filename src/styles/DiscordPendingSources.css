@@ -1,0 +1,233 @@
+.discord-pending {
+  color: var(--color-ink);
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-pending--inbox {
+  margin-top: 0;
+  padding: 16px 0;
+}
+
+.discord-pending--inbox .discord-pending__header strong {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.discord-pending--inbox .discord-pending__actions button,
+.discord-pending--inbox .discord-pending__actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 12px;
+}
+
+.discord-pending__header,
+.discord-pending__summary,
+.discord-pending__summary > div,
+.discord-pending__messages header {
+  min-width: 0;
+}
+
+.discord-pending__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.discord-pending__header strong,
+.discord-pending__header small {
+  display: block;
+}
+
+.discord-pending__header strong {
+  color: var(--color-ink);
+  font-size: 0.88rem;
+}
+
+.discord-pending__header small,
+.discord-pending__state,
+.discord-pending__summary small,
+.discord-pending__summary > span {
+  color: var(--color-ink-soft);
+  font-size: 0.7rem;
+}
+
+.discord-pending__header small {
+  margin-top: 4px;
+}
+
+.discord-pending__header > span {
+  min-width: 25px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.discord-pending__list {
+  margin-top: 12px;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-pending__item {
+  padding: 15px 0;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.discord-pending__summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.discord-pending__summary strong,
+.discord-pending__summary small {
+  display: block;
+}
+
+.discord-pending__summary strong {
+  font-size: 0.8rem;
+}
+
+.discord-pending__summary small {
+  margin-top: 3px;
+}
+
+.discord-pending__summary p {
+  max-width: 600px;
+  margin: 8px 0 0;
+  color: var(--color-ink-soft);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}
+
+.discord-pending__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+}
+
+.discord-pending__actions button,
+.discord-pending__actions a {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.discord-pending__actions .discord-pending__delete {
+  color: var(--color-danger);
+}
+
+.discord-pending__messages {
+  display: grid;
+  gap: 14px;
+  margin-top: 13px;
+  padding: 10px 0 2px 14px;
+  border-left: 2px solid var(--color-accent-soft);
+}
+
+.discord-pending__messages article + article {
+  padding-top: 12px;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-pending__messages header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-ink-soft);
+  font-size: 0.68rem;
+}
+
+.discord-pending__messages p {
+  margin: 8px 0 0;
+  color: var(--color-ink);
+  font-size: 0.76rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.discord-pending__messages .discord-pending__empty-body {
+  color: var(--color-ink-soft);
+}
+
+.discord-pending__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.discord-pending__attachments a {
+  padding: 4px 7px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  color: var(--color-accent);
+  font-size: 0.68rem;
+  text-decoration: none;
+}
+
+.discord-pending__attachments .discord-text-attachment {
+  width: 100%;
+}
+
+.discord-pending__attachments pre {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.discord-pending__bind {
+  display: grid;
+  gap: 9px;
+  margin-top: 13px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-pending__state {
+  margin: 12px 0 0;
+}
+
+.discord-pending__status,
+.discord-pending__error {
+  margin: 10px 0 0;
+  font-size: 0.72rem;
+}
+
+.discord-pending__status {
+  color: var(--color-ink-soft);
+}
+
+.discord-pending__error {
+  color: var(--color-danger);
+}
+
+@media (max-width: 640px) {
+  .discord-pending__summary {
+    display: block;
+  }
+
+  .discord-pending__summary > span {
+    display: block;
+    margin-top: 5px;
+  }
+}

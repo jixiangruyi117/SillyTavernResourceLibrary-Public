@@ -1,0 +1,192 @@
+.discord-intake-status,
+.discord-intake-toast {
+  position: fixed;
+  z-index: 1320;
+  left: 50%;
+  bottom: calc(22px + var(--safe-bottom));
+  translate: -50% 0;
+  max-width: min(460px, calc(100vw - 30px));
+  padding: 9px 13px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink-soft);
+  box-shadow: 0 10px 28px rgb(20 44 52 / 12%);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.discord-intake-toast--error {
+  color: #8b5d57;
+}
+
+.discord-intake-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: center;
+  padding: max(18px, var(--safe-top)) max(18px, var(--safe-right)) max(18px, var(--safe-bottom))
+    max(18px, var(--safe-left));
+  background: rgb(18 35 42 / 24%);
+}
+
+.discord-intake {
+  width: min(650px, 100%);
+  max-height: min(880px, calc(var(--app-viewport-height) - 36px));
+  overflow-y: auto;
+  padding: 24px 26px 26px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 18px 60px rgb(25 51 60 / 14%);
+  color: var(--color-ink);
+}
+
+.discord-intake__paste-help {
+  margin: 18px 0;
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.discord-intake__paste-field > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--color-ink);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.discord-intake__paste-field textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 11px;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.discord-intake > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.discord-intake > header small {
+  color: var(--color-ink-soft);
+  font-size: 0.65rem;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+}
+
+.discord-intake > header h2 {
+  margin: 4px 0 0;
+  font-size: 1rem;
+}
+
+.discord-intake > header button {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-soft);
+  font-size: 1.45rem;
+  cursor: pointer;
+}
+
+.discord-intake__source {
+  margin-top: 20px;
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid var(--color-accent-soft);
+}
+
+.discord-intake__source strong,
+.discord-intake__source span,
+.discord-intake__source small {
+  display: block;
+}
+
+.discord-intake__source strong {
+  font-size: 0.9rem;
+}
+
+.discord-intake__source span {
+  margin-top: 4px;
+  color: var(--color-ink-soft);
+  font-size: 0.7rem;
+}
+
+.discord-intake__source p {
+  margin: 8px 0 0;
+  color: var(--color-ink-soft);
+  font-size: 0.77rem;
+  line-height: 1.65;
+}
+
+.discord-intake__source small {
+  margin-top: 7px;
+  color: var(--color-ink-soft);
+  font-size: 0.66rem;
+}
+
+.discord-intake__bind {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-intake > footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 17px;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-intake > footer button {
+  min-height: 39px;
+  padding: 0 11px;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.discord-intake__message {
+  margin: 12px 0 0;
+  font-size: 0.72rem;
+}
+
+.discord-intake__message--error {
+  color: #8b5d57;
+}
+
+@media (max-width: 640px) {
+  .discord-intake-overlay {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .discord-intake {
+    width: 100%;
+    max-height: var(--app-viewport-height);
+    min-height: var(--app-viewport-height);
+    padding: max(20px, var(--safe-top)) max(18px, var(--safe-right)) max(28px, var(--safe-bottom))
+      max(18px, var(--safe-left));
+    border: 0;
+    border-radius: 0;
+  }
+}

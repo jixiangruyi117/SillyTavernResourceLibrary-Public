@@ -1,0 +1,503 @@
+import { gzip, gunzip, strFromU8, strToU8 } from 'fflate'
+
+import type { ArchivePortableData } from '../types/Backup'
+import { JsonResourceParser } from '../parser/JsonResourceParser'
+import { PngResourceParser } from '../parser/PngResourceParser'
+import {
+  RESOURCE_TYPE,
+  type Category,
+  type Resource,
+  type ResourceBackupDescriptor,
+  type ResourceReference,
+  type ResourceSummary,
+} from '../types/Resource'
+import { isRecord } from '../utils/UnknownValue'
+import {
+  createGitHubBundle,
+  parseGitHubBundleManifest,
+  type GitHubBundleManifest,
+  type GitHubBundlePart,
+} from './GitHubBackupBundle'
+import { hashCloudBlob } from './CloudArchiveCodec'
+
+export const STRUCTURED_SNAPSHOT_FORMAT = 'srl-structured-cloud-snapshot'
+export const STRUCTURED_SNAPSHOT_VERSION = 3
+const LEGACY_STRUCTURED_SNAPSHOT_VERSION = 1
+const LEGACY_STRUCTURED_SNAPSHOT_VERSION_2 = 2
+const SMALL_OBJECT_LIMIT = 4 * 1024 * 1024
+
+export function structuredSnapshotName(createdAt = new Date(), compressed = true): string {
+  return `srl-snapshot-${createdAt.toISOString().replace(/[:.]/g, '-').slice(0, 23)}.srlmanifest.v3.json${compressed ? '.gz' : ''}`
+}
+
+export function isStructuredSnapshotObjectKey(objectKey: string): boolean {
+  return /\.(?:srlsnapshot|srlmanifest\.v3)\.json(?:\.gz)?$/iu.test(objectKey)
+}
+
+export function structuredSnapshotArchiveName(objectKey: string): string {
+  return objectKey.replace(/\.(?:srlsnapshot|srlmanifest\.v3)\.json(?:\.gz)?$/iu, '.zip')
+}
+
+export type CloudObjectSource =
+  | { kind: 'range'; contentHash: string; offset: number; size: number }
+  | {
+      kind: 'concat'
+      segments: Array<{ contentHash: string; offset: number; size: number }>
+    }
+  | { kind: 'inline'; blob: Blob }
+
+export interface CloudObjectPlan {
+  name: string
+  hash: string
+  size: number
+  blob?: Blob
+  loadBlob?: () => Promise<Blob>
+  source: CloudObjectSource
+  contentType: string
+}
+
+export interface StructuredResourceCandidate {
+  summary: ResourceSummary
+  summaryIsPartial?: boolean
+  load: () => Promise<Resource>
+}
+
+type StructuredResourceInput = Resource | StructuredResourceCandidate
+
+export interface StructuredResource extends Omit<Resource, 'originalBlob' | 'thumbnailBlob'> {
+  object: GitHubBundleManifest
+}
+
+export interface StructuredSnapshot {
+  format: typeof STRUCTURED_SNAPSHOT_FORMAT
+  version:
+    | typeof STRUCTURED_SNAPSHOT_VERSION
+    | typeof LEGACY_STRUCTURED_SNAPSHOT_VERSION
+    | typeof LEGACY_STRUCTURED_SNAPSHOT_VERSION_2
+  createdAt: string
+  categories: Category[]
+  resources: StructuredResource[]
+  versions: StructuredResource[]
+  portableData: ArchivePortableData
+  objectContract?: {
+    algorithm: 'SHA-256'
+    immutable: true
+    naming: 'srl-chunk--sha256-{hash}'
+  }
+}
+
+export interface CreatedStructuredSnapshot {
+  snapshot: StructuredSnapshot
+  chunks: Map<string, Blob>
+  nativeSources: Map<string, CloudObjectSource>
+  objectPlans: CloudObjectPlan[]
+  totalSize: number
+  partCount: number
+  localReadBytes: number
+  descriptorUpdates: Array<{
+    id: string
+    historical: boolean
+    descriptor: ResourceBackupDescriptor
+  }>
+}
+
+function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    gzip(bytes, { level: 6 }, (error, compressed) => {
+      if (error) reject(error)
+      else resolve(compressed)
+    })
+  })
+}
+
+function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    gunzip(bytes, (error, decompressed) => {
+      if (error) reject(error)
+      else resolve(decompressed)
+    })
+  })
+}
+
+export async function encodeStructuredSnapshot(snapshot: StructuredSnapshot): Promise<Blob> {
+  const compressed = await gzipBytes(strToU8(JSON.stringify(snapshot)))
+  const owned = new Uint8Array(compressed.byteLength)
+  owned.set(compressed)
+  return new Blob([owned.buffer], { type: 'application/gzip' })
+}
+
+export async function decodeStructuredSnapshot(blob: Blob): Promise<StructuredSnapshot> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const jsonBytes = bytes[0] === 0x1f && bytes[1] === 0x8b ? await gunzipBytes(bytes) : bytes
+  try {
+    return parseStructuredSnapshot(JSON.parse(strFromU8(jsonBytes)) as unknown)
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('对象级云备份')) throw error
+    throw new Error('对象级云备份清单 JSON 无效', { cause: error })
+  }
+}
+
+function withoutBlobs(
+  resource: ResourceReference,
+  object: GitHubBundleManifest,
+): StructuredResource {
+  const {
+    originalBlob: _originalBlob,
+    thumbnailBlob: _thumbnailBlob,
+    ...record
+  } = resource as Resource
+  const metadata = { ...record.metadata }
+  if (resource.type === RESOURCE_TYPE.CHARACTER_CARD && isRecord(metadata.card)) {
+    delete metadata.card
+  }
+  return { ...record, metadata, object }
+}
+
+function reusableObject(resource: ResourceReference): GitHubBundleManifest | undefined {
+  const descriptor = resource.backupDescriptor
+  if (
+    !descriptor ||
+    ![1, 2].includes(descriptor.version) ||
+    descriptor.resourceId !== resource.id ||
+    descriptor.contentHash !== resource.contentHash.toLowerCase() ||
+    descriptor.size !== resource.fileSize ||
+    !descriptor.parts?.length
+  ) {
+    return undefined
+  }
+  let expectedOffset = 0
+  const parts: GitHubBundlePart[] = []
+  for (const part of descriptor.parts) {
+    if (
+      part.offset !== expectedOffset ||
+      part.size < 0 ||
+      part.storedSize !== undefined ||
+      part.name !== `srl-chunk--sha256-${part.sha256}`
+    ) {
+      return undefined
+    }
+    parts.push({ name: part.name, size: part.size, sha256: part.sha256 })
+    expectedOffset += part.size
+  }
+  if (expectedOffset !== resource.fileSize) return undefined
+  return {
+    format: 'srl-github-backup-bundle',
+    version: 2,
+    createdAt: new Date().toISOString(),
+    fileName: resource.fileName,
+    totalSize: resource.fileSize,
+    totalSha256: resource.contentHash.toLowerCase(),
+    parts,
+  }
+}
+
+async function restoreStructuredMetadata(
+  resource: Omit<StructuredResource, 'object'>,
+  originalBlob: Blob,
+): Promise<Record<string, unknown>> {
+  if (resource.type !== RESOURCE_TYPE.CHARACTER_CARD || isRecord(resource.metadata.card)) {
+    return resource.metadata
+  }
+  const file = new File([originalBlob], resource.fileName, { type: resource.mimeType })
+  const parser =
+    resource.mimeType === 'image/png' || /\.png$/iu.test(resource.fileName)
+      ? new PngResourceParser()
+      : new JsonResourceParser()
+  const parsed = await parser.parse(file)
+  const card = parsed.metadata?.card
+  if (parsed.type !== RESOURCE_TYPE.CHARACTER_CARD || !isRecord(card)) {
+    throw new Error(`无法从已校验原文件重建角色卡清单：${resource.fileName}`)
+  }
+  return { ...parsed.metadata, ...resource.metadata, card }
+}
+
+async function addResource(
+  input: StructuredResourceInput,
+  target: StructuredResource[],
+  chunks: Map<string, Blob>,
+  nativeSources: Map<string, CloudObjectSource>,
+  objectPlans: Map<string, CloudObjectPlan>,
+  descriptorUpdates: CreatedStructuredSnapshot['descriptorUpdates'],
+  historical: boolean,
+): Promise<number> {
+  const candidate = 'summary' in input ? (input as StructuredResourceCandidate) : undefined
+  let resource: ResourceReference = candidate ? candidate.summary : (input as Resource)
+  if (candidate?.summaryIsPartial) {
+    const full = await candidate.load()
+    if (
+      full.id !== resource.id ||
+      full.contentHash !== resource.contentHash ||
+      full.updatedAt !== resource.updatedAt
+    )
+      throw new Error(`云备份期间资源发生变化：${resource.fileName}`)
+    resource = full
+  }
+  const reusable = reusableObject(resource)
+  if (reusable) {
+    target.push(withoutBlobs(resource, reusable))
+    let offset = 0
+    for (const part of reusable.parts) {
+      const source: CloudObjectSource = {
+        kind: 'range',
+        contentHash: resource.contentHash.toLowerCase(),
+        offset,
+        size: part.size,
+      }
+      const loaded = candidate
+        ? undefined
+        : (resource as Resource).originalBlob.slice(offset, offset + part.size)
+      if (loaded) chunks.set(part.name, loaded)
+      nativeSources.set(part.name, source)
+      if (!objectPlans.has(part.name)) {
+        const partOffset = offset
+        objectPlans.set(part.name, {
+          name: part.name,
+          hash: part.sha256,
+          size: part.size,
+          blob: loaded,
+          loadBlob: candidate
+            ? async () => {
+                const hydrated = await candidate.load()
+                return hydrated.originalBlob.slice(partOffset, partOffset + part.size)
+              }
+            : undefined,
+          source,
+          contentType: 'application/octet-stream',
+        })
+      }
+      offset += part.size
+    }
+    return 0
+  }
+  if (candidate && !candidate.summaryIsPartial) resource = await candidate.load()
+  const hydrated = resource as Resource
+  if (hydrated.originalBlob.size <= SMALL_OBJECT_LIMIT) {
+    const actualHash = await hashCloudBlob(hydrated.originalBlob)
+    if (actualHash !== hydrated.contentHash.toLowerCase()) {
+      throw new Error(`资源原文件摘要与索引不一致：${hydrated.fileName}`)
+    }
+    const name = `srl-chunk--sha256-${actualHash}`
+    const object: GitHubBundleManifest = {
+      format: 'srl-github-backup-bundle',
+      version: 2,
+      createdAt: new Date().toISOString(),
+      fileName: hydrated.fileName,
+      totalSize: hydrated.fileSize,
+      totalSha256: actualHash,
+      parts: [{ name, size: hydrated.fileSize, sha256: actualHash }],
+    }
+    target.push(withoutBlobs(hydrated, object))
+    chunks.set(name, hydrated.originalBlob)
+    const source: CloudObjectSource = {
+      kind: 'range',
+      contentHash: actualHash,
+      offset: 0,
+      size: hydrated.fileSize,
+    }
+    nativeSources.set(name, source)
+    objectPlans.set(name, {
+      name,
+      hash: actualHash,
+      size: hydrated.fileSize,
+      blob: hydrated.originalBlob,
+      source,
+      contentType: 'application/octet-stream',
+    })
+    descriptorUpdates.push({
+      id: hydrated.id,
+      historical,
+      descriptor: {
+        version: 2,
+        resourceId: hydrated.id,
+        contentHash: actualHash,
+        size: hydrated.fileSize,
+        updatedAt: hydrated.updatedAt,
+        parts: [{ name, offset: 0, size: hydrated.fileSize, sha256: actualHash }],
+      },
+    })
+    return hydrated.originalBlob.size
+  }
+  const { manifest, blobs } = await createGitHubBundle(
+    hydrated.originalBlob,
+    hydrated.fileName,
+    undefined,
+    hydrated.contentHash,
+  )
+  target.push(withoutBlobs(hydrated, manifest))
+  let offset = 0
+  const descriptorParts: NonNullable<ResourceBackupDescriptor['parts']> = []
+  for (const [index, part] of manifest.parts.entries()) {
+    chunks.set(part.name, blobs[index]!)
+    const source: CloudObjectSource = {
+      kind: 'range',
+      contentHash: hydrated.contentHash.toLowerCase(),
+      offset,
+      size: part.size,
+    }
+    nativeSources.set(part.name, source)
+    objectPlans.set(part.name, {
+      name: part.name,
+      hash: part.sha256,
+      size: part.size,
+      blob: blobs[index]!,
+      source,
+      contentType: 'application/octet-stream',
+    })
+    descriptorParts.push({
+      name: part.name,
+      offset,
+      size: part.size,
+      sha256: part.sha256,
+    })
+    offset += part.size
+  }
+  descriptorUpdates.push({
+    id: hydrated.id,
+    historical,
+    descriptor: {
+      version: 2,
+      resourceId: hydrated.id,
+      contentHash: hydrated.contentHash.toLowerCase(),
+      size: hydrated.fileSize,
+      updatedAt: hydrated.updatedAt,
+      parts: descriptorParts,
+    },
+  })
+  return hydrated.originalBlob.size * 2
+}
+
+export async function createStructuredSnapshot(
+  resources: Iterable<StructuredResourceInput> | AsyncIterable<StructuredResourceInput>,
+  versions: Iterable<StructuredResourceInput> | AsyncIterable<StructuredResourceInput>,
+  categories: Category[],
+  portableData: ArchivePortableData,
+): Promise<CreatedStructuredSnapshot> {
+  const chunks = new Map<string, Blob>()
+  const nativeSources = new Map<string, CloudObjectSource>()
+  const objectPlans = new Map<string, CloudObjectPlan>()
+  const current: StructuredResource[] = []
+  const historic: StructuredResource[] = []
+  const descriptorUpdates: CreatedStructuredSnapshot['descriptorUpdates'] = []
+  let localReadBytes = 0
+  for await (const resource of resources)
+    localReadBytes += await addResource(
+      resource,
+      current,
+      chunks,
+      nativeSources,
+      objectPlans,
+      descriptorUpdates,
+      false,
+    )
+  for await (const version of versions)
+    localReadBytes += await addResource(
+      version,
+      historic,
+      chunks,
+      nativeSources,
+      objectPlans,
+      descriptorUpdates,
+      true,
+    )
+  const parts: GitHubBundlePart[] = [...objectPlans.values()].map((plan) => ({
+    name: plan.name,
+    size: plan.size,
+    sha256: plan.hash,
+  }))
+  return {
+    snapshot: {
+      format: STRUCTURED_SNAPSHOT_FORMAT,
+      version: STRUCTURED_SNAPSHOT_VERSION,
+      createdAt: new Date().toISOString(),
+      categories,
+      resources: current,
+      versions: historic,
+      portableData,
+      objectContract: {
+        algorithm: 'SHA-256',
+        immutable: true,
+        naming: 'srl-chunk--sha256-{hash}',
+      },
+    },
+    chunks,
+    nativeSources,
+    objectPlans: [...objectPlans.values()],
+    totalSize: [...current, ...historic].reduce((total, resource) => total + resource.fileSize, 0),
+    partCount: parts.length,
+    localReadBytes,
+    descriptorUpdates,
+  }
+}
+
+export function isStructuredSnapshot(value: unknown): value is StructuredSnapshot {
+  const snapshot = value as Partial<StructuredSnapshot>
+  return (
+    Boolean(snapshot) &&
+    snapshot.format === STRUCTURED_SNAPSHOT_FORMAT &&
+    [
+      LEGACY_STRUCTURED_SNAPSHOT_VERSION,
+      LEGACY_STRUCTURED_SNAPSHOT_VERSION_2,
+      STRUCTURED_SNAPSHOT_VERSION,
+    ].includes(snapshot.version ?? 0) &&
+    Array.isArray(snapshot.resources) &&
+    Array.isArray(snapshot.versions) &&
+    Array.isArray(snapshot.categories) &&
+    Boolean(snapshot.portableData) &&
+    snapshot.portableData?.version === 1
+  )
+}
+
+export function parseStructuredSnapshot(value: unknown): StructuredSnapshot {
+  if (!isStructuredSnapshot(value)) throw new Error('对象级云备份清单格式无效')
+  const snapshot = value as StructuredSnapshot
+  if (Number.isNaN(Date.parse(snapshot.createdAt))) throw new Error('对象级云备份时间无效')
+  const ids = new Set<string>()
+  for (const resource of [...snapshot.resources, ...snapshot.versions]) {
+    if (!resource || typeof resource.id !== 'string' || ids.has(resource.id)) {
+      throw new Error('对象级云备份包含无效或重复资源 ID')
+    }
+    ids.add(resource.id)
+    resource.object = parseGitHubBundleManifest(resource.object)
+    if (
+      resource.object.totalSize !== resource.fileSize ||
+      resource.object.totalSha256.toLowerCase() !== resource.contentHash.toLowerCase()
+    ) {
+      throw new Error(`对象级云备份资源校验信息不一致：${resource.fileName}`)
+    }
+  }
+  return snapshot
+}
+
+export function structuredSnapshotParts(snapshot: StructuredSnapshot): GitHubBundlePart[] {
+  const unique = new Map<string, GitHubBundlePart>()
+  for (const resource of [...snapshot.resources, ...snapshot.versions]) {
+    for (const part of resource.object.parts) {
+      unique.set(part.name, {
+        ...part,
+        size: part.storedSize ?? part.size,
+      })
+    }
+  }
+  return [...unique.values()]
+}
+
+export async function materializeStructuredResources(
+  records: StructuredResource[],
+  readObject: (object: GitHubBundleManifest) => Promise<Blob>,
+): Promise<Resource[]> {
+  const resources: Resource[] = []
+  for (const record of records) {
+    resources.push(await materializeStructuredResource(record, readObject))
+  }
+  return resources
+}
+
+export async function materializeStructuredResource(
+  record: StructuredResource,
+  readObject: (object: GitHubBundleManifest) => Promise<Blob>,
+): Promise<Resource> {
+  const { object, ...resource } = record
+  const originalBlob = await readObject(object)
+  const metadata = await restoreStructuredMetadata(resource, originalBlob)
+  return { ...resource, metadata, originalBlob }
+}

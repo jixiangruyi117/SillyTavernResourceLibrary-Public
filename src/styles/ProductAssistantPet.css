@@ -1,0 +1,219 @@
+.assistant-pet {
+  position: fixed;
+  z-index: 30;
+  width: 88px;
+  height: 88px;
+  padding: 0;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  box-shadow: none;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+.assistant-pet--walk {
+  animation: assistant-pet-stroll 16s ease-in-out;
+}
+.assistant-pet--travelling {
+  transition:
+    left var(--pet-travel-duration) linear,
+    top var(--pet-travel-duration) linear;
+}
+.assistant-pet-bubble {
+  position: fixed;
+  z-index: 31;
+  width: 190px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-line));
+  border-radius: 18px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  box-shadow:
+    0 5px 18px rgb(24 68 76 / 12%),
+    inset 0 1px 0 rgb(255 255 255 / 12%);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  transform: translateY(-100%);
+  cursor: pointer;
+}
+.assistant-pet-bubble::after {
+  position: absolute;
+  left: calc(var(--pet-tail-x) - 6px);
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  border-right: inherit;
+  border-bottom: inherit;
+  background: inherit;
+  transform: rotate(45deg);
+  pointer-events: none;
+  content: '';
+}
+.assistant-pet-bubble--below {
+  transform: none;
+}
+.assistant-pet-bubble--below::after {
+  top: -7px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+.assistant-pet-run {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background-repeat: no-repeat;
+  background-size: 300% 200%;
+  animation: assistant-pet-run-frames 600ms step-end infinite;
+  pointer-events: none;
+  filter: drop-shadow(0 3px 4px rgb(55 41 87 / 18%));
+}
+.assistant-pet-orb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 3px 5px rgb(37 92 111 / 23%));
+  pointer-events: none;
+}
+@keyframes assistant-pet-run-frames {
+  0%,
+  100% {
+    background-position: 0 0;
+  }
+  16.6667% {
+    background-position: 50% 0;
+  }
+  33.3333% {
+    background-position: 100% 0;
+  }
+  50% {
+    background-position: 0 100%;
+  }
+  66.6667% {
+    background-position: 50% 100%;
+  }
+  83.3333% {
+    background-position: 100% 100%;
+  }
+}
+.assistant-pet img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: drop-shadow(0 3px 4px rgb(55 41 87 / 18%));
+}
+.assistant-pet:active {
+  cursor: grabbing;
+  transform: none;
+}
+@keyframes assistant-pet-stroll {
+  0%,
+  15%,
+  85%,
+  100% {
+    transform: translate(0, 0);
+  }
+  35%,
+  65% {
+    transform: translate(calc(-1 * var(--pet-walk-range)), -2px);
+  }
+  45%,
+  55% {
+    transform: translate(calc(-1 * var(--pet-walk-range)), 1px);
+  }
+}
+.assistant-pet-dialog {
+  position: fixed;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  width: min(300px, calc(100vw - 16px));
+  height: min(340px, calc(100dvh - 16px));
+  box-sizing: border-box;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0 12px 8px;
+  border: 1px solid var(--color-line);
+  border-radius: 20px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 18%);
+  overflow: hidden;
+}
+.assistant-pet-dialog:not([open]) {
+  display: none;
+}
+.assistant-pet-dialog--expanded {
+  z-index: 80;
+  border: 0;
+  border-radius: 0;
+  padding-top: max(8px, var(--safe-top));
+  padding-right: max(12px, var(--safe-right));
+  padding-bottom: max(8px, var(--safe-bottom));
+  padding-left: max(12px, var(--safe-left));
+  box-shadow: none;
+}
+.assistant-pet-dialog .appearance-studio--chat {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.assistant-pet-dialog .chat-messages {
+  padding-block: 12px;
+}
+.assistant-pet-dialog .chat-composer {
+  margin-block: 6px;
+  padding-bottom: 0;
+}
+.assistant-pet-dialog .chat-image--result {
+  width: 128px;
+}
+.assistant-pet-dialog .chat-image--result img {
+  max-height: 128px;
+  object-fit: contain;
+}
+.assistant-pet-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-soft);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.assistant-pet-resize svg {
+  width: 14px;
+  height: 14px;
+}
+.assistant-pet-dialog--above .assistant-pet-resize {
+  top: 0;
+  bottom: auto;
+  cursor: nesw-resize;
+}
+.assistant-pet-dialog--above .assistant-pet-resize svg {
+  transform: scaleY(-1);
+}
+.assistant-pet-dialog--above .feature-app-header {
+  padding-right: 24px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-pet {
+    animation: none;
+    transition: none;
+  }
+  .assistant-pet-run {
+    animation: none;
+  }
+}

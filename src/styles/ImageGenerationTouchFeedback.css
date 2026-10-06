@@ -1,0 +1,41 @@
+/* 只补触控反馈，不改变 AI 生图工作台的批准布局。 */
+.image-generation-app button,
+.image-generation-app summary,
+.image-generation-app .switch {
+  -webkit-tap-highlight-color: color-mix(in srgb, var(--color-accent, #1d707b) 18%, transparent);
+  touch-action: manipulation;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .image-generation-app button:not(:disabled),
+  .image-generation-app summary,
+  .image-generation-app .switch:not(:disabled) {
+    transition:
+      transform 90ms ease,
+      filter 90ms ease,
+      opacity 90ms ease;
+  }
+
+  .image-generation-app button:not(:disabled):active,
+  .image-generation-app summary:active {
+    transform: translateY(1px) scale(0.985);
+    filter: brightness(0.94);
+  }
+
+  .image-generation-app .switch:not(:disabled):active {
+    filter: brightness(0.9);
+  }
+
+  .image-generation-app input[type='checkbox']:not(.switch):not(:disabled):active,
+  .image-generation-app input[type='radio']:not(:disabled):active {
+    transform: scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-generation-app button,
+  .image-generation-app summary,
+  .image-generation-app .switch {
+    transition: none;
+  }
+}

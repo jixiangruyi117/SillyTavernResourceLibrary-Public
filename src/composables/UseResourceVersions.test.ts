@@ -1,0 +1,229 @@
+/** @vitest-environment jsdom */
+import { ref } from 'vue'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ResourceVersionView } from '../services/ResourceService'
+import { RESOURCE_TYPE, type Resource, type ResourceSummary } from '../types/Resource'
+
+const resourceApi = {
+  activateVersion: vi.fn(),
+  listVersions: vi.fn(),
+  deleteVersion: vi.fn(),
+  deleteVersions: vi.fn(),
+  get: vi.fn(),
+  updateMetadata: vi.fn(),
+  updateVersionNote: vi.fn(),
+  mergeExistingResourceAsVersion: vi.fn(),
+  replaceCharacterCardArtwork: vi.fn(),
+}
+
+vi.mock('../core/AppContainer', () => ({ resourceService: resourceApi }))
+
+const confirmMock = vi.fn(async () => true)
+const chooseActionMock = vi.fn(async (..._args: unknown[]) => 'confirm' as const)
+vi.mock('./UseConfirmDialog', () => ({
+  confirmAction: confirmMock,
+  chooseAction: chooseActionMock,
+}))
+
+const { useResourceVersions } = await import('./UseResourceVersions')
+const selectionMock = vi.hoisted(() => vi.fn())
+vi.mock('../services/CharacterCardMigrationReview', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/CharacterCardMigrationReview')>()),
+  selectCharacterCardMigrationEdits: selectionMock,
+}))
+
+const current = { id: 'r1', name: '夜航船' } as Resource
+
+function version(id: string, active: boolean): ResourceVersionView {
+  return {
+    active,
+    resource: { id, fileName: `${id}.png`, versionLabel: `版本 ${id}` },
+  } as ResourceVersionView
+}
+
+function setup(versions: ResourceVersionView[] = []) {
+  const notices: string[] = []
+  const organizingResource = ref<Resource | undefined>(current)
+  const organizingVersions = ref<ResourceVersionView[]>(versions)
+  const isOrganizing = ref(false)
+  const resources = ref<ResourceSummary[]>([{ id: 'r2', name: '旧版夜航船' } as ResourceSummary])
+  const loadResources = vi.fn(async () => {})
+  const refreshStorageHealth = vi.fn(async () => {})
+  const api = useResourceVersions({
+    organizingResource,
+    organizingVersions,
+    isOrganizing,
+    resources,
+    showNotice: (m) => notices.push(m),
+    loadResources,
+    refreshStorageHealth,
+  })
+  return { api, notices, organizingResource, organizingVersions, isOrganizing, loadResources }
+}
+
+describe('useResourceVersions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resourceApi.listVersions.mockResolvedValue([])
+    selectionMock.mockImplementation(async (edits) => edits)
+  })
+
+  it('切换当前版本后刷新版本列表与资源索引', async () => {
+    const next = { id: 'r1', name: '夜航船 v2' } as Resource
+    resourceApi.activateVersion.mockResolvedValue(next)
+    const { api, organizingResource, loadResources, notices } = setup([version('v2', false)])
+
+    await api.handleActivateVersion('v2')
+
+    expect(resourceApi.activateVersion).toHaveBeenCalledWith('r1', 'v2')
+    expect(organizingResource.value).toStrictEqual(next)
+    expect(loadResources).toHaveBeenCalled()
+    expect(notices[0]).toContain('已切换当前展示版本')
+  })
+
+  it('按统一清单选择迁移角色卡修改，再更新激活版本的补丁元数据', async () => {
+    const edit = {
+      id: 'greeting-edit',
+      section: 'greeting',
+      operation: 'add',
+      targetKey: 'alternate:added',
+      label: '新备用开场白',
+      after: '迁移后的备用开场白',
+      migrateToVersions: true,
+      updatedAt: 1,
+    }
+    const targetCard = {
+      spec: 'chara_card_v2',
+      data: { first_mes: '新版主开场白', alternate_greetings: [] },
+    }
+    const targetVersion = {
+      id: 'v2',
+      name: '夜航船新版',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: { card: targetCard, characterContentEdits: [] },
+    } as unknown as Resource
+    const next = {
+      id: 'r1',
+      name: '夜航船新版',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: { card: targetCard, characterContentEdits: [] },
+    } as unknown as Resource
+    resourceApi.activateVersion.mockResolvedValue(next)
+    resourceApi.updateMetadata.mockResolvedValue(next)
+    chooseActionMock.mockResolvedValueOnce('confirm')
+    const { api, organizingResource } = setup([
+      { active: false, resource: targetVersion } as ResourceVersionView,
+    ])
+    organizingResource.value = {
+      ...current,
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      metadata: {
+        card: { data: { first_mes: '原开场', alternate_greetings: [] } },
+        characterContentEdits: [edit],
+      },
+    } as Resource
+
+    await api.handleActivateVersion('v2')
+
+    expect(selectionMock).toHaveBeenCalledOnce()
+    expect(selectionMock.mock.calls[0]?.[0]).toEqual([edit])
+    expect(resourceApi.updateMetadata).toHaveBeenCalledWith('r1', {
+      characterContentEdits: [
+        expect.objectContaining({
+          label: '新备用开场白',
+          targetKey: 'alternate:added',
+          migrateToVersions: true,
+        }),
+      ],
+    })
+  })
+
+  it('正在进行其他版本操作时忽略并发调用', async () => {
+    const { api, isOrganizing } = setup()
+    isOrganizing.value = true
+    await api.handleActivateVersion('v2')
+    expect(resourceApi.activateVersion).not.toHaveBeenCalled()
+  })
+
+  it('不允许删除当前版本', async () => {
+    const { api } = setup([version('v1', true)])
+    await api.handleDeleteResourceVersion('v1')
+    expect(resourceApi.deleteVersions).not.toHaveBeenCalled()
+  })
+
+  it('删除历史版本前必须确认', async () => {
+    const { api } = setup([version('v1', false)])
+    confirmMock.mockResolvedValueOnce(false)
+    await api.handleDeleteResourceVersion('v1')
+    expect(resourceApi.deleteVersions).not.toHaveBeenCalled()
+
+    confirmMock.mockResolvedValueOnce(true)
+    resourceApi.get.mockResolvedValue(current)
+    await api.handleDeleteResourceVersion('v1')
+    expect(resourceApi.deleteVersions).toHaveBeenCalledWith('r1', ['v1'])
+  })
+
+  it('允许删除当前逻辑版本中的非当前自定义卡面封装', async () => {
+    const custom = { id: 'custom-art', fileName: 'custom.png' } as Resource
+    const activeGroup = {
+      active: true,
+      resource: current,
+      carriers: [current, custom],
+    } as ResourceVersionView
+    resourceApi.get.mockResolvedValue(current)
+    const { api } = setup([activeGroup])
+
+    await api.handleDeleteResourceVersion(custom.id)
+
+    expect(resourceApi.deleteVersions).toHaveBeenCalledWith('r1', ['custom-art'])
+  })
+
+  it('更换卡面后刷新同一资源的封装列表', async () => {
+    const next = { ...current, fileName: '自定义卡面.png' } as Resource
+    resourceApi.replaceCharacterCardArtwork.mockResolvedValue(next)
+    const { api, organizingResource, notices } = setup()
+    const file = new File(['image'], '喜欢的图片.png', { type: 'image/png' })
+
+    await api.handleReplaceCharacterCardArtwork(file)
+
+    expect(resourceApi.replaceCharacterCardArtwork).toHaveBeenCalledWith('r1', file)
+    expect(organizingResource.value).toStrictEqual(next)
+    expect(notices[0]).toContain('原卡面和原文件仍保留')
+  })
+
+  it('版本备注保存与清除给出不同提示', async () => {
+    resourceApi.get.mockResolvedValue(current)
+    const { api, notices } = setup()
+    await api.handleUpdateVersionNote('v1', '作者原版')
+    await api.handleUpdateVersionNote('v1', '   ')
+    expect(notices).toEqual(['备注已保存', '备注已清除'])
+  })
+
+  it('合并不存在的资源时提示并跳过', async () => {
+    const { api, notices } = setup()
+    await api.handleMergeExistingVersion('missing', '')
+    expect(notices).toEqual(['要合并的资源已经不存在'])
+    expect(resourceApi.mergeExistingResourceAsVersion).not.toHaveBeenCalled()
+  })
+
+  it('手动合并成功后同时刷新存储用量', async () => {
+    resourceApi.mergeExistingResourceAsVersion.mockResolvedValue(current)
+    confirmMock.mockResolvedValueOnce(true)
+    const { api, notices } = setup()
+    await api.handleMergeExistingVersion('r2', '来自旧库')
+    expect(resourceApi.mergeExistingResourceAsVersion).toHaveBeenCalledWith('r1', 'r2', '来自旧库')
+    expect(notices).toEqual(['已手动加入历史版本'])
+  })
+
+  it('没有打开任何资源时所有操作都是空动作', async () => {
+    const { api, organizingResource } = setup()
+    organizingResource.value = undefined
+    await api.handleActivateVersion('v1')
+    await api.handleUpdateVersionNote('v1', 'x')
+    await api.handleMergeExistingVersion('r2', '')
+    expect(resourceApi.activateVersion).not.toHaveBeenCalled()
+    expect(resourceApi.updateVersionNote).not.toHaveBeenCalled()
+    expect(resourceApi.mergeExistingResourceAsVersion).not.toHaveBeenCalled()
+  })
+})
