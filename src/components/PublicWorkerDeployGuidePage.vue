@@ -1,3 +1,4 @@
+<!-- SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-deploy-guide-page -->
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -60,7 +61,6 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-deploy-guide-page -->
   <Teleport to="body">
     <main
       class="public-worker-guide"
@@ -91,7 +91,11 @@ onBeforeUnmount(() => {
             <span class="public-worker-guide__number">01</span>
             <div>
               <h2 id="worker-step-one">Fork 仓库</h2>
-              <a href="https://github.com/jixiangruyi117/SRL-Worker-Public/fork" target="_blank" rel="noreferrer">
+              <a
+                href="https://github.com/jixiangruyi117/SRL-Worker-Public/fork"
+                target="_blank"
+                rel="noreferrer"
+              >
                 Fork SRL-Worker-Public ↗
               </a>
             </div>
@@ -102,9 +106,19 @@ onBeforeUnmount(() => {
             <div>
               <h2 id="worker-step-two">在 Cloudflare 部署</h2>
               <ol>
-                <li>打开 Cloudflare Dashboard → <strong>Workers &amp; Pages</strong> → <strong>Create application</strong>，在 <strong>Import a repository</strong> 旁点 <strong>Get started</strong>。</li>
-                <li>连接 GitHub 并选择刚才 Fork 的仓库；若仓库未显示，先授权 Cloudflare GitHub App 访问该仓库。生产分支选 <code>main</code>。</li>
-                <li>Worker 名称填 <code>srl-worker-public</code>；Root directory 留默认；Build command 留空；Deploy command 填：</li>
+                <li>
+                  打开 Cloudflare Dashboard → <strong>Workers &amp; Pages</strong> →
+                  <strong>Create application</strong>，在 <strong>Import a repository</strong> 旁点
+                  <strong>Get started</strong>。
+                </li>
+                <li>
+                  连接 GitHub 并选择刚才 Fork 的仓库；若仓库未显示，先授权 Cloudflare GitHub App
+                  访问该仓库。生产分支选 <code>main</code>。
+                </li>
+                <li>
+                  Worker 名称填 <code>srl-worker-public</code>；Root directory 留默认；Build command
+                  留空；Deploy command 填：
+                </li>
               </ol>
               <div class="public-worker-guide__command">
                 <pre><code>{{ deployCommand }}</code></pre>
@@ -122,7 +136,10 @@ onBeforeUnmount(() => {
               <p v-if="copyError" class="public-worker-guide__copy-error" role="alert">
                 {{ copyError }}
               </p>
-              <p>点击 <strong>Save and Deploy</strong>。若部署失败，在 Worker 的部署历史中打开本次构建日志。</p>
+              <p>
+                点击 <strong>Save and Deploy</strong>。若部署失败，在 Worker
+                的部署历史中打开本次构建日志。
+              </p>
               <a href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer">
                 打开 Cloudflare Dashboard ↗
               </a>
@@ -133,13 +150,19 @@ onBeforeUnmount(() => {
             <span class="public-worker-guide__number">03</span>
             <div>
               <h2 id="worker-step-three">填回 Worker 地址</h2>
-              <p>复制 Cloudflare 显示的 HTTPS 根地址，在 SRL Public 的 <strong>设置 → 自部署 Worker</strong> 中粘贴并保存。</p>
+              <p>
+                复制 Cloudflare 显示的 HTTPS 根地址，在 SRL Public 的
+                <strong>设置 → 自部署 Worker</strong> 中粘贴并保存。
+              </p>
             </div>
           </section>
 
           <section class="public-worker-guide__after" aria-labelledby="worker-after-title">
             <h2 id="worker-after-title">部署后</h2>
-            <p>更新：在 GitHub Fork 页面点 <strong>Sync fork → Update branch</strong>；Cloudflare 监听的 <code>main</code> 有更新后会自动重新部署。</p>
+            <p>
+              更新：在 GitHub Fork 页面点 <strong>Sync fork → Update branch</strong>；Cloudflare
+              监听的 <code>main</code> 有更新后会自动重新部署。
+            </p>
           </section>
         </article>
       </div>
@@ -148,3 +171,4 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped src="../styles/PublicWorkerDeployGuidePage.css"></style>
+<!-- SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-deploy-guide-page -->

@@ -1,0 +1,7 @@
+# 当前进度
+
+- Public 源码版本：0.0.152。
+- 与主库对应的共享源码：归一化审计 1398 个文件一致，1 个已标记的 Public TypeScript 类型兼容差异（Discord 收件箱通知结果按类型分支构造，行为与主库一致）。
+- Public 保留独立应用身份、无维护者登录/资源广场入口，以及用户自填的 SRL Worker 地址和部署教程；Discord Bridge 继续独立配置。
+- 网页/APP 资源构建与全量测试通过。Android Gradle/APK 构建尚未验证，因为环境缺少 Java；未进行真机验收。
+- 下一步：完成公开增量隐私扫描和 noreply 邮箱核对后提交、推送 Public。

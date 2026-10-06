@@ -135,7 +135,7 @@ export const APP_DATABASE_STORES = [
 ] as const
 
 export type NativeAppDatabaseStore = (typeof APP_DATABASE_STORES)[number]
-const BLOB_CHUNK_BYTES = 1024 * 1024
+const BLOB_CHUNK_BYTES = 256 * 1024
 
 function assertAndroidDatabase(): void {
   if (

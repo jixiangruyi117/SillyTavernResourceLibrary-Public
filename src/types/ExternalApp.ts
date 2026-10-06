@@ -140,7 +140,6 @@ export interface ExternalAppToolDescriptor extends ExternalAppTool {
 }
 
 export interface InstalledExternalApp {
-  plazaSource?: import('./PlazaImportSource').PlazaImportSource
   id: string
   manifest: ExternalAppManifest
   runtimeHtml: string
@@ -200,7 +199,6 @@ export interface ExternalAppPermissionAuditEntry {
 
 /** 已通过安装包校验、但尚未写入本机的第三方 APP 预览。 */
 export interface ExternalAppPreview {
-  plazaSource?: import('./PlazaImportSource').PlazaImportSource
   manifest: ExternalAppManifest
   runtimeHtml: string
   compatibleRuntimeHtml: string

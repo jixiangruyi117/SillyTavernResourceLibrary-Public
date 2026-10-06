@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import '../styles/FolderLibrary.css'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import {
   useFolderLibraryView,

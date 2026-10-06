@@ -1,6 +1,5 @@
 import { createApp } from 'vue'
 
-import { installAndroidAppUpdateChecks } from './core/AndroidAppUpdate'
 import { appDatabase } from './core/AppDatabaseInstance'
 import { installGlobalErrorHandlers } from './core/FatalErrorNotice'
 import { installNativeRuntime } from './core/NativeRuntime'
@@ -303,7 +302,6 @@ const startupAttempt = beginStartupAttempt()
 if (isSafeModeActive()) installSafeModeBanner()
 else if (startupAttempt.rescueRequired) installStartupRescuePrompt()
 installNativeRuntime()
-installAndroidAppUpdateChecks()
 void disableServiceWorkerForNativeApp()
 window.addEventListener('resize', scheduleViewportState, { passive: true })
 window.addEventListener('orientationchange', scheduleViewportState, { passive: true })

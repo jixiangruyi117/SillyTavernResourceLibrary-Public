@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { vi } from 'vitest'
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-assistant-component-test-mock
 vi.mock('./ProductAssistant.vue', () => ({
   default: {
@@ -93,7 +94,6 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.emitted('update:uiFontScale')?.[0]).toEqual(['large'])
   })
 })
-
 describe('AppearanceStudio AI CSS owner', () => {
   beforeEach(() => {
     localStorage.clear()

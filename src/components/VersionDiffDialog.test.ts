@@ -178,6 +178,9 @@ describe('VersionDiffDialog', () => {
       },
     })
     await flushPromises()
+    await vi.waitFor(() =>
+      expect(wrapper.findAll('.version-diff__image-columns img')).toHaveLength(2),
+    )
 
     expect(wrapper.get('h3').text()).toBe('封装图片对比')
     expect(wrapper.text()).toContain('封装 A · 封装A.png')

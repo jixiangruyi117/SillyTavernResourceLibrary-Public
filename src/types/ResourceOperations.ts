@@ -10,7 +10,6 @@ export interface ImportOptions {
   skipVersionComparison?: boolean
   persistVersionMatchCache?: boolean
   sameNameVersionCandidates?: boolean
-  preferPngContainer?: boolean
   onProgress?: (progress: {
     completed: number
     total: number

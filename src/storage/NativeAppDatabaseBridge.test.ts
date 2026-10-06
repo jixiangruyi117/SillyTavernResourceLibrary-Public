@@ -53,7 +53,7 @@ describe('NativeAppDatabaseBridge', () => {
   })
 
   it('streams a large Blob in bounded chunks and verifies native offsets', async () => {
-    const blob = new Blob([new Uint8Array(1024 * 1024 + 7)], { type: 'application/octet-stream' })
+    const blob = new Blob([new Uint8Array(256 * 1024 + 7)], { type: 'application/octet-stream' })
     await expect(
       nativeAppDatabase.writeBlob('assetFiles', 'asset-1', 'blob', blob),
     ).resolves.toEqual({
@@ -63,7 +63,7 @@ describe('NativeAppDatabaseBridge', () => {
     })
     expect(plugin.appendBlob).toHaveBeenCalledTimes(2)
     const chunks = plugin.appendBlob.mock.calls.map(([call]) => atob(call.data).length)
-    expect(chunks).toEqual([1024 * 1024, 7])
+    expect(chunks).toEqual([256 * 1024, 7])
     expect(plugin.completeBlob).toHaveBeenCalledWith({ token: 'token' })
   })
 

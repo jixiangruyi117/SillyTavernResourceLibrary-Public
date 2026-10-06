@@ -1,4 +1,4 @@
-/* SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-settings-help */
+/* SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-help */
 .public-worker-settings__tools {
   display: inline-flex;
   align-items: center;
@@ -56,7 +56,9 @@
   font-size: 1rem;
   line-height: 1.4;
   box-shadow: inset 0 1px 2px rgb(20 50 60 / 5%);
-  transition: border-color 140ms ease, box-shadow 140ms ease;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .public-worker-settings__url::placeholder {

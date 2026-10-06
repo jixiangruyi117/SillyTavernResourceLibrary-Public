@@ -20,8 +20,6 @@ export interface ResourceStorageAdapter {
   list(): Promise<Resource[]>
   listSummaries(): Promise<ResourceSummary[]>
   listResourceListSummaries?(): Promise<ResourceListSummary[]>
-  /** Bounded newest-first character-card summaries for inbox auto-binding only. */
-  listRecentCharacterCardSummaries?(limit?: number): Promise<ResourceListSummary[]>
   /** Current gallery images; same-type scope also supplies shared category candidates. */
   listGalleryListSummaries?(
     ownerId: string,

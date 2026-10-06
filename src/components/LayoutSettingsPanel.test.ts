@@ -3,17 +3,6 @@ import { shallowMount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const runtime = vi.hoisted(() => ({ android: false }))
-vi.mock('../core/LibraryContainer', () => ({
-  discordInboxAutomationSettingsService: {
-    load: async () => ({
-      bindSameName: false,
-      bindSameAuthor: false,
-      bindNextPng: false,
-      preferPngContainer: false,
-    }),
-    save: async () => undefined,
-  },
-}))
 vi.mock('../core/PlatformService', () => ({
   platform: {
     update: { isAndroidApk: () => runtime.android },
@@ -84,13 +73,6 @@ describe('LayoutSettingsPanel platform-specific preview options', () => {
     expect((checkbox.element as HTMLInputElement).checked).toBe(false)
     await checkbox.setValue(true)
     expect(wrapper.emitted('update:sameNameVersionCandidates')?.[0]).toEqual([true])
-  })
-  it('exposes the global PNG wrapper preference', async () => {
-    const wrapper = mountSettings()
-    const label = wrapper
-      .findAll('label')
-      .find((node) => node.text().includes('同内容角色卡优先使用 PNG 封装'))!
-    expect((label.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
   })
   it('keeps remote-resource permission but hides Android-only cache switches on Web/PWA', () => {
     runtime.android = false

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import '../styles/ConfirmDialog.css'
-import { defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { defineAsyncComponent } from 'vue'
 
 import { useConfirmDialogState } from '../composables/UseConfirmDialog'
 import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
@@ -69,13 +70,11 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 function cancelOrReturn(): void {
-  // SRL-PUBLIC-SYNC: BEGIN REPLACE id=assistant-token-review-cancel
   if (detailsOpen.value) {
     tokenReview.value?.closeDetail()
     return
   }
   respond('cancel')
-  // SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-cancel
 }
 
 function respondWithHaptic(response: 'confirm' | 'cancel' | 'alternative'): void {

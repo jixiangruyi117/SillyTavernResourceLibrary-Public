@@ -51,34 +51,6 @@ public final class NativeAppDatabaseTest {
         context.deleteDatabase(name);
     }
 
-    @Test public void readsOnlyRecentUnboundCommunitySourcesThroughIndexes() throws Exception {
-        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        String name = "srl-app-data-test-" + UUID.randomUUID();
-        NativeAppDatabase database = new NativeAppDatabase(context, name);
-        for (int index = 1; index <= 3; index++) {
-            String id = "source-" + index;
-            JSONObject value = new JSONObject().put("id", id).put("title", id).put("updatedAt", index * 100L);
-            JSONArray indexes = new JSONArray()
-                .put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put(String.valueOf(index * 100L))));
-            if (index == 2)
-                indexes.put(new JSONObject().put("name", "id").put("keys", new JSONArray().put(JSONObject.quote(id))));
-            database.putRecords("communitySources", new JSONArray().put(new JSONObject()
-                .put("key", JSONObject.quote(id)).put("value", value).put("indexes", indexes)));
-        }
-        database.putRecords("resourceSourceBindings", new JSONArray().put(new JSONObject()
-            .put("key", JSONObject.quote("binding-2"))
-            .put("value", new JSONObject().put("id", "binding-2").put("sourceId", "source-2"))
-            .put("indexes", new JSONArray().put(new JSONObject().put("name", "sourceId")
-                .put("keys", new JSONArray().put(JSONObject.quote("source-2")))))));
-
-        JSONArray recent = database.getRecentRecordsByIndex("communitySources", "updatedAt", 2);
-        assertEquals(2, recent.length());
-        assertEquals("source-3", recent.getJSONObject(0).getJSONObject("value").getString("id"));
-        assertEquals("source-1", recent.getJSONObject(1).getJSONObject("value").getString("id"));
-        database.close();
-        context.deleteDatabase(name);
-    }
-
     @Test public void rejectsUnknownStoresAndRollsBackMalformedBatches() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name = "srl-app-data-test-" + UUID.randomUUID();
@@ -305,25 +277,6 @@ public final class NativeAppDatabaseTest {
         database.deleteRecords("assetFiles", new JSONArray().put("asset-1"));
         assertEquals(0L, database.countRecords("assetFiles"));
         assertNull(database.readBlobChunk("assetFiles", "asset-1", "blob", 0L, 11));
-        database.close();
-        context.deleteDatabase(name);
-    }
-
-    @Test public void acceptsOneMegabyteBlobChunks() throws Exception {
-        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        String name = "srl-app-data-test-" + UUID.randomUUID();
-        NativeAppDatabase database = new NativeAppDatabase(context, name);
-        byte[] chunk = new byte[NativeAppDatabase.MAX_BLOB_CHUNK_BYTES];
-        java.util.Arrays.fill(chunk, (byte) 0x5a);
-        NativeAppDatabase.BlobTransfer transfer = database.beginBlob(
-            "assetFiles", "asset-1", "blob", chunk.length + 1L, "application/octet-stream");
-        assertEquals((long) chunk.length,
-            database.appendBlob(transfer.token, 0L, chunk));
-        assertEquals(chunk.length + 1L,
-            database.appendBlob(transfer.token, chunk.length, new byte[] {0x2a}));
-        JSONObject metadata = database.completeBlob(transfer.token);
-        assertEquals(chunk.length + 1L, metadata.getLong("size"));
-        database.deleteBlob("assetFiles", "asset-1", "blob");
         database.close();
         context.deleteDatabase(name);
     }

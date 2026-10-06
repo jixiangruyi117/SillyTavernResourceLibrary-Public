@@ -111,7 +111,7 @@ final class NativeCharacterCardProcessor {
                         : existing);
             String existingFileName = row.optString("fileName", "");
             String matchKind = score == 100
-                ? (isCrossJsonPng(incomingFileName, existingFileName) ? "containerVariant" : "contentDuplicate")
+                ? (isJsonName(incomingFileName) && isJsonName(existingFileName) ? "contentDuplicate" : "containerVariant")
                 : score == 90 || score == 85 ? "version" : "heuristic";
             if (score < 60 && sameNameCandidates && incoming.sameName.equals(summarySameName(row.optString("name", "")))) {
                 score = 60;
@@ -122,8 +122,6 @@ final class NativeCharacterCardProcessor {
             CardInfo evidence = existing == null ? summaryInfo(row, metadata) : existing;
             matches.add(new JSONObject()
                 .put("resourceId", row.optString("id", ""))
-                .put("versionGroupId", row.optString("versionGroupId", ""))
-                .put("fileName", existingFileName)
                 .put("historical", historical)
                 .put("score", score)
                 .put("matchKind", matchKind)
@@ -184,7 +182,7 @@ final class NativeCharacterCardProcessor {
                 : incoming.coreHash.equals(existing.coreHash) ? 90
                 : scoreByIdentity(incoming, existing);
             String matchKind = score == 100
-                ? (isCrossJsonPng(incomingFileName, fileName) ? "containerVariant" : "contentDuplicate")
+                ? (isJsonName(incomingFileName) && isJsonName(fileName) ? "contentDuplicate" : "containerVariant")
                 : score == 90 || score == 85 ? "version" : "heuristic";
             if (score < 60 && incoming.sameName.equals(existing.sameName)) { score = 60; matchKind = "sameName"; }
             if (score < 60) continue;
@@ -338,13 +336,6 @@ final class NativeCharacterCardProcessor {
     }
 
     private static boolean isJsonName(String name) { return name != null && name.toLowerCase(Locale.ROOT).endsWith(".json"); }
-    private static boolean isCrossJsonPng(String first, String second) {
-        boolean firstJson = isJsonName(first);
-        boolean secondJson = isJsonName(second);
-        boolean firstPng = first != null && first.toLowerCase(Locale.ROOT).endsWith(".png");
-        boolean secondPng = second != null && second.toLowerCase(Locale.ROOT).endsWith(".png");
-        return (firstJson && secondPng) || (firstPng && secondJson);
-    }
 
     private static void writeJsonAtomically(File destination, JSONObject value) throws Exception {
         File temporary = new File(destination.getParentFile(), destination.getName() + ".tmp");

@@ -13,10 +13,7 @@ const KEY_BINARY_TAG = '__srlIdbBinaryKeyV1'
 const VALUE_TAG = '__srlAppDatabaseValueV1'
 const LARGE_STRING_THRESHOLD = 256 * 1024
 const MAX_BATCH_JSON_CHARS = 768 * 1024
-// The native bridge accepts up to 100 records per transaction. Keep the existing
-// byte-size guard below as the second bound, while reducing bridge round trips on
-// first-run migration of libraries with many small records.
-const DEFAULT_BATCH_SIZE = 100
+const DEFAULT_BATCH_SIZE = 25
 
 interface EncodedBlobValue {
   [VALUE_TAG]: 'blob' | 'file' | 'text' | 'array-buffer' | 'typed-array'

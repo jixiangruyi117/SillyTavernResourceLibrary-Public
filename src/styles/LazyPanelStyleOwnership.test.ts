@@ -12,7 +12,6 @@ describe('lazy panel style ownership', () => {
     ['../components/ExtractedAssetCleaner.vue', '../styles/DuplicateCleaner.css'],
     ['../components/ParsedCharacterTagCleaner.vue', '../styles/DuplicateCleaner.css'],
     ['../components/VersionImportDialog.vue', '../styles/VersionArchive.css'],
-    ['../components/FolderLibraryView.vue', '../styles/FolderLibrary.css'],
   ])('%s loads its required styles directly', (componentPath, stylesheet) => {
     expect(source(componentPath)).toContain(stylesheet)
   })

@@ -192,16 +192,6 @@ export class ResourceService {
     return (await this.storage.listSummaries()).map(toResourceListSummary)
   }
 
-  listRecentCharacterCards(limit = 100): Promise<ResourceListSummary[]> {
-    if (this.storage.listRecentCharacterCardSummaries)
-      return this.storage.listRecentCharacterCardSummaries(limit)
-    return this.listResourceListSummaries().then((resources) =>
-      resources
-        .filter((resource) => resource.type === RESOURCE_TYPE.CHARACTER_CARD)
-        .slice(0, limit),
-    )
-  }
-
   repairThumbnailAssets(): Promise<number> {
     return this.storage.repairThumbnailAssets?.() ?? Promise.resolve(0)
   }
@@ -357,12 +347,7 @@ export class ResourceService {
     const incomingCore = canonicalizeCharacterCardCore(parsed.metadata)
     if (incomingContent === undefined) return
 
-    const containerFormat = (name: string, mimeType = ''): 'json' | 'png' | undefined => {
-      if (/\.json$/iu.test(name) || /json/iu.test(mimeType)) return 'json'
-      if (/\.png$/iu.test(name) || /png/iu.test(mimeType)) return 'png'
-      return undefined
-    }
-    const incomingFormat = containerFormat(fileName)
+    const incomingIsJson = /\.json$/iu.test(fileName)
     for (const candidate of candidates) {
       const stored = candidate.matchedHistorical
         ? await this.storage.getVersion?.(candidate.matchedResource.id)
@@ -373,11 +358,9 @@ export class ResourceService {
       candidate.matchedResource = toResourceSummary(stored)
 
       if (incomingContent === existingContent) {
-        const existingFormat = containerFormat(stored.fileName, stored.mimeType)
+        const existingIsJson = /\.json$/iu.test(stored.fileName) || /json/iu.test(stored.mimeType)
         candidate.matchKind =
-          incomingFormat && existingFormat && incomingFormat !== existingFormat
-            ? 'containerVariant'
-            : 'contentDuplicate'
+          incomingIsJson && existingIsJson ? 'contentDuplicate' : 'containerVariant'
         candidate.score = 100
         candidate.reasons = [
           candidate.matchKind === 'contentDuplicate'

@@ -31,7 +31,6 @@ export interface FrontendWorkshopSourceComponentRuntimeRequirements {
 }
 
 export interface FrontendWorkshopSourceComponentProvenance {
-  plazaSource?: import('./PlazaImportSource').PlazaImportSource
   origin: FrontendWorkshopSourceComponentOrigin
   sourceComponentId?: string
   projectId?: string

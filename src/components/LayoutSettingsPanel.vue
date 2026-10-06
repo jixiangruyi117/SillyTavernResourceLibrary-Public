@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+// SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-settings-next-tick-import
+import { nextTick } from 'vue'
 import { platform } from '../core/PlatformService'
 import { resetPerformanceMonitorPosition } from '../core/PerformanceMonitor'
 import { forceRefresh, manualCheckForUpdate } from '../core/ServiceWorkerUpdate'
@@ -13,11 +15,6 @@ import { getNativeResourceStorageInfo } from '../storage/NativeResourceFileMirro
 import type { NativeSecurityState } from '../core/NativeSecurity'
 import type { NativeSafBackupStatus } from '../core/NativeSafBackup'
 import { isNativeHapticsEnabled, setNativeHapticsEnabled } from '../core/NativeHaptics'
-import { discordInboxAutomationSettingsService } from '../core/LibraryContainer'
-import {
-  DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
-  type DiscordInboxAutomationSettings,
-} from '../services/DiscordInboxAutomationSettings'
 import type { NativeSystemUiState } from '../core/NativeSystemUi'
 // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-import
 import {
@@ -31,7 +28,6 @@ import SecretProtectionSettings from './SecretProtectionSettings.vue'
 import ResourceHealthCenter from './ResourceHealthCenter.vue'
 // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-deploy-guide-import
 import PublicWorkerDeployGuidePage from './PublicWorkerDeployGuidePage.vue'
-// SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-deploy-guide-import
 
 defineProps<{
   vaultEnabled: boolean
@@ -136,9 +132,10 @@ async function checkWorkerBaseUrl(): Promise<void> {
     const response = await fetch(`${baseUrl}/api/cloud/health`, {
       headers: { accept: 'application/json' },
     })
-    const payload = (await response.json().catch(() => null)) as
-      | { ok?: unknown; service?: unknown }
-      | null
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: unknown
+      service?: unknown
+    } | null
     if (!response.ok) throw new Error(`检查失败（HTTP ${response.status}）`)
     if (payload?.ok !== true || payload.service !== 'srl-koofr-worker')
       throw new Error('该地址没有返回有效的 SRL Worker 状态')
@@ -155,27 +152,20 @@ async function checkWorkerBaseUrl(): Promise<void> {
   }
 }
 // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-settings-state
-const inboxAutomationSettings = ref<DiscordInboxAutomationSettings>({
-  ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
-})
 let offlineDownloadController: AbortController | undefined
 onMounted(async () => {
-  const [storage, security, saf, systemUi, offline, automation] = await Promise.all([
+  const [storage, security, saf, systemUi, offline] = await Promise.all([
     getNativeResourceStorageInfo().catch(() => null),
     platform.security.getState().catch(() => null),
     platform.backup.getStatus().catch(() => null),
     platform.systemUi.getState().catch(() => null),
     isNativeApk ? Promise.resolve(null) : getOfflineResourceStatus().catch(() => null),
-    discordInboxAutomationSettingsService.load().catch(() => ({
-      ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
-    })),
   ])
   nativeStorageInfo.value = storage
   nativeSecurityState.value = security
   nativeSafBackup.value = saf
   nativeSystemUiState.value = systemUi
   offlineResourceStatus.value = offline
-  inboxAutomationSettings.value = automation
 })
 onBeforeUnmount(() => offlineDownloadController?.abort())
 async function handleCheckUpdate(): Promise<void> {
@@ -195,15 +185,6 @@ async function toggleSecureScreen(event: Event): Promise<void> {
   const enabled = (event.target as HTMLInputElement).checked
   await platform.security.setSecureScreen(enabled)
   if (nativeSecurityState.value) nativeSecurityState.value.secureScreen = enabled
-}
-
-async function togglePreferPngContainer(event: Event): Promise<void> {
-  const settings = {
-    ...inboxAutomationSettings.value,
-    preferPngContainer: (event.target as HTMLInputElement).checked,
-  }
-  await discordInboxAutomationSettingsService.save(settings)
-  inboxAutomationSettings.value = settings
 }
 
 async function verifyDeviceOwner(): Promise<void> {
@@ -335,7 +316,9 @@ async function clearOfflineResources(): Promise<void> {
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <circle cx="12" cy="12" r="9" />
-                  <path d="M9.8 9a2.25 2.25 0 1 1 3.72 1.7c-.98.83-1.52 1.24-1.52 2.55M12 16.8v.1" />
+                  <path
+                    d="M9.8 9a2.25 2.25 0 1 1 3.72 1.7c-.98.83-1.52 1.24-1.52 2.55M12 16.8v.1"
+                  />
                 </svg>
               </button>
               <span class="public-worker-settings__local">本机</span>
@@ -345,33 +328,32 @@ async function clearOfflineResources(): Promise<void> {
             <span>
               <strong>SRL Worker 地址</strong>
               <small>
-                部署自己的 SRL-Worker-Public 后填写 HTTPS 域名根地址。用于酒馆设备码中继、加密暂存和 Koofr 云备份中转；Discord Bridge 仍在其自己的连接设置中配置。
+                部署自己的 SRL-Worker-Public 后填写 HTTPS 域名根地址。用于酒馆设备码中继、加密暂存和
+                Koofr 云备份中转；Discord Bridge 仍在其自己的连接设置中配置。
               </small>
             </span>
             <input
               v-model="publicWorkerBaseUrl"
-              @input="publicWorkerCheckMessage = ''"
-              @blur="normalizeWorkerBaseUrlField"
               type="url"
               inputmode="url"
               autocomplete="url"
               class="public-worker-settings__url"
               placeholder="https://your-worker.workers.dev"
               aria-label="SRL Worker 地址"
+              @input="publicWorkerCheckMessage = ''"
+              @blur="normalizeWorkerBaseUrlField"
             />
           </label>
           <div class="public-worker-settings__controls">
             <div class="settings-number-row__control">
-              <button
-                type="button"
-                :disabled="isCheckingPublicWorker"
-                @click="checkWorkerBaseUrl"
-              >
+              <button type="button" :disabled="isCheckingPublicWorker" @click="checkWorkerBaseUrl">
                 {{ isCheckingPublicWorker ? '检查中…' : '检查 Worker' }}
               </button>
               <button type="button" @click="saveWorkerBaseUrl">保存 Worker 地址</button>
             </div>
-            <small v-if="publicWorkerCheckMessage" role="status">{{ publicWorkerCheckMessage }}</small>
+            <small v-if="publicWorkerCheckMessage" role="status">{{
+              publicWorkerCheckMessage
+            }}</small>
             <small v-if="publicWorkerMessage" role="status">{{ publicWorkerMessage }}</small>
           </div>
         </section>
@@ -466,22 +448,6 @@ async function clearOfflineResources(): Promise<void> {
                   ($event.target as HTMLInputElement).checked,
                 )
               "
-            />
-            <i aria-hidden="true"></i>
-          </label>
-          <label class="settings-switch-row">
-            <span>
-              <strong>同内容角色卡优先使用 PNG 封装</strong>
-              <small
-                >仅当 PNG 与 JSON 卡内数据完全相同且封装不同才归为同一卡；PNG 保持当前封装，JSON
-                存为另一封装。网页和 APK 前台自动整理；APK
-                原生后台遇到这类候选仍会转前台确认。</small
-              >
-            </span>
-            <input
-              type="checkbox"
-              :checked="inboxAutomationSettings.preferPngContainer"
-              @change="togglePreferPngContainer"
             />
             <i aria-hidden="true"></i>
           </label>
@@ -931,12 +897,10 @@ async function clearOfflineResources(): Promise<void> {
       </footer>
     </section>
     <!-- SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-deploy-guide-page -->
-    <PublicWorkerDeployGuidePage
-      v-if="showPublicWorkerGuide"
-      @close="closePublicWorkerGuide"
-    />
+    <PublicWorkerDeployGuidePage v-if="showPublicWorkerGuide" @close="closePublicWorkerGuide" />
     <!-- SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-deploy-guide-page -->
   </div>
 </template>
 
+<!-- SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-settings-css -->
 <style scoped src="../styles/PublicWorkerSettings.css"></style>

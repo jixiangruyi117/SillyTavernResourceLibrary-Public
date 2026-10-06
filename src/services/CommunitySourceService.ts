@@ -170,36 +170,6 @@ export class CommunitySourceService {
     return views
   }
 
-  async listUnboundForAutomation(
-    limit = 5,
-  ): Promise<Array<{ source: CommunitySource; starter?: CommunitySourceMessage }>> {
-    const sources = await this.storage.listUnboundSources(Math.min(5, Math.max(1, limit)))
-    const views: Array<{ source: CommunitySource; starter?: CommunitySourceMessage }> = []
-    for (const source of sources)
-      views.push({
-        source,
-        starter: this.storage.getStarterMessage
-          ? await this.storage.getStarterMessage(source.id)
-          : (await this.storage.listMessages(source.id)).find(
-              (message) => message.kind === 'starter',
-            ),
-      })
-    return views
-  }
-
-  async getSourceForAutomation(sourceId: string): Promise<CommunitySource | undefined> {
-    return this.storage.getSource(sourceId)
-  }
-
-  async updateAutomationPendingPng(sourceId: string, pending: boolean): Promise<void> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) return
-    if (pending) source.autoBindPendingPng = true
-    else delete source.autoBindPendingPng
-    source.updatedAt = Date.now()
-    await this.storage.putSource(source)
-  }
-
   async findDiscordSourceForCapture(captureInput: DiscordCapture): Promise<
     | {
         source: CommunitySource
@@ -441,12 +411,7 @@ export class CommunitySourceService {
     }
   }
 
-  async bindSource(
-    resourceId: string,
-    sourceId: string,
-    note?: string,
-    autoBindingRule?: ResourceSourceBinding['autoBindingRule'],
-  ): Promise<void> {
+  async bindSource(resourceId: string, sourceId: string, note?: string): Promise<void> {
     const source = await this.storage.getSource(sourceId)
     if (!source) throw new Error('社区来源不存在')
     const existing = (await this.storage.listBindingsForResource(resourceId)).some(
@@ -458,7 +423,6 @@ export class CommunitySourceService {
         resourceId,
         sourceId,
         note: clean(note, 2_000),
-        ...(autoBindingRule ? { autoBindingRule } : {}),
         createdAt: Date.now(),
       })
     if (typeof window !== 'undefined')
@@ -471,64 +435,6 @@ export class CommunitySourceService {
 
   async unbindSource(resourceId: string, sourceId: string): Promise<void> {
     await this.storage.deleteBinding(createResourceSourceBindingId(resourceId, sourceId))
-  }
-
-  async listRecentAutoBindings(limit = 100): Promise<ResourceCommunitySourceSummary[]> {
-    const bindings = await this.storage.listRecentAutoBindings?.(limit)
-    if (!bindings?.length) return []
-    const summaries = await Promise.all(
-      bindings.map(async (binding) => {
-        const source = await this.getSourceSummary(binding.sourceId)
-        return source ? { source, binding } : undefined
-      }),
-    )
-    return summaries.flatMap((summary) => (summary ? [summary] : []))
-  }
-
-  async clearRecentAutoBindings(limit = 100): Promise<number> {
-    const bindings = await this.storage.listRecentAutoBindings?.(limit)
-    if (!bindings?.length) return 0
-    for (const binding of bindings) await this.storage.deleteBinding(binding.id)
-    return bindings.length
-  }
-
-  async confirmAutoBinding(resourceId: string, sourceId: string): Promise<void> {
-    const binding = (await this.storage.listBindingsForResource(resourceId)).find(
-      (candidate) => candidate.sourceId === sourceId && candidate.autoBindingRule,
-    )
-    if (!binding) throw new Error('这条自动关联已处理或不存在。')
-    const confirmed = { ...binding }
-    delete confirmed.autoBindingRule
-    delete confirmed.note
-    await this.storage.putBinding(confirmed)
-  }
-
-  async replaceAutoBinding(
-    currentResourceId: string,
-    nextResourceId: string,
-    sourceId: string,
-  ): Promise<void> {
-    if (currentResourceId === nextResourceId) {
-      await this.confirmAutoBinding(currentResourceId, sourceId)
-      return
-    }
-    const binding = (await this.storage.listBindingsForResource(currentResourceId)).find(
-      (candidate) => candidate.sourceId === sourceId && candidate.autoBindingRule,
-    )
-    if (!binding) throw new Error('这条自动关联已处理或不存在。')
-    if (!(await this.storage.getSource(sourceId))) throw new Error('社区来源不存在')
-
-    await this.bindSource(nextResourceId, sourceId)
-    await this.unbindSource(currentResourceId, sourceId)
-    const replacement = (await this.storage.listBindingsForResource(nextResourceId)).find(
-      (candidate) => candidate.sourceId === sourceId,
-    )
-    if (replacement?.autoBindingRule) {
-      const confirmed = { ...replacement }
-      delete confirmed.autoBindingRule
-      delete confirmed.note
-      await this.storage.putBinding(confirmed)
-    }
   }
 
   async setMessageKind(

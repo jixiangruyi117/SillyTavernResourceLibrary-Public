@@ -61,37 +61,6 @@ function secrets() {
 }
 
 describe('personal resource lifecycle', () => {
-  it('keeps plaza attribution on save/load and duplicate identity in lightweight summaries', async () => {
-    const { personal, resources } = setup()
-    const plazaSource = {
-      resourceId: '11111111-1111-4111-8111-111111111111',
-      name: '番外',
-      author: '作者',
-      importedAt: 1,
-      license: {
-        repost: false,
-        modify: false,
-        shareModified: false,
-        commercial: false,
-        attribution: true,
-        notice: '仅个人使用',
-      },
-    }
-    const saved = await personal.save(
-      { ...document('extraStory'), text: '原文', plazaSource },
-      new Map(),
-    )
-    expect((await personal.read(saved)).plazaSource).toEqual(plazaSource)
-    expect((await resources.listResourceListSummaries())[0]?.metadata.plazaResourceId).toBe(
-      plazaSource.resourceId,
-    )
-    await expect(
-      personal.save(
-        { ...document('extraStory'), plazaSource: { broken: true } as never },
-        new Map(),
-      ),
-    ).rejects.toThrow('来源与授权格式无效')
-  })
   it('retains multi-chunk APK bytes during a second save using IndexedDB staging', async () => {
     const { personal } = setup(true)
     const bytes = zipSync(

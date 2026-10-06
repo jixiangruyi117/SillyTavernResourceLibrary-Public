@@ -231,15 +231,25 @@ public class ShareReceiverPlugin extends Plugin {
 
     // Recover process death after a verified staging commit but before its download receipt was flushed.
     static boolean recoverCloudReceipt(File folder, String token, String libraryId, String worker) throws Exception {
+        return recoverCloudReceipt(folder, token, libraryId, worker, NativeShareImportService::readMetadata);
+    }
+
+    static boolean recoverCloudReceipt(
+        File folder,
+        String token,
+        String libraryId,
+        String worker,
+        NativeShareImportService.MetadataReader metadataReader
+    ) throws Exception {
         if (!NativeDiscordDownloadWorker.validToken(token)) throw new IllegalArgumentException("云端任务身份无效");
         String staged = NativeShareImportService.stagedToken(token, 0);
-        if (!NativeShareImportService.isCommitted(folder, staged)) return false;
-        JSONObject metadata = NativeShareImportService.readMetadata(new File(folder, staged + ".json"));
+        if (!NativeShareImportService.isCommitted(folder, staged, metadataReader)) return false;
+        JSONObject metadata = metadataReader.read(new File(folder, staged + ".json"));
         assertCloudTarget(metadata, libraryId, worker);
         if (!token.equals(metadata.optString("discordSourceToken")))
             throw new IllegalArgumentException("下载附件身份不匹配");
         File source = new File(folder, token + ".json");
-        if (source.isFile() && NativeShareImportService.readMetadata(source).optBoolean("downloadCancelled")) return false;
+        if (source.isFile() && metadataReader.read(source).optBoolean("downloadCancelled")) return false;
         if (!new File(folder, token + ".done").isFile()) NativeDiscordDownloadWorker.publishReceipt(folder, token);
         return true;
     }

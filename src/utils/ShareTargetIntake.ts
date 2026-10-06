@@ -84,8 +84,6 @@ type NativeShareSnapshot = Awaited<ReturnType<ShareReceiverPlugin['getPendingSha
 const deliveredNativeTokens = new Set<string>()
 
 export interface SharedFileBatch {
-  /** True only for resources received from the paired Discord cloud inbox. */
-  automaticCloud?: boolean
   onItemComplete?(result: ImportResult): Promise<void>
   onVersionResolved?(committedHash?: string): Promise<void>
   onFailure?(message: string): Promise<void>
@@ -577,7 +575,6 @@ export function cloudWebResourceBatch(file: File, recoveryId: string): SharedFil
   const completedImportAliases = readStoredImportAliases(recoveryId)
   return {
     files: [file],
-    automaticCloud: true,
     recoveryId,
     completedContentHashes,
     completedImportAliases,

@@ -339,9 +339,6 @@ export class ExternalAppService {
       new Set(preview.allowedPermissions ?? preview.requestedPermissions),
     ).filter((permission) => preview.requestedPermissions.includes(permission))
     const installed: InstalledExternalApp = {
-      ...(preview.plazaSource
-        ? { plazaSource: JSON.parse(JSON.stringify(preview.plazaSource)) }
-        : {}),
       id: manifest.id,
       // 安装预览会经过 Vue 的响应式状态；写入 IndexedDB 前必须还原为可结构化克隆的普通对象。
       manifest,

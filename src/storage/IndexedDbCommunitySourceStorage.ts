@@ -210,14 +210,6 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     return decoded
   }
 
-  async getStarterMessage(sourceId: string): Promise<CommunitySourceMessage | undefined> {
-    const message = await this.database.communitySourceMessages
-      .where('[sourceId+kind]')
-      .equals([sourceId, 'starter'])
-      .first()
-    return message ? decodeCommunitySourceMessage(message, this.codec) : undefined
-  }
-
   async getMessage(
     sourceId: string,
     messageKeyHash: string,
@@ -256,23 +248,6 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     const decoded: ResourceSourceBinding[] = []
     for (const binding of bindings)
       decoded.push(await decodeResourceSourceBinding(binding, this.codec))
-    return decoded
-  }
-
-  async listRecentAutoBindings(limit = 100): Promise<ResourceSourceBinding[]> {
-    const requested = Math.min(200, Math.max(1, Math.round(limit)))
-    // Only inspect a bounded recent window; manual bindings are filtered after decode.
-    const recent = await this.database.resourceSourceBindings
-      .orderBy('createdAt')
-      .reverse()
-      .limit(Math.min(500, requested * 5))
-      .toArray()
-    const decoded: ResourceSourceBinding[] = []
-    for (const binding of recent) {
-      const value = await decodeResourceSourceBinding(binding, this.codec)
-      if (value.autoBindingRule) decoded.push(value)
-      if (decoded.length >= requested) break
-    }
     return decoded
   }
 

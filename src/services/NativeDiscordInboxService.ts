@@ -104,17 +104,28 @@ export function checkNativeDiscordInboxTarget(workerUrl: string, libraryId: stri
 export async function notifyNativeDiscordInboxResult(result: DiscordInboxResult): Promise<void> {
   if (!isNativeDiscordInboxAvailable()) return
   try {
-    const fields = {
-      id: result.id,
-      workerUrl: result.workerUrl,
-      libraryId: result.libraryId,
-      name: result.name,
-    }
+    // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=discord-inbox-result-type-narrowing
+    const { id, workerUrl, libraryId, name } = result
     if (result.kind === 'resource') {
-      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
+      await receiver.notifyCloudInboxResult({
+        kind: 'resource',
+        id,
+        workerUrl,
+        libraryId,
+        name,
+        state: result.state,
+      })
     } else {
-      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
+      await receiver.notifyCloudInboxResult({
+        kind: 'post',
+        id,
+        workerUrl,
+        libraryId,
+        name,
+        state: result.state,
+      })
     }
+    // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=discord-inbox-result-type-narrowing
   } catch {
     // Notification permission or an older APK must not change the persisted result.
   }

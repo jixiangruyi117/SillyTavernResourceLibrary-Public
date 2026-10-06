@@ -54,10 +54,14 @@ function createNativeStore() {
         : [indexName.replace(/^\*/u, '')]
       const rows: Array<{ indexKey: string; primaryKey: string }> = []
       for (const [primaryKey, value] of read(store)) {
-        const extracted: unknown =
-          keyPaths.length === 1 ? value[keyPaths[0]!] : keyPaths.map((path) => value[path])
-        const candidates =
-          indexName.startsWith('*') && Array.isArray(extracted) ? extracted : [extracted]
+        // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=native-index-prefer-const-lint-compat
+        // eslint-disable-next-line prefer-const
+        let extracted: unknown = keyPaths.length === 1
+          ? value[keyPaths[0]!]
+          : keyPaths.map((path) => value[path])
+        const candidates = indexName.startsWith('*') && Array.isArray(extracted)
+          ? extracted
+          : [extracted]
         for (const candidate of candidates) {
           if (candidate === undefined || candidate === null) continue
           const encoded = JSON.stringify(candidate)

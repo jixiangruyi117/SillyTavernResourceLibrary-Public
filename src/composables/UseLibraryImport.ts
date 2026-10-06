@@ -1,11 +1,6 @@
 import type { ComputedRef, Ref, ShallowRef } from 'vue'
 import { computed, nextTick, onMounted, onScopeDispose } from 'vue'
-import {
-  discordInboxAutomationSettingsService,
-  resourceArchiveService,
-  resourceService,
-} from '../core/LibraryContainer'
-import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
+import { resourceArchiveService, resourceService } from '../core/LibraryContainer'
 import { noticeCenter } from '../core/NoticeCenter'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 import { confirmChatImports } from './UseChatImportConfirmation'
@@ -955,15 +950,11 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         protectedFiles.push(protectedFile)
         if (sourceHash) originalContentHashes.set(protectedFile, sourceHash)
       }
-      const automationSettings = await discordInboxAutomationSettingsService
-        .load()
-        .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
       const results = await resourceService.importFiles(protectedFiles, {
         ...chatOptions,
         extractCharacterAssets: context.extractCharacterAssets.value,
         skipVersionComparison: context.skipVersionComparisonOnImport.value,
         sameNameVersionCandidates: context.sameNameVersionCandidates?.value === true,
-        preferPngContainer: automationSettings.preferPngContainer,
         persistVersionMatchCache: context.persistResourceVersionMatchCache.value,
         signal: activeImportAbortController?.signal,
         completedContentHashes: shareBatch?.completedContentHashes,

@@ -28,7 +28,6 @@ export {
   categoryService,
   characterDrawService,
   communitySourceService,
-  discordInboxAutomationSettingsService,
   communitySourceStorage,
   database,
   exportService,
