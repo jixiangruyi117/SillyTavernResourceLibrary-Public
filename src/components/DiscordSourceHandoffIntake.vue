@@ -2,7 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { communitySourceService } from '../core/CommunitySourceRuntime'
-import { initializeVaultOnce, resourceService, vaultService } from '../core/LibraryContainer'
+import {
+  discordInboxAutomationSettingsService,
+  initializeVaultOnce,
+  resourceService,
+  vaultService,
+} from '../core/LibraryContainer'
 import { useTransientStatus } from '../composables/UseTransientStatus'
 import {
   clearDiscordHandoffFromLocation,
@@ -19,6 +24,8 @@ import {
 } from '../services/DiscordHandoffService'
 import { loadDiscordSourceConnectionSettings } from '../services/DiscordSourceSettingsService'
 import { notifyNativeDiscordInboxResult } from '../services/NativeDiscordInboxService'
+import { autoBindPostToRecentCard, markPostForNextPng } from '../services/DiscordInboxAutoBinding'
+import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
 import type { NativeDeepLink } from '../core/NativeRuntime'
 import type { ResourceCommunitySourceView } from '../types/CommunitySource'
 import type { ResourceListSummary } from '../types/Resource'
@@ -172,6 +179,30 @@ async function saveDelivery(
   if (!saved.messages.some((message) => message.messageId === envelope.capture.messageId))
     throw new Error('本机正文读回校验未完成，云端内容仍保留；请稍后重试。')
   onLocalSaved?.()
+  if (automatic && envelope.delivery?.libraryId) {
+    const automationSettings = await discordInboxAutomationSettingsService
+      .load()
+      .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
+    const starterContent =
+      saved.messages.find((message) => message.kind === 'starter')?.content ?? ''
+    try {
+      const binding = await autoBindPostToRecentCard(
+        communitySourceService,
+        resourceService,
+        saved.source,
+        starterContent,
+        automationSettings,
+      )
+      if (!binding)
+        await markPostForNextPng(
+          communitySourceService,
+          saved.source.id,
+          automationSettings.bindNextPng,
+        )
+    } catch {
+      // A best-effort auto-match must never prevent an already verified post from being acknowledged.
+    }
+  }
   const existingBindings = await communitySourceService.getSourceUsage(saved.source.id)
   const state: DeliveryState = existingBindings.length ? 'saved' : 'waiting_binding'
   if (automatic && envelope.delivery?.libraryId)

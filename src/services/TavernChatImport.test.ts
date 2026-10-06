@@ -98,7 +98,7 @@ describe('chat transfer to the canonical resource library', () => {
     await resources.importFiles([archive()])
     expect(summaryRead).not.toHaveBeenCalled()
     expect(versionRead).not.toHaveBeenCalled()
-  }, 20_000)
+  }, 10_000)
   it('stores only a chat by default, keeping reading rules and a portable thumbnail without full card lore', async () => {
     const { resources } = setup()
     await resources.importFiles([archive(), archive()])

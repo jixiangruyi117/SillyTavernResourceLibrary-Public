@@ -54,7 +54,7 @@ describe('GitHubBackupBundle', () => {
     expect(changed.length).toBeGreaterThan(0)
     expect(changed.length).toBeLessThan(second.manifest.parts.length)
     expect(changed.reduce((total, part) => total + part.size, 0)).toBeLessThan(changedBytes.length)
-  }, 15000)
+  })
 
   it('可复用外层已经计算过的整包哈希，避免上传前重复扫描大文件', async () => {
     const knownHash = 'a'.repeat(64)

@@ -17,6 +17,7 @@ interface NativeShortcutApi {
 }
 
 interface NativeShareReceiverApi {
+  resumeDeferredDiscordImports(): Promise<{ resumed: number }>
   addListener(
     eventName: 'cloudInboxReady',
     listener: (event: { running: boolean }) => void,
@@ -48,6 +49,17 @@ export type NativeDeepLink =
 
 const NativeShortcut = registerPlugin<NativeShortcutApi>('NativeShortcut')
 const NativeShareReceiver = registerPlugin<NativeShareReceiverApi>('ShareReceiver')
+let deferredDiscordImportResume: Promise<void> | undefined
+
+function resumeDeferredDiscordImports(): void {
+  if (Capacitor.getPlatform() !== 'android' || deferredDiscordImportResume) return
+  deferredDiscordImportResume = NativeShareReceiver.resumeDeferredDiscordImports()
+    .then(() => undefined)
+    .catch(() => undefined)
+    .finally(() => {
+      deferredDiscordImportResume = undefined
+    })
+}
 
 /** 深链只引用本机资源 ID，绝不编码资源内容、账号或云端凭据。 */
 export function createNativeResourceDeepLink(resourceId: string): string | null {
@@ -149,7 +161,9 @@ async function installNativeShareListener(): Promise<void> {
   })
   await NativeShareReceiver.addListener('discordDownloadCompleted', (detail) => {
     window.dispatchEvent(new CustomEvent('srl:native-share-download-completed', { detail }))
+    resumeDeferredDiscordImports()
   })
+  resumeDeferredDiscordImports()
 }
 
 export function installNativeRuntime(): void {
@@ -162,6 +176,7 @@ export function installNativeRuntime(): void {
     if (isActive) {
       window.dispatchEvent(new Event('srl:native-share'))
       window.dispatchEvent(new Event('srl:native-active'))
+      resumeDeferredDiscordImports()
     }
   })
   void App.addListener('appUrlOpen', ({ url }) => publishShortcut(url))

@@ -1,6 +1,5 @@
 import type { PersonalResourceSelection, PlainSecretCopy } from '../services/PersonalResourceBackup'
-import type { Category, Resource, ResourceSummary } from './Resource'
-import type { AppSetting } from './Resource'
+import type { AppSetting, Category, Resource, ResourceSummary } from './Resource'
 import type {
   CommunitySourceAttachmentArchiveEntry,
   CommunitySourceBackupData,

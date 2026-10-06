@@ -258,6 +258,12 @@
 
 .discord-manual-screenshot {
   margin: 11px 0 4px;
+  cursor: zoom-in;
+}
+
+.discord-manual-screenshot:focus-visible {
+  outline: 2px solid var(--color-accent, #168a91);
+  outline-offset: 3px;
 }
 
 .discord-manual-screenshot img {

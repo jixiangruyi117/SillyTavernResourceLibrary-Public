@@ -34,9 +34,7 @@ const emit = defineEmits<{
   'preview-cancelled': []
 }>()
 
-const props = defineProps<{
-  sharedFiles?: File[]
-}>()
+const props = defineProps<{ sharedFiles?: File[] }>()
 const { activeDialog: confirmation, respond: respondToConfirmation } = useConfirmDialogState()
 
 const apps = ref<InstalledExternalAppSummary[]>([])

@@ -218,7 +218,10 @@ export function useDiscordResourceInbox(
         }
         // This callback is invoked only after the importer commits all items/decisions.
         entry.imported = true
-        await notifyResult(entry, duplicateItems > 0 && importedItems === 0 ? 'duplicate' : 'imported')
+        await notifyResult(
+          entry,
+          duplicateItems > 0 && importedItems === 0 ? 'duplicate' : 'imported',
+        )
         if (native) {
           // Release the shared importer now. Keep this entry and staging until cloud ACK succeeds.
           void entry.confirm!().catch(() => undefined)

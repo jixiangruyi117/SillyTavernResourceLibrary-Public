@@ -924,6 +924,22 @@ export class BrowserStorageService {
     return hasAcknowledgedProjectNotice()
   }
 
+  hasAcknowledgedResourcePlazaNotice(version: string): boolean {
+    try {
+      return localStorage.getItem('srl.resourcePlaza.acknowledgedNotice') === version
+    } catch {
+      return false
+    }
+  }
+
+  acknowledgeResourcePlazaNotice(version: string): void {
+    try {
+      localStorage.setItem('srl.resourcePlaza.acknowledgedNotice', version)
+    } catch {
+      // Continue this visit; unavailable storage requires acknowledgement next time.
+    }
+  }
+
   async hasAcknowledgedProjectNoticePersisted(): Promise<boolean> {
     return hasAcknowledgedProjectNoticePersisted()
   }

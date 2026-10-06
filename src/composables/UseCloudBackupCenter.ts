@@ -31,7 +31,7 @@ import { Capacitor } from '@capacitor/core'
 
 import type { EmitFn } from 'vue'
 
-import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { confirmAction } from '../composables/UseConfirmDialog'
 
@@ -210,10 +210,6 @@ export function useCloudBackupCenter(
   const now = ref(Date.now())
 
   const tutorialPreview = ref<{ source: string; alt: string }>()
-
-  const tutorialCloseButton = useTemplateRef<HTMLButtonElement>('tutorialCloseButton')
-
-  let tutorialTrigger: HTMLElement | undefined
 
   let clock: number | undefined
 
@@ -847,29 +843,15 @@ export function useCloudBackupCenter(
   }
 
   function openTutorialPreview(source: string, alt: string, event: MouseEvent): void {
-    tutorialTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined
+    if (event.currentTarget instanceof HTMLElement)
+      event.currentTarget.focus({ preventScroll: true })
     tutorialPreview.value = { source, alt }
   }
 
   function closeTutorialPreview(): void {
     if (!tutorialPreview.value) return
     tutorialPreview.value = undefined
-    void nextTick(() => tutorialTrigger?.focus({ preventScroll: true }))
   }
-
-  function handleTutorialKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || !tutorialPreview.value) return
-    closeTutorialPreview()
-    event.preventDefault()
-    event.stopImmediatePropagation()
-  }
-
-  watch(tutorialPreview, async (preview) => {
-    document.body.classList.toggle('tutorial-preview-open', Boolean(preview))
-    if (!preview) return
-    await nextTick()
-    tutorialCloseButton.value?.focus({ preventScroll: true })
-  })
 
   watch(
     () => github.value.contentSelection.credentials,
@@ -887,7 +869,6 @@ export function useCloudBackupCenter(
 
   onMounted(() => {
     clock = window.setInterval(() => (now.value = Date.now()), 60_000)
-    window.addEventListener('keydown', handleTutorialKeydown, true)
     if (nativeTransport) {
       void refreshNativeBackupState()
       nativeJobPoll = window.setInterval(() => void refreshNativeBackupState(), 5_000)
@@ -931,8 +912,6 @@ export function useCloudBackupCenter(
     nativeStateGeneration += 1
     if (clock !== undefined) window.clearInterval(clock)
     if (nativeJobPoll !== undefined) window.clearInterval(nativeJobPoll)
-    window.removeEventListener('keydown', handleTutorialKeydown, true)
-    document.body.classList.remove('tutorial-preview-open')
   })
   return {
     status,

@@ -43,6 +43,29 @@ public class NativeDiscordDownloadNotificationTest {
             new JSONObject().put("state", "parse_failed")));
     }
 
+    @Test public void migrationUnavailableImportGetsBoundedRetriesWithoutStartingAnotherDownload() {
+        assertTrue(NativeDiscordDownloadWorker.shouldRetryAfterMigration("native_database_unavailable", 0));
+        assertTrue(NativeDiscordDownloadWorker.shouldRetryAfterMigration("native_database_unavailable", 4));
+        assertFalse(NativeDiscordDownloadWorker.shouldRetryAfterMigration("native_database_unavailable", 5));
+        assertFalse(NativeDiscordDownloadWorker.shouldRetryAfterMigration("waiting_version", 0));
+    }
+
+    @Test public void stagedImportCanResumeAfterMigrationCompletesWithoutRedownloading() throws Exception {
+        assertTrue(NativeDiscordDownloadWorker.shouldRetryStagedImport(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "native_database_unavailable"))));
+        assertFalse(NativeDiscordDownloadWorker.shouldRetryStagedImport(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "imported"))));
+        assertFalse(NativeDiscordDownloadWorker.shouldRetryStagedImport(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "waiting_version"))));
+        assertFalse(NativeDiscordDownloadWorker.shouldRetryStagedImport(new JSONObject()));
+    }
+
+    @Test public void queuesOneFollowupWhenStartupFindsADeferredImportStillRunning() {
+        assertTrue(NativeDiscordDownloadWorker.shouldAppendDeferredImport(true, false));
+        assertFalse(NativeDiscordDownloadWorker.shouldAppendDeferredImport(true, true));
+        assertFalse(NativeDiscordDownloadWorker.shouldAppendDeferredImport(false, false));
+    }
+
     @Test public void completionNoticeReportsActualImportFallbackInsteadOfHidingItsCause() throws Exception {
         JSONObject parsed = new JSONObject().put("state", "parsed");
         assertTrue(NativeDiscordDownloadWorker.completionText(parsed,

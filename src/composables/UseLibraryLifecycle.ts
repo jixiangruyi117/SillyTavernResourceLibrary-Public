@@ -351,7 +351,9 @@ export function useLibraryLifecycle(context: LibraryLifecycleContext) {
     )
     void initializeLibrary()
       .then(markStartupReady)
-      .catch(() => context.showNotice('无法读取本地数据库，请刷新后重试'))
+      .catch(() => {
+        context.showNotice('无法读取本地数据库，请刷新后重试')
+      })
   })
 
   onUnmounted(() => {

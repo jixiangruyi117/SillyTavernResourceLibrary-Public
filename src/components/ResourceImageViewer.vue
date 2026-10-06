@@ -13,6 +13,7 @@ const props = defineProps<{
   hasNext?: boolean
   loading?: boolean
   cover?: boolean
+  minimal?: boolean
 }>()
 const emit = defineEmits<{ close: []; previous: []; next: []; loaded: [] }>()
 const stage = ref<HTMLElement>()
@@ -128,7 +129,12 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <Teleport to="body">
-    <div class="resource-image-viewer" role="presentation" @click.self="emit('close')">
+    <div
+      class="resource-image-viewer"
+      :class="{ 'resource-image-viewer--minimal': minimal }"
+      role="presentation"
+      @click.self="emit('close')"
+    >
       <section
         ref="panel"
         class="resource-image-viewer__sheet"
@@ -159,11 +165,11 @@ onBeforeUnmount(() => {
           <button
             class="resource-image-viewer__action"
             type="button"
-            aria-label="收起完整原图"
+            :aria-label="minimal ? '关闭图片' : '收起完整原图'"
             data-viewer-action="close"
             @click="activateControl('close')"
           >
-            收起完整原图
+            {{ minimal ? '×' : '收起完整原图' }}
           </button>
         </header>
         <div

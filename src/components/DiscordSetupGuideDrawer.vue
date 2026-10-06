@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import ResourceImageViewer from './ResourceImageViewer.vue'
 
 import { DISCORD_BRIDGE_DEPLOY_URL } from '../services/DiscordBridgeDeployService'
 
@@ -20,6 +21,16 @@ const props = withDefaults(
 
 const emit = defineEmits<{ close: [] }>()
 const copyStatus = ref('')
+const previewImage = ref<{ source: string; alt: string }>()
+
+function openScreenshot(event: MouseEvent | KeyboardEvent): void {
+  const trigger = event.currentTarget
+  if (!(trigger instanceof HTMLElement)) return
+  const image = trigger.querySelector('img')
+  if (!image) return
+  trigger.focus({ preventScroll: true })
+  previewImage.value = { source: image.currentSrc || image.src, alt: image.alt }
+}
 
 async function copyText(value: string, message: string): Promise<void> {
   if (!value) return
@@ -107,7 +118,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 打开 Discord Bot 设置
               </a>
               <code>Application ID：General Information → APPLICATION ID</code>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-application-id-redacted.png'"
                   alt="Discord General Information 页面，绿色圈出已遮挡的 Application ID 和 Public Key"
@@ -120,7 +139,15 @@ async function copyText(value: string, message: string): Promise<void> {
               </figure>
               <code>Public Key：General Information → PUBLIC KEY（中文界面显示为“客户端”）</code>
               <code>Bot Token：Bot → Reset Token</code>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-bot-token-redacted.png'"
                   alt="Discord Bot 页面，绿色圈出 Reset Token 按钮"
@@ -203,7 +230,15 @@ async function copyText(value: string, message: string): Promise<void> {
               <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">
                 打开 Cloudflare Dashboard
               </a>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/d1-empty-create-callout.jpg'"
                   alt="Cloudflare D1 数据库列表为空，标出开始创建数据库的位置"
@@ -211,7 +246,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 />
                 <figcaption>列表为空时，先创建 D1 数据库；仓库导入不会自动创建它。</figcaption>
               </figure>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/d1-create-form-callout.jpg'"
                   alt="Cloudflare 创建 D1 数据库表单，标出数据库名称和创建按钮"
@@ -267,7 +310,15 @@ async function copyText(value: string, message: string): Promise<void> {
     "HANDOFF_TTL_SECONDS": "1200"
   }
 }</code></pre>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/wrangler-database-id-location.jpg'"
                   alt="wrangler.jsonc 中 database_id 应填写的位置示意"
@@ -288,7 +339,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 D1 DB named srl-discord-source-handoff”，回头核对 D1 是否创建在同一个 Cloudflare
                 账号，以及名称和 Database ID 是否对应。
               </p>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/d1-migration-not-found.jpg'"
                   alt="Cloudflare 部署日志提示找不到 srl-discord-source-handoff D1 数据库"
@@ -345,7 +404,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 Wrangler 版本也低于 Cloudflare Worker Previews 的最低要求；只有升级 Wrangler
                 并单独配置预览环境的 D1 和 Discord 变量后，才开启预览构建。
               </p>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/cloudflare-build-preview-settings.jpg'"
                   alt="Cloudflare 构建设置中 Preview builds 和 Cloudflare Access 开关的位置"
@@ -369,18 +436,6 @@ async function copyText(value: string, message: string): Promise<void> {
                 Cloudflare 会按 <code>wrangler.jsonc</code> 中的数据库 ID 将 D1 绑定到
                 Worker；首次部署时 <code>npm run deploy</code> 会先应用数据库迁移，再发布 Worker。
               </p>
-              <p class="discord-guide-note discord-guide-note--soft">
-                以后要更新时，在你的 GitHub Fork 页面点
-                <strong>Sync fork → Update branch</strong>。同步到 main 后，Cloudflare
-                会自动重新部署；如果显示冲突，先按 GitHub 提示解决冲突。
-              </p>
-              <a
-                href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                查看 GitHub 同步 Fork 的说明
-              </a>
             </div>
           </section>
 
@@ -406,7 +461,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 Token。Key 是变量名；前两项保持 <strong>Secret</strong> 未勾选，Bot Token 勾选
                 <strong>Secret</strong>。
               </p>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/cloudflare-production-variable-fields.jpg'"
                   alt="Cloudflare 新增环境变量表单中环境、Key、Value 和 Secret 的位置"
@@ -456,7 +519,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 <code>workers.dev</code> 开关。Preview 保持关闭即可。若 Overview 显示
                 <strong>No URLs enabled</strong>，说明还没有启用 Production URL。
               </p>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/workers-dev-enable-redacted.jpg'"
                   alt="Cloudflare Worker Domains 页面，遮挡账户子域名并标出 Production workers.dev 开关"
@@ -503,7 +574,15 @@ async function copyText(value: string, message: string): Promise<void> {
               <a :href="developerAppUrl" target="_blank" rel="noopener noreferrer">
                 打开 Discord General Information
               </a>
-              <figure class="discord-guide-screenshot">
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/discord-endpoint-validation-error.jpg'"
                   alt="Discord 交互端点 URL 验证失败示例，并标出应检查的路径和 Public Key"
@@ -565,10 +644,79 @@ async function copyText(value: string, message: string): Promise<void> {
             </div>
           </section>
 
+          <section v-if="props.deploymentMode === 'github'" class="discord-guide-step">
+            <span>09</span>
+            <div>
+              <h4>以后同步 Bridge 更新</h4>
+              <p>
+                原仓库发布新版后，打开你自己的 Fork 首页。在分支状态提示中点
+                <strong>Sync fork</strong>，再点绿色的
+                <strong>Update branch</strong>，把上游更新同步到 Fork 的 <code>main</code>。
+              </p>
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
+                <img
+                  :src="'/tutorials/discord-github/fork-sync-status.png'"
+                  alt="GitHub Fork 页面显示分支与上游有提交差异，并圈出 Sync fork 菜单"
+                  loading="lazy"
+                />
+                <figcaption>
+                  在自己的 Fork 页面打开 Sync fork；ahead/behind 的数字会随更新变化。
+                </figcaption>
+              </figure>
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
+                <img
+                  :src="'/tutorials/discord-github/fork-update-branch.png'"
+                  alt="GitHub 同步 Fork 确认框，标出绿色 Update branch 按钮"
+                  loading="lazy"
+                />
+                <figcaption>点击 Update branch 同步上游提交。</figcaption>
+              </figure>
+              <p class="discord-guide-note discord-guide-note--soft">
+                不要点红色的 <strong>Discard commits</strong>：它会丢弃你 Fork
+                中独有的提交。若同步时出现冲突，先处理冲突，不要用丢弃提交来绕过。
+              </p>
+              <p>
+                同步完成后，Cloudflare Workers Builds 会从 <code>main</code> 自动重新部署。到
+                Cloudflare 的 Deployments 页面确认最新部署成功；如果失败，先看构建日志再继续。
+              </p>
+              <a
+                href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                查看 GitHub 同步 Fork 的官方说明
+              </a>
+            </div>
+          </section>
+
           <p v-if="copyStatus" class="discord-guide-status" role="status">{{ copyStatus }}</p>
         </div>
       </aside>
     </Transition>
+    <ResourceImageViewer
+      v-if="previewImage"
+      :src="previewImage.source"
+      :name="previewImage.alt"
+      :cover="true"
+      :minimal="true"
+      @close="previewImage = undefined"
+    />
   </Teleport>
 </template>
 

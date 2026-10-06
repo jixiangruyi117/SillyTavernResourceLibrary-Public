@@ -8,7 +8,8 @@
   z-index: 21;
   right: max(0.75rem, var(--safe-right));
   bottom: var(--activity-offset);
-  width: min(24rem, calc(100vw - 1.5rem));
+  width: min(420px, calc(100vw - 24px));
+  box-sizing: border-box;
   color: var(--color-ink);
   pointer-events: none;
 }
@@ -65,20 +66,23 @@
 
 .activity-center__panel {
   pointer-events: auto;
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 0.55rem);
-  width: 100%;
-  max-height: min(
-    34rem,
-    calc(var(--app-viewport-height, 100dvh) - var(--activity-offset) - 4rem - var(--safe-top, 0px))
-  );
+  position: fixed;
+  z-index: 22;
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: min(84dvh, 672px);
   overflow: auto;
   padding: 0.8rem;
   border: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
   border-radius: 1rem;
   background: var(--color-surface);
   box-shadow: 0 1.2rem 3rem var(--color-shadow);
+  transform: translate(-50%, -50%);
 }
 
 .activity-center__focused-progress {
@@ -173,6 +177,9 @@
 .activity-center__header-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 0.45rem;
 }
 
@@ -193,6 +200,8 @@
 }
 
 .activity-center__panel > header {
+  flex-wrap: wrap;
+  min-width: 0;
   position: sticky;
   top: -0.8rem;
   z-index: 1;
@@ -214,6 +223,8 @@
 }
 
 .activity-center__panel button {
+  max-width: 100%;
+  white-space: normal;
   min-height: 2.25rem;
   padding: 0.35rem 0.65rem;
   border: 1px solid var(--color-line);
@@ -289,8 +300,8 @@
 
 @media (max-width: 53.75rem) {
   .activity-center:not(.activity-center--inline) {
-    right: 0.65rem;
-    width: min(22rem, calc(100vw - 1.3rem));
+    right: 10px;
+    width: min(360px, calc(100vw - 20px));
   }
 }
 

@@ -12,7 +12,10 @@ const {
   stopKeepAlive,
   suspendKeepAlive,
   confirmImportAction,
+  autoBindIncomingCardMock,
+  communitySourceService,
   resourceService,
+  automationSettingsService,
   selectMigrationEdits,
 } = vi.hoisted(() => ({
   inspectArchive: vi.fn(),
@@ -22,6 +25,8 @@ const {
   stopKeepAlive: vi.fn(),
   suspendKeepAlive: vi.fn(),
   confirmImportAction: vi.fn(),
+  autoBindIncomingCardMock: vi.fn(),
+  communitySourceService: {},
   resourceService: {
     get: vi.fn(),
     findByContentHash: vi.fn(),
@@ -31,12 +36,27 @@ const {
     importAsVersion: vi.fn(),
     importFiles: vi.fn(),
   },
+  automationSettingsService: {
+    load: vi.fn().mockResolvedValue({
+      bindSameName: false,
+      bindSameAuthor: false,
+      bindNextPng: false,
+      bindForeground: false,
+      preferPngContainer: false,
+    }),
+  },
   selectMigrationEdits: vi.fn(),
 }))
 
 vi.mock('../core/LibraryContainer', () => ({
+  communitySourceService,
   resourceArchiveService: { inspect: inspectArchive, readResourceArchive, tavernFiles },
   resourceService,
+  discordInboxAutomationSettingsService: automationSettingsService,
+}))
+
+vi.mock('../services/DiscordInboxAutoBinding', () => ({
+  autoBindIncomingCard: autoBindIncomingCardMock,
 }))
 
 vi.mock('../services/CharacterCardMigrationReview', () => ({
@@ -76,6 +96,14 @@ describe('shared backup route handoff', () => {
     resourceService.getVersion.mockReset()
     resourceService.importAsVersion.mockReset().mockResolvedValue({ id: 'resource-1' })
     resourceService.importFiles.mockReset()
+    autoBindIncomingCardMock.mockReset()
+    automationSettingsService.load.mockReset().mockResolvedValue({
+      bindSameName: false,
+      bindSameAuthor: false,
+      bindNextPng: false,
+      bindForeground: false,
+      preferPngContainer: false,
+    })
     selectMigrationEdits.mockReset()
     vi.stubGlobal('document', {
       visibilityState: 'visible',
@@ -86,6 +114,63 @@ describe('shared backup route handoff', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it('runs foreground auto-binding for imported cloud cards in the inbox import path', async () => {
+    const file = new File(['{}'], 'card.png', { type: 'image/png' })
+    const importedResource = {
+      id: 'card-1',
+      type: 'characterCard',
+      name: '阿青',
+      fileName: file.name,
+      metadata: {},
+    }
+    automationSettingsService.load.mockResolvedValue({
+      bindSameName: true,
+      bindSameAuthor: true,
+      bindNextPng: true,
+      bindForeground: true,
+      preferPngContainer: false,
+    })
+    resourceService.importFiles.mockImplementationOnce(async (_files, options) => {
+      await options.onItemComplete({
+        status: 'imported',
+        fileName: file.name,
+        resource: importedResource,
+      })
+      return []
+    })
+    const context = {
+      isBusy: ref(false),
+      isNativeApk: false,
+      pendingBackupImport: ref<File>(),
+      pendingVersionImports: ref([]),
+      extractCharacterAssets: ref(false),
+      persistResourceVersionMatchCache: ref(false),
+      skipVersionComparisonOnImport: ref(false),
+      hideCharacterAssets: ref(true),
+      LARGE_IMPORT_BYTES: 1024,
+      backupRecommended: ref(false),
+      loadResources: vi.fn().mockResolvedValue(undefined),
+      refreshStorageHealth: vi.fn().mockResolvedValue(undefined),
+      showNotice: vi.fn(),
+    }
+    const scope = effectScope()
+    const importer = scope.run(() => useLibraryImport(() => context as never))!
+
+    await importer.handleSharedImportChoice([file], 'resource', {
+      files: [file],
+      automaticCloud: true,
+      recoveryId: 'cloud-auto-binding',
+      acknowledge: vi.fn().mockResolvedValue(undefined),
+    })
+
+    expect(autoBindIncomingCardMock).toHaveBeenCalledWith(
+      communitySourceService,
+      importedResource,
+      expect.objectContaining({ bindForeground: true }),
+    )
+    scope.stop()
   })
 
   it('retains a transformed source digest and skips re-encryption when resuming a committed share', async () => {

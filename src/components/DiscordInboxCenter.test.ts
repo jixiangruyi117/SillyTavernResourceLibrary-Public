@@ -3,6 +3,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi } from 'vitest'
 import DiscordInboxCenter from './DiscordInboxCenter.vue'
 
+const inboxActions = { openCloudCleanup: vi.fn(), openAutomationSettings: vi.fn() }
+
 vi.mock('../services/DiscordSourceSettingsService', () => ({
   loadDiscordSourceConnectionSettings: () => ({
     applicationId: '',
@@ -17,6 +19,7 @@ vi.mock('../services/DiscordSourceSettingsService', () => ({
 const stubs = {
   DiscordInboxPanel: {
     props: ['mode'],
+    methods: inboxActions,
     template:
       "<section :data-testid=\"mode === 'pairing' ? 'pairing-settings' : 'post-inbox'\">收件面板</section>",
   },
@@ -29,6 +32,27 @@ const stubs = {
 }
 
 describe('standalone inbox', () => {
+  it('places cleanup and inbox settings in the page header and opens the matching panels', async () => {
+    const wrapper = mount(DiscordInboxCenter, { attachTo: document.body, global: { stubs } })
+    try {
+      const header = wrapper.find('.feature-app-header__trailing')
+      expect(header.exists()).toBe(true)
+      const cleanup = header.get('[aria-label="清理云端"]')
+      const settings = header.get('[aria-label="收件箱设置"]')
+      expect(cleanup.find('svg').exists()).toBe(true)
+      expect(settings.find('svg').exists()).toBe(true)
+      expect(cleanup.find('svg path').attributes('stroke')).toBe('currentColor')
+      expect(settings.find('svg path').attributes('stroke')).toBe('currentColor')
+      await cleanup.trigger('click')
+      await settings.trigger('click')
+      expect(inboxActions.openCloudCleanup).toHaveBeenCalledOnce()
+      expect(inboxActions.openAutomationSettings).toHaveBeenCalledOnce()
+    } finally {
+      wrapper.unmount()
+      vi.clearAllMocks()
+    }
+  })
+
   it('opens the existing connection settings without duplicating the inbox panels', async () => {
     const wrapper = mount(DiscordInboxCenter, { attachTo: document.body, global: { stubs } })
     try {

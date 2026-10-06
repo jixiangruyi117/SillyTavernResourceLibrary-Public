@@ -26,6 +26,7 @@ import {
   type FeatureAppDescriptorContext,
 } from '../core/FeatureAppRegistry'
 import { getFeatureAppLoader } from '../core/FeatureAppLoaders'
+import { officialAppService } from '../core/OfficialAppRuntime'
 import { featureAppUsageStore } from '../core/FeatureAppUsageStore'
 import type {
   LayoutMode,
@@ -40,12 +41,13 @@ import {
   type CharacterDrawState,
 } from '../services/CharacterDrawService'
 import type { InstalledExternalAppSummary } from '../types/ExternalApp'
+import { isOfficialAppId } from '../types/OfficialApp'
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import type { AssistantNavigationTarget } from '../services/ProductAssistantService'
 import { getHiddenCategoryIds, isResourceHiddenByCategory } from '../utils/CategoryVisibility'
 
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=official-app-feature-page
-export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp'
+export type FeaturePage = 'home' | BuiltInFeatureAppPage | 'externalApp' | 'officialApps'
 // SRL-PUBLIC-SYNC: END REPLACE id=official-app-feature-page
 
 // Only pages with a fixed viewport and an explicit internal scroll owner may
@@ -121,6 +123,10 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   }
 
   const DrawApp = createRegisteredAsyncPanel('draw')
+  const OfficialAppManager = createAsyncPanel(
+    'APP 管理',
+    () => import('../components/OfficialAppManager.vue'),
+  )
 
   const AppearanceStudio = createRegisteredAsyncPanel('appearance')
 
@@ -182,6 +188,10 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const bundleSendIds = ref<string[]>([])
 
   const externalApps = ref<InstalledExternalAppSummary[]>([])
+  const installedOfficialIds = ref(new Set<string>())
+  async function reloadOfficialApps(): Promise<void> {
+    installedOfficialIds.value = new Set((await officialAppService.list()).map((app) => app.id))
+  }
 
   const activeExternalAppId = ref('')
 
@@ -204,10 +214,9 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   const enabledExternalApps = computed(() => externalApps.value.filter((app) => app.enabled))
 
   const visibleBuiltInFeatureApps = computed(() =>
-    FEATURE_APP_REGISTRY.filter((app) => {
-      if (!app.visible) return false
-      return true
-    })
+    FEATURE_APP_REGISTRY.filter(
+      (app) => app.visible && (!isOfficialAppId(app.id) || installedOfficialIds.value.has(app.id)),
+    )
       .slice()
       .sort((left, right) => left.sortOrder - right.sortOrder),
   )
@@ -293,9 +302,8 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
       throw new Error('这个界面不能由助手打开')
     const app = FEATURE_APP_REGISTRY.find((item) => item.id === id && item.visible)
     if (app) openFeatureDesktopEntry({ kind: 'builtIn', app })
-    else if (id === 'home') activePage.value = id
     // SRL-PUBLIC-SYNC: BEGIN REPLACE id=official-app-feature-navigation
-    // Public has no official app store navigation.
+    else if (id === 'home' || id === 'officialApps') activePage.value = id
     // SRL-PUBLIC-SYNC: END REPLACE id=official-app-feature-navigation
     else if (props.navigateLibrary) await props.navigateLibrary(id)
     else throw new Error('这个界面的入口暂不可用')
@@ -520,6 +528,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
       const locksHostScroll = active !== false && FEATURE_PAGES_WITH_INTERNAL_SCROLL.has(page)
       document.body.classList.toggle('feature-app-scroll-lock', locksHostScroll)
       document.documentElement.classList.toggle('feature-app-scroll-lock', locksHostScroll)
+      if (page === 'home') void reloadOfficialApps().catch(() => {})
       document.body.classList.toggle('folder-desktop-open', active !== false && page === 'folders')
       if (resumeTrackingReady && active !== false)
         writeAppResumeState({
@@ -535,6 +544,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
   })
 
   onMounted(async () => {
+    await reloadOfficialApps().catch(() => {})
     window.addEventListener('keydown', handleKeydown)
     window.addEventListener(SRL_BACK_REQUEST_EVENT, handleBackRequest)
     window.addEventListener('srl:native-shortcut', handleNativeShortcut)
@@ -606,6 +616,7 @@ export function useFeatureHub(props: Readonly<FeatureHubProps>, emit: EmitFn<Fea
     desktopFilterActions,
     selectDesktopFilter,
     DrawApp,
+    OfficialAppManager,
     AppearanceStudio,
     TavernBridgeCenter,
     bundleSendIds,

@@ -13,9 +13,11 @@ import DiscordInboxPanel from './DiscordInboxPanel.vue'
 import DiscordResourceDownloadPanel from './DiscordResourceDownloadPanel.vue'
 import DiscordPendingSources from './DiscordPendingSources.vue'
 import DiscordNativeInboxMode from './DiscordNativeInboxMode.vue'
+import type { ResourceSummary } from '../types/Resource'
 
-defineEmits<{ back: [] }>()
+defineEmits<{ back: []; 'open-resource': [resource: ResourceSummary] }>()
 const settingsOpen = ref(false)
+const inboxPanel = ref<InstanceType<typeof DiscordInboxPanel> | null>(null)
 watch(
   assistantGuidance,
   (guide) => {
@@ -78,10 +80,48 @@ const ConnectionSettings = createAsyncPanel(
       >
         连接设置
       </button>
+      <button
+        class="feature-header-action feature-header-action--icon"
+        type="button"
+        aria-label="清理云端"
+        title="清理云端"
+        data-assistant-focus="inbox-cloud-cleanup"
+        @click="inboxPanel?.openCloudCleanup()"
+      >
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1.7"
+          />
+        </svg>
+      </button>
+      <button
+        class="feature-header-action feature-header-action--icon"
+        type="button"
+        aria-label="收件箱设置"
+        title="收件箱设置"
+        data-assistant-focus="inbox-automation-settings"
+        @click="inboxPanel?.openAutomationSettings()"
+      >
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M4 7h9m4 0h3M4 17h3m4 0h9M13 5v4M7 15v4"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1.7"
+          />
+          <circle cx="15" cy="7" r="2" stroke="currentColor" stroke-width="1.7" />
+          <circle cx="9" cy="17" r="2" stroke="currentColor" stroke-width="1.7" />
+        </svg>
+      </button>
     </template>
     <div class="discord-inbox-center__content">
       <DiscordNativeInboxMode />
-      <DiscordInboxPanel />
+      <DiscordInboxPanel ref="inboxPanel" @open-resource="$emit('open-resource', $event)" />
       <DiscordResourceDownloadPanel />
       <DiscordPendingSources hide-when-empty />
     </div>

@@ -539,11 +539,13 @@ export async function cancelDiscordInboxJob(
   await inboxRequest(`/jobs/${encodeURIComponent(id)}`, 'DELETE', undefined, expected)
 }
 
-export async function clearDiscordInboxCloudHistory(): Promise<{
+export async function clearDiscordInboxCloudHistory(
+  scope: 'posts' | 'resources' | 'both' = 'both',
+): Promise<{
   posts: number
   resources: number
 }> {
-  const payload = (await (await inboxRequest('/cleanup', 'DELETE')).json()) as Record<
+  const payload = (await (await inboxRequest('/cleanup-scoped', 'DELETE', { scope })).json()) as Record<
     string,
     unknown
   >

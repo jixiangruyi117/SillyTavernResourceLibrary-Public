@@ -139,6 +139,8 @@ export interface CommunitySource {
   revisions?: CommunitySourceRevision[]
   /** Snapshot time of the source display metadata, independent from message edit versions. */
   metadataCapturedAt?: number
+  /** Inbox-only marker consumed by the next imported character-card PNG. */
+  autoBindPendingPng?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -231,6 +233,8 @@ export interface ResourceSourceBinding {
   resourceId: string
   sourceId: string
   note?: string
+  /** Set only for reversible, inbox automation bindings. */
+  autoBindingRule?: 'same-name' | 'same-author' | 'next-png'
   createdAt: number
 }
 

@@ -1,6 +1,13 @@
 import type { ComputedRef, Ref, ShallowRef } from 'vue'
 import { computed, nextTick, onMounted, onScopeDispose } from 'vue'
-import { resourceArchiveService, resourceService } from '../core/LibraryContainer'
+import {
+  communitySourceService,
+  discordInboxAutomationSettingsService,
+  resourceArchiveService,
+  resourceService,
+} from '../core/LibraryContainer'
+import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
+import { autoBindIncomingCard } from '../services/DiscordInboxAutoBinding'
 import { noticeCenter } from '../core/NoticeCenter'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 import { confirmChatImports } from './UseChatImportConfirmation'
@@ -950,11 +957,15 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         protectedFiles.push(protectedFile)
         if (sourceHash) originalContentHashes.set(protectedFile, sourceHash)
       }
+      const automationSettings = await discordInboxAutomationSettingsService
+        .load()
+        .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
       const results = await resourceService.importFiles(protectedFiles, {
         ...chatOptions,
         extractCharacterAssets: context.extractCharacterAssets.value,
         skipVersionComparison: context.skipVersionComparisonOnImport.value,
         sameNameVersionCandidates: context.sameNameVersionCandidates?.value === true,
+        preferPngContainer: automationSettings.preferPngContainer,
         persistVersionMatchCache: context.persistResourceVersionMatchCache.value,
         signal: activeImportAbortController?.signal,
         completedContentHashes: shareBatch?.completedContentHashes,
@@ -996,6 +1007,27 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
             else await shareBatch?.markImportItemCompleted?.(result.resource.contentHash)
           }
           await shareBatch?.onItemComplete?.(result)
+          if (
+            shareBatch?.automaticCloud &&
+            automationSettings.bindForeground &&
+            result.status === 'imported'
+          ) {
+            try {
+              const binding = await autoBindIncomingCard(
+                communitySourceService,
+                result.resource,
+                automationSettings,
+              )
+              if (binding)
+                window.dispatchEvent(
+                  new CustomEvent('srl:community-sources-changed', {
+                    detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
+                  }),
+                )
+            } catch {
+              // Binding is best effort; it must not turn a committed resource import into a failure.
+            }
+          }
         },
         onProgress: ({ completed, total, fileName, phase }) => {
           updateImportTask(taskId, {

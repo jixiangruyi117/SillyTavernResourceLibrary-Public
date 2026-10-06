@@ -16,6 +16,11 @@ import type { NativeSecurityState } from '../core/NativeSecurity'
 import type { NativeSafBackupStatus } from '../core/NativeSafBackup'
 import { isNativeHapticsEnabled, setNativeHapticsEnabled } from '../core/NativeHaptics'
 import type { NativeSystemUiState } from '../core/NativeSystemUi'
+import { discordInboxAutomationSettingsService } from '../core/LibraryContainer'
+import {
+  DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+  type DiscordInboxAutomationSettings,
+} from '../services/DiscordInboxAutomationSettings'
 // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-import
 import {
   loadPublicWorkerBaseUrl,
@@ -84,6 +89,9 @@ const offlineResourceStatus = ref<OfflineResourceStatus | null>(null)
 const offlineResourceMessage = ref('')
 const offlineDownloadPercent = ref(0)
 const isDownloadingOfflineResources = ref(false)
+const inboxAutomationSettings = ref<DiscordInboxAutomationSettings>({
+  ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+})
 // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-state
 const publicWorkerBaseUrl = ref(loadPublicWorkerBaseUrl())
 const publicWorkerMessage = ref('')
@@ -154,18 +162,22 @@ async function checkWorkerBaseUrl(): Promise<void> {
 // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-settings-state
 let offlineDownloadController: AbortController | undefined
 onMounted(async () => {
-  const [storage, security, saf, systemUi, offline] = await Promise.all([
+  const [storage, security, saf, systemUi, offline, automation] = await Promise.all([
     getNativeResourceStorageInfo().catch(() => null),
     platform.security.getState().catch(() => null),
     platform.backup.getStatus().catch(() => null),
     platform.systemUi.getState().catch(() => null),
     isNativeApk ? Promise.resolve(null) : getOfflineResourceStatus().catch(() => null),
+    discordInboxAutomationSettingsService.load().catch(() => ({
+      ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+    })),
   ])
   nativeStorageInfo.value = storage
   nativeSecurityState.value = security
   nativeSafBackup.value = saf
   nativeSystemUiState.value = systemUi
   offlineResourceStatus.value = offline
+  inboxAutomationSettings.value = automation
 })
 onBeforeUnmount(() => offlineDownloadController?.abort())
 async function handleCheckUpdate(): Promise<void> {
@@ -185,6 +197,15 @@ async function toggleSecureScreen(event: Event): Promise<void> {
   const enabled = (event.target as HTMLInputElement).checked
   await platform.security.setSecureScreen(enabled)
   if (nativeSecurityState.value) nativeSecurityState.value.secureScreen = enabled
+}
+
+async function togglePreferPngContainer(event: Event): Promise<void> {
+  const settings = {
+    ...inboxAutomationSettings.value,
+    preferPngContainer: (event.target as HTMLInputElement).checked,
+  }
+  await discordInboxAutomationSettingsService.save(settings)
+  inboxAutomationSettings.value = settings
 }
 
 async function verifyDeviceOwner(): Promise<void> {
@@ -448,6 +469,21 @@ async function clearOfflineResources(): Promise<void> {
                   ($event.target as HTMLInputElement).checked,
                 )
               "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+          <label class="settings-switch-row">
+            <span>
+              <strong>同内容角色卡优先使用 PNG 封装</strong>
+              <small
+                >仅当 PNG 与 JSON 卡内数据完全相同且封装不同时归为同一卡；PNG 保持当前封装，JSON
+                存为另一封装。网页和 APK 前台自动整理；APK 原生后台遇到此类候选会转前台确认。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="inboxAutomationSettings.preferPngContainer"
+              @change="togglePreferPngContainer"
             />
             <i aria-hidden="true"></i>
           </label>

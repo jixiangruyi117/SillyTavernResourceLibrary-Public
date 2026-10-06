@@ -252,6 +252,26 @@
   pointer-events: auto;
   cursor: pointer;
 }
+.resource-image-viewer--minimal {
+  z-index: 1300;
+  background: #07100d;
+}
+.resource-image-viewer--minimal .resource-image-viewer__sheet {
+  padding: 0;
+}
+.resource-image-viewer--minimal .resource-image-viewer__header {
+  top: max(0.5rem, var(--safe-top, 0px));
+  right: max(0.5rem, var(--safe-right, 0px));
+}
+.resource-image-viewer--minimal .resource-image-viewer__action {
+  width: var(--size-touch);
+  min-width: var(--size-touch);
+  min-height: var(--size-touch);
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  line-height: 1;
+}
 .resource-image-viewer__title {
   flex: 1;
   min-width: 0;

@@ -12,8 +12,21 @@ import {
   readDiscordInboxStatus,
 } from '../services/DiscordHandoffService'
 import { loadDiscordSourceConnectionSettings } from '../services/DiscordSourceSettingsService'
+import { resourceService } from '../core/AppContainer'
+import {
+  communitySourceService,
+  discordInboxAutomationSettingsService,
+} from '../core/LibraryContainer'
+import {
+  DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+  type DiscordInboxAutomationSettings,
+} from '../services/DiscordInboxAutomationSettings'
+import type { ResourceCommunitySourceView } from '../types/CommunitySource'
+import type { ResourceListSummary, ResourceSummary } from '../types/Resource'
+import ResourcePicker from './ResourcePicker.vue'
 
 const props = withDefaults(defineProps<{ mode?: 'inbox' | 'pairing' }>(), { mode: 'inbox' })
+const emit = defineEmits<{ 'open-resource': [resource: ResourceSummary] }>()
 const isPairing = computed(() => props.mode === 'pairing')
 type InboxStatus = Awaited<ReturnType<typeof readDiscordInboxStatus>>
 type InboxJob = Awaited<ReturnType<typeof listDiscordInboxJobs>>['recent'][number]
@@ -34,6 +47,28 @@ const receiving = ref(false)
 const progress = ref('')
 const error = ref('')
 const settingsOpen = ref(false)
+const automationSettingsOpen = ref(false)
+const cloudCleanupOpen = ref(false)
+const cloudCleanupScope = ref<'posts' | 'resources' | 'both'>('both')
+const automationSettings = ref<DiscordInboxAutomationSettings>({
+  ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+})
+const recentAutoBindings = ref<
+  Array<{
+    sourceTitle: string
+    resourceLabel: string
+    resourceId: string
+    sourceId: string
+    rule?: string
+  }>
+>([])
+const autoBindingDetails = ref<
+  Record<string, { view: ResourceCommunitySourceView; resource?: ResourceListSummary }>
+>({})
+const reviewExpandedId = ref('')
+const replacingBindingId = ref('')
+const selectedReplacementId = ref('')
+const replacementResources = ref<ResourceListSummary[]>([])
 let disposed = false
 let requestedRefresh = false
 const configured = computed(() => Boolean(libraryId.value))
@@ -109,22 +144,179 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function refreshAutoBindings(): Promise<void> {
+  automationSettings.value = {
+    ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
+    ...(await discordInboxAutomationSettingsService.load()),
+  }
+  const bindings = await communitySourceService.listRecentAutoBindings(50)
+  recentAutoBindings.value = bindings.map(({ source, binding }) => ({
+    sourceTitle: source.title || 'Discord 帖子',
+    resourceLabel:
+      binding.note?.replace(/^自动关联：.*? · /u, '') || `角色卡 ${binding.resourceId.slice(0, 8)}`,
+    resourceId: binding.resourceId,
+    sourceId: binding.sourceId,
+    rule: binding.autoBindingRule,
+  }))
+}
+
+async function toggleAutoBindingReview(
+  item: (typeof recentAutoBindings.value)[number],
+): Promise<void> {
+  const key = `${item.resourceId}:${item.sourceId}`
+  if (reviewExpandedId.value === key) {
+    reviewExpandedId.value = ''
+    return
+  }
+  reviewExpandedId.value = key
+  if (autoBindingDetails.value[key]) return
+  actionBusy.value = true
+  try {
+    const [view, resources] = await Promise.all([
+      communitySourceService.getForResource(item.resourceId, item.sourceId),
+      resourceService.listResourceListSummaries(),
+    ])
+    if (!view) throw new Error('帖子或关联记录已不存在。')
+    autoBindingDetails.value = {
+      ...autoBindingDetails.value,
+      [key]: { view, resource: resources.find((resource) => resource.id === item.resourceId) },
+    }
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '无法读取自动关联内容。'
+    reviewExpandedId.value = ''
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function confirmAutoBinding(item: (typeof recentAutoBindings.value)[number]): Promise<void> {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await communitySourceService.confirmAutoBinding(item.resourceId, item.sourceId)
+    progress.value = `已确认“${item.sourceTitle}”的自动关联。`
+    await refreshAutoBindings()
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '确认自动关联失败。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function returnAutoBindingToPending(
+  item: (typeof recentAutoBindings.value)[number],
+): Promise<void> {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await communitySourceService.unbindSource(item.resourceId, item.sourceId)
+    progress.value = `已将“${item.sourceTitle}”退回待整理。`
+    reviewExpandedId.value = ''
+    await refreshAutoBindings()
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '退回待整理失败。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function replaceAutoBinding(item: (typeof recentAutoBindings.value)[number]): Promise<void> {
+  if (!selectedReplacementId.value || actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await communitySourceService.replaceAutoBinding(
+      item.resourceId,
+      selectedReplacementId.value,
+      item.sourceId,
+    )
+    const replacement = (await resourceService.listResourceListSummaries()).find(
+      (resource) => resource.id === selectedReplacementId.value,
+    )
+    progress.value = replacement
+      ? `已将“${item.sourceTitle}”改关联到“${replacement.name}”。`
+      : `已更新“${item.sourceTitle}”的关联。`
+    selectedReplacementId.value = ''
+    replacingBindingId.value = ''
+    reviewExpandedId.value = ''
+    await refreshAutoBindings()
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '替换关联资源失败。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function startReplacingAutoBinding(sourceId: string): Promise<void> {
+  if (actionBusy.value) return
+  if (replacingBindingId.value === sourceId) {
+    replacingBindingId.value = ''
+    selectedReplacementId.value = ''
+    return
+  }
+  actionBusy.value = true
+  try {
+    replacementResources.value = (await resourceService.listResourceListSummaries()).filter(
+      (resource) => resource.type === 'characterCard',
+    )
+    replacingBindingId.value = sourceId
+    selectedReplacementId.value = ''
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '无法读取角色卡列表。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function updateAutomationSetting(
+  key: keyof DiscordInboxAutomationSettings,
+  enabled: boolean,
+): Promise<void> {
+  const next = { ...automationSettings.value, [key]: enabled }
+  await discordInboxAutomationSettingsService.save(next)
+  automationSettings.value = next
+}
+
+async function clearAutoBindings(): Promise<void> {
+  if (!recentAutoBindings.value.length || actionBusy.value) return
+  actionBusy.value = true
+  try {
+    const count = await communitySourceService.clearRecentAutoBindings(50)
+    progress.value = `已取消 ${count} 条自动关联；帖子已回到待整理。`
+    await refreshAutoBindings()
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '取消自动关联失败。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
 async function cleanupCloudHistory(): Promise<void> {
   if (cleanupBusy.value || actionBusy.value) return
+  if (!configured.value || !credentialsAvailable.value) {
+    error.value = '请先在连接设置中配对资源库。'
+    cloudCleanupOpen.value = false
+    return
+  }
+  const scope = cloudCleanupScope.value
+  cloudCleanupOpen.value = false
   if (
     !(await confirmAction({
-      title: '清理云端已结束任务',
+      title: `清理${scope === 'posts' ? '帖子收件' : scope === 'resources' ? '资源下载' : '帖子收件和资源下载'}？`,
       message:
-        '将删除已保存帖子的云端回执和已导入资源的云端记录；本机内容不会受影响。待领取帖子、正在处理的任务，以及失败或已取消的资源任务会保留，方便继续领取、重试或单独清理。此清理无法撤销。',
-      confirmLabel: '清理云端记录',
+        '只删除已完成的云端记录，本机内容不会受影响；待领取帖子、正在处理的任务，以及失败或已取消的资源任务会保留。此操作无法撤销。',
+      confirmLabel: '清理已完成记录',
     }))
   )
     return
   cleanupBusy.value = true
   error.value = ''
   try {
-    const result = await clearDiscordInboxCloudHistory()
-    progress.value = `已清理云端记录：帖子 ${result.posts} 条，资源 ${result.resources} 项。`
+    const result = await clearDiscordInboxCloudHistory(scope)
+    progress.value = `已清理：帖子 ${result.posts} 条，资源 ${result.resources} 项。`
     window.dispatchEvent(new Event('srl:receive-discord-inbox'))
     window.dispatchEvent(new Event('srl:discord-resources-updated'))
   } catch (cause) {
@@ -133,6 +325,17 @@ async function cleanupCloudHistory(): Promise<void> {
     cleanupBusy.value = false
   }
 }
+
+function openAutomationSettings(): void {
+  automationSettingsOpen.value = true
+}
+
+function openCloudCleanup(): void {
+  cloudCleanupScope.value = 'both'
+  cloudCleanupOpen.value = true
+}
+
+defineExpose({ openAutomationSettings, openCloudCleanup })
 
 async function cancelPendingPost(job: InboxJob): Promise<void> {
   if (actionBusy.value) return
@@ -266,6 +469,7 @@ onMounted(() => {
   window.addEventListener('srl:discord-inbox-updated', onProgress)
   if (!isPairing.value) window.addEventListener('srl:receive-discord-inbox', onConnectionChanged)
   void refresh()
+  if (!isPairing.value) void refreshAutoBindings()
 })
 onBeforeUnmount(() => {
   disposed = true
@@ -314,15 +518,6 @@ onBeforeUnmount(() => {
           <path d="M19 8a8 8 0 0 0-13-2L3 9m0-5v5h5M5 16a8 8 0 0 0 13 2l3-3m0 5v-5h-5" />
         </svg>
         {{ receiving ? '正在领取…' : '领取' }}
-      </button>
-      <button
-        v-if="configured && !isPairing"
-        type="button"
-        data-assistant-focus="inbox-cloud-cleanup"
-        :disabled="loading || actionBusy || cleanupBusy || !credentialsAvailable"
-        @click="cleanupCloudHistory"
-      >
-        {{ cleanupBusy ? '清理中…' : '清理云端' }}
       </button>
     </header>
     <template v-if="configured && !isPairing">
@@ -373,6 +568,134 @@ onBeforeUnmount(() => {
       <p v-else-if="status?.paired && !pendingCount && !loading && !error && !progress">
         暂无新帖子。
       </p>
+      <section v-if="recentAutoBindings.length" class="discord-inbox__auto-bindings">
+        <header>
+          <div>
+            <strong>待确认的自动关联（{{ recentAutoBindings.length }}）</strong>
+            <small>查看正文和角色卡后确认；有误可替换或退回待整理。</small>
+          </div>
+          <button type="button" :disabled="actionBusy" @click="clearAutoBindings">
+            全部退回待整理
+          </button>
+        </header>
+        <ul>
+          <li v-for="item in recentAutoBindings" :key="`${item.resourceId}:${item.sourceId}`">
+            <div class="discord-inbox__auto-binding-summary">
+              <strong>{{ item.sourceTitle }}</strong>
+              <span>→ {{ item.resourceLabel }}</span>
+              <small
+                >自动匹配：{{
+                  item.rule === 'same-name'
+                    ? '同名'
+                    : item.rule === 'same-author'
+                      ? '同作者'
+                      : '后续 PNG'
+                }}</small
+              >
+            </div>
+            <div class="discord-inbox__auto-binding-actions">
+              <button type="button" :disabled="actionBusy" @click="toggleAutoBindingReview(item)">
+                {{
+                  reviewExpandedId === `${item.resourceId}:${item.sourceId}`
+                    ? '收起核对'
+                    : '查看核对'
+                }}
+              </button>
+              <button
+                type="button"
+                :disabled="
+                  actionBusy ||
+                  reviewExpandedId !== `${item.resourceId}:${item.sourceId}` ||
+                  !autoBindingDetails[`${item.resourceId}:${item.sourceId}`]
+                "
+                @click="confirmAutoBinding(item)"
+              >
+                确认正确
+              </button>
+              <button
+                type="button"
+                :disabled="actionBusy"
+                @click="startReplacingAutoBinding(item.sourceId)"
+              >
+                替换资源
+              </button>
+              <button
+                type="button"
+                :disabled="actionBusy"
+                @click="returnAutoBindingToPending(item)"
+              >
+                退回待整理
+              </button>
+            </div>
+            <div
+              v-if="reviewExpandedId === `${item.resourceId}:${item.sourceId}`"
+              class="discord-inbox__auto-binding-review"
+            >
+              <p v-if="!autoBindingDetails[`${item.resourceId}:${item.sourceId}`]">
+                正在读取核对内容…
+              </p>
+              <template v-else>
+                <article>
+                  <h4>帖子正文</h4>
+                  <p
+                    v-for="message in autoBindingDetails[`${item.resourceId}:${item.sourceId}`].view
+                      .messages"
+                    :key="message.id"
+                    class="discord-inbox__review-message"
+                  >
+                    <strong>{{ message.authorName }}</strong>
+                    <span>{{ message.content || '（没有文字正文）' }}</span>
+                  </p>
+                </article>
+                <article>
+                  <h4>当前关联角色卡</h4>
+                  <p v-if="autoBindingDetails[`${item.resourceId}:${item.sourceId}`].resource">
+                    {{ autoBindingDetails[`${item.resourceId}:${item.sourceId}`].resource?.name }} ·
+                    {{
+                      autoBindingDetails[`${item.resourceId}:${item.sourceId}`].resource?.fileName
+                    }}
+                  </p>
+                  <p v-else>当前角色卡不存在或已移除。</p>
+                  <button
+                    v-if="autoBindingDetails[`${item.resourceId}:${item.sourceId}`].resource"
+                    type="button"
+                    @click="
+                      emit(
+                        'open-resource',
+                        autoBindingDetails[`${item.resourceId}:${item.sourceId}`].resource!,
+                      )
+                    "
+                  >
+                    打开角色卡
+                  </button>
+                </article>
+              </template>
+            </div>
+            <div
+              v-if="replacingBindingId === item.sourceId"
+              class="discord-inbox__auto-binding-replace"
+            >
+              <ResourcePicker
+                title="选择要关联的角色卡"
+                :resources="replacementResources"
+                :model-value="selectedReplacementId ? [selectedReplacementId] : []"
+                :multiple="false"
+                :show-actions="false"
+                :disabled="actionBusy"
+                @update:model-value="selectedReplacementId = $event[0] ?? ''"
+              />
+              <button
+                class="button button--primary"
+                type="button"
+                :disabled="!selectedReplacementId || actionBusy"
+                @click="replaceAutoBinding(item)"
+              >
+                确认替换
+              </button>
+            </div>
+          </li>
+        </ul>
+      </section>
     </template>
     <details v-if="isPairing" :open="settingsOpen" @toggle="onSettingsToggle">
       <summary>管理配对</summary>
@@ -429,6 +752,113 @@ onBeforeUnmount(() => {
     </details>
     <p v-if="error" class="discord-inbox__error" role="alert">{{ error }}</p>
   </section>
+  <Teleport to="body">
+    <div
+      v-if="automationSettingsOpen"
+      class="discord-inbox-dialog-backdrop"
+      @click.self="automationSettingsOpen = false"
+    >
+      <section
+        class="discord-inbox-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="inbox-auto-title"
+      >
+        <header>
+          <h2 id="inbox-auto-title">收件箱设置</h2>
+          <button type="button" aria-label="关闭" @click="automationSettingsOpen = false">×</button>
+        </header>
+        <div class="discord-inbox__automation">
+          <label>
+            <span>同名角色卡 <small>只比对最近 5 条未关联帖子</small></span>
+            <input
+              type="checkbox"
+              :checked="automationSettings.bindSameName"
+              @change="
+                updateAutomationSetting('bindSameName', ($event.target as HTMLInputElement).checked)
+              "
+            />
+          </label>
+          <label>
+            <span>同作者角色卡 <small>正文需有“作者：”，且作者名与卡片作者一致</small></span>
+            <input
+              type="checkbox"
+              :checked="automationSettings.bindSameAuthor"
+              @change="
+                updateAutomationSetting(
+                  'bindSameAuthor',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+          </label>
+          <label>
+            <span>帖子后导入的第一个角色卡 PNG <small>只处理后台自动收件</small></span>
+            <input
+              type="checkbox"
+              :checked="automationSettings.bindNextPng"
+              @change="
+                updateAutomationSetting('bindNextPng', ($event.target as HTMLInputElement).checked)
+              "
+            />
+          </label>
+          <label>
+            <span>前台开启自动绑定 <small>云端资源在前台导入时也按以上规则匹配</small></span>
+            <input
+              type="checkbox"
+              :checked="automationSettings.bindForeground"
+              @change="
+                updateAutomationSetting(
+                  'bindForeground',
+                  ($event.target as HTMLInputElement).checked,
+                )
+              "
+            />
+          </label>
+        </div>
+      </section>
+    </div>
+    <div
+      v-if="cloudCleanupOpen"
+      class="discord-inbox-dialog-backdrop"
+      @click.self="cloudCleanupOpen = false"
+    >
+      <section
+        class="discord-inbox-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="inbox-cleanup-title"
+      >
+        <header>
+          <h2 id="inbox-cleanup-title">清理云端</h2>
+          <button type="button" aria-label="关闭" @click="cloudCleanupOpen = false">×</button>
+        </header>
+        <fieldset class="discord-inbox-cleanup-options">
+          <legend>选择清理范围</legend>
+          <label><input v-model="cloudCleanupScope" type="radio" value="posts" />帖子收件</label>
+          <label
+            ><input v-model="cloudCleanupScope" type="radio" value="resources" />资源下载</label
+          >
+          <label><input v-model="cloudCleanupScope" type="radio" value="both" />两者都清理</label>
+        </fieldset>
+        <p>只清理已完成的云端记录，不影响本机内容；未完成任务会保留。</p>
+        <p v-if="!configured || !credentialsAvailable" class="discord-inbox-dialog__error">
+          请先在连接设置中配对资源库。
+        </p>
+        <footer>
+          <button type="button" @click="cloudCleanupOpen = false">取消</button>
+          <button
+            class="discord-inbox-dialog__primary"
+            type="button"
+            :disabled="cleanupBusy || !configured || !credentialsAvailable"
+            @click="cleanupCloudHistory"
+          >
+            {{ cleanupBusy ? '清理中…' : '继续' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped src="../styles/DiscordInboxPanel.css"></style>

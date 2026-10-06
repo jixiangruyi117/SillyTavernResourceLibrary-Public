@@ -87,6 +87,9 @@ const runtime = vi.hoisted(() => ({
       createdAt: 1,
     },
   })),
+  automationSettings: vi.fn(async () => ({ bindNextPng: false })),
+  markPendingPng: vi.fn(async () => undefined),
+  getSourceForAutomation: vi.fn(async () => undefined),
 }))
 
 vi.mock('../core/LibraryContainer', () => ({
@@ -95,6 +98,7 @@ vi.mock('../core/LibraryContainer', () => ({
     importLinks: vi.fn(),
     listResourceListSummaries: runtime.listResources,
   },
+  discordInboxAutomationSettingsService: { load: runtime.automationSettings },
   vaultService: {
     getStatus: runtime.vaultStatus,
   },
@@ -107,6 +111,8 @@ vi.mock('../core/CommunitySourceRuntime', () => ({
     saveDiscordCapture: runtime.saveDiscordCapture,
     localizeSavedMessageAttachments: runtime.localize,
     getSourceUsageByKeyHash: runtime.sourceUsageByHash,
+    getSourceForAutomation: runtime.getSourceForAutomation,
+    updateAutomationPendingPng: runtime.markPendingPng,
   },
 }))
 

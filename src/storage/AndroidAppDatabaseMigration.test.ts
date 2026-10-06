@@ -64,6 +64,35 @@ function createNativePort() {
 }
 
 describe('AndroidAppDatabaseMigrator', () => {
+  it('uses the native bridge batch capacity by default for faster first-run migration', async () => {
+    const database = new Dexie(`android-native-migrate-batched-${crypto.randomUUID()}`)
+    database.version(1).stores({ resources: 'id' })
+    await database
+      .table('resources')
+      .bulkPut(Array.from({ length: 250 }, (_, index) => ({ id: `resource-${index}` })))
+    const native = createNativePort()
+    const putRecordsWithState = native.putRecordsWithState.bind(native)
+    let batchCount = 0
+    native.putRecordsWithState = async (...args) => {
+      batchCount += 1
+      return putRecordsWithState(...args)
+    }
+    const migrator = new AndroidAppDatabaseMigrator({
+      database,
+      native,
+      isQuiesced: () => true,
+    })
+
+    await expect(migrator.migrateStore('resources')).resolves.toMatchObject({
+      copied: 250,
+      total: 250,
+      status: 'verified',
+    })
+    expect(batchCount).toBe(3)
+    expect(native.records.get('resources')?.size).toBe(250)
+    await database.delete()
+  })
+
   it('copies and verifies a store while preserving structured values and binary attachments', async () => {
     const name = `android-native-migration-${crypto.randomUUID()}`
     const database = new Dexie(name)

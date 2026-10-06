@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import ResourceImageViewer from './ResourceImageViewer.vue'
 
 import manualWorkerSource from 'virtual:srl-discord-manual-worker-source'
 
@@ -16,6 +17,16 @@ defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const copyStatus = ref('')
+const previewImage = ref<{ source: string; alt: string }>()
+
+function openScreenshot(event: MouseEvent | KeyboardEvent): void {
+  const trigger = event.currentTarget
+  if (!(trigger instanceof HTMLElement)) return
+  const image = trigger.querySelector('img')
+  if (!image) return
+  trigger.focus({ preventScroll: true })
+  previewImage.value = { source: image.currentSrc || image.src, alt: image.alt }
+}
 
 async function copyText(value: string, message: string): Promise<void> {
   if (!value) return
@@ -87,7 +98,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 打开 Discord Bot 设置
               </a>
               <code>Application ID：General Information → APPLICATION ID</code>
-              <figure class="discord-manual-screenshot">
+              <figure
+                class="discord-manual-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-application-id-redacted.png'"
                   alt="Discord General Information 页面，绿色圈出已遮挡的 Application ID 和 Public Key"
@@ -100,7 +119,15 @@ async function copyText(value: string, message: string): Promise<void> {
               </figure>
               <code>Public Key：General Information → PUBLIC KEY（中文界面显示为“客户端”）</code>
               <code>Bot Token：Bot → Reset Token</code>
-              <figure class="discord-manual-screenshot">
+              <figure
+                class="discord-manual-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-bot-token-redacted.png'"
                   alt="Discord Bot 页面，绿色圈出 Reset Token 按钮"
@@ -231,7 +258,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 勾选框；按上面对应方式设置。三项添加后保存并 Deploy。Bot Token 必须保存为
                 Secret，不要发给别人。
               </p>
-              <figure class="discord-manual-screenshot">
+              <figure
+                class="discord-manual-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/cloudflare-production-variable-fields.jpg'"
                   alt="Cloudflare 新增环境变量表单中环境、Key、Value 和 Secret 的位置"
@@ -251,7 +286,15 @@ async function copyText(value: string, message: string): Promise<void> {
               <p>
                 部署成功后，在 Worker 的 Domains 页面复制 Production 的 workers.dev 地址，格式类似：
               </p>
-              <figure class="discord-manual-screenshot">
+              <figure
+                class="discord-manual-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/workers-dev-enable-redacted.jpg'"
                   alt="Cloudflare Worker Domains 页面，遮挡账户子域名并标出 Production workers.dev 开关"
@@ -302,7 +345,15 @@ async function copyText(value: string, message: string): Promise<void> {
                 workers.dev 地址是否已启用。初次验证发送 PING，只依赖 Public Key 验签；Application
                 ID 和 Bot Token 不参与这一步。
               </p>
-              <figure class="discord-manual-screenshot">
+              <figure
+                class="discord-manual-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
                 <img
                   :src="'/tutorials/discord-github/discord-endpoint-validation-error.jpg'"
                   alt="Discord 交互端点 URL 验证失败示例，并标出应检查的路径和 Public Key"
@@ -353,6 +404,14 @@ async function copyText(value: string, message: string): Promise<void> {
         </div>
       </aside>
     </Transition>
+    <ResourceImageViewer
+      v-if="previewImage"
+      :src="previewImage.source"
+      :name="previewImage.alt"
+      :cover="true"
+      :minimal="true"
+      @close="previewImage = undefined"
+    />
   </Teleport>
 </template>
 

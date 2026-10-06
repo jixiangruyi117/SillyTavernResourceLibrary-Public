@@ -672,6 +672,77 @@ describe('Discord inbox Worker behavior', () => {
     ).toEqual([{ token_hash: 'c'.repeat(64) }, { token_hash: `${'c'.repeat(64)}:chunk:1` }])
   })
 
+  it('cleans only the selected cloud history category', async () => {
+    const pair = await newPair()
+    await bind(pair)
+    const now = Date.now()
+    database.sqlite
+      .prepare(
+        'INSERT INTO inbox_resources (id,library_id,fingerprint,channel_id,message_id,url,name,size,state,created_at,updated_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        '11111111-1111-4111-a111-111111111111',
+        pair.libraryId,
+        'resource-fingerprint',
+        '',
+        '',
+        '',
+        'done.png',
+        1,
+        'imported',
+        now,
+        now,
+        now + 60_000,
+      )
+    database.sqlite
+      .prepare(
+        'INSERT INTO inbox_deliveries (id,handoff_token_hash,library_id,claimed_library_id,dedupe_scope,fingerprint,source_key_hash,state,title,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        'saved-post',
+        'a'.repeat(64),
+        pair.libraryId,
+        pair.libraryId,
+        'post-scope',
+        'post-fingerprint',
+        'post-source',
+        'saved',
+        '已保存帖子',
+        now,
+        now + 60_000,
+      )
+
+    const posts = await request('/inbox/cleanup-scoped', {
+      method: 'DELETE',
+      headers: headers(pair),
+      body: { scope: 'posts' },
+    })
+    expect(posts.status).toBe(200)
+    expect(await posts.json()).toMatchObject({ posts: 1, resources: 0 })
+    expect(database.sqlite.prepare('SELECT id FROM inbox_resources').all()).toHaveLength(1)
+
+    const resources = await request('/inbox/cleanup-scoped', {
+      method: 'DELETE',
+      headers: headers(pair),
+      body: { scope: 'resources' },
+    })
+    expect(resources.status).toBe(200)
+    expect(await resources.json()).toMatchObject({ posts: 0, resources: 1 })
+    expect(database.sqlite.prepare('SELECT id FROM inbox_resources').all()).toHaveLength(0)
+  })
+
+  it('rejects an unknown scoped cleanup category', async () => {
+    const pair = await newPair()
+    await bind(pair)
+    const response = await request('/inbox/cleanup-scoped', {
+      method: 'DELETE',
+      headers: headers(pair),
+      body: { scope: 'everything' },
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_cleanup_scope' })
+  })
+
   it('cancels an unclaimed post and removes its cloud payload without touching another task', async () => {
     const pair = await newPair()
     await bind(pair)

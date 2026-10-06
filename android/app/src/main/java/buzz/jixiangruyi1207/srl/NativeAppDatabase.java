@@ -26,7 +26,7 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
     // rather than rejecting ordinary libraries once they cross an arbitrary 1,000 rows.
     static final int MAX_BATCH_SIZE = 50_000;
     static final int MAX_ROW_JSON_CHARS = 4 * 1024 * 1024;
-    static final int MAX_BLOB_CHUNK_BYTES = 256 * 1024;
+    static final int MAX_BLOB_CHUNK_BYTES = 1024 * 1024;
     static final long MAX_BLOB_BYTES = 4L * 1024L * 1024L * 1024L * 1024L;
     private static final Set<String> STORES = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
         "resources", "resourceSummaries", "resourceListSummaries", "resourceVersions",
@@ -283,6 +283,27 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
         } catch (Exception error) { throw new IllegalStateException("原生数据库分页读取失败", error); }
     }
 
+    JSONArray getRecentRecordsByIndex(String store, String indexName, int limit) {
+        requireStore(store);
+        if (indexName == null || indexName.isBlank() || indexName.length() > 256 || limit < 1 || limit > 200)
+            throw new IllegalArgumentException("原生数据库最近记录查询参数无效");
+        String unboundSource = "communitySources".equals(store)
+            ? " AND NOT EXISTS (SELECT 1 FROM app_record_indexes b WHERE b.store_name = 'resourceSourceBindings' " +
+                "AND b.index_name = 'sourceId' AND b.index_key = r.record_key)"
+            : "";
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+            "SELECT r.record_key, r.payload_json FROM app_records r " +
+                "JOIN app_record_indexes i ON i.store_name = r.store_name AND i.record_key = r.record_key " +
+                "WHERE r.store_name = ? AND i.store_name = ? AND i.index_name = ? " + unboundSource + " " +
+                "GROUP BY r.record_key ORDER BY CAST(trim(i.index_key, '\"') AS INTEGER) DESC, r.record_key DESC LIMIT ?",
+            new String[] {store, store, indexName, String.valueOf(limit)})) {
+            JSONArray rows = new JSONArray();
+            while (cursor.moveToNext()) rows.put(new JSONObject()
+                .put("key", cursor.getString(0)).put("value", new JSONObject(cursor.getString(1))));
+            return rows;
+        } catch (Exception error) { throw new IllegalStateException("原生数据库最近记录读取失败", error); }
+    }
+
     JSONArray getRecordsByKeys(String store, JSONArray keys) {
         requireStore(store);
         if (keys == null || keys.length() > 900) throw new IllegalArgumentException("原生数据库键批次无效");
@@ -383,6 +404,14 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
                     if (keys == null || keys.length() > MAX_BATCH_SIZE)
                         throw new IllegalArgumentException("原生数据库删除批次无效");
                     deleteRecordsWithinTransaction(database, store, keys, hashes);
+                } else if ("moveBlobs".equals(type)) {
+                    String fromStore = operation.optString("fromStore", "");
+                    String fromKey = operation.optString("fromKey", "");
+                    String toStore = operation.optString("toStore", "");
+                    String toKey = operation.optString("toKey", "");
+                    requireStore(fromStore); requireKey(fromKey);
+                    requireStore(toStore); requireKey(toKey);
+                    moveBlobReferencesWithinTransaction(database, fromStore, fromKey, toStore, toKey);
                 } else if ("clear".equals(type)) {
                     collectStoreBlobHashes(database, store, hashes);
                     collectStorePendingPaths(database, store, pendingPaths);
@@ -482,6 +511,27 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
                 database.insertWithOnConflict("app_record_indexes", null, values, SQLiteDatabase.CONFLICT_REPLACE);
             }
         }
+    }
+
+    private static void moveBlobReferencesWithinTransaction(SQLiteDatabase database, String fromStore,
+                                                             String fromKey, String toStore, String toKey) {
+        ArrayList<ContentValues> references = new ArrayList<>();
+        try (Cursor cursor = database.query("app_blobs",
+            new String[] {"field_path", "mime_type", "byte_length", "sha256"},
+            "store_name = ? AND record_key = ?", new String[] {fromStore, fromKey}, null, null, null)) {
+            while (cursor.moveToNext()) {
+                ContentValues target = new ContentValues();
+                target.put("store_name", toStore); target.put("record_key", toKey);
+                target.put("field_path", cursor.getString(0)); target.put("mime_type", cursor.getString(1));
+                target.put("byte_length", cursor.getLong(2)); target.put("sha256", cursor.getString(3));
+                references.add(target);
+            }
+        }
+        for (ContentValues reference : references) {
+            if (database.insertWithOnConflict("app_blobs", null, reference, SQLiteDatabase.CONFLICT_REPLACE) < 0)
+                throw new IllegalStateException("原生资源版本附件关联失败");
+        }
+        database.delete("app_blobs", "store_name = ? AND record_key = ?", new String[] {fromStore, fromKey});
     }
 
     private void attachStagedBlobReferences(SQLiteDatabase database, String store, String key,

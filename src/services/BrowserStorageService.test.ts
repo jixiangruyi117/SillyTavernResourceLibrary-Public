@@ -1,9 +1,16 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BrowserStorageService } from './BrowserStorageService'
 
 describe('BrowserStorageService cabinet desktop resources', () => {
+  it('remembers only the matching resource plaza notice version on this device', () => {
+    const service = new BrowserStorageService()
+    expect(service.hasAcknowledgedResourcePlazaNotice('notice-v1')).toBe(false)
+    service.acknowledgeResourcePlazaNotice('notice-v1')
+    expect(new BrowserStorageService().hasAcknowledgedResourcePlazaNotice('notice-v1')).toBe(true)
+    expect(service.hasAcknowledgedResourcePlazaNotice('notice-v2')).toBe(false)
+  })
   it('imports older preferences while dropping the retired history retention field on export', () => {
     const service = new BrowserStorageService()
     const legacyPreferences = {
@@ -30,6 +37,31 @@ describe('BrowserStorageService cabinet desktop resources', () => {
   beforeEach(() => {
     localStorage.clear()
     document.cookie = 'srl_project_notice=; Max-Age=0; Path=/'
+  })
+  it('remembers only the exact resource plaza notice on this device', () => {
+    const service = new BrowserStorageService()
+    expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
+    service.acknowledgeResourcePlazaNotice('current')
+    expect(new BrowserStorageService().hasAcknowledgedResourcePlazaNotice('current')).toBe(true)
+    expect(service.hasAcknowledgedResourcePlazaNotice('updated')).toBe(false)
+    localStorage.clear()
+    expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
+  })
+  it('requires acknowledgement again when device storage is unavailable', () => {
+    const service = new BrowserStorageService()
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('unavailable')
+    })
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota')
+    })
+    try {
+      expect(() => service.acknowledgeResourcePlazaNotice('current')).not.toThrow()
+      expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
+    } finally {
+      read.mockRestore()
+      write.mockRestore()
+    }
   })
   it('defaults to hiding companion chat regex and preserves the choice in portable preferences', () => {
     const service = new BrowserStorageService()

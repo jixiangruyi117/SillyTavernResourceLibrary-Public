@@ -199,6 +199,7 @@ class NativeTransactionFacade implements NativeTransaction {
   private readonly loaded = new Set<string>()
   private aborted = false
   private finished = false
+  private activeRequests = 0
   private autoCompleteTimer?: ReturnType<typeof setTimeout>
   readonly native: typeof nativeAppDatabase
   private readonly emitComplete: (error?: unknown) => Promise<void>
@@ -239,15 +240,20 @@ class NativeTransactionFacade implements NativeTransaction {
           onerror: null,
         }
         if (key === Number.NEGATIVE_INFINITY || key === Number.POSITIVE_INFINITY) {
+          // Dexie's waitFor() issues get(-Infinity) requests as keep-alives while it awaits
+          // native async work. Cancel any pending auto-close so a slow bridge round-trip
+          // cannot close the readwrite transaction before Dexie resumes it.
+          this.pauseAutoComplete()
           setTimeout(() => request.onsuccess?.(), 0)
-          this.scheduleAutoComplete()
           return request
         }
         void this.get(name, key).then(
           (value) => {
             request.result = value
-            setTimeout(() => request.onsuccess?.(), 0)
-            this.scheduleAutoComplete()
+            setTimeout(() => {
+              request.onsuccess?.()
+              this.scheduleAutoComplete()
+            }, 0)
           },
           (error) => request.onerror?.(new ErrorEvent('error', { error }) as unknown as Event),
         )
@@ -307,7 +313,6 @@ class NativeTransactionFacade implements NativeTransaction {
       afterKey = page.nextKey
     }
     this.loaded.add(store)
-    this.scheduleAutoComplete()
     return this.entriesFor(store)
   }
 
@@ -317,12 +322,10 @@ class NativeTransactionFacade implements NativeTransaction {
     const changes = this.changesFor(store)
     const staged = changes.get(token)
     if (staged) {
-      this.scheduleAutoComplete()
       return staged.deleted ? undefined : cloneValue(staged.value)
     }
     const cached = this.cacheFor(store).get(token)
     if (cached) {
-      this.scheduleAutoComplete()
       if (cached.deleted) return undefined
       if (cached.encoded) {
         const decoded = await decodeAppDatabaseValue(
@@ -338,13 +341,9 @@ class NativeTransactionFacade implements NativeTransaction {
     }
     const nativeStore = store as NativeAppDatabaseStore
     const value = await this.native.getRecord(nativeStore, token)
-    if (value === undefined) {
-      this.scheduleAutoComplete()
-      return undefined
-    }
+    if (value === undefined) return undefined
     const decoded = await decodeAppDatabaseValue(value, nativeStore, token, this.native)
     this.cacheFor(store).set(token, { key, value: decoded, deleted: false, encoded: false })
-    this.scheduleAutoComplete()
     return cloneValue(decoded)
   }
 
@@ -394,9 +393,25 @@ class NativeTransactionFacade implements NativeTransaction {
   }
 
   scheduleAutoComplete(): void {
-    if (this.finished || this.aborted) return
+    if (this.finished || this.aborted || this.activeRequests > 0) return
     if (this.autoCompleteTimer) clearTimeout(this.autoCompleteTimer)
     this.autoCompleteTimer = setTimeout(() => this.commit(), 0)
+  }
+
+  pauseAutoComplete(): void {
+    if (this.autoCompleteTimer) clearTimeout(this.autoCompleteTimer)
+    this.autoCompleteTimer = undefined
+  }
+
+  async runRequest<T>(operation: () => Promise<T>): Promise<T> {
+    this.pauseAutoComplete()
+    this.activeRequests += 1
+    try {
+      return await operation()
+    } finally {
+      this.activeRequests -= 1
+      if (this.activeRequests === 0) this.scheduleAutoComplete()
+    }
   }
 
   entriesFor(store: string): Map<string, StoredEntry> {
@@ -483,7 +498,9 @@ function createCursor(
   values: boolean,
   reverse: boolean,
   decode: (value: unknown, row: (typeof rows)[number]) => Promise<unknown>,
+  nativeTransaction: NativeTransactionFacade,
 ): DBCoreCursor {
+  nativeTransaction.pauseAutoComplete()
   let position = 0
   let done = rows.length === 0
   let callback: (() => void) | undefined
@@ -547,6 +564,7 @@ function createCursor(
     stop(value) {
       if (done && resolveIteration === undefined) return
       done = true
+      nativeTransaction.scheduleAutoComplete()
       resolveIteration?.(value)
       resolveIteration = undefined
     },
@@ -579,6 +597,7 @@ function createCursor(
     if (done) return
     if (position >= rows.length) {
       done = true
+      nativeTransaction.scheduleAutoComplete()
       resolveIteration?.()
       resolveIteration = undefined
       return
@@ -747,7 +766,6 @@ async function applyMutations(
       }
     }
   }
-  trans.scheduleAutoComplete()
   return { numFailures: Object.keys(failures).length, failures, results, lastResult }
 }
 
@@ -845,22 +863,47 @@ export function createAndroidNativeDexieCore(options: {
             ...downstreamTable,
             async get(request) {
               if (!options.enabled()) return downstreamTable.get(request)
-              return (request.trans as NativeTransactionFacade).get(name, request.key)
+              const trans = request.trans as NativeTransactionFacade
+              return trans.runRequest(() => trans.get(name, request.key))
             },
             async getMany(request) {
               if (!options.enabled()) return downstreamTable.getMany(request)
               const trans = request.trans as NativeTransactionFacade
-              return Promise.all(request.keys.map((key) => trans.get(name, key)))
+              return trans.runRequest(() =>
+                Promise.all(request.keys.map((key) => trans.get(name, key))),
+              )
             },
             async query(request) {
               if (!options.enabled()) return downstreamTable.query(request)
               const trans = request.trans as NativeTransactionFacade
-              if (!request.query.index.isPrimaryKey && request.query.index.name) {
-                let rows = await trans.queryIndex(
-                  name,
+              return trans.runRequest(async () => {
+                if (!request.query.index.isPrimaryKey && request.query.index.name) {
+                  let rows = await trans.queryIndex(
+                    name,
+                    request.query.index,
+                    request.query.range,
+                    request.direction ?? 'next',
+                  )
+                  if (request.limit !== undefined) rows = rows.slice(0, request.limit)
+                  const result =
+                    request.values === false
+                      ? rows.map((row) => cloneValue(row.primaryKey))
+                      : await Promise.all(
+                          rows.map(async (row) =>
+                            cloneValue(
+                              row.encoded ? await trans.get(name, row.primaryKey) : row.value,
+                            ),
+                          ),
+                        )
+                  return { result }
+                }
+                const entries = await trans.load(name)
+                const direction = request.direction ?? 'next'
+                let rows = getCursorRows(
+                  entries,
                   request.query.index,
                   request.query.range,
-                  request.direction ?? 'next',
+                  direction,
                 )
                 if (request.limit !== undefined) rows = rows.slice(0, request.limit)
                 const result =
@@ -869,58 +912,45 @@ export function createAndroidNativeDexieCore(options: {
                     : await Promise.all(
                         rows.map(async (row) =>
                           cloneValue(
-                            row.encoded ? await trans.get(name, row.primaryKey) : row.value,
+                            row.encoded
+                              ? await decodeAppDatabaseValue(
+                                  row.value,
+                                  name as NativeAppDatabaseStore,
+                                  encodeAppDatabaseKey(row.primaryKey),
+                                  trans.native,
+                                )
+                              : row.value,
                           ),
                         ),
                       )
                 return { result }
-              }
-              const entries = await trans.load(name)
-              const direction = request.direction ?? 'next'
-              let rows = getCursorRows(entries, request.query.index, request.query.range, direction)
-              if (request.limit !== undefined) rows = rows.slice(0, request.limit)
-              const result =
-                request.values === false
-                  ? rows.map((row) => cloneValue(row.primaryKey))
-                  : await Promise.all(
-                      rows.map(async (row) =>
-                        cloneValue(
-                          row.encoded
-                            ? await decodeAppDatabaseValue(
-                                row.value,
-                                name as NativeAppDatabaseStore,
-                                encodeAppDatabaseKey(row.primaryKey),
-                                trans.native,
-                              )
-                            : row.value,
-                        ),
-                      ),
-                    )
-              return { result }
+              })
             },
             async count(request) {
               if (!options.enabled()) return downstreamTable.count(request)
               const trans = request.trans as NativeTransactionFacade
-              if (!request.query.index.isPrimaryKey && request.query.index.name) {
-                return (
-                  await trans.queryIndex(name, request.query.index, request.query.range, 'next')
-                ).length
-              }
-              const entries = await trans.load(name)
-              return getCursorRows(entries, request.query.index, request.query.range, 'next').length
+              return trans.runRequest(async () => {
+                if (!request.query.index.isPrimaryKey && request.query.index.name) {
+                  return (
+                    await trans.queryIndex(name, request.query.index, request.query.range, 'next')
+                  ).length
+                }
+                const entries = await trans.load(name)
+                return getCursorRows(entries, request.query.index, request.query.range, 'next')
+                  .length
+              })
             },
             async mutate(request) {
               if (!options.enabled()) return downstreamTable.mutate(request)
-              return applyMutations(
-                request.trans as NativeTransactionFacade,
-                name,
-                downstreamTable.schema,
-                request,
+              const trans = request.trans as NativeTransactionFacade
+              return trans.runRequest(() =>
+                applyMutations(trans, name, downstreamTable.schema, request),
               )
             },
             async openCursor(request) {
               if (!options.enabled()) return downstreamTable.openCursor(request)
               const trans = request.trans as NativeTransactionFacade
+              trans.pauseAutoComplete()
               if (!request.query.index.isPrimaryKey && request.query.index.name) {
                 const rows = await trans.queryIndex(
                   name,
@@ -934,6 +964,10 @@ export function createAndroidNativeDexieCore(options: {
                       ? 'nextunique'
                       : 'next',
                 )
+                if (!rows.length) {
+                  trans.scheduleAutoComplete()
+                  return null
+                }
                 return rows.length
                   ? createCursor(
                       request.trans,
@@ -941,6 +975,7 @@ export function createAndroidNativeDexieCore(options: {
                       request.values !== false,
                       request.reverse ?? false,
                       async (value, row) => (row.encoded ? trans.get(name, row.primaryKey) : value),
+                      trans,
                     )
                   : null
               }
@@ -958,6 +993,10 @@ export function createAndroidNativeDexieCore(options: {
                 request.query.range,
                 direction,
               )
+              if (!rows.length) {
+                trans.scheduleAutoComplete()
+                return null
+              }
               return rows.length
                 ? createCursor(
                     request.trans,
@@ -971,6 +1010,7 @@ export function createAndroidNativeDexieCore(options: {
                         encodeAppDatabaseKey(row.primaryKey),
                         trans.native,
                       ),
+                    trans,
                   )
                 : null
             },

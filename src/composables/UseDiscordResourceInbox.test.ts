@@ -134,7 +134,9 @@ describe('cloud resource coordination', () => {
     const intake = start()
     await flushPromises()
     expect(setup.ack).toHaveBeenCalledWith(job.id, 'imported', target, undefined)
-    expect(setup.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'resource', state: 'duplicate' }))
+    expect(setup.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'resource', state: 'duplicate' }),
+    )
     expect(taskCenter.list()[0]?.status).toBe('completed')
     expect(intake.receive).not.toHaveBeenCalled()
   })

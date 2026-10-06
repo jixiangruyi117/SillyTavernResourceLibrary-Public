@@ -478,25 +478,43 @@ export async function handleInboxRequest(
         .run()
       return json({ ok: true })
     }
-    if (path === '/inbox/cleanup' && request.method === 'DELETE') {
+    if (
+      (path === '/inbox/cleanup' || path === '/inbox/cleanup-scoped') &&
+      request.method === 'DELETE'
+    ) {
+      const scoped = path === '/inbox/cleanup-scoped'
+      const body = scoped ? await requestBody(request) : undefined
+      const scope = scoped ? body?.scope : 'both'
+      if (scope !== 'posts' && scope !== 'resources' && scope !== 'both')
+        throw new InboxError(400, 'invalid_cleanup_scope')
       const now = Date.now()
-      const [payloads, posts, resources] = await env.DB.batch([
-        cleanupCompletedHandoffPayloads(env, endpoint.library_id, now),
-        env.DB.prepare(
-          `DELETE FROM inbox_deliveries WHERE claimed_library_id = ? AND state IN ('saved','waiting_binding') AND expires_at > ?
+      const statements: D1PreparedStatement[] = []
+      if (scope === 'posts' || scope === 'both') {
+        statements.push(
+          cleanupCompletedHandoffPayloads(env, endpoint.library_id, now),
+          env.DB.prepare(
+            `DELETE FROM inbox_deliveries WHERE claimed_library_id = ? AND state IN ('saved','waiting_binding') AND expires_at > ?
            AND (library_id IS NULL OR EXISTS (SELECT 1 FROM inbox_endpoints e
              WHERE e.library_id = inbox_deliveries.library_id AND e.revoked_at IS NULL))`,
-        ).bind(endpoint.library_id, now),
-        env.DB.prepare(
-          `DELETE FROM inbox_resources WHERE library_id = ? AND expires_at > ?
+          ).bind(endpoint.library_id, now),
+        )
+      }
+      if (scope === 'resources' || scope === 'both') {
+        statements.push(
+          env.DB.prepare(
+            `DELETE FROM inbox_resources WHERE library_id = ? AND expires_at > ?
            AND state = 'imported'`,
-        ).bind(endpoint.library_id, now),
-      ])
+          ).bind(endpoint.library_id, now),
+        )
+      }
+      const results = await env.DB.batch(statements)
+      const includesPosts = scope === 'posts' || scope === 'both'
+      const includesResources = scope === 'resources' || scope === 'both'
       return json({
         ok: true,
-        posts: posts.meta.changes ?? 0,
-        resources: resources.meta.changes ?? 0,
-        payloadRows: payloads.meta.changes ?? 0,
+        posts: includesPosts ? (results[includesPosts ? 1 : 0]?.meta.changes ?? 0) : 0,
+        resources: includesResources ? (results[includesPosts ? 2 : 0]?.meta.changes ?? 0) : 0,
+        payloadRows: includesPosts ? (results[0]?.meta.changes ?? 0) : 0,
       })
     }
     if (path === '/inbox/jobs' && request.method === 'GET') {

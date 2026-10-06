@@ -1,5 +1,9 @@
 import type { LibraryImportContext, ImportTotals } from './UseLibraryImport'
-import { resourceService } from '../core/LibraryContainer'
+import {
+  communitySourceService,
+  discordInboxAutomationSettingsService,
+  resourceService,
+} from '../core/LibraryContainer'
 
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 
@@ -35,6 +39,8 @@ import { materializeNativeFile, nativeFileSize } from '../core/NativeFileSource'
 import { markSharedImportItemCompleted, type SharedFileBatch } from '../utils/ShareTargetIntake'
 
 import { hashBlob } from '../services/HashService'
+import { autoBindIncomingCard } from '../services/DiscordInboxAutoBinding'
+import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
 
 export interface UseLibraryFileImportContext {
   getContext: () => LibraryImportContext
@@ -80,6 +86,9 @@ export async function importResourceFiles(
       if (ownsTask) taskCenter.cancelled(taskId)
       return false
     }
+    const automationSettings = await discordInboxAutomationSettingsService
+      .load()
+      .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
     const { protectPersonalImport } = await import('../services/PersonalResourceImport')
     const { requestSecretPassword } = await import('./UseSecretPasswordPrompt')
     const protectedFiles = []
@@ -123,6 +132,7 @@ export async function importResourceFiles(
       extractCharacterAssets: context.extractCharacterAssets.value,
       skipVersionComparison: context.skipVersionComparisonOnImport.value,
       sameNameVersionCandidates: context.sameNameVersionCandidates?.value === true,
+      preferPngContainer: automationSettings.preferPngContainer,
       persistVersionMatchCache: context.persistResourceVersionMatchCache.value,
       signal: operations.activeImportAbortController?.signal,
       completedContentHashes: shareBatch?.completedContentHashes,
@@ -164,6 +174,23 @@ export async function importResourceFiles(
           else await shareBatch?.markImportItemCompleted?.(result.resource.contentHash)
         }
         await shareBatch?.onItemComplete?.(result)
+        if (
+          shareBatch?.automaticCloud &&
+          automationSettings.bindForeground &&
+          result.status === 'imported'
+        ) {
+          const binding = await autoBindIncomingCard(
+            communitySourceService,
+            result.resource,
+            automationSettings,
+          )
+          if (binding)
+            window.dispatchEvent(
+              new CustomEvent('srl:community-sources-changed', {
+                detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
+              }),
+            )
+        }
       },
       onProgress: ({ completed, total, fileName, phase }) => {
         operations.updateImportTask(taskId, {

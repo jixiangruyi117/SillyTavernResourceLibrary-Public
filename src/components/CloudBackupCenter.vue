@@ -4,6 +4,7 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import BackupScopeTree from './BackupScopeTree.vue'
+import ResourceImageViewer from './ResourceImageViewer.vue'
 import {
   useCloudBackupCenter,
   type CloudBackupCenterProps,
@@ -849,32 +850,14 @@ onUnmounted(() => window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleScope
           </button>
         </footer>
       </dialog>
-      <div
+      <ResourceImageViewer
         v-if="tutorialPreview"
-        class="tutorial-preview"
-        role="dialog"
-        aria-modal="true"
-        aria-label="教程大图预览"
-        @click.self="closeTutorialPreview"
-      >
-        <section class="tutorial-preview__panel">
-          <header>
-            <span><small>GUIDE PREVIEW</small><strong>教程大图</strong></span>
-            <button
-              ref="tutorialCloseButton"
-              type="button"
-              aria-label="关闭教程大图"
-              @click="closeTutorialPreview"
-            >
-              关闭
-            </button>
-          </header>
-          <div class="tutorial-preview__canvas" @click.self="closeTutorialPreview">
-            <img :src="tutorialPreview.source" :alt="tutorialPreview.alt" />
-          </div>
-          <p>点击图片外的空白处，或按 Esc 返回教程。</p>
-        </section>
-      </div>
+        :src="tutorialPreview.source"
+        :name="tutorialPreview.alt"
+        :cover="true"
+        :minimal="true"
+        @close="closeTutorialPreview"
+      />
     </Teleport>
   </section>
 </template>

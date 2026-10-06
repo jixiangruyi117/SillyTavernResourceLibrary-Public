@@ -46,6 +46,72 @@ public final class NativeDiscordDownloadWorker extends Worker {
         return "parsed".equals(state) || "parsed_index_unavailable".equals(state);
     }
 
+    static boolean shouldRetryAfterMigration(String importState, int runAttemptCount) {
+        return "native_database_unavailable".equals(importState) && runAttemptCount < 5;
+    }
+
+    static boolean shouldAppendDeferredImport(boolean running, boolean hasPendingFollowup) {
+        return running && !hasPendingFollowup;
+    }
+
+    static boolean shouldRetryStagedImport(JSONObject ready) {
+        JSONObject outcome = ready == null ? null : ready.optJSONObject("nativeImportOutcome");
+        return outcome != null && "native_database_unavailable".equals(outcome.optString("state"));
+    }
+
+    static synchronized int resumeDeferredImports(Context context) throws Exception {
+        NativeAppDatabase database = new NativeAppDatabase(context);
+        String activeState = database.getState("migration:appdb:v1:active");
+        if (activeState == null || !"verified-v1".equals(database.getState("migration:appdb:indexes:v1:active"))) return 0;
+        JSONObject active = new JSONObject(activeState);
+        String mode = active.optString("mode", "active");
+        if (active.optInt("version") != 1 || !("active".equals(mode) || "".equals(mode))) return 0;
+
+        File folder = new File(context.getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER);
+        File[] receipts = folder.listFiles((dir, name) -> name.endsWith(".done"));
+        if (receipts == null) return 0;
+        WorkManager manager = WorkManager.getInstance(context);
+        int resumed = 0;
+        for (File receipt : receipts) {
+            String token = receipt.getName().substring(0, receipt.getName().length() - ".done".length());
+            if (!validToken(token)) continue;
+            String stagedToken = NativeShareImportService.stagedToken(token, 0);
+            File metadataFile = new File(folder, stagedToken + ".json");
+            File payload = new File(folder, stagedToken);
+            if (!metadataFile.isFile() || !payload.isFile()) continue;
+            JSONObject ready = NativeShareImportService.readMetadata(metadataFile);
+            if (!shouldRetryStagedImport(ready)) continue;
+
+            boolean alreadyRunning = false;
+            boolean hasPendingFollowup = false;
+            for (WorkInfo info : manager.getWorkInfosForUniqueWork(WORK_PREFIX + token).get()) {
+                if (info.getState() == WorkInfo.State.RUNNING) alreadyRunning = true;
+                else if (!info.getState().isFinished()) hasPendingFollowup = true;
+            }
+            OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(NativeDiscordDownloadWorker.class)
+                .setInputData(new Data.Builder().putString("token", token).build())
+                .addTag(TAG).addTag(WORK_PREFIX + token)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build();
+            if (alreadyRunning) {
+                // Startup can find a staged file while its last migration-gated attempt is still
+                // running. Queue one check behind it so the ready database is not missed forever.
+                if (shouldAppendDeferredImport(true, hasPendingFollowup)) {
+                    manager.enqueueUniqueWork(WORK_PREFIX + token, ExistingWorkPolicy.APPEND, request)
+                        .getResult().get();
+                    resumed++;
+                }
+                continue;
+            }
+            ready.put("downloadWorkId", request.getId().toString());
+            NativeShareImportService.writeMetadata(folder, stagedToken, ready);
+            manager.enqueueUniqueWork(WORK_PREFIX + token, ExistingWorkPolicy.REPLACE, request).getResult().get();
+            notifyQueued(context, token, request.getId().toString(), "正在后台继续校验并导入已下载附件");
+            ShareReceiverPlugin.notifyDiscordDownloadStarted(token, request.getId().toString(), ready.optString("name", "云端资源"), ready.has("cloudLibraryId"));
+            resumed++;
+        }
+        return resumed;
+    }
+
     static String completionText(JSONObject processed, JSONObject nativeImport) {
         String parsedState = processed == null ? "" : processed.optString("state");
         String importState = nativeImport == null ? "deferred" : nativeImport.optString("state", "deferred");
@@ -198,9 +264,26 @@ public final class NativeDiscordDownloadWorker extends Worker {
         File folder = new File(getApplicationContext().getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER);
         File source = new File(folder, token + ".json");
         try {
-            if (new File(folder, token + ".done").isFile()) return Result.success();
+            boolean retryStagedImport = false;
+            if (new File(folder, token + ".done").isFile()) {
+                File readyMetadata = new File(folder, NativeShareImportService.stagedToken(token, 0) + ".json");
+                retryStagedImport = readyMetadata.isFile()
+                    && shouldRetryStagedImport(NativeShareImportService.readMetadata(readyMetadata));
+            }
+            if (new File(folder, token + ".done").isFile() && !retryStagedImport) return Result.success();
             JSONObject metadata;
-            synchronized (NativeDiscordDownloadWorker.class) {
+            if (retryStagedImport) {
+                String stagedToken = NativeShareImportService.stagedToken(token, 0);
+                File readyMetadata = new File(folder, stagedToken + ".json");
+                if (!readyMetadata.isFile() || !new File(folder, stagedToken).isFile()) return Result.success();
+                JSONObject ready = NativeShareImportService.readMetadata(readyMetadata);
+                JSONObject previous = ready.optJSONObject("nativeImportOutcome");
+                String previousState = previous == null ? "" : previous.optString("state");
+                if ("imported".equals(previousState) || "duplicate_file".equals(previousState)
+                    || "duplicate_card".equals(previousState) || "waiting_version".equals(previousState)
+                    || "vault_requires_foreground".equals(previousState)) return Result.success();
+                metadata = new JSONObject(ready.toString()).put("downloadWorkId", getId().toString());
+            } else synchronized (NativeDiscordDownloadWorker.class) {
                 metadata = NativeShareImportService.readMetadata(source);
                 // Jobs already queued by an earlier APK acquire the same persisted action identity.
                 if (metadata.optString("downloadWorkId").isBlank()) {
@@ -210,23 +293,28 @@ public final class NativeDiscordDownloadWorker extends Worker {
                 if (!canCheckpoint(metadata, getId().toString())) return Result.failure();
             }
             // Honor CDN Retry-After without sleeping a worker thread or spending a network attempt.
-            if (metadata.optLong("downloadNotBefore", 0) > System.currentTimeMillis()) {
+            if (!retryStagedImport && metadata.optLong("downloadNotBefore", 0) > System.currentTimeMillis()) {
                 notifyWaiting(token, source);
                 return Result.retry();
             }
-            synchronized (NativeDiscordDownloadWorker.class) {
+            if (!retryStagedImport) synchronized (NativeDiscordDownloadWorker.class) {
                 requireCurrent(source);
                 clearNotification(getApplicationContext(), token);
                 setForegroundAsync(foreground(token, "等待下载 " + metadata.optString("name"), 0, 0)).get();
                 NativeInboxNotificationGroup.refresh(getApplicationContext());
             }
-            transfer = NativeExecutors.network().submit(() -> {
-                try { runTransfer(token, () -> download(folder, source, token, metadata)); }
-                catch (Exception error) { throw new TransferFailure(error); }
-            });
-            if (isStopped()) transfer.cancel(true);
-            transfer.get();
-            if (isStopped()) return Result.retry();
+            if (retryStagedImport) {
+                clearNotification(getApplicationContext(), token);
+                setForegroundAsync(foreground(token, "后台继续解析 " + metadata.optString("name"), 0, 0)).get();
+            } else {
+                transfer = NativeExecutors.network().submit(() -> {
+                    try { runTransfer(token, () -> download(folder, source, token, metadata)); }
+                    catch (Exception error) { throw new TransferFailure(error); }
+                });
+                if (isStopped()) transfer.cancel(true);
+                transfer.get();
+                if (isStopped()) return Result.retry();
+            }
             JSONObject processed = new JSONObject();
             JSONObject nativeImport = new JSONObject().put("state", "deferred");
             try {
@@ -285,6 +373,12 @@ public final class NativeDiscordDownloadWorker extends Worker {
                 metadata.put("nativeImportOutcome", nativeImport);
             }
             String importState = nativeImport.optString("state", "deferred");
+            if (shouldRetryAfterMigration(importState, getRunAttemptCount())) {
+                notifyFinished(getApplicationContext(), token, getId().toString(),
+                    metadata.optString("name", "云端资源") + "：已下载",
+                    "原生资源库暂不可用；下载文件已保留，打开 SRL 后会继续导入。", false);
+                return Result.retry();
+            }
             boolean importedOrDuplicate = "imported".equals(importState)
                 || "duplicate_file".equals(importState) || "duplicate_card".equals(importState);
             String completionText = completionText(processed, nativeImport);
