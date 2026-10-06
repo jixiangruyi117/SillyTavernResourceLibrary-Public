@@ -1,6 +1,8 @@
 import { computed, ref, shallowRef, useTemplateRef } from 'vue'
 
-import { isAndroidApk } from '../core/AndroidAppUpdate'
+// SRL-PUBLIC-SYNC: BEGIN REPLACE id=public-apk-platform-detection
+import { isCapacitorApp as isAndroidApk } from '../utils/CapacitorDetection'
+// SRL-PUBLIC-SYNC: END REPLACE id=public-apk-platform-detection
 
 import { browserStorageService } from '../core/LibraryContainer'
 

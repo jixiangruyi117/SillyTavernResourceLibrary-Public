@@ -18,7 +18,6 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 import buildInfo from './build-info.json' with { type: 'json' }
 
-const authProxy = { '/api': 'http://127.0.0.1:8787' }
 const previewVendorGlobalsSourceId = 'virtual:srl-preview-vendor-globals-source'
 const resolvedPreviewVendorGlobalsSourceId = `\0${previewVendorGlobalsSourceId}`
 const appearanceStarterCssSourceId = 'virtual:srl-appearance-starter-css-source'
@@ -267,7 +266,9 @@ export default defineConfig({
       },
     },
     appearanceStarterCssSourcePlugin(),
-    officialAppPackagesPlugin(buildInfo.buildId),
+    // SRL-PUBLIC-SYNC: BEGIN REPLACE id=official-app-package-build
+    officialAppPackagesPlugin(buildInfo.buildId, false),
+    // SRL-PUBLIC-SYNC: END REPLACE id=official-app-package-build
     previewVendorGlobalsSourcePlugin(),
     {
       name: 'srl-discord-manual-worker-source',
@@ -312,7 +313,7 @@ export default defineConfig({
         ],
         globIgnores: ['**/downloads/**', '**/official-apps/**', '**/offline-assets.json'],
         navigateFallback: 'index.html',
-        // 登录与互传中继必须实时访问服务器，任何情况下都不能走缓存。
+        // 互传中继必须实时访问 Worker，任何情况下都不能走缓存。
         navigateFallbackDenylist: [/^\/api\//, /^\/force-refresh\.html$/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
@@ -370,8 +371,6 @@ export default defineConfig({
     cssTarget: 'chrome61',
   },
   server: {
-    proxy: authProxy,
     watch: { ignored: ['**/android/**'] },
   },
-  preview: { proxy: authProxy },
 })

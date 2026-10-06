@@ -11,9 +11,11 @@ const modal = ref<HTMLDialogElement>()
 const confirmButton = ref<HTMLButtonElement>()
 const cancelButton = ref<HTMLButtonElement>()
 const dialogPanel = ref<HTMLElement>()
+// SRL-PUBLIC-SYNC: BEGIN REPLACE id=assistant-token-review-dialog-state
 const TokenReview = defineAsyncComponent(() => import('./ProductAssistantTokenReview.vue'))
 const tokenReview = ref<{ closeDetail: () => void }>()
 const detailsOpen = ref(false)
+// SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-dialog-state
 let returnFocus: HTMLElement | undefined
 
 // 危险操作默认聚焦取消，避免回车误确认；普通操作聚焦确认。
@@ -67,8 +69,13 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 function cancelOrReturn(): void {
-  if (detailsOpen.value) tokenReview.value?.closeDetail()
-  else respond('cancel')
+  // SRL-PUBLIC-SYNC: BEGIN REPLACE id=assistant-token-review-cancel
+  if (detailsOpen.value) {
+    tokenReview.value?.closeDetail()
+    return
+  }
+  respond('cancel')
+  // SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-cancel
 }
 
 function respondWithHaptic(response: 'confirm' | 'cancel' | 'alternative'): void {
@@ -111,6 +118,7 @@ onUnmounted(() => {
         aria-modal="true"
         :aria-label="activeDialog.title"
       >
+        <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=assistant-token-review-dialog-content -->
         <h3 v-if="!detailsOpen">{{ activeDialog.title }}</h3>
         <TokenReview
           v-if="activeDialog.tokenReview"
@@ -120,6 +128,7 @@ onUnmounted(() => {
           @details="detailsOpen = $event"
         />
         <p v-else>{{ activeDialog.message }}</p>
+        <!-- SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-dialog-content -->
         <footer v-if="!detailsOpen">
           <button ref="cancelButton" type="button" @click="respondWithHaptic('cancel')">
             {{ activeDialog.cancelLabel }}

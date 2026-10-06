@@ -1,21 +1,14 @@
 /** @vitest-environment jsdom */
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-vi.mock('../core/OfficialAppRuntime', () => ({
-  ensurePreinstalledOfficialApps: async () => undefined,
-  acquireOfficialAppUse: async () => () => {},
-  officialAppService: { list: async () => [{ id: 'imageAlbum' }, { id: 'assistant' }] },
-  loadOfficialApp: async (id: string) => {
-    if (id === 'assistant') return (await import('./ProductAssistant.vue')).default
-    throw new Error(`Unexpected test APP: ${id}`)
-  },
-}))
+// SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-assistant-component-test-mock
 vi.mock('./ProductAssistant.vue', () => ({
   default: {
     props: ['getContext', 'execute', 'captureReference'],
     template: '<div data-testid="assistant">AI 助手</div>',
   },
 }))
+// SRL-PUBLIC-SYNC: END REPLACE id=appearance-assistant-component-test-mock
 
 import { BrowserStorageService } from '../services/BrowserStorageService'
 import AppearanceOriginalCssActions from './AppearanceOriginalCssActions.vue'
@@ -53,7 +46,8 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.get('[data-cabinet-columns="2"]').attributes('aria-checked')).toBe('true')
   })
 
-  it('offers every feature app and separates installed APPs from dormant scopes', async () => {
+  // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-scope-availability-test
+  it('offers every local feature app as an editable scope', async () => {
     const wrapper = mount(AppearanceStudio, {
       props: { theme: 'light', layoutMode: 'grid', uiFontScale: 'standard', customCss: '' },
     })
@@ -65,9 +59,10 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.text()).toContain('user才是老大')
     await flushPromises()
     expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('生图相册')
-    expect(wrapper.get('[aria-label="未安装 APP 的样式"]').text()).toContain('AI 生图')
-    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).not.toContain('AI 生图')
+    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('AI 生图')
+    expect(wrapper.find('[aria-label="未安装 APP 的样式"]').exists()).toBe(false)
   })
+  // SRL-PUBLIC-SYNC: END REPLACE id=appearance-scope-availability-test
 
   it('shares official CSS actions without passing user CSS', () => {
     const wrapper = mount(AppearanceStudio, {
@@ -262,16 +257,17 @@ describe('AppearanceStudio AI CSS owner', () => {
       request,
       signal,
     )
+    // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-assistant-app-availability-test
     expect(value.data).toMatchObject({
       appInstallation: {
         availableRegions: expect.arrayContaining([
           expect.objectContaining({ value: 'app:imageAlbum' }),
-        ]),
-        unavailableRegions: expect.arrayContaining([
           expect.objectContaining({ value: 'app:imageGeneration' }),
         ]),
+        unavailableRegions: [],
       },
     })
+    // SRL-PUBLIC-SYNC: END REPLACE id=appearance-assistant-app-availability-test
     await expect(
       child.props('execute')(
         { action: 'diagnose', feature: 'login', answer: '检查' },
