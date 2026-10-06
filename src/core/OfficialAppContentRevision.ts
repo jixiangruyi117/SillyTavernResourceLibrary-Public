@@ -8,10 +8,10 @@ export const OFFICIAL_APP_CONTENT_REVISIONS: Record<OfficialAppId, number> = {
   chatReader: 1,
   draw: 1,
   stitch: 12,
-  frontendWorkshop: 4,
-  imageGeneration: 2,
+  frontendWorkshop: 5,
+  imageGeneration: 3,
   imageAlbum: 1,
-  userPersona: 4,
+  userPersona: 5,
   resourceBundle: 1,
   tavernBridge: 1,
 }
