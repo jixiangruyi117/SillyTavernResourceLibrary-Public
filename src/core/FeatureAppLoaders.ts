@@ -23,7 +23,7 @@ export function getFeatureAppLoader(
     case 'stitch':
       return () => import('../components/PresetStitcherApp.vue')
     case 'frontendWorkshop':
-      return () => import('../components/FrontendWorkshopApp.vue')
+      return () => import('../components/FrontendWorkshopSourceAiShell.vue')
     case 'imageGeneration':
       return () => import('../components/ImageGenerationApp.vue')
     case 'imageAlbum':

@@ -17,3 +17,11 @@
 - 验证：生产构建通过；生成的 `frontendWorkshop` 包修订号为 5；官方 APP 包校验为 9 个当前包、51 个保留包、17 个可选资源。
 - 补充审计：先前按文件名排除 `OfficialApp` 的同步审计漏掉了这个共享修订配置。将非登录/非资源广场 APP 的修订号逐项与主库核对后，Public 与主库一致；其余差异仅为账号/助手/资源广场移除及已标记的通知类型兼容实现。
 - 发布与部署：提交 `1239846fce2f1a50df1b701ca98f1afab86ab5b0` 已推送到 Public 主仓库 `main`。按用户要求未修改其个人 fork；用户给出的线上地址仍由该 fork 部署，需其同步 fork 并等待 Cloudflare 重部署后才会提供修订 5。
+
+## 2026-10-06：修复网页版前端工作台加载旧入口
+
+- 纠正前次判断：Public Worker 实际返回的 JS 与 Public 当时的源码构建一致，但此前只比较了 `FrontendWorkshopApp.vue`，没有核对主库官方 APP 的真实入口。主库 `OfficialAppPackages.ts` 将 `frontendWorkshop` 指向 `FrontendWorkshopSourceAiShell.vue`；Public 为免登录而绕过 `OfficialAppGate` 时，错误地直接载入旧的 `FrontendWorkshopApp.vue`，所以提高内容修订号并不能更新网页版实际显示的界面。
+- 改动：Public 保留免登录直载方式，将 `frontendWorkshop` 入口改为 `FrontendWorkshopSourceAiShell.vue`；Public 版本推进至 `0.0.154`。不引入主库需要账号会话的共享图床/组件分享功能，也保留 Public 示例图片地址占位符，未复制主库的自有图床域名。
+- 验证：`pnpm run build` 通过，生成 `srl-public-0.0.154-v8` 与前端工作台资源包；未运行测试。线上 Worker 尚未更新，需个人 fork 同步 Public 主库提交并等待 Cloudflare 构建部署。
+- 公开增量隐私审计：基线 `1239846fce2f1a50df1b701ca98f1afab86ab5b0`；本次差异未发现个人邮箱、私人域名/服务地址或新增二进制。主库模板中的自有图床地址未复制，Public 示例仍是占位符。
+- 未决：提交前仍需复核本次 author/committer 邮箱及远端推送；当前 Main 工作树中与本次无关的未提交改动保持未触碰。
