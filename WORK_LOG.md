@@ -6,8 +6,8 @@
 - 改动：同步 Discord 收件箱自动关联、分类清理、教程放大与 Fork 更新说明；同步 JSON/PNG 封装偏好、导入/备份/本地存储、原生后台导入与延迟恢复；同步非账号类 APP 管理入口和懒加载样式。保留免登录与 Public Worker 配置，排除资源广场、账号/作者托管功能。移除同步过程中误带入的资源广场 APK 导入代码；主库自有域名和图床地址恢复为示例占位符。Public 版本更新至 0.0.156。
 - 保留差异：`NativeDiscordInboxService` 的联合类型安全字段构造继续使用 Public 已标记实现；应用身份、用户自填通用 Worker 与 Discord 独立 Worker 设置保持 Public 配置。
 - 验证：`pnpm run build` 通过，生成 `srl-public-0.0.156-v8`，官方 APP 包校验通过（9 个当前包、51 个保留包、9 个可选资源）；`android/gradlew.bat :app:compileDebugJavaWithJavac` 通过。未运行测试。
-- 隐私审计：增量基线 `1390334f68144d047b9fdbd6ab97e5f10c0e6f4a`；提交后扫描 `findings=[]`、`binaryReview=[]`。人工核对教程中的地址均为 Discord/Cloudflare/GitHub 官方链接、用户公开 Fork 仓库或示例占位符；私人邮箱、域名和服务地址未进入提交。同步提交已创建，待推送。
-- 未决：用户 fork 及 Cloudflare 部署未修改；须用户同步 Fork 并由 Cloudflare 重新部署后才会获得本次版本。
+- 隐私审计：增量基线 `1390334f68144d047b9fdbd6ab97e5f10c0e6f4a`；提交后扫描 `findings=[]`、`binaryReview=[]`。人工核对教程中的地址均为 Discord/Cloudflare/GitHub 官方链接、用户公开 Fork 仓库或示例占位符；私人邮箱、域名和服务地址未进入提交。提交 `c7899463c7441bbde294401266aeede059413893` 的 author/committer 均为 GitHub noreply，已推送至 Public 远端 `main`。
+- 未决：同步时主库工作树还有 5 个未提交的原生导入/下载改动，本次未纳入；待主库提交后再同步。用户 fork 及 Cloudflare 部署未修改；须用户同步 Fork 并由 Cloudflare 重新部署后才会获得本次版本。
 
 ## 2026-10-06：同步至 0.0.152
 
