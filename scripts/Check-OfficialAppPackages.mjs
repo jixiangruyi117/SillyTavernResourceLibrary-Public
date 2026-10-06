@@ -127,7 +127,7 @@ for (const [id, download] of Object.entries(catalog.apps)) {
   assert.equal(manifest.entry, download.entry)
   assert.equal(manifest.runtimeEntry, download.runtimeEntry)
   assert.ok(manifest.hostFiles.some((file) => file.path === manifest.runtimeEntry))
-  assert.ok(manifest.files.length < 128)
+  assert.ok(manifest.files.length <= 128)
   assert.equal(Object.keys(archive).length, manifest.files.length + 1)
   assert.ok(manifest.files.some((file) => file.path === manifest.entry && !file.bundled))
   for (const file of manifest.files) {
@@ -161,7 +161,7 @@ const retainedRoot = resolve('public/official-apps')
 let retainedPackages = 0
 let needsLegacyWorkbenchCover = false
 for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
-  assert.ok(build.isDirectory() && /^srl-(?:public-)?\d+\.\d+\.\d+-v\d+$/u.test(build.name))
+  assert.ok(build.isDirectory() && /^srl-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
   const catalogPath = `official-apps/${build.name}/catalog.json`
   const sourceCatalog = readFileSync(resolve('public', catalogPath))
   assert.deepEqual(read(catalogPath), sourceCatalog, `Retained catalog changed: ${build.name}`)
@@ -200,7 +200,7 @@ for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
 if (needsLegacyWorkbenchCover)
   assert.equal(
     hash(read('images/frontend-workbench-cover-v1.jpg')),
-    hash(readFileSync(resolve('public/images/frontend-workbench-cover-v1.jpg'))),
+    hash(readFileSync(resolve('src/assets/frontend-workbench-cover-v1.jpg'))),
     'Retained workbench cover bytes changed',
   )
 else

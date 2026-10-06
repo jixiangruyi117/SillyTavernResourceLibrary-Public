@@ -122,6 +122,32 @@ try {
     console.log(`安装通过：${name} / ${Date.now() - started} ms`)
   }
   assert.equal(names.length, officialAppIds().length)
+  // Feature shell chunks use the normal runtime cache on first online visit.
+  // Warm each installed APP before disabling the network so this checks a
+  // real revisit offline, rather than an unvisited lazy chunk never precached.
+  await back()
+  for (const name of names) {
+    currentAppName = `首次联网打开：${name}`
+    await openAuditFeature(page, name)
+    await page.waitForFunction(
+      () =>
+        !document.querySelector('.async-panel-loading') &&
+        !document.querySelector('.official-app-install[aria-busy="true"]'),
+    )
+    assert.equal(
+      await page.locator('.official-app-install,.async-panel-error,#srl-fatal-error').count(),
+      0,
+      `Online open failed before offline check: ${name}`,
+    )
+    const permission = page.locator('.external-app-permission')
+    if (name === '读了么') {
+      await permission.waitFor({ state: 'visible' })
+      await permission.getByRole('button', { name: '仅同意这次' }).click()
+    } else if (await permission.count()) {
+      await permission.getByRole('button', { name: '仅同意这次' }).click()
+    }
+    await back()
+  }
   if (process.env.SRL_AUDIT_NEXT_DIST) {
     const nextHtml = await readFile(resolve(process.env.SRL_AUDIT_NEXT_DIST, 'index.html'), 'utf8')
     const nextEntry = nextHtml.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/u)?.[1]
@@ -388,9 +414,13 @@ try {
       0,
       `First offline open failed: ${name}`,
     )
-    const appId = await page
-      .locator('[data-official-app-ready]')
-      .getAttribute('data-official-app-ready')
+    const appId = await page.locator('.feature-hub').getAttribute('data-feature-page')
+    assert.ok(officialAppIds().includes(appId), `没有识别当前 APP 页面：${name}`)
+    assert.equal(
+      await page.locator(`[data-official-app-ready="${appId}"]`).count(),
+      1,
+      `${name} 页面必须由当前官方 APP 就绪标记确认`,
+    )
     const readiness = await page.evaluate(
       (id) =>
         new Promise((accept, reject) => {

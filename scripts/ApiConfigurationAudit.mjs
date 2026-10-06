@@ -65,14 +65,14 @@ try {
           path: resolve(environment.outputDir, `${name}-${width}-${theme}.png`),
         })
       }
-      const inspectApi = async (panel) => {
+      const inspectApi = async (panel, assistant) => {
         const advanced = panel.locator('.main-api-settings__advanced')
         assert.equal(await advanced.getAttribute('open'), null)
         const compact = (await panel.boundingBox()).height
         const name = await panel.getByLabel('配置名称', { exact: true }).boundingBox()
         const protocol = await panel.getByLabel('接口协议', { exact: true }).boundingBox()
         assert.ok(Math.abs(name.y - protocol.y) < 2, 'name and protocol share one row')
-        await screenshot('main-api', panel)
+        await screenshot(assistant ? 'assistant-api' : 'main-api', panel)
         await tap(advanced.locator(':scope > summary'))
         assert.ok((await panel.boundingBox()).height > compact + 200)
         const help = advanced.locator('.main-api-settings__help')
@@ -87,7 +87,7 @@ try {
         const saveOutput = async () => {
           await tap(
             panel.getByRole('button', {
-              name: '保存配置',
+              name: assistant ? '保存并用于助手' : '保存配置',
               exact: true,
             }),
           )
@@ -106,7 +106,10 @@ try {
           '',
           'cleared output cap remains blank after refresh',
         )
-        await screenshot('main-api-output-blank', advanced)
+        await screenshot(
+          assistant ? 'assistant-api-output-blank' : 'main-api-output-blank',
+          advanced,
+        )
         await advanced.locator('.main-api-settings__credential-mode select').selectOption('session')
         await advanced.getByPlaceholder('留空不限制', { exact: true }).first().fill('2048')
         await tap(advanced.locator(':scope > summary'))
@@ -116,7 +119,7 @@ try {
         await tap(panel.locator('.main-api-settings__profiletools summary'))
         await tap(
           panel.getByRole('button', {
-            name: '保存配置',
+            name: assistant ? '保存并用于助手' : '保存配置',
             exact: true,
           }),
         )
@@ -201,7 +204,7 @@ try {
       await main.waitFor()
       await main.getByLabel('API URL', { exact: true }).fill('https://example.invalid/v1')
       await main.locator('.inline-model-picker input').fill('fixture-model')
-      await inspectApi(main)
+      await inspectApi(main, false)
       const mainId = await main.getByLabel('API 配置', { exact: true }).inputValue()
       await tap(main.getByRole('button', { name: '新增', exact: true }))
       await main.getByLabel('配置名称', { exact: true }).fill('配置二')
@@ -229,6 +232,66 @@ try {
       await tap(page.getByRole('button', { name: '保存并退出', exact: true }))
       await page.locator('.ai-tagging').waitFor({ state: 'hidden' })
       await tap(page.getByRole('button', { name: '功能', exact: true }))
+      await openAuditFeature(page, '蒜惹菈')
+      const assistant = page.locator('.product-assistant')
+      await tap(assistant.getByRole('button', { name: '聊天设置', exact: true }))
+      const network = assistant.getByRole('switch', { name: '联网工具', exact: true })
+      const settingsStatus = assistant.locator('.chat-settings-save [role="status"]')
+      assert.equal(await network.isChecked(), false)
+      await tap(network)
+      await tap(assistant.getByRole('switch', { name: '模型原生搜索', exact: true }))
+      await tap(assistant.getByRole('button', { name: '保存设置', exact: true }))
+      await settingsStatus.filter({ hasText: /^已保存$/u }).waitFor()
+      await tap(network)
+      await settingsStatus.filter({ hasText: /^有修改，待保存$/u }).waitFor()
+      await screenshot('assistant-settings-pending', assistant.locator('.chat-settings-save'))
+      assert.equal(
+        await assistant.getByRole('switch', { name: '模型原生搜索', exact: true }).count(),
+        0,
+      )
+      await tap(assistant.getByRole('button', { name: '保存设置', exact: true }))
+      await settingsStatus.filter({ hasText: /^已保存$/u }).waitFor()
+      await tap(network)
+      await tap(assistant.getByRole('button', { name: '返回功能桌面', exact: true }))
+      const unsaved = page.getByRole('alertdialog', { name: '有修改未保存', exact: true })
+      await unsaved.waitFor()
+      await screenshot('assistant-unsaved-exit', unsaved)
+      assert.ok(
+        (
+          await unsaved
+            .locator('button')
+            .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height))
+        ).every((height) => height >= 44),
+        'unsaved choices have 44px touch targets',
+      )
+      await tap(unsaved.getByRole('button', { name: '继续编辑', exact: true }))
+      assert.equal(await network.isChecked(), true)
+      await tap(assistant.getByRole('button', { name: '返回功能桌面', exact: true }))
+      await tap(unsaved.getByRole('button', { name: '不保存退出', exact: true }))
+      await assistant.getByRole('button', { name: '聊天设置', exact: true }).waitFor()
+      await tap(assistant.getByRole('button', { name: '聊天设置', exact: true }))
+      assert.equal(await network.isChecked(), false, 'discard keeps the stored switch off')
+      await tap(network)
+      await network.press('Escape')
+      await unsaved.waitFor()
+      await page.keyboard.press('Escape')
+      await unsaved.waitFor({ state: 'hidden' })
+      assert.equal(await network.isChecked(), true, 'Escape cancels the choice without exiting')
+      await tap(assistant.getByRole('button', { name: '返回功能桌面', exact: true }))
+      await tap(unsaved.getByRole('button', { name: '保存并退出', exact: true }))
+      await assistant.getByRole('button', { name: '聊天设置', exact: true }).waitFor()
+      await tap(assistant.getByRole('button', { name: '聊天设置', exact: true }))
+      assert.equal(await network.isChecked(), true, 'save and exit persists through reopening')
+      await tap(network)
+      await tap(assistant.getByRole('button', { name: '保存设置', exact: true }))
+      await settingsStatus.filter({ hasText: /^已保存$/u }).waitFor()
+      await tap(assistant.getByRole('button', { name: '助手 API', exact: true }))
+      await tap(assistant.getByRole('button', { name: '新增', exact: true }))
+      await assistant.getByLabel('API URL', { exact: true }).fill('https://example.invalid/v1')
+      await assistant.locator('.inline-model-picker input').fill('fixture-assistant')
+      await inspectApi(assistant.locator('.main-api-settings'), true)
+      for (let index = 0; index < 3; index++)
+        await tap(assistant.getByRole('button', { name: '返回功能桌面', exact: true }))
       await tap(page.getByRole('button', { name: 'APP 管理', exact: true }))
       const manager = page.locator('.official-app-manager')
       await manager.waitFor()
@@ -274,7 +337,7 @@ try {
         await image.getByRole('status').filter({ hasText: /保存/ }).waitFor()
       }
       console.log(
-        `PASS ${environment.engine} ${width} ${theme}: main/tagging/image APIs; collapse, profile activation, retained parameters, save and reset`,
+        `PASS ${environment.engine} ${width} ${theme}: main/assistant/tagging/image APIs; collapse, profile activation, retained parameters, save and reset`,
       )
       await context.close()
       context = undefined

@@ -18,6 +18,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 import buildInfo from './build-info.json' with { type: 'json' }
 
+const authProxy = { '/api': 'http://127.0.0.1:8787' }
 const previewVendorGlobalsSourceId = 'virtual:srl-preview-vendor-globals-source'
 const resolvedPreviewVendorGlobalsSourceId = `\0${previewVendorGlobalsSourceId}`
 const appearanceStarterCssSourceId = 'virtual:srl-appearance-starter-css-source'
@@ -190,7 +191,7 @@ function offlineAssetManifestPlugin(): Plugin {
             file.type === 'chunk' &&
             Object.keys(file.modules).some(
               (id) =>
-                /\/src\/(?:Bootstrap|Main|App|core\/AppContainer|components\/DiscordSourceHandoffIntake)\.(?:ts|vue)$/u.test(
+                /\/src\/(?:Bootstrap|Main|App|components\/DiscordSourceHandoffIntake)\.(?:ts|vue)$/u.test(
                   id.replaceAll('\\', '/'),
                 ) || id.replaceAll('\\', '/').includes('/workbox-window/'),
             )
@@ -244,10 +245,6 @@ export default defineConfig({
       process.env.SRL_ANDROID_PREINSTALL_OFFICIAL_APPS === '1',
     ),
   },
-  build: {
-    // Preserve existing older Android WebView CSS compatibility.
-    cssTarget: 'chrome61',
-  },
   plugins: [
     vue(),
     {
@@ -270,9 +267,7 @@ export default defineConfig({
       },
     },
     appearanceStarterCssSourcePlugin(),
-    // SRL-PUBLIC-SYNC: BEGIN REPLACE id=official-app-package-build
-    officialAppPackagesPlugin(buildInfo.buildId, false),
-    // SRL-PUBLIC-SYNC: END REPLACE id=official-app-package-build
+    officialAppPackagesPlugin(buildInfo.buildId),
     previewVendorGlobalsSourcePlugin(),
     {
       name: 'srl-discord-manual-worker-source',
@@ -304,10 +299,10 @@ export default defineConfig({
           'force-refresh.html',
           'manifest.webmanifest',
           'official-app-assets.json',
-          // 启动保留桌面/iOS与192px普通/适配图标；512px安装资源仍在完整离线清单并按需缓存。
+          // Keep startup cache limited to compact app icons. Apple touch and 512px icons remain
+          // published and in the complete offline list, then load when requested.
           'icons/*-192.png',
           'icons/srl-icon-32.png',
-          'icons/apple-touch-icon.png',
         ],
         manifestTransforms: [
           async (entries) => ({
@@ -317,7 +312,7 @@ export default defineConfig({
         ],
         globIgnores: ['**/downloads/**', '**/official-apps/**', '**/offline-assets.json'],
         navigateFallback: 'index.html',
-        // 互传中继必须实时访问服务器，任何情况下都不能走缓存。
+        // 登录与互传中继必须实时访问服务器，任何情况下都不能走缓存。
         navigateFallbackDenylist: [/^\/api\//, /^\/force-refresh\.html$/],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
@@ -369,7 +364,14 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    // Keep production CSS compatible with older Android WebViews used by packaged APKs.
+    // This prevents minification from emitting modern media-query range syntax that those runtimes may ignore.
+    cssTarget: 'chrome61',
+  },
   server: {
+    proxy: authProxy,
     watch: { ignored: ['**/android/**'] },
   },
+  preview: { proxy: authProxy },
 })

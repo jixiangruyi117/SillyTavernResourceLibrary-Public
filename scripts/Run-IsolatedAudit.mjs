@@ -14,7 +14,10 @@ export const AUDIT_SUITES = {
   'official-apps': 'scripts/OfficialAppLifecycleAudit.mjs',
   appearance: 'scripts/AppearanceScopeAudit.mjs',
   'detail-layout': 'scripts/ResourceDetailLayoutAudit.mjs',
+  stress: 'scripts/BrowserStressAudit.mjs',
+  assistant: 'scripts/ProductAssistantPetAudit.mjs',
   'api-config': 'scripts/ApiConfigurationAudit.mjs',
+  'assistant-workflows': 'scripts/ProductAssistantWorkflowAudit.mjs',
 }
 
 export function parseAuditArguments(args) {
@@ -28,7 +31,7 @@ export function parseAuditArguments(args) {
   }
   if (!Object.hasOwn(AUDIT_SUITES, options.suite))
     throw new Error(
-      '请选择 discord-handoff、discord-inbox、official-apps、appearance、detail-layout 或 api-config',
+      '请选择 discord-handoff、discord-inbox、official-apps、appearance、detail-layout、stress、assistant、api-config 或 assistant-workflows',
     )
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/u.test(options.run || ''))
     throw new Error('必须通过 --run 指定本次独立运行名称')

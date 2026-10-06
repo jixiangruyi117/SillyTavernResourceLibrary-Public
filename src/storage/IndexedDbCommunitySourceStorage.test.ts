@@ -71,6 +71,28 @@ function createMessage(source: CommunitySource, content: string): CommunitySourc
 }
 
 describe('IndexedDbCommunitySourceStorage', () => {
+  it('reads only the indexed starter message for bounded inbox matching', async () => {
+    const database = new AppDatabase(`community-source-starter-index-${crypto.randomUUID()}`)
+    const { storage } = createStorage(database)
+    const source = createSource()
+    await storage.putSource(source)
+    await storage.putMessage(createMessage(source, '作者：作者甲'))
+    await storage.putMessage({
+      ...createMessage(source, '评论不应读入'),
+      id: `${source.id}:reply`,
+      messageKeyHash: 'c'.repeat(64),
+      messageId: 'reply-1',
+      kind: COMMUNITY_SOURCE_MESSAGE_KIND.SELECTED_COMMENT,
+    })
+
+    await expect(storage.getStarterMessage(source.id)).resolves.toMatchObject({
+      kind: COMMUNITY_SOURCE_MESSAGE_KIND.STARTER,
+      content: '作者：作者甲',
+    })
+    database.close()
+    await database.delete()
+  })
+
   it.each([false, true])(
     'restores gallery and deleted-target posts without changing content (vault=%s)',
     async (encrypted) => {

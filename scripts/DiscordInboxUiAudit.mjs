@@ -43,15 +43,26 @@ const mocks = {
     export const stopNativeDiscordInbox=async()=>state(false);`,
   DiscordSourceSettingsService: `export const loadDiscordSourceConnectionSettings=()=>({workerBaseUrl:'https://worker.example',inboxLibraryId:'fixture-library',inboxSecret:'fixture-only',inboxName:'测试资源库'});`,
   DiscordHandoffService: `
+    let postJobs=[];
+    let postHistory=[{id:'post',state:'saved',title:'已保存的测试帖子'}];
     export const inboxConnection=()=>({workerUrl:'https://worker.example',libraryId:'fixture-library'});
     export const readDiscordInboxStatus=async()=>({paired:true,isDefault:true,name:'测试资源库'});
-    export const listDiscordInboxJobs=async()=>({jobs:[],hasMore:false,recent:[{id:'post',state:'saved',title:'已保存的测试帖子'}]});
+    export const listDiscordInboxJobs=async()=>({jobs:postJobs,hasMore:false,recent:postHistory});
     export const pairDiscordInbox=async()=>{throw Error('Not part of this fixture')};
+    export const cancelDiscordInboxJob=async(id)=>{postJobs=postJobs.filter(job=>job.id!==id)};
+    export const clearDiscordInboxCloudHistory=async()=>{postHistory=[];return {posts:1,resources:1}};
     export const clearDiscordInboxPairing=async()=>{throw Error('Not part of this fixture')};`,
   DiscordResourceInboxService: `
-    export const listDiscordResourceJobs=async()=>({hasMore:false,jobs:[{id:'wait',name:'待确认.json',state:'waiting_version',updatedAt:2}],recent:[{id:'saved',name:'已保存.json',state:'imported',updatedAt:1}]});
-    export const acknowledgeDiscordResource=async()=>{throw Error('Not part of this fixture')};`,
-  UseConfirmDialog: `export const confirmAction=async()=>false;`,
+    const jobs=[
+      {id:'downloading',name:'正在下载.json',state:'downloading',updatedAt:3},
+      {id:'cancelled',name:'失败记录.json',state:'cancelled',updatedAt:2},
+      {id:'wait',name:'待确认.json',state:'waiting_version',updatedAt:1},
+    ];
+    export const listDiscordResourceJobs=async()=>({hasMore:false,jobs,recent:[{id:'saved',name:'已保存.json',state:'imported',updatedAt:0}]});
+    export const acknowledgeDiscordResource=async(id,state)=>{const job=jobs.find(item=>item.id===id);if(job)job.state=state};
+    export const cancelDiscordResourceJob=async(id)=>{const job=jobs.find(item=>item.id===id);if(job)job.state='cancelled'};
+    export const deleteDiscordResourceJob=async(id)=>{const index=jobs.findIndex(item=>item.id===id);if(index>=0)jobs.splice(index,1)};`,
+  UseConfirmDialog: `export const confirmAction=async()=>true;`,
 }
 await build({
   configFile: false,
@@ -116,6 +127,18 @@ try {
           if ((await history.getAttribute('open')) !== null)
             throw new Error('Touch did not collapse history')
         }
+        await page.getByRole('button', { name: '清理云端', exact: true }).tap()
+        await page.getByText('已清理云端记录：帖子 1 条，资源 1 项。').waitFor()
+        await page.getByRole('button', { name: '取消 正在下载.json', exact: true }).tap()
+        await page
+          .locator('li')
+          .filter({ hasText: '正在下载.json' })
+          .getByText('已取消', { exact: true })
+          .waitFor()
+        await page.getByRole('button', { name: '清理 失败记录.json', exact: true }).tap()
+        await page
+          .getByRole('button', { name: '清理 失败记录.json', exact: true })
+          .waitFor({ state: 'detached' })
         await stop.tap()
         const start = page.getByRole('button', { name: '开启收件模式', exact: true })
         await start.waitFor()

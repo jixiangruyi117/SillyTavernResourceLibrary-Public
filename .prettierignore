@@ -16,3 +16,6 @@ docs/frontend-workshop/runtime/S0B_LIFECYCLE_PLAN.md
 docs/frontend-workshop/runtime/S0B_MVU_OPTIONALITY.md
 docs/frontend-workshop/runtime/S0C_STRESS_PLAN.md
 docs/frontend-workshop/runtime/runtime-contract.s0a.json
+# Chronological progress logs are append-only; preserve historical formatting.
+WORK_LOG.md
+CURRENT_PROGRESS.md

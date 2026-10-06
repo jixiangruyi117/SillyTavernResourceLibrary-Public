@@ -29,10 +29,14 @@ try {
     await page.getByRole('button', { name: 'APP 管理', exact: true }).click()
     await page.locator('.official-app-manager').waitFor()
   }
+  const expand = async (details) => {
+    if (!(await details.evaluate((element) => element.open)))
+      await details.locator(':scope > summary').click()
+  }
   const appearance = async () => {
     await app('外观')
     await page.locator('.appearance-studio').waitFor()
-    await page.locator('.appearance-advanced > summary').click()
+    await expand(page.locator('.appearance-advanced'))
   }
   const status = (text) => page.getByRole('status').filter({ hasText: text }).waitFor()
   const stored = () =>
@@ -71,10 +75,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('button', { name: '功能', exact: true }).click()
   await appearance()
-  await page
-    .locator('.appearance-advanced summary')
-    .filter({ hasText: '未安装 APP / 待恢复的样式' })
-    .click()
+  await expand(page.locator('.appearance-inactive-scopes'))
   await page.getByRole('tab', { name: '抽了么', exact: true }).click()
   const preset = {
     id: 'fixture',
@@ -135,6 +136,7 @@ try {
   await status('安装成功')
   await back()
   await appearance()
+  await page.getByRole('tab', { name: /^抽了么/u }).waitFor()
   assert.ok(
     (await page.getByRole('tablist', { name: '选择要装修的界面' }).innerText()).includes('抽了么'),
   )
@@ -159,10 +161,7 @@ try {
   assert.ok(
     !(await page.getByRole('tablist', { name: '选择要装修的界面' }).innerText()).includes('抽了么'),
   )
-  await page
-    .locator('.appearance-advanced summary')
-    .filter({ hasText: '未安装 APP / 待恢复的样式' })
-    .click()
+  await expand(page.locator('.appearance-inactive-scopes'))
   assert.ok(
     (await page.getByRole('tablist', { name: '未安装 APP 的样式' }).innerText()).includes('抽了么'),
   )

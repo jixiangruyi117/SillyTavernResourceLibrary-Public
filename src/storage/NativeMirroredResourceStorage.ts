@@ -57,6 +57,14 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
       : this.delegate.listSummaries()
   }
 
+  listRecentCharacterCardSummaries(limit = 100): Promise<ResourceListSummary[]> {
+    return this.delegate.listRecentCharacterCardSummaries
+      ? this.delegate.listRecentCharacterCardSummaries(limit)
+      : this.listResourceListSummaries().then((resources) =>
+          resources.filter((resource) => resource.type === 'characterCard').slice(0, limit),
+        )
+  }
+
   repairThumbnailAssets(): Promise<number> {
     return this.enqueueMutation(() =>
       this.delegate.repairThumbnailAssets

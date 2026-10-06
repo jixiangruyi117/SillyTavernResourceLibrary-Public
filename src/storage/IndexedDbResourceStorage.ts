@@ -175,6 +175,29 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     return resources
   }
 
+  async listRecentCharacterCardSummaries(limit = 100): Promise<ResourceListSummary[]> {
+    const requested = Math.min(200, Math.max(1, Math.round(limit)))
+    const stored = await this.database.resourceListSummaries
+      .orderBy('updatedAt')
+      .reverse()
+      .limit(requested)
+      .toArray()
+    const candidates = this.vault?.isEnabled()
+      ? stored
+      : stored.filter(
+          (resource) => 'type' in resource && resource.type === RESOURCE_TYPE.CHARACTER_CARD,
+        )
+    const decoded = await Promise.all(
+      candidates.map((resource) =>
+        this.vault ? this.vault.decodeResourceSummary(resource) : (resource as ResourceSummary),
+      ),
+    )
+    return decoded
+      .filter((resource) => resource.type === RESOURCE_TYPE.CHARACTER_CARD)
+      .slice(0, requested)
+      .map(toResourceListSummary)
+  }
+
   async listGalleryListSummaries(
     ownerId: string,
     includeSameType = false,

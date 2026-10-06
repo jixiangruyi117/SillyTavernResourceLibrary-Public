@@ -369,18 +369,6 @@ async function copyText(value: string, message: string): Promise<void> {
                 Cloudflare 会按 <code>wrangler.jsonc</code> 中的数据库 ID 将 D1 绑定到
                 Worker；首次部署时 <code>npm run deploy</code> 会先应用数据库迁移，再发布 Worker。
               </p>
-              <p class="discord-guide-note discord-guide-note--soft">
-                以后要更新时，在你的 GitHub Fork 页面点
-                <strong>Sync fork → Update branch</strong>。同步到 main 后，Cloudflare
-                会自动重新部署；如果显示冲突，先按 GitHub 提示解决冲突。
-              </p>
-              <a
-                href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                查看 GitHub 同步 Fork 的说明
-              </a>
             </div>
           </section>
 
@@ -562,6 +550,51 @@ async function copyText(value: string, message: string): Promise<void> {
               <p class="discord-guide-note discord-guide-note--soft">
                 只有还要自动检查社区帖子更新时，才需要把 Bot 加入对应服务器，并允许它查看来源频道。
               </p>
+            </div>
+          </section>
+
+          <section v-if="props.deploymentMode === 'github'" class="discord-guide-step">
+            <span>09</span>
+            <div>
+              <h4>以后同步 Bridge 更新</h4>
+              <p>
+                原仓库发布新版后，打开你自己的 Fork 首页。在分支状态提示中点
+                <strong>Sync fork</strong>，再点绿色的
+                <strong>Update branch</strong>，把上游更新同步到 Fork 的 <code>main</code>。
+              </p>
+              <figure class="discord-guide-screenshot">
+                <img
+                  :src="'/tutorials/discord-github/fork-sync-status.png'"
+                  alt="GitHub Fork 页面显示分支与上游有提交差异，并圈出 Sync fork 菜单"
+                  loading="lazy"
+                />
+                <figcaption>
+                  在自己的 Fork 页面打开 Sync fork；ahead/behind 的数字会随更新变化。
+                </figcaption>
+              </figure>
+              <figure class="discord-guide-screenshot">
+                <img
+                  :src="'/tutorials/discord-github/fork-update-branch.png'"
+                  alt="GitHub 同步 Fork 确认框，标出绿色 Update branch 按钮"
+                  loading="lazy"
+                />
+                <figcaption>点击 Update branch 同步上游提交。</figcaption>
+              </figure>
+              <p class="discord-guide-note discord-guide-note--soft">
+                不要点红色的 <strong>Discard commits</strong>：它会丢弃你 Fork
+                中独有的提交。若同步时出现冲突，先处理冲突，不要用丢弃提交来绕过。
+              </p>
+              <p>
+                同步完成后，Cloudflare Workers Builds 会从 <code>main</code> 自动重新部署。到
+                Cloudflare 的 Deployments 页面确认最新部署成功；如果失败，先看构建日志再继续。
+              </p>
+              <a
+                href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                查看 GitHub 同步 Fork 的官方说明
+              </a>
             </div>
           </section>
 

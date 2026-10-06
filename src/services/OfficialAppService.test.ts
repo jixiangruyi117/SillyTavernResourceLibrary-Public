@@ -128,6 +128,51 @@ describe('official APP package lifecycle', () => {
     expect(await service.ready('draw')).toBe(true)
   })
 
+  it('rejects APP archives whose file count exceeds the bounded package limit', async () => {
+    const { service } = await fixture('draw', (candidate) => {
+      for (let index = 0; index < 127; index++)
+        candidate.files.push({
+          path: `/assets/extra-${index}.js`,
+          size: 1,
+          sha256: 'a'.repeat(64),
+        })
+    })
+
+    await expect(service.install('draw')).rejects.toThrow('安装包文件数量超过限制')
+    expect(records.size).toBe(0)
+    expect(files.size).toBe(0)
+  })
+
+  it('rejects a second APP install instead of leaving it queued behind the active download', async () => {
+    const { service, fetcher } = await fixture()
+    const request = vi.fn(
+      (
+        name: string,
+        optionsOrAction: unknown,
+        action?: (lock: object | null) => Promise<unknown>,
+      ) => {
+        if (name === 'srl-official-app-download-active' && action) return action(null)
+        return action ? action({}) : (optionsOrAction as () => Promise<unknown>)()
+      },
+    )
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request,
+      },
+    })
+
+    await expect(service.install('draw')).rejects.toThrow(
+      '另一个内置 APP 正在下载或更新，请完成后再试',
+    )
+    expect(request).toHaveBeenCalledWith(
+      'srl-official-app-download-active',
+      { ifAvailable: true },
+      expect.any(Function),
+    )
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('does not report an APP update for a newer shell when its owned package bytes are unchanged', async () => {
     const { service } = await fixture()
     await service.install('draw')

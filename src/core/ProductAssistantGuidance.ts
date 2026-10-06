@@ -57,7 +57,7 @@ export const ASSISTANT_GUIDES: readonly AssistantGuide[] = [
     steps: [
       {
         target: 'discord-github-tutorial-content',
-        text: '已打开“连接设置 → GitHub 仓库部署”教程，可以直接查看步骤。',
+        text: '已打开“连接设置 → GitHub 仓库部署”教程。后续同步 Fork 更新的步骤在教程末尾；使用 Update branch，不要点 Discard commits。',
       },
     ],
   },

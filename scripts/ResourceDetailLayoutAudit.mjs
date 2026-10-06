@@ -1,4 +1,4 @@
-/* global document */
+/* global document, getComputedStyle */
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { readFile } from 'node:fs/promises'
@@ -47,6 +47,22 @@ try {
         .getByRole('button', { name: '查看并编辑资源详情', exact: true })
       if (width < 500) await detailButton.tap()
       else await detailButton.click()
+      const stats = page.locator('.resource-detail__stats')
+      const statsLayout = await stats.evaluate((element) => {
+        const style = getComputedStyle(element)
+        const first = element.firstElementChild?.getBoundingClientRect()
+        const second = element.children.item(1)?.getBoundingClientRect()
+        return {
+          display: style.display,
+          columns: style.gridTemplateColumns.split(/\s+/u).length,
+          firstTop: first?.top,
+          secondTop: second?.top,
+        }
+      })
+      const statsLabel = `${width}/resource statistics: ${JSON.stringify(statsLayout)}`
+      assert.equal(statsLayout.display, 'grid', statsLabel)
+      assert.equal(statsLayout.columns, 4, statsLabel)
+      assert.equal(statsLayout.secondTop, statsLayout.firstTop, statsLabel)
       for (const theme of ['light', 'dark']) {
         await page.evaluate(
           (theme) => document.documentElement.setAttribute('data-theme', theme),

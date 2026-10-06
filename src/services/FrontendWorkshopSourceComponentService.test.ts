@@ -165,16 +165,26 @@ describe('FrontendWorkshopSourceComponentService new-only packages', () => {
         root: { tagName: 'article' },
         provenance: {
           origin: 'imported',
+          plazaSource: {
+            resourceId: '11111111-1111-4111-8111-111111111111',
+            name: '原作品',
+            author: '作者',
+            importedAt: 1,
+          },
         },
         projectIds: ['private-project'],
       },
       { id: 'component-1', now: 2 },
     )
     const backup = await service.exportPortableState()
+    expect(backup[0]?.provenance.plazaSource?.resourceId).toBe(
+      '11111111-1111-4111-8111-111111111111',
+    )
     expect(backup[0]?.projectIds).toEqual([])
     await componentStorage.delete(component.id)
     await service.importPortableState(backup)
     expect((await service.get(component.id))?.source.html).toBe('<article>正文</article>')
+    expect((await service.get(component.id))?.provenance.plazaSource?.author).toBe('作者')
     await service.importPortableState(backup)
     expect(await service.list()).toHaveLength(1)
   })
@@ -288,6 +298,29 @@ describe('FrontendWorkshopSourceComponentService new-only packages', () => {
       dependencies: component.dependencies,
     })
     expect('assets' in imported).toBe(false)
+    const plazaSource = {
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      name: '原帖',
+      author: '作者',
+      importedAt: 1,
+      license: {
+        repost: true,
+        modify: true,
+        shareModified: true,
+        commercial: true,
+        attribution: true,
+        notice: '保留包内限制',
+      },
+    }
+    const fromPlaza = await service.importPortablePackage(portable.blob, {
+      id: 'component-plaza',
+      plazaSource,
+    })
+    expect(fromPlaza.source).toEqual(component.source)
+    expect(fromPlaza.provenance.plazaSource).toEqual(plazaSource)
+    expect(fromPlaza.sharePolicy.allowShare).toBe(component.sharePolicy.allowShare)
+    expect(fromPlaza.sharePolicy.allowDerivatives).toBe(component.sharePolicy.allowDerivatives)
+    expect(fromPlaza.sharePolicy.notice).toContain('原帖')
   })
 
   it('rejects legacy binary packages instead of importing their files or assets', async () => {

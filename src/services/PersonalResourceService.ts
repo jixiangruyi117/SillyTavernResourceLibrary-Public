@@ -26,6 +26,9 @@ export function personalResourceMetadata(document: PersonalResourceDocument): Pa
           ? '部署资料 · 私密字段需解锁查看'
           : document.text.slice(0, 200),
     metadata: {
+      ...(document.plazaSource
+        ? { plazaSource: document.plazaSource, plazaResourceId: document.plazaSource.resourceId }
+        : {}),
       format: 'srl-personal-resource',
       attachmentCount: document.attachments.length,
       privateFieldCount: document.fields.filter((field) => field.private).length,

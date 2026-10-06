@@ -10,8 +10,34 @@ const runtime = vi.hoisted(() => ({
   clear: vi.fn(),
   cancelJob: vi.fn(),
   cleanupHistory: vi.fn(),
+  clearAutoBindings: vi.fn(async () => 0),
+  listAutoBindings: vi.fn(async (): Promise<unknown[]> => []),
+  getAutoBindingView: vi.fn(async (): Promise<unknown> => undefined),
+  confirmAutoBinding: vi.fn(async () => undefined),
+  replaceAutoBinding: vi.fn(async () => undefined),
+  unbindSource: vi.fn(async () => undefined),
+  resourceSummaries: vi.fn(async (): Promise<unknown[]> => []),
+  getAutomation: vi.fn(async () => undefined),
+  putAutomation: vi.fn(async () => undefined),
   connection: vi.fn(() => ({ workerUrl: 'https://worker.example', libraryId: 'library-1' })),
   confirm: vi.fn(async () => true),
+}))
+vi.mock('../core/LibraryContainer', () => ({
+  discordInboxAutomationSettingsService: {
+    load: runtime.getAutomation,
+    save: runtime.putAutomation,
+  },
+  communitySourceService: {
+    listRecentAutoBindings: runtime.listAutoBindings,
+    clearRecentAutoBindings: runtime.clearAutoBindings,
+    getForResource: runtime.getAutoBindingView,
+    confirmAutoBinding: runtime.confirmAutoBinding,
+    replaceAutoBinding: runtime.replaceAutoBinding,
+    unbindSource: runtime.unbindSource,
+  },
+}))
+vi.mock('../core/AppContainer', () => ({
+  resourceService: { listResourceListSummaries: runtime.resourceSummaries },
 }))
 vi.mock('../services/DiscordSourceSettingsService', () => ({
   loadDiscordSourceConnectionSettings: runtime.settings,
@@ -161,10 +187,13 @@ describe('DiscordInboxPanel', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('默认目标：我的资源库')
     expect(wrapper.find('#discord-inbox-settings').exists()).toBe(false)
-    expect(wrapper.find('button[aria-label="收件设置"]').exists()).toBe(false)
+    expect(wrapper.find('button[aria-label="收件箱设置"]').exists()).toBe(true)
+    expect(wrapper.find('.discord-inbox__automation').exists()).toBe(false)
+    await wrapper.get('button[aria-label="收件箱设置"]').trigger('click')
+    expect(wrapper.find('.discord-inbox__automation').exists()).toBe(true)
     expect(wrapper.find('details.discord-inbox__pending-jobs').exists()).toBe(true)
     expect(wrapper.get('details.discord-inbox__history').attributes('open')).toBeDefined()
-    expect(wrapper.find('input').exists()).toBe(false)
+    expect(wrapper.findAll('.discord-inbox__automation input[type="checkbox"]')).toHaveLength(3)
     expect(wrapper.text()).toContain('待领取 1+ 条')
     expect(wrapper.text()).toContain('待关联资源')
     window.dispatchEvent(
@@ -188,6 +217,122 @@ describe('DiscordInboxPanel', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('已保存 3 条，1 条待关联')
     expect(runtime.jobs).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('lets the user review an automatic post binding and approve it as manual', async () => {
+    const card = {
+      id: 'card-1',
+      type: 'characterCard',
+      name: '角色 A',
+      fileName: 'a.png',
+      tags: [],
+      metadata: {},
+      categoryId: null,
+      categoryIds: [],
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const binding = {
+      source: { id: 'post-1', title: '帖子 A' },
+      binding: { sourceId: 'post-1', resourceId: 'card-1', autoBindingRule: 'same-name' },
+    }
+    runtime.settings.mockReturnValue(settings)
+    runtime.listAutoBindings.mockResolvedValueOnce([binding]).mockResolvedValueOnce([])
+    runtime.getAutoBindingView.mockResolvedValue({
+      source: { id: 'post-1', title: '帖子 A' },
+      messages: [{ id: 'message-1', authorName: '作者', content: '帖子首楼正文' }],
+      binding: binding.binding,
+    })
+    runtime.resourceSummaries.mockResolvedValue([card])
+    const wrapper = mount(DiscordInboxPanel)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('待确认的自动关联（1）')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '查看核对')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('帖子首楼正文')
+    expect(wrapper.text()).toContain('角色 A · a.png')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '打开角色卡')!
+      .trigger('click')
+    expect(wrapper.emitted('open-resource')?.[0]).toEqual([card])
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '确认正确')!
+      .trigger('click')
+    await flushPromises()
+    expect(runtime.confirmAutoBinding).toHaveBeenCalledWith('card-1', 'post-1')
+    expect(wrapper.text()).not.toContain('待确认的自动关联')
+    wrapper.unmount()
+  })
+
+  it('replaces an automatic binding with a selected character card', async () => {
+    const card = (id: string, name: string) => ({
+      id,
+      type: 'characterCard',
+      name,
+      fileName: `${id}.png`,
+      tags: [],
+      metadata: {},
+      categoryId: null,
+      categoryIds: [],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const autoBinding = {
+      source: { id: 'post-2', title: '帖子 B' },
+      binding: { sourceId: 'post-2', resourceId: 'card-1', autoBindingRule: 'same-author' },
+    }
+    runtime.settings.mockReturnValue(settings)
+    runtime.listAutoBindings
+      .mockResolvedValueOnce([autoBinding])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([autoBinding])
+      .mockResolvedValueOnce([])
+    runtime.resourceSummaries.mockResolvedValue([card('card-1', '原卡'), card('card-2', '替换卡')])
+    const wrapper = mount(DiscordInboxPanel)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '替换资源')!
+      .trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.resource-picker__list button')[1]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '确认替换')!
+      .trigger('click')
+    await flushPromises()
+    expect(runtime.replaceAutoBinding).toHaveBeenCalledWith('card-1', 'card-2', 'post-2')
+    expect(wrapper.text()).not.toContain('待确认的自动关联')
+    wrapper.unmount()
+  })
+
+  it('returns an automatic binding to the pending list', async () => {
+    runtime.settings.mockReturnValue(settings)
+    runtime.listAutoBindings
+      .mockResolvedValueOnce([
+        {
+          source: { id: 'post-2', title: '帖子 B' },
+          binding: { sourceId: 'post-2', resourceId: 'card-1', autoBindingRule: 'same-author' },
+        },
+      ])
+      .mockResolvedValueOnce([])
+    const wrapper = mount(DiscordInboxPanel)
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '退回待整理')!
+      .trigger('click')
+    await flushPromises()
+    expect(runtime.unbindSource).toHaveBeenCalledWith('card-1', 'post-2')
     wrapper.unmount()
   })
 

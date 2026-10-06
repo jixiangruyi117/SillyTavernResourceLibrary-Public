@@ -66,6 +66,13 @@ import {
 
 import { type ImportOptions } from '../types/ResourceOperations'
 
+export function shouldMakeIncomingPngCurrent(
+  incomingIsPng: boolean,
+  matchedHistorical: boolean,
+): boolean {
+  return incomingIsPng && !matchedHistorical
+}
+
 export interface ResourceImportOperationsContext {
   resourceService: import('./ResourceService').ResourceService
   persistedVersionMatchCacheLoaded: boolean
@@ -824,6 +831,33 @@ export async function importFilesSerial(
             for (const resource of extracted.created) rememberActive(toResourceSummary(resource))
             continue
           }
+        }
+        const exactContainerMatch =
+          options.preferPngContainer &&
+          candidates.length === 1 &&
+          candidates[0]?.matchKind === 'containerVariant' &&
+          ((/\.png$/iu.test(file.name) &&
+            /\.json$/iu.test(candidates[0].matchedResource.fileName)) ||
+            (/\.json$/iu.test(file.name) &&
+              /\.png$/iu.test(candidates[0].matchedResource.fileName)))
+            ? candidates[0]
+            : undefined
+        if (exactContainerMatch) {
+          const targetId = exactContainerMatch.resource.id
+          const incomingIsPng = /\.png$/iu.test(file.name)
+          const makeIncomingCurrent = shouldMakeIncomingPngCurrent(
+            incomingIsPng,
+            exactContainerMatch.matchedHistorical,
+          )
+          const resource = await operations.resourceService.importAsVersion(
+            importFile,
+            targetId,
+            makeIncomingCurrent,
+            '同内容 JSON / PNG 封装',
+            'container',
+          )
+          results.push({ status: 'imported', fileName: file.name, resource })
+          continue
         }
         if (candidates.length) {
           results.push({

@@ -11,6 +11,7 @@ import { VaultService } from '../services/VaultService'
 import { ResourceGalleryService } from '../services/ResourceGalleryService'
 import { GreetingResourceService } from '../services/GreetingResourceService'
 import { CommunitySourceService } from '../services/CommunitySourceService'
+import { DiscordInboxAutomationSettingsService } from '../services/DiscordInboxAutomationSettings'
 import { CommunitySourceRestoreService } from '../services/CommunitySourceRestoreService'
 import { ResourceArchiveService } from '../services/ResourceArchiveService'
 import { ArchiveRecoveryService } from '../services/ArchiveRecoveryService'
@@ -82,6 +83,9 @@ export const greetingResourceService = new GreetingResourceService(resourceServi
 export const communitySourceService = new CommunitySourceService(
   communitySourceStorageOwner,
   assetStore,
+)
+export const discordInboxAutomationSettingsService = new DiscordInboxAutomationSettingsService(
+  database,
 )
 export const userPersonaService = new UserPersonaService(resourceService)
 export const categoryService = new CategoryService(categoryStorage)

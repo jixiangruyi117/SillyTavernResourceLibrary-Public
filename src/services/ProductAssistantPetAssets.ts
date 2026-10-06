@@ -1,3 +1,5 @@
+import { hostedApiFetchBinary } from '../core/HostedApiTransport'
+
 export const ASSISTANT_PET_ASSET_FILES = [
   'assistant-pet.png',
   'assistant-pet-chat.png',
@@ -56,9 +58,9 @@ export async function downloadAssistantPetAssets(): Promise<void> {
   try {
     for (const file of ASSISTANT_PET_ASSET_FILES) {
       const request = requestFor(file)
-      // SRL-PUBLIC-SYNC: BEGIN REPLACE id=assistant-pet-asset-download
-      const response = await fetch(request, { cache: 'no-store' })
-      // SRL-PUBLIC-SYNC: END REPLACE id=assistant-pet-asset-download
+      // In the packaged APK, relative fetches resolve to the WebView's local shell.
+      // Fetch the public artwork through the shared native-aware transport instead.
+      const response = await hostedApiFetchBinary(`/icons/${file}`, 2 * 1024 * 1024)
       if (!response.ok || !response.headers.get('content-type')?.startsWith('image/png'))
         throw new Error('桌宠图片下载失败')
       await cache.put(request, response.clone())

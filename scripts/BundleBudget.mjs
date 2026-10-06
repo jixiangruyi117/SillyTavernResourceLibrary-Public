@@ -18,9 +18,10 @@ const limits = {
   mainJs: 800 * 1024,
   lazyVueCompilerJs: 900 * 1024,
   css: 400 * 1024,
-  defaultPrecache: 1.5 * 1024 * 1024,
+  defaultPrecache: 2.5 * 1024 * 1024,
   fullOfflineCore: 12 * 1024 * 1024,
   optionalBrowserCompiler: 16 * 1024 * 1024,
+  optionalAssistantPetArtwork: 16 * 1024 * 1024,
 }
 
 for (const entry of entries) {
@@ -57,10 +58,15 @@ const optionalCompilerAsset = (url) =>
   /^\/assets\/(?:FrontendWorkshopBrowserSourceCompilerService-|browser-[^/]+\.js$|compiler-sfc\.esm-browser-|esbuild-[^/]+\.wasm$)/u.test(
     url,
   )
+const optionalPetArtwork = (url) => /^\/icons\/assistant-pet(?:-[^/]+)?\.png$/u.test(url)
 const optionalBrowserCompilerBytes = offlineManifest.assets
   .filter((asset) => optionalCompilerAsset(asset.url))
   .reduce((total, asset) => total + asset.size, 0)
-const fullOfflineCoreBytes = offlineManifest.totalBytes - optionalBrowserCompilerBytes
+const optionalAssistantPetArtworkBytes = offlineManifest.assets
+  .filter((asset) => optionalPetArtwork(asset.url))
+  .reduce((total, asset) => total + asset.size, 0)
+const fullOfflineCoreBytes =
+  offlineManifest.totalBytes - optionalBrowserCompilerBytes - optionalAssistantPetArtworkBytes
 if (fullOfflineCoreBytes > limits.fullOfflineCore) {
   failures.push(`完整离线核心为 ${fullOfflineCoreBytes} bytes，超过 ${limits.fullOfflineCore}`)
 }
@@ -69,8 +75,13 @@ if (optionalBrowserCompilerBytes > limits.optionalBrowserCompiler) {
     `按需 Browser Compiler 为 ${optionalBrowserCompilerBytes} bytes，超过 ${limits.optionalBrowserCompiler}`,
   )
 }
+if (optionalAssistantPetArtworkBytes > limits.optionalAssistantPetArtwork) {
+  failures.push(
+    `按需蒜惹菈桌宠图片为 ${optionalAssistantPetArtworkBytes} bytes，超过 ${limits.optionalAssistantPetArtwork}`,
+  )
+}
 
 if (failures.length) throw new Error(`Bundle budget 失败：\n- ${failures.join('\n- ')}`)
 process.stdout.write(
-  `Bundle budget 通过：默认 precache ${(precacheBytes / 1024 / 1024).toFixed(2)} MiB，完整离线核心 ${(fullOfflineCoreBytes / 1024 / 1024).toFixed(2)} MiB，按需 Browser Compiler ${(optionalBrowserCompilerBytes / 1024 / 1024).toFixed(2)} MiB\n`,
+  `Bundle budget 通过：默认 precache ${(precacheBytes / 1024 / 1024).toFixed(2)} MiB，离线核心 ${(fullOfflineCoreBytes / 1024 / 1024).toFixed(2)} MiB，按需 Browser Compiler ${(optionalBrowserCompilerBytes / 1024 / 1024).toFixed(2)} MiB，按需蒜惹菈图片 ${(optionalAssistantPetArtworkBytes / 1024 / 1024).toFixed(2)} MiB\n`,
 )

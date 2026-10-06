@@ -11,6 +11,7 @@ import {
   type CommunitySourceMessage,
   type DiscordCapture,
   type ResourceSourceBinding,
+  createResourceSourceBindingId,
 } from '../types/CommunitySource'
 import { CommunitySourceService } from './CommunitySourceService'
 import * as captureHelpers from './CommunitySourceCapture'
@@ -1033,5 +1034,33 @@ describe('CommunitySourceService archive hardening', () => {
     expect(found?.source.id).toBe(created.source.id)
     expect(found?.messages).toHaveLength(1)
     expect(found?.bindings.map((binding) => binding.resourceId)).toEqual(['resource-a'])
+  })
+
+  it('confirms automatic bindings as manual and safely replaces their target', async () => {
+    const storage = new MemoryCommunitySourceStorage()
+    const service = new CommunitySourceService(storage)
+    const saved = await service.saveDiscordCapture(starter())
+    const automaticBinding: ResourceSourceBinding = {
+      id: createResourceSourceBindingId('resource-a', saved.source.id),
+      resourceId: 'resource-a',
+      sourceId: saved.source.id,
+      note: '自动关联：同名 · 角色 A',
+      autoBindingRule: 'same-name',
+      createdAt: Date.now(),
+    }
+    await storage.putBinding(automaticBinding)
+
+    await service.confirmAutoBinding('resource-a', saved.source.id)
+    let bindings = await storage.listBindingsForSource(saved.source.id)
+    expect(bindings).toHaveLength(1)
+    expect(bindings[0]?.autoBindingRule).toBeUndefined()
+    expect(bindings[0]?.note).toBeUndefined()
+
+    await storage.putBinding(automaticBinding)
+    await service.replaceAutoBinding('resource-a', 'resource-b', saved.source.id)
+    bindings = await storage.listBindingsForSource(saved.source.id)
+    expect(bindings).toHaveLength(1)
+    expect(bindings[0]).toMatchObject({ resourceId: 'resource-b', sourceId: saved.source.id })
+    expect(bindings[0]?.autoBindingRule).toBeUndefined()
   })
 })

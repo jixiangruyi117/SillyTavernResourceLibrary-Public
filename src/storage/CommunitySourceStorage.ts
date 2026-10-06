@@ -32,12 +32,15 @@ export interface CommunitySourceStorage {
   listUnboundSources(limit?: number): Promise<CommunitySource[]>
 
   listMessages(sourceId: string): Promise<CommunitySourceMessage[]>
+  /** Read only the post's first-floor message for bounded auto-matching. */
+  getStarterMessage?(sourceId: string): Promise<CommunitySourceMessage | undefined>
   getMessage(sourceId: string, messageKeyHash: string): Promise<CommunitySourceMessage | undefined>
   putMessage(message: CommunitySourceMessage): Promise<void>
   deleteMessage(id: string): Promise<void>
 
   listBindingsForResource(resourceId: string): Promise<ResourceSourceBinding[]>
   listBindingsForSource(sourceId: string): Promise<ResourceSourceBinding[]>
+  listRecentAutoBindings?(limit?: number): Promise<ResourceSourceBinding[]>
   putBinding(binding: ResourceSourceBinding): Promise<void>
   deleteBinding(id: string): Promise<void>
   /** Repair only binding rows; current resources are rechecked atomically before removal. */

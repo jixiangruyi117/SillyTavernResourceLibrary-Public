@@ -15,6 +15,16 @@ export interface NativeExportDirectoryStatus {
 }
 
 interface NativeFileExportPlugin {
+  downloadResourceToWrite(options: {
+    token: string
+    resourceId: string
+    expectedSize: number
+  }): Promise<void>
+  downloadResourceForImport(options: {
+    resourceId: string
+    expectedSize: number
+  }): Promise<{ token: string; uri: string; bytes: number }>
+  releaseImportedResource(options: { token: string }): Promise<void>
   chooseDirectory(): Promise<NativeExportDirectoryStatus>
   getDirectoryStatus(): Promise<NativeExportDirectoryStatus>
   clearDirectory(): Promise<NativeExportDirectoryStatus>
@@ -29,6 +39,55 @@ interface NativeFileExportPlugin {
 }
 
 const plugin = registerPlugin<NativeFileExportPlugin>('NativeFileExport')
+
+export async function readPlazaResourceForImport(
+  resourceId: string,
+  fileName: string,
+  expectedSize: number,
+): Promise<File> {
+  if (!isNativeFileExportAvailable()) throw new Error('当前设备不支持资源广场导入')
+  const staged = await plugin.downloadResourceForImport({ resourceId, expectedSize })
+  try {
+    if (staged.bytes !== expectedSize) throw new Error('暂存资源大小不一致')
+    const response = await fetch(Capacitor.convertFileSrc(staged.uri), { cache: 'no-store' })
+    if (!response.ok) throw new Error('无法读取暂存资源文件')
+    const blob = await response.blob()
+    if (blob.size !== expectedSize) throw new Error('读取的资源文件大小不一致')
+    return new File([blob], fileName, { type: blob.type })
+  } finally {
+    await plugin.releaseImportedResource({ token: staged.token })
+  }
+}
+
+export async function savePlazaResourceToDownloads(
+  resourceId: string,
+  fileName: string,
+  expectedSize: number,
+): Promise<void> {
+  const task = taskCenter.start({
+    name: `下载 ${fileName}`,
+    phase: '保存到下载目录 / SRL',
+    cancelable: false,
+  })
+  let token = ''
+  try {
+    const staged = await plugin.beginWrite({
+      destination: 'downloads',
+      fileName,
+      mimeType: 'application/octet-stream',
+    })
+    token = staged.token
+    await plugin.downloadResourceToWrite({ token, resourceId, expectedSize })
+    const result = await plugin.commitWrite({ token })
+    token = ''
+    if (result.bytes !== expectedSize) throw new Error('保存的资源大小不一致')
+    taskCenter.complete(task)
+  } catch (error) {
+    if (token) await plugin.abortWrite({ token }).catch(() => undefined)
+    taskCenter.fail(task, error)
+    throw error
+  }
+}
 
 export function isNativeFileExportAvailable(): boolean {
   return (

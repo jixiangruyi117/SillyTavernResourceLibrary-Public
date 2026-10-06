@@ -13,8 +13,9 @@ import DiscordInboxPanel from './DiscordInboxPanel.vue'
 import DiscordResourceDownloadPanel from './DiscordResourceDownloadPanel.vue'
 import DiscordPendingSources from './DiscordPendingSources.vue'
 import DiscordNativeInboxMode from './DiscordNativeInboxMode.vue'
+import type { ResourceSummary } from '../types/Resource'
 
-defineEmits<{ back: [] }>()
+defineEmits<{ back: []; 'open-resource': [resource: ResourceSummary] }>()
 const settingsOpen = ref(false)
 watch(
   assistantGuidance,
@@ -81,7 +82,7 @@ const ConnectionSettings = createAsyncPanel(
     </template>
     <div class="discord-inbox-center__content">
       <DiscordNativeInboxMode />
-      <DiscordInboxPanel />
+      <DiscordInboxPanel @open-resource="$emit('open-resource', $event)" />
       <DiscordResourceDownloadPanel />
       <DiscordPendingSources hide-when-empty />
     </div>

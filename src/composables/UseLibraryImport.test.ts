@@ -13,6 +13,7 @@ const {
   suspendKeepAlive,
   confirmImportAction,
   resourceService,
+  automationSettingsService,
   selectMigrationEdits,
 } = vi.hoisted(() => ({
   inspectArchive: vi.fn(),
@@ -31,12 +32,21 @@ const {
     importAsVersion: vi.fn(),
     importFiles: vi.fn(),
   },
+  automationSettingsService: {
+    load: vi.fn().mockResolvedValue({
+      bindSameName: false,
+      bindSameAuthor: false,
+      bindNextPng: false,
+      preferPngContainer: false,
+    }),
+  },
   selectMigrationEdits: vi.fn(),
 }))
 
 vi.mock('../core/LibraryContainer', () => ({
   resourceArchiveService: { inspect: inspectArchive, readResourceArchive, tavernFiles },
   resourceService,
+  discordInboxAutomationSettingsService: automationSettingsService,
 }))
 
 vi.mock('../services/CharacterCardMigrationReview', () => ({
