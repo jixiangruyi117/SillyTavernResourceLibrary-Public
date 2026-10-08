@@ -125,6 +125,17 @@ function mountSettings() {
 }
 
 describe('LayoutSettingsPanel platform-specific preview options', () => {
+  it('多线路开关在网页也可见，确认前保持实际关闭状态', async () => {
+    const wrapper = mountSettings()
+    const label = wrapper.findAll('label').find((item) => item.text().includes('增加多线路下载'))!
+    const input = label.find<HTMLInputElement>('input')
+    expect(input.element.checked).toBe(false)
+    await input.setValue(true)
+    expect(wrapper.emitted('update:increasePreviewDownloads')).toEqual([[true]])
+    expect(input.element.checked).toBe(false)
+    await wrapper.setProps({ increasePreviewDownloads: true })
+    expect(input.element.checked).toBe(true)
+  })
   it('exposes the same-name candidate switch without enabling it by default', async () => {
     const wrapper = mountSettings()
     const label = wrapper

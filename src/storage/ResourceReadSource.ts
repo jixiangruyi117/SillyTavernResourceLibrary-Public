@@ -21,6 +21,20 @@ export async function readResourceMetadata(
 }
 
 /** Uses the same DBCore transaction queue as get()/update(), retaining binary descriptors. */
+export async function readResourceMetadataBatch(
+  database: AppDatabase,
+  ids: string[],
+  store: 'resources' | 'resourceVersions' = 'resources',
+): Promise<Array<StoredResource | undefined>> {
+  const table = database[store]
+  if (!isAndroidNativeAppDatabaseActive()) return table.bulkGet(ids)
+  return database.transaction('r', table, async (transaction) => {
+    const request = { trans: transaction.idbtrans, keys: ids, loadBinary: false }
+    return (await table.core.getMany(request)) as Array<StoredResource | undefined>
+  })
+}
+
+/** Uses the same DBCore transaction queue as get()/update(), retaining binary descriptors. */
 export async function readResourceSource(
   database: AppDatabase,
   id: string,

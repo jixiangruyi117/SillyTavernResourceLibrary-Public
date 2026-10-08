@@ -151,6 +151,68 @@ function createdSnapshot(hashes = ['a'.repeat(64)]): CreatedStructuredSnapshot {
 }
 
 describe('CloudBackupService V3', () => {
+  it.each(['github', 'webdav'] as const)(
+    'lists and restores settings-only %s snapshots with the selected remapped reader data',
+    async (provider) => {
+      const snapshot = createdSnapshot([]).snapshot
+      snapshot.portableData = {
+        version: 1,
+        chatReader: [],
+        assistantData: [],
+        credentials: { version: 1, cloudBackup: { github: 'fixture-secret' } },
+      }
+      const remapped: ArchivePortableData = {
+        ...snapshot.portableData,
+        chatReader: [
+          {
+            id: 'reader-state',
+            appId: 'com.srl.duleme',
+            key: 'chat:remapped-id',
+            value: {},
+            updatedAt: 1,
+          },
+        ],
+      }
+      const restored = vi.fn().mockResolvedValue({ restoredResources: 0, portableData: remapped })
+      const imported = vi.fn()
+      const filter = vi.fn(async (data: ArchivePortableData) => data)
+      const service = new CloudBackupService(
+        { listResourceListSummaries: vi.fn(async () => []) } as unknown as ResourceService,
+        { list: vi.fn(async () => []) } as unknown as CategoryService,
+        {} as ExportService,
+        { restoreStructured: restored } as unknown as RestoreService,
+        undefined,
+        imported,
+      )
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(githubRepositoryResponse()))
+      await service.importPortableCredentials({ [provider]: 'token' })
+      await service.saveConfig(provider === 'github' ? githubConfig : webDavConfig, '')
+      const readSnapshot = vi.fn().mockResolvedValue(snapshot)
+      Object.assign(service, {
+        readGitHubStructuredSnapshot: readSnapshot,
+        readWebDavStructuredSnapshot: readSnapshot,
+        createGitHubObjectReader: vi.fn().mockResolvedValue(vi.fn()),
+        createWebDavObjectReader: vi.fn(),
+      })
+      const item = {
+        id: '1',
+        objectKey: 'snapshot.srlmanifest.v3.json.gz',
+        size: 1,
+        createdAt: 1,
+        kind: provider === 'github' ? ('githubSnapshot' as const) : ('webdavSnapshot' as const),
+      }
+      expect(await service.listBackupRestoreContents(item)).toEqual({
+        resources: [],
+        portableScopeIds: ['extra.chatReader', 'extra.assistantData', 'extra.credentials'],
+      })
+      expect(readSnapshot).toHaveBeenCalledOnce()
+      expect(await service.restoreBackup(item, filter, [], false, ['extra.chatReader'])).toBe(0)
+      expect(filter).toHaveBeenCalledWith({ version: 1, chatReader: remapped.chatReader })
+      expect(imported).toHaveBeenCalledWith({ version: 1, chatReader: remapped.chatReader })
+      expect(restored.mock.calls[0]?.[0].resources).toEqual([])
+      expect(snapshot.portableData.credentials).toBeDefined()
+    },
+  )
   beforeEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
@@ -728,6 +790,7 @@ describe('CloudBackupService V3', () => {
       'snapshot.srlmanifest.v3.json.gz',
       false,
       expect.objectContaining({ version: 3 }),
+      undefined,
     )
     service.reuseUnchangedStructuredBackup = vi.fn(async () => ({
       id: 'manifest-1',

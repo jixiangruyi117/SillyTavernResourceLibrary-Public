@@ -328,6 +328,133 @@ export function useRichContentPreview(
 
   let preloadAbortController: AbortController | undefined
 
+  let mediaLoadAbortController: AbortController | undefined
+
+  let initialMediaStarted = false
+
+  // A swipe replaces DOM in the existing document, so its outer iframe does not load again.
+  // Wait only for current eager images/srcdoc frames; deferred media belongs to later scrolling.
+  async function waitForPreviewMedia(signal: AbortSignal): Promise<void> {
+    const displayed = new WeakMap<Element, boolean>()
+    const isDisplayed = (element: Element, checkVisibility = true): boolean => {
+      const cached = displayed.get(element)
+      const style = (element.ownerDocument.defaultView ?? window).getComputedStyle(element)
+      const hasLayout =
+        cached ??
+        (style.display !== 'none' &&
+          (!element.parentElement || isDisplayed(element.parentElement, false)))
+      displayed.set(element, hasLayout)
+      // visibility can be restored on a child; display:none cannot.
+      return hasLayout && (!checkVisibility || !['hidden', 'collapse'].includes(style.visibility))
+    }
+    const waitForLoad = (element: Element) =>
+      new Promise<void>((resolve) => {
+        const finish = () => {
+          element.removeEventListener('load', finish)
+          element.removeEventListener('error', finish)
+          signal.removeEventListener('abort', finish)
+          resolve()
+        }
+        element.addEventListener('load', finish, { once: true })
+        element.addEventListener('error', finish, { once: true })
+        signal.addEventListener('abort', finish, { once: true })
+        if (signal.aborted) finish()
+      })
+    const waitForDocument = (child: HTMLIFrameElement) =>
+      new Promise<void>((resolve) => {
+        const childDocument = child.contentDocument
+        const owner = child.ownerDocument.defaultView
+        const finish = () => {
+          child.removeEventListener('load', finish)
+          child.removeEventListener('error', finish)
+          childDocument?.removeEventListener('DOMContentLoaded', finish)
+          owner?.removeEventListener('message', layoutReady)
+          signal.removeEventListener('abort', finish)
+          resolve()
+        }
+        const layoutReady = (event: MessageEvent) => {
+          if (
+            event.source === child.contentWindow &&
+            event.data?.type === 'SRL_FRAME_LAYOUT_READY'
+          ) {
+            finish()
+          }
+        }
+        child.addEventListener('load', finish, { once: true })
+        child.addEventListener('error', finish, { once: true })
+        childDocument?.addEventListener('DOMContentLoaded', finish, { once: true })
+        owner?.addEventListener('message', layoutReady)
+        signal.addEventListener('abort', finish, { once: true })
+        if (
+          signal.aborted ||
+          (child.contentDocument?.URL === 'about:srcdoc' &&
+            child.contentDocument.readyState !== 'loading')
+        ) {
+          finish()
+        }
+      })
+    const visit = async (document: Document): Promise<void> => {
+      if (signal.aborted) return
+      await Promise.all([
+        ...Array.from(document.images)
+          .filter((image) => !image.complete && image.loading !== 'lazy' && isDisplayed(image))
+          .map(waitForLoad),
+        ...Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[srcdoc]')).map(
+          async (child) => {
+            try {
+              if (!isDisplayed(child)) return
+              if (child.loading === 'lazy' && child.contentDocument?.URL !== 'about:srcdoc') {
+                let top = child.getBoundingClientRect().top
+                let ownerFrame = child.ownerDocument.defaultView?.frameElement
+                while (ownerFrame) {
+                  top += ownerFrame.getBoundingClientRect().top
+                  ownerFrame = ownerFrame.ownerDocument.defaultView?.frameElement
+                }
+                if (top >= window.innerHeight) return
+              }
+              if (
+                child.contentDocument?.readyState === 'loading' ||
+                child.contentDocument?.URL !== 'about:srcdoc'
+              ) {
+                await waitForDocument(child)
+              }
+              if (!signal.aborted && child.contentDocument) await visit(child.contentDocument)
+            } catch {
+              // Author-owned cross-origin frames remain in the browser's loading lifecycle.
+            }
+          },
+        ),
+      ])
+    }
+    const document = frame.value?.contentDocument
+    if (document) await visit(document)
+  }
+
+  function settleInitialPreview(): void {
+    if (initialMediaStarted || !frame.value || !preview.value) return
+    initialMediaStarted = true
+    const currentFrame = frame.value
+    const requestId = greetingTransitionRequestId
+    const controller = new AbortController()
+    mediaLoadAbortController = controller
+    void waitForPreviewMedia(controller.signal).then(() => {
+      if (
+        controller.signal.aborted ||
+        requestId !== greetingTransitionRequestId ||
+        frame.value !== currentFrame
+      ) {
+        return
+      }
+      mediaLoadAbortController = undefined
+      previewFormalReady = true
+      previewDocumentSent = true
+      if (pendingGreetingIndex !== undefined || sessionGreetingIndex !== props.greetingIndex) {
+        if (syncGreetingTransition()) return
+      }
+      isPreviewLoading.value = false
+    })
+  }
+
   let releasePreloadedResources: (() => void) | undefined
 
   let previewDocumentSent = false
@@ -397,18 +524,13 @@ export function useRichContentPreview(
       isPreviewLoading.value = true
       return true
     }
+    if (inFlightGreetingIndex === target) return true
     if (sessionGreetingIndex === target) {
       pendingGreetingIndex = undefined
       inFlightGreetingIndex = undefined
       isPreviewLoading.value = false
       return true
     }
-    if (inFlightGreetingIndex === target) {
-      isPreviewLoading.value =
-        Number(currentPreviewSessionHost()?.context?.().chat?.[0]?.swipe_id) !== target
-      return true
-    }
-
     const host = currentPreviewSessionHost()
     if (!host || typeof host.transitionSwipe !== 'function') return false
 
@@ -418,6 +540,9 @@ export function useRichContentPreview(
     pendingGreetingIndex = target
     inFlightGreetingIndex = target
     isPreviewLoading.value = true
+    mediaLoadAbortController?.abort()
+    const mediaController = new AbortController()
+    mediaLoadAbortController = mediaController
     const preparedMessage = prepareGreetingMessage(source, target, 'alternate')
     const rendered = buildRenderCompatibilitySwipeMarkup(source, previewPolicy.value, {
       vendorLibs: sessionVendorLibs,
@@ -437,6 +562,7 @@ export function useRichContentPreview(
         transitionResult = prepareNativePreviewAssets(
           collectPreviewRemoteResourceUrls(rendered, true),
           controller.signal,
+          previewPolicy.value.increaseDownloadConcurrency === true,
         )
           .catch(() => undefined)
           .then(() => {
@@ -459,7 +585,6 @@ export function useRichContentPreview(
     const acceptAppliedTarget = () => {
       sessionGreetingIndex = target
       pendingGreetingIndex = undefined
-      if (normalizedGreetingIndex() === target) isPreviewLoading.value = false
       if (canonicalSeedQueued) return
       canonicalSeedQueued = true
       queueMicrotask(() => {
@@ -484,6 +609,9 @@ export function useRichContentPreview(
         if (requestId === greetingTransitionRequestId) acceptAppliedTarget()
         if (changed) await host.emit(host.events.CHARACTER_MESSAGE_RENDERED, [0])
         if (requestId !== greetingTransitionRequestId) return
+        await waitForPreviewMedia(mediaController.signal)
+        if (mediaController.signal.aborted || requestId !== greetingTransitionRequestId) return
+        mediaLoadAbortController = undefined
         inFlightGreetingIndex = undefined
         if (props.greetingContents.length && normalizedGreetingIndex() !== target) {
           syncGreetingTransition()
@@ -518,6 +646,9 @@ export function useRichContentPreview(
   }
 
   function invalidatePreviewFrameSession(): void {
+    initialMediaStarted = false
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     previewFormalReady = false
     previewDocumentSent = false
     sessionGreetingIndex = undefined
@@ -549,6 +680,8 @@ export function useRichContentPreview(
   }
 
   function markPreviewInputsDirty(): void {
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     previewInputRevision += 1
     previewDirty = true
     canonicalPreviewSeed = undefined
@@ -561,6 +694,8 @@ export function useRichContentPreview(
   }
 
   function markPreviewSelectionDirty(): void {
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     previewDirty = true
     rebuildGeneration += 1
     preloadAbortController?.abort()
@@ -570,6 +705,8 @@ export function useRichContentPreview(
   }
 
   function suspendPreviewWork(): void {
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     rebuildGeneration += 1
     if (!hasCurrentCanonicalPreviewSeed()) previewDirty = true
     preloadAbortController?.abort()
@@ -594,6 +731,9 @@ export function useRichContentPreview(
       return
     }
     const generation = ++rebuildGeneration
+    initialMediaStarted = false
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     const inputRevision = previewInputRevision
     previewDirty = false
     isPreviewLoading.value = true
@@ -658,8 +798,11 @@ export function useRichContentPreview(
       })
       return state
     }
-    const [vendorLibs, mvuPreview] = await Promise.all([loadVendors(), loadMvu()])
-    const charAvatarUrl = props.charAvatar ? await blobToDataUrl(props.charAvatar) : undefined
+    const [vendorLibs, mvuPreview, charAvatarUrl] = await Promise.all([
+      loadVendors(),
+      loadMvu(),
+      props.charAvatar ? blobToDataUrl(props.charAvatar) : undefined,
+    ])
     if (
       generation !== rebuildGeneration ||
       inputRevision !== previewInputRevision ||
@@ -691,6 +834,7 @@ export function useRichContentPreview(
       await prepareNativePreviewAssets(
         collectPreviewRemoteResourceUrls(nextPreview.document, true),
         controller.signal,
+        previewPolicy.value.increaseDownloadConcurrency === true,
       ).catch(() => undefined)
       if (generation !== rebuildGeneration || controller.signal.aborted) return
       preview.value = nextPreview
@@ -703,6 +847,7 @@ export function useRichContentPreview(
       preloadAbortController = controller
       void preloadPreviewDocumentResources(nextPreview.document, undefined, {
         signal: controller.signal,
+        increaseDownloadConcurrency: previewPolicy.value.increaseDownloadConcurrency === true,
       })
         .then((preloaded) => {
           if (generation !== rebuildGeneration || controller.signal.aborted) {
@@ -744,20 +889,13 @@ export function useRichContentPreview(
     scheduleIdleGreetingPrewarm(targetGreetingIndex)
   }
 
-  function handleFrameLoad(): void {
+  function handleFrameLoad(event: Event): void {
+    if (event.currentTarget !== frame.value) return
     reportPreviewPerformance({
       stage: 'iframe-load',
       greetingIndex: normalizedGreetingIndex(),
     })
-    previewDocumentSent = true
-    previewFormalReady = true
-    if (pendingGreetingIndex !== undefined || sessionGreetingIndex !== props.greetingIndex) {
-      if (syncGreetingTransition()) {
-        scheduleHostViewportSync()
-        return
-      }
-    }
-    isPreviewLoading.value = false
+    settleInitialPreview()
     scheduleHostViewportSync()
   }
 
@@ -779,6 +917,9 @@ export function useRichContentPreview(
     if (payload.type === 'SRL_PREVIEW_HEIGHT') {
       const height = Number(payload.height)
       if (Number.isFinite(height) && height > 0) measuredHeight.value = Math.ceil(height)
+      // Layout reports start at DOMContentLoaded. The iframe load event also waits
+      // for author-owned hidden scenes, so it cannot define the visible loading cycle.
+      settleInitialPreview()
       return
     }
     if (payload.type === 'SRL_PREVIEW_DETAILS_STATE') {
@@ -829,6 +970,8 @@ export function useRichContentPreview(
   }
 
   onUnmounted(() => {
+    mediaLoadAbortController?.abort()
+    mediaLoadAbortController = undefined
     cancelIdlePrewarm()
     preloadAbortController?.abort()
     preloadAbortController = undefined
@@ -843,8 +986,10 @@ export function useRichContentPreview(
 
   watch(
     [
-      previewPolicy,
-      () => props.title,
+      () => previewPolicy.value.allowRemoteResources,
+      () => previewPolicy.value.allowScripts,
+      // Greeting labels change with the selected opening; they do not replace its session.
+      () => (props.greetingContents.length ? undefined : props.title),
       () => props.runtimeScripts,
       () => props.charAvatar,
       () => props.inspector,

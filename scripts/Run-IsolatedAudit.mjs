@@ -16,6 +16,7 @@ export const AUDIT_SUITES = {
   'detail-layout': 'scripts/ResourceDetailLayoutAudit.mjs',
   'world-book': 'scripts/WorldBookBrowserAudit.mjs',
   'storage-settings': 'scripts/ResourceRecoveryAudit.mjs',
+  'intake-files': 'scripts/NativeIntakeFilesAudit.mjs',
   stress: 'scripts/BrowserStressAudit.mjs',
   assistant: 'scripts/ProductAssistantPetAudit.mjs',
   'api-config': 'scripts/ApiConfigurationAudit.mjs',
@@ -24,6 +25,7 @@ export const AUDIT_SUITES = {
   'reader-startup': 'scripts/ChatReaderStartupAudit.mjs',
   'app-entry': 'scripts/AppEntryAudit.mjs',
   'chat-script-transfer': 'scripts/ChatScriptTransferAudit.mjs',
+  'preview-loading': 'scripts/GreetingPreviewLoadingAudit.mjs',
   'assistant-workflows': 'scripts/ProductAssistantWorkflowAudit.mjs',
   'tavern-live': 'scripts/TavernLiveTransferAudit.mjs',
 }
@@ -92,7 +94,48 @@ export function runAuditCommand(script, args = [], env = process.env, control) {
   })
 }
 
-export async function runIsolatedAudit(options) {
+// A gate group may share expensive validation. Standalone audits always validate fully.
+export function createAuditValidationSession(command = runAuditCommand, read = readFile) {
+  const inventories = new Map()
+  const httpChecked = new Set()
+  const fingerprint = async (directory) =>
+    createHash('sha256')
+      .update(await read(resolve(directory, 'official-app-assets.json')))
+      .digest('hex')
+  return {
+    async local(directory) {
+      directory = resolve(directory)
+      const current = await fingerprint(directory)
+      if (inventories.has(directory)) {
+        if (inventories.get(directory) !== current) throw new Error('共用候选产物清单发生变化')
+        return
+      }
+      await command('scripts/Check-OfficialAppPackages.mjs', [directory])
+      if (current !== (await fingerprint(directory)))
+        throw new Error('校验期间候选产物清单发生变化')
+      inventories.set(directory, current)
+    },
+    async http(url, directory) {
+      directory = resolve(directory)
+      if (!inventories.has(directory)) throw new Error('必须先校验本地候选')
+      if (httpChecked.has(directory)) return
+      await command('scripts/Verify-OfficialAppDeployment.mjs', [url])
+      httpChecked.add(directory)
+    },
+    async finish() {
+      for (const [directory, original] of inventories) {
+        if (original !== (await fingerprint(directory))) throw new Error('共用候选产物清单发生变化')
+        // Also catches replaced asset/package bytes with an unchanged inventory.
+        await command('scripts/Check-OfficialAppPackages.mjs', [directory])
+      }
+    },
+  }
+}
+
+export async function runIsolatedAudit(options, validation) {
+  const checkLocal = validation
+    ? (directory) => validation.local(directory)
+    : (directory) => runAuditCommand('scripts/Check-OfficialAppPackages.mjs', [directory])
   const output = resolve('.codex-tmp', options.run)
   await mkdir(resolve('.codex-tmp'), { recursive: true })
   // Exclusive reservation prevents two chats from overwriting evidence under one run name.
@@ -113,11 +156,13 @@ export async function runIsolatedAudit(options) {
   let preview
   let phase = '产物完整性预检'
   try {
-    if (options.suite === 'discord-handoff' || options.suite === 'discord-inbox') {
+    if (['discord-handoff', 'discord-inbox', 'preview-loading'].includes(options.suite)) {
       phase =
-        options.suite === 'discord-inbox'
-          ? '收件箱组件隔离浏览器审计'
-          : 'Worker 接收页隔离浏览器审计'
+        options.suite === 'preview-loading'
+          ? '开场白渐进加载组件隔离浏览器审计'
+          : options.suite === 'discord-inbox'
+            ? '收件箱组件隔离浏览器审计'
+            : 'Worker 接收页隔离浏览器审计'
       await runAuditCommand(AUDIT_SUITES[options.suite], [], {
         ...process.env,
         SRL_AUDIT_MODE: 'fixture',
@@ -131,14 +176,14 @@ export async function runIsolatedAudit(options) {
       console.log(`${phase}通过：${options.run} / ${options.engine}`)
       return result
     }
-    await runAuditCommand('scripts/Check-OfficialAppPackages.mjs', [options.dist])
+    await checkLocal(options.dist)
     const inventoryPath = resolve(options.dist, 'official-app-assets.json')
     const original = await readFile(inventoryPath)
     result.buildId = JSON.parse(original).shellVersion
     const fingerprint = createHash('sha256').update(original).digest('hex')
     let nextFingerprint
     if (options.nextDist) {
-      await runAuditCommand('scripts/Check-OfficialAppPackages.mjs', [options.nextDist])
+      await checkLocal(options.nextDist)
       nextFingerprint = createHash('sha256')
         .update(await readFile(resolve(options.nextDist, 'official-app-assets.json')))
         .digest('hex')
@@ -154,7 +199,8 @@ export async function runIsolatedAudit(options) {
       bridgeUrl: options.suite === 'tavern-live' ? process.env.SRL_AUDIT_RELAY_URL : undefined,
     })
     phase = '下载清单与安装包 HTTP 预检'
-    await runAuditCommand('scripts/Verify-OfficialAppDeployment.mjs', [preview.url])
+    if (validation) await validation.http(preview.url, options.dist)
+    else await runAuditCommand('scripts/Verify-OfficialAppDeployment.mjs', [preview.url])
     result.steps.push(phase)
     phase = '浏览器功能审计'
     result.status = 'failed'
@@ -185,7 +231,7 @@ export async function runIsolatedAudit(options) {
         .digest('hex') !== fingerprint
     )
       throw new Error('测试期间产物清单发生变化，请使用该聊天独立的 --dist')
-    await runAuditCommand('scripts/Check-OfficialAppPackages.mjs', [options.dist])
+    await checkLocal(options.dist)
     if (options.nextDist) {
       if (
         createHash('sha256')
@@ -193,7 +239,7 @@ export async function runIsolatedAudit(options) {
           .digest('hex') !== nextFingerprint
       )
         throw new Error('下一版本候选测试期间被替换')
-      await runAuditCommand('scripts/Check-OfficialAppPackages.mjs', [options.nextDist])
+      await checkLocal(options.nextDist)
       result.steps.push('同源真实SW更新与安装保留')
     }
     result.steps.push(phase)

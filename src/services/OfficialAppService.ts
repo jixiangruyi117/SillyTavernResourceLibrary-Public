@@ -1,5 +1,8 @@
 import { hashBytes, hashBlob } from './HashService'
-import { OFFICIAL_APP_HOST_API_VERSION } from '../core/OfficialAppHostApi'
+import {
+  OFFICIAL_APP_HOST_API_VERSION,
+  OFFICIAL_APP_MAX_PACKAGE_FILES,
+} from '../core/OfficialAppHostApi'
 import { LEGACY_OFFICIAL_APP_CONTENT_REVISION } from '../core/OfficialAppContentRevision'
 
 async function hashPackageBytes(bytes: Uint8Array): Promise<string> {
@@ -41,7 +44,7 @@ async function downloadAndUnzipPackage(
   if (length !== expectedBytes) throw new Error('APP 下载不完整')
   onCheck?.()
   if ((await hashPackageBytes(bytes)) !== expectedHash) throw new Error('APP 下载校验失败')
-  return unzipPackage(bytes.buffer)
+  return unzipPackage(bytes.buffer, OFFICIAL_APP_MAX_PACKAGE_FILES)
 }
 
 import { unzipPackage, MAX_PACKAGE_BYTES } from './ExternalAppPackage'
@@ -404,7 +407,7 @@ export class OfficialAppService {
     if (
       !Array.isArray(app.files) ||
       !app.files.length ||
-      app.files.length > 128 ||
+      app.files.length + 1 > OFFICIAL_APP_MAX_PACKAGE_FILES ||
       !Array.isArray(app.styles) ||
       !app.styles.every(safeAsset)
     )

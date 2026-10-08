@@ -14,6 +14,7 @@ import { createGitHubObjectReader } from './CloudBackupGitHubTransport'
 import { createWebDavObjectReader } from './CloudBackupWebDavTransport'
 import type { CloudBackupTransportContext } from './CloudBackupTransportContext'
 import type { GitHubBundleManifest } from './GitHubBackupBundle'
+import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 
 async function resource(id: string): Promise<Resource> {
   const blob = new Blob([
@@ -39,6 +40,46 @@ async function resource(id: string): Promise<Resource> {
 }
 
 describe('structured cloud restore', () => {
+  it('returns reader data bound to the imported resource after an ID conflict', async () => {
+    const database = new AppDatabase(`structured-reader-conflict-${crypto.randomUUID()}`)
+    const storage = new IndexedDbArchiveStorage(database)
+    const service = new RestoreService(storage, new MemoryRestoreStagingStore())
+    const source = await resource('conflicting-id')
+    const existing = { ...(await resource('different-body')), id: source.id }
+    await storage.restore([], [existing])
+    const snapshot = (
+      await createStructuredSnapshot([source], [], [], {
+        version: 1,
+        chatReader: [
+          {
+            id: 'reader-state',
+            appId: CHAT_READER_APP_ID,
+            key: 'chat:' + source.id,
+            value: { bookmark: 4 },
+            updatedAt: 1,
+          },
+        ],
+      })
+    ).snapshot
+    try {
+      const report = await service.restoreStructured(
+        snapshot,
+        async () => source.originalBlob,
+        [existing],
+        [],
+        'snapshot',
+      )
+      const imported = (await database.resources.toArray()).find(
+        (row) => row.contentHash === source.contentHash,
+      )!
+      expect(imported.id).not.toBe(source.id)
+      expect(report).toHaveProperty('portableData.chatReader.0.key', 'chat:' + imported.id)
+      expect(snapshot.portableData.chatReader?.[0]?.key).toBe('chat:' + source.id)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
   it('preserves the cloud hydration callback through the production CommunitySource restore owner', async () => {
     const database = new AppDatabase(`structured-production-owner-${crypto.randomUUID()}`)
     const storage = new IndexedDbArchiveStorage(database)

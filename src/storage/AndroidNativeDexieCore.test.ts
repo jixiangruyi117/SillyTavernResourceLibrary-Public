@@ -1,10 +1,21 @@
 import 'fake-indexeddb/auto'
 
+import { IndexedDbArchiveStorage } from './IndexedDbArchiveStorage'
+import { IndexedDbCategoryStorage } from './IndexedDbCategoryStorage'
+import { ResourceParserRegistry } from '../parser/ResourceParser'
+import { CategoryService } from '../services/CategoryService'
+import { RestoreService } from '../services/RestoreService'
+import { hashCloudBlob } from '../services/CloudArchiveCodec'
+import {
+  buildStructuredBackup,
+  type CloudBackupSnapshotOperationsContext,
+} from '../services/CloudBackupSnapshotOperations'
+
 import Dexie, { liveQuery } from 'dexie'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AppDatabase } from '../database/AppDatabase'
-import type { VaultService } from '../services/VaultService'
+import { VaultService } from '../services/VaultService'
 import { APP_DATABASE_STORES, nativeAppDatabase } from './NativeAppDatabaseBridge'
 import {
   createAndroidNativeDexieCore,
@@ -25,13 +36,16 @@ import {
 } from './AndroidAppDatabaseMigration'
 import { hashBlob } from '../services/HashService'
 import { ChatReaderService } from '../services/ChatReaderService'
-import type { ResourceService } from '../services/ResourceService'
+import { ResourceService } from '../services/ResourceService'
 import {
   getRetainedIndexedDbCopy,
   clearRetainedIndexedDbCopy,
 } from './AndroidNativeAppDatabaseRuntime'
 
-function createNativeStore(keyPages = false) {
+function createNativeStore(keyPages = false, bridgeDelay = 0) {
+  const bridgeTurn = async () => {
+    if (bridgeDelay) await new Promise<void>((resolve) => setTimeout(resolve, bridgeDelay))
+  }
   const stores = new Map<string, Map<string, Record<string, unknown>>>()
   const blobs = new Map<string, Blob>()
   const states = new Map<string, string>()
@@ -62,9 +76,11 @@ function createNativeStore(keyPages = false) {
   }
   const native = {
     async getRecord(store: string, key: string) {
+      await bridgeTurn()
       return read(store).get(key)
     },
     async getRecords(store: string, afterKey: string | undefined, limit: number) {
+      await bridgeTurn()
       const rows = [...read(store).entries()]
         .filter(([key]) => afterKey === undefined || key > afterKey)
         .sort(([left], [right]) => left.localeCompare(right))
@@ -74,6 +90,7 @@ function createNativeStore(keyPages = false) {
       return { rows, count: read(store).size, nextKey }
     },
     async getRecordKeys(store: string, afterKey: string | undefined, limit: number) {
+      await bridgeTurn()
       const keys = [...read(store).keys()]
         .filter((key) => afterKey === undefined || key > afterKey)
         .sort()
@@ -84,19 +101,19 @@ function createNativeStore(keyPages = false) {
       return read(store).size
     },
     async getRecordsByKeys(store: string, keys: string[]) {
+      await bridgeTurn()
       return keys.flatMap((key) => {
         const value = read(store).get(key)
         return value ? [{ key, value }] : []
       })
     },
     async getIndexEntries(store: string, indexName: string, indexKey?: string) {
+      await bridgeTurn()
       const keyPaths = indexName.startsWith('[')
         ? indexName.slice(1, -1).split('+')
         : [indexName.replace(/^\*/u, '')]
       const rows: Array<{ indexKey: string; primaryKey: string }> = []
       for (const [primaryKey, value] of read(store)) {
-        // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=native-index-prefer-const-lint-compat
-        // eslint-disable-next-line prefer-const
         const saved = indexes.get(`${store}\0${primaryKey}`)
         if (saved) {
           for (const key of saved.find((index) => index.name === indexName)?.keys ?? [])
@@ -123,6 +140,7 @@ function createNativeStore(keyPages = false) {
       operations: Array<Record<string, unknown>>,
       options?: { expectedRevisions?: Record<string, number> },
     ) {
+      await bridgeTurn()
       for (const [store, revision] of Object.entries(options?.expectedRevisions ?? {}))
         if (Number(states.get(`revision:appdb:v1:${store}`) ?? 0) !== revision)
           throw new Error('data changed during transaction')
@@ -204,6 +222,7 @@ function createNativeStore(keyPages = false) {
       source: Blob,
       attachmentOwnerKey = key,
     ) {
+      await bridgeTurn()
       blobs.set(blobKey(store, attachmentOwnerKey, path), source)
       return {
         sha256: await hashBlob(source),
@@ -212,9 +231,11 @@ function createNativeStore(keyPages = false) {
       }
     },
     async readBlob(store: string, key: string, path: string) {
+      await bridgeTurn()
       return blobs.get(blobKey(store, key, path))
     },
     async deleteBlob(store: string, key: string, path: string) {
+      await bridgeTurn()
       blobs.delete(blobKey(store, key, path))
     },
   } as unknown as typeof nativeAppDatabase
@@ -271,6 +292,47 @@ function createNativeStore(keyPages = false) {
       failNextApplyBatch = true
     },
     blobKey,
+  }
+}
+
+async function delayedDatabase() {
+  const name = `native-core-routes-${crypto.randomUUID()}`
+  const seed = new AppDatabase(name)
+  await seed.open()
+  seed.close()
+  const fixture = createNativeStore(false, 1)
+  const database = new AppDatabase(name)
+  database.use(createAndroidNativeDexieCore({ enabled: () => true, native: fixture.native }))
+  return {
+    ...fixture,
+    database,
+    async close() {
+      database.close()
+      await database.delete()
+    },
+  }
+}
+
+async function routeResource(id: string): Promise<Resource> {
+  const originalBlob = new Blob([JSON.stringify({ id, original: `preserve-${id}` })], {
+    type: 'application/json',
+  })
+  return {
+    id,
+    type: RESOURCE_TYPE.OTHER,
+    name: id,
+    description: '',
+    fileName: `${id}.json`,
+    mimeType: originalBlob.type,
+    fileSize: originalBlob.size,
+    contentHash: await hashCloudBlob(originalBlob),
+    favorite: false,
+    categoryId: null,
+    tags: ['retain'],
+    metadata: { nested: { original: id } },
+    originalBlob,
+    createdAt: 1,
+    updatedAt: 1,
   }
 }
 
@@ -1886,5 +1948,367 @@ describe('AndroidNativeDexieCore', () => {
 
     database.close()
     await database.delete()
+  })
+
+  it('round-trips every native app table in one transaction across bridge turns', async () => {
+    const fixture = await delayedDatabase()
+    const { database, stores } = fixture
+    // Cloud jobs/orphans use their own database owner, not AppDatabase's Dexie facade.
+    const names = APP_DATABASE_STORES.filter(
+      (name) => !['cloudBackupJobs', 'cloudBackupOrphans'].includes(name),
+    )
+    try {
+      await database.transaction('rw', names, async () => {
+        for (const name of names) {
+          const table = database.table(name)
+          const paths = table.schema.primKey.keyPath
+          const row = Object.fromEntries(
+            (Array.isArray(paths) ? paths : [paths]).map((path) => [path!, `key-${name}-${path}`]),
+          )
+          for (const index of table.schema.indexes.filter((index) => index.unique)) {
+            for (const path of Array.isArray(index.keyPath) ? index.keyPath : [index.keyPath]) {
+              row[path!] = `unique-${name}-${path}`
+            }
+          }
+          row.payload = `retain-${name}`
+          const key = await table.put(row)
+          expect(await table.get(key)).toEqual(row)
+        }
+      })
+      for (const name of names) {
+        expect(stores.get(name)!.size).toBe(1)
+        expect(await database.table(name).toArray()).toMatchObject([{ payload: `retain-${name}` }])
+      }
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  it('keeps nested metadata updates, history removal and waitFor rejection atomic', async () => {
+    const fixture = await delayedDatabase()
+    const { database } = fixture
+    const storage = new IndexedDbResourceStorage(database)
+    try {
+      const a = await routeResource('a'),
+        b = await routeResource('b')
+      await storage.saveMany([a, b])
+      await storage.saveVersion({ ...(await routeResource('old-a')), versionGroupId: a.id })
+      await storage.updateMany([a.id, b.id], { favorite: true, metadata: { retained: true } })
+      expect(await storage.listResourceListSummaries()).toHaveLength(2)
+      expect(await storage.listVersionSummaries()).toHaveLength(1)
+      await expect(
+        database.transaction('rw', database.resources, async () => {
+          await database.resources.update(a.id, (row) => {
+            if (!('name' in row)) throw new Error('Expected a plain resource fixture')
+            row.name = 'must roll back'
+          })
+          await Dexie.waitFor(
+            new Promise<void>((_resolve, reject) => {
+              setTimeout(() => reject(new Error('external operation failed')), 10)
+            }),
+          )
+        }),
+      ).rejects.toThrow('external operation failed')
+      expect((await storage.get(a.id))!.name).toBe(a.id)
+      expect(await (await storage.get(a.id))!.originalBlob.text()).toBe(await a.originalBlob.text())
+      await storage.deleteMany([a.id])
+      expect(await storage.listVersionSummaries()).toEqual([])
+      expect((await storage.listSummaries()).map((row) => row.id)).toEqual([b.id])
+      expect(await (await storage.get(b.id))!.originalBlob.text()).toBe(await b.originalBlob.text())
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  it('backs up current/history metadata and restores staged originals through the real storage owners', async () => {
+    const source = await delayedDatabase(),
+      target = await delayedDatabase()
+    const sourceStorage = new IndexedDbResourceStorage(source.database)
+    const resourceService = new ResourceService(sourceStorage, new ResourceParserRegistry([]))
+    const context = {
+      resourceService,
+      categoryService: new CategoryService(new IndexedDbCategoryStorage(source.database)),
+    } as CloudBackupSnapshotOperationsContext
+    try {
+      const a = await routeResource('a'),
+        b = await routeResource('b')
+      const old = { ...(await routeResource('old-a')), versionGroupId: a.id }
+      await sourceStorage.saveMany([a, b])
+      await sourceStorage.saveVersion(old)
+      const backup = await buildStructuredBackup(context, { version: 1 })
+      expect(backup.snapshot.resources).toHaveLength(2)
+      expect(backup.snapshot.versions).toHaveLength(1)
+      expect(backup.snapshot.resources[0]!.metadata).toEqual(a.metadata)
+      for (const update of backup.descriptorUpdates) {
+        await resourceService.updateBackupDescriptor(
+          update.id,
+          update.descriptor,
+          update.historical,
+        )
+      }
+      const loadCurrent = vi.spyOn(resourceService, 'get')
+      const loadVersion = vi.spyOn(resourceService, 'getVersion')
+      const reused = await buildStructuredBackup(context, { version: 1 })
+      expect(reused.localReadBytes).toBe(0)
+      expect(loadCurrent).not.toHaveBeenCalled()
+      expect(loadVersion).not.toHaveBeenCalled()
+      const archive = new IndexedDbArchiveStorage(target.database)
+      const existing = await routeResource('existing')
+      await archive.restore([], [existing])
+      const restored = await new RestoreService(archive).restoreStructured(
+        backup.snapshot,
+        async (object) =>
+          new Blob(
+            object.parts.map((part) => {
+              const blob = backup.chunks.get(part.name)!
+              return blob.slice(part.offset ?? 0, (part.offset ?? 0) + part.size)
+            }),
+          ),
+        await new IndexedDbResourceStorage(target.database).listSummaries(),
+        [],
+        'fixture',
+      )
+      expect(restored).toMatchObject({ restoredResources: 2, restoredVersions: 1 })
+      const targetStorage = new IndexedDbResourceStorage(target.database)
+      for (const item of [a, b, existing]) {
+        const row = (await targetStorage.get(item.id))!
+        expect(await row.originalBlob.text()).toBe(await item.originalBlob.text())
+        expect(row.metadata).toEqual(item.metadata)
+      }
+      const history = await targetStorage.listVersionSummaries()
+      expect(history).toHaveLength(1)
+      expect(history[0]!.versionGroupId).toBe(a.id)
+      expect(await (await targetStorage.getVersion(history[0]!.id))!.originalBlob.text()).toBe(
+        await old.originalBlob.text(),
+      )
+      expect(await target.database.restoreStaging.count()).toBe(0)
+      // A snapshot containing only portable settings has no rows to commit.
+      await archive.restore([], [], [])
+      expect(await target.database.resources.count()).toBe(3)
+    } finally {
+      await source.close()
+      await target.close()
+    }
+  })
+
+  it('preserves existing originals and permits retry after the final restore commit fails', async () => {
+    const fixture = await delayedDatabase()
+    const archive = new IndexedDbArchiveStorage(fixture.database)
+    const storage = new IndexedDbResourceStorage(fixture.database)
+    try {
+      const existing = await routeResource('existing'),
+        incoming = await routeResource('incoming')
+      await archive.restore([], [existing])
+      const applyBatch = fixture.native.applyBatch.bind(fixture.native)
+      const apply = vi.spyOn(fixture.native, 'applyBatch').mockImplementation(async (...args) => {
+        if (args[0].some((operation) => operation.store === 'resources'))
+          throw new Error('final commit interrupted')
+        return applyBatch(...args)
+      })
+      await expect(archive.restore([], [incoming])).rejects.toThrow('final commit interrupted')
+      expect(await storage.get(incoming.id)).toBeUndefined()
+      expect(await (await storage.get(existing.id))!.originalBlob.text()).toBe(
+        await existing.originalBlob.text(),
+      )
+      expect(await fixture.database.restoreStaging.count()).toBe(0)
+      apply.mockRestore()
+      await archive.restore([], [incoming])
+      expect(await (await storage.get(incoming.id))!.originalBlob.text()).toBe(
+        await incoming.originalBlob.text(),
+      )
+      expect(await fixture.database.resources.count()).toBe(2)
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  it('keeps vault encryption and metadata updates working across native bridge turns', async () => {
+    const fixture = await delayedDatabase()
+    const vault = new VaultService(fixture.database)
+    try {
+      await vault.initialize()
+      await vault.enable('synthetic-test-password')
+      const storage = new IndexedDbResourceStorage(fixture.database, vault)
+      const original = await routeResource('encrypted')
+      await storage.save(original)
+      await storage.updateMetadata(original.id, { name: 'encrypted metadata update' })
+      expect((await storage.listResourceListSummaries())[0]!.name).toBe('encrypted metadata update')
+      expect(await (await storage.get(original.id))!.originalBlob.text()).toBe(
+        await original.originalBlob.text(),
+      )
+      expect(
+        JSON.stringify(fixture.stores.get('resources')!.get(JSON.stringify(original.id))),
+      ).not.toContain('preserve-encrypted')
+    } finally {
+      await fixture.close()
+    }
+  })
+
+  it.each(['r', 'rw'] as const)(
+    'completes a %s transaction that has no database requests',
+    async (mode) => {
+      const name = `native-core-empty-${crypto.randomUUID()}`
+      const seed = new AppDatabase(name)
+      await seed.open()
+      seed.close()
+      const { native } = createNativeStore()
+      const apply = vi.spyOn(native, 'applyBatch')
+      const database = new AppDatabase(name)
+      database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+      try {
+        await expect(
+          database.transaction(mode, database.resources, async () => 'empty'),
+        ).resolves.toBe('empty')
+        expect(apply).not.toHaveBeenCalled()
+      } finally {
+        database.close()
+        await database.delete()
+      }
+    },
+    1000,
+  )
+
+  it('keeps the cloud-backup summary transaction alive across native bridge turns', async () => {
+    const name = `native-core-cloud-backup-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { stores, native } = createNativeStore()
+    for (let index = 0; index < 267; index++) {
+      const id = `resource-${index}`
+      const contentHash = index.toString(16).padStart(64, '0')
+      stores.get('resources')!.set(JSON.stringify(id), {
+        id,
+        type: 'other',
+        name: id,
+        fileName: `${id}.bin`,
+        mimeType: 'application/octet-stream',
+        fileSize: 1024,
+        contentHash,
+        favorite: false,
+        categoryId: null,
+        tags: [],
+        metadata: {},
+        createdAt: 1,
+        updatedAt: 1,
+        nativeOriginal: { version: 1, contentHash, size: 1024 },
+      })
+    }
+    const getRecords = native.getRecords.bind(native)
+    const read = vi.spyOn(native, 'getRecords').mockImplementation(async (...args) => {
+      // Capacitor bridge calls complete in a later task, unlike an immediate Promise fixture.
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+      return getRecords(...args)
+    })
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const storage = new IndexedDbResourceStorage(database)
+    try {
+      await expect(storage.listResourceListSummaries()).resolves.toHaveLength(267)
+      expect(stores.get('resourceListSummaries')!.size).toBe(267)
+      expect(stores.get('resources')!.size).toBe(267)
+    } finally {
+      read.mockRestore()
+      database.close()
+      await database.delete()
+    }
+  }, 15_000)
+
+  it('does not publish staged writes if a later bridge read is followed by an abort', async () => {
+    const name = `native-core-delayed-rollback-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { stores, native } = createNativeStore()
+    stores.get('resourceSummaries')!.set('"existing"', { id: 'existing', name: 'keep' })
+    const getRecord = native.getRecord.bind(native)
+    const read = vi.spyOn(native, 'getRecord').mockImplementation(async (...args) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+      return getRecord(...args)
+    })
+    const apply = vi.spyOn(native, 'applyBatch')
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await expect(
+        database.transaction('rw', database.resources, database.resourceSummaries, async () => {
+          await database.resources.put({ id: 'uncommitted', name: 'discard' } as never)
+          expect(await database.resourceSummaries.get('existing')).toMatchObject({ name: 'keep' })
+          throw new Error('abort after bridge read')
+        }),
+      ).rejects.toThrow('abort after bridge read')
+      expect(apply).not.toHaveBeenCalled()
+      expect(stores.get('resources')!.size).toBe(0)
+      expect(stores.get('resourceSummaries')!.get('"existing"')).toEqual({
+        id: 'existing',
+        name: 'keep',
+      })
+    } finally {
+      read.mockRestore()
+      database.close()
+      await database.delete()
+    }
+  })
+
+  it('holds parallel attachment reads and cursor decoding until their bridge calls finish', async () => {
+    const name = `native-core-delayed-attachments-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { stores, blobs, native, blobKey } = createNativeStore()
+    for (const id of ['a', 'b']) {
+      const attachment = new Blob([`original-${id}`])
+      const path = '$/originalBlob'
+      stores.get('resources')!.set(JSON.stringify(id), {
+        id,
+        name: id,
+        originalBlob: {
+          __srlAppDatabaseValueV1: 'blob',
+          fieldPath: path,
+          size: attachment.size,
+          mimeType: attachment.type,
+          sha256: `${attachment.size}`.padStart(64, '0'),
+        },
+      })
+      blobs.set(blobKey('resources', JSON.stringify(id), path), attachment)
+    }
+    const readBlob = native.readBlob.bind(native)
+    const read = vi.spyOn(native, 'readBlob').mockImplementation(async (...args) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, args[1] === '"a"' ? 1 : 10))
+      return readBlob(...args)
+    })
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await database.transaction('rw', database.resources, async () => {
+        const resources = await database.resources.bulkGet(['a', 'b'])
+        expect(resources.map((row) => row?.id)).toEqual(['a', 'b'])
+        for (const row of resources) {
+          const original = row && 'originalBlob' in row ? row.originalBlob : undefined
+          expect(original).toBeInstanceOf(Blob)
+        }
+        await database.resources.update('b', (row) => {
+          if (!('name' in row)) throw new Error('Expected a plain resource fixture')
+          row.name = 'parallel read complete'
+        })
+      })
+      const visited: string[] = []
+      await database.transaction('rw', database.resources, async () => {
+        await database.resources.orderBy('id').each((row) => visited.push(row.id))
+        await database.resources.update('a', (row) => {
+          if (!('name' in row)) throw new Error('Expected a plain resource fixture')
+          row.name = 'cursor read complete'
+        })
+      })
+      expect(visited).toEqual(['a', 'b'])
+      expect(await database.resources.get('a')).toMatchObject({ name: 'cursor read complete' })
+      expect(await database.resources.get('b')).toMatchObject({ name: 'parallel read complete' })
+      expect(await native.readBlob('resources', '"a"', '$/originalBlob')).toBeInstanceOf(Blob)
+      expect(await native.readBlob('resources', '"b"', '$/originalBlob')).toBeInstanceOf(Blob)
+    } finally {
+      read.mockRestore()
+      database.close()
+      await database.delete()
+    }
   })
 })

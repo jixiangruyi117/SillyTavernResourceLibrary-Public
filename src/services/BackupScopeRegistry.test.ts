@@ -7,6 +7,8 @@ import {
   toArchivePortableSelection,
   toCloudContentSelection,
 } from './BackupScopeRegistry'
+import { portableRestoreScopeIds, selectRestorePortableData } from './BackupRestoreSelection'
+import type { ArchivePortableData } from '../types/Backup'
 import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
 
 const resources = Object.values(RESOURCE_TYPE).map((type, index) => ({
@@ -20,6 +22,29 @@ const resources = Object.values(RESOURCE_TYPE).map((type, index) => ({
 })) as ResourceSummary[]
 
 describe('BackupScopeRegistry', () => {
+  it('restores only selected portable fields, including empty collections and grouped credentials', () => {
+    const data: ArchivePortableData = {
+      version: 1,
+      assistantData: [],
+      chatReader: [],
+      credentials: { version: 1, cloudBackup: { github: 'fixture-token' } },
+    }
+    expect(portableRestoreScopeIds(data)).toEqual([
+      'extra.chatReader',
+      'extra.assistantData',
+      'extra.credentials',
+    ])
+    expect(selectRestorePortableData(data, ['extra.chatReader'])).toEqual({
+      version: 1,
+      chatReader: [],
+    })
+    expect(selectRestorePortableData(data, [])).toEqual({ version: 1 })
+    expect(selectRestorePortableData(data)).toBe(data)
+    expect(selectRestorePortableData(data, ['extra.credentials'])).toEqual({
+      version: 1,
+      credentials: data.credentials,
+    })
+  })
   it('为每种资源类型提供唯一注册范围', () => {
     const ids = BACKUP_SCOPE_REGISTRY.map((scope) => scope.id)
     expect(new Set(ids).size).toBe(ids.length)

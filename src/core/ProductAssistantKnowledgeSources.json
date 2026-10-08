@@ -1,6 +1,26 @@
 {
-  "knowledgeSha256": "826b3dd5bac615154bb24fda5dfa62a4a34679214334e7e7262a25a8074b0d7c",
+  "knowledgeSha256": "c3a55e60dda7410dddf065dab0f5ce0ffb202d006b787b627799a36dcb3c72d7",
   "sources": [
+    {
+      "path": "src/composables/FolderThumbnailCache.ts",
+      "guides": ["folders"],
+      "sha256": "ba26ff03ddd3f52368ab3de436502ef85d84232052c686de1b0610971d0f77f7"
+    },
+    {
+      "path": "src/components/FeatureHub.vue",
+      "guides": ["folders"],
+      "sha256": "a7e2a346600f9a667812b971ad337a51c61099e3b33de06ee6e91dad06b61275"
+    },
+    {
+      "path": "src/components/ChatReaderStartup.vue",
+      "guides": ["chat-reader"],
+      "sha256": "35cf30371b43ee519a94590faf3c5b674485535ae45c87816d6df2691a64f326"
+    },
+    {
+      "path": "src/utils/ChatReaderAppearance.ts",
+      "guides": ["chat-reader"],
+      "sha256": "03d24e207ef13d73340af2fab25ef790e18a7a9116beaf15cafb5d153d592910"
+    },
     {
       "path": "src/core/FeatureAppRegistry.ts",
       "guides": ["apps"],
@@ -39,7 +59,7 @@
     {
       "path": "src/composables/UseAppearanceSettings.ts",
       "guides": ["appearance"],
-      "sha256": "9ae1df2b8f8b4b3e61538058cd4beefd2d27f386b7af07c0e6b12c29fca1c9d5"
+      "sha256": "e3765f5a962b3b79115b5d8b1e61b33223b9caad8913de7d224102d9f7b4ec1d"
     },
     {
       "path": "src/components/LibraryToolbar.vue",
@@ -64,17 +84,17 @@
     {
       "path": "src/components/CloudBackupCenter.vue",
       "guides": ["backup"],
-      "sha256": "3e455da496da08e25c600ef4be78a5e66a28fc95282c493999ceea599d5cb903"
+      "sha256": "c6352186b711cfdcba78ccedb3eea2b60d307338478abf8e9600752636a3ef66"
     },
     {
       "path": "src/services/CloudBackupService.ts",
       "guides": ["backup"],
-      "sha256": "25063be42c1a4f94f9759af7757a97e86dc4e699da8b7e1e2174a25898a7965d"
+      "sha256": "f2fb07bff6850344a9135e48e386f3ebbfcf18088f93259ff16aa5127874cc4f"
     },
     {
       "path": "src/services/RestoreService.ts",
       "guides": ["backup"],
-      "sha256": "387d0f6cd8aa9f2646ae928fee4c589fabc34c72d946e1def7ccd7a910b00697"
+      "sha256": "7e99573dc28f07cffcabd9bbadb3809b7d612d3112c85593107517a57720dc63"
     },
     {
       "path": "src/components/TavernBridgeCenter.vue",
@@ -148,8 +168,8 @@
     },
     {
       "path": "src/App.vue",
-      "guides": ["assistant", "import", "data-protection"],
-      "sha256": "2353a9bab63bf4ee4be6b612d2b71067e33cf8db629d18c3ff0a532d31d78874"
+      "guides": ["assistant", "import", "data-protection", "appearance"],
+      "sha256": "927c45d66bbfea70ec16825a7b0e395c28d81aba87cc5c2093034f86c82c2bc8"
     },
     {
       "path": "src/core/ProductAssistantGuidance.ts",
@@ -289,13 +309,13 @@
     },
     {
       "path": "src/services/BrowserStorageService.ts",
-      "guides": ["import", "resource-bundle", "bridge"],
-      "sha256": "87014755cf85527503796b75d0ce33a9d41a3f1cd006290dcf21d6cb4e28fb9a"
+      "guides": ["import", "resource-bundle", "bridge", "appearance"],
+      "sha256": "1d2f6d56ec31ed0ed5e4035c94eac94852cd392425af23be2b0c94a1f412b2e9"
     },
     {
       "path": "src/storage/IndexedDbResourceHealthStorage.ts",
       "guides": ["import"],
-      "sha256": "668643da6bf4f177e325cd9e0ed150ba7911add7ceaa7eafbe5ed99f8c947255"
+      "sha256": "9569275013d00d2f7caa105c1f90ae4a032de8c296a8346732d4ccedf50e2e36"
     },
     {
       "path": "src/composables/UseLibraryProtection.ts",
@@ -320,7 +340,7 @@
     {
       "path": "src/components/DiscordSourceHandoffIntake.vue",
       "guides": ["discord-posts"],
-      "sha256": "e59cf52efcc2c0a30dbfd488769150148bc6cddcd0bde9533ed016b88aa72e02"
+      "sha256": "e27e4887201ade9645acd9f54c263c39faf42d5ba7104848c674b47cbb85f18e"
     },
     {
       "path": "src/components/DiscordInboxCenter.vue",
@@ -365,12 +385,12 @@
     {
       "path": "src/services/DiscordHandoffService.ts",
       "guides": ["discord-posts"],
-      "sha256": "cdd43f5da85cf0ba549430409f6fd416ef5d48e8424026058a95b899f0260f65"
+      "sha256": "4808e60eeda22494a2dac8dd403eda7438aec0fc67f3ae9dff8d4ed77b2d250c"
     },
     {
       "path": "src/services/CommunitySourceService.ts",
       "guides": ["discord-posts"],
-      "sha256": "bca0e7ce2226603e2f6f0d3e420ddcb2fe0b424e813d58b740198afe519456a6"
+      "sha256": "d0e01bfac4c4f84bd3fdccb55b2c5ecc4b2314f6ece273f230cd899517764988"
     },
     {
       "path": "src/services/DiscordSourceSettingsService.ts",
@@ -395,7 +415,7 @@
     {
       "path": "src/components/ChatReaderApp.vue",
       "guides": ["chat-reader"],
-      "sha256": "d7556ded0e2458a09a7d5e37daefb88f3ccee122a5b19ea0e03e2fc196ac758a"
+      "sha256": "67b94af0a7f7a84be05a66a16134f4f4e5fe45b0cbf3c5396fb6a167ab4daf09"
     },
     {
       "path": "src/services/ChatReaderService.ts",
@@ -480,7 +500,7 @@
     {
       "path": "src/composables/UseFolderLibraryView.ts",
       "guides": ["folders"],
-      "sha256": "8e6a8ee0e1efca9d0ccdca7192397b682f32e0b5b024d96a1e53d636e56f3ca7"
+      "sha256": "d361b8654c4fce9efa1d3ebb5b3b6effe1ad04ecba6d99f00a36a45d757aa159"
     },
     {
       "path": "src/composables/UseFolderCabinetDrag.ts",
@@ -575,7 +595,7 @@
     {
       "path": "src/services/CloudBackupRetentionOperations.ts",
       "guides": ["backup"],
-      "sha256": "cea79a9889e44768848740c5e9774d74105ef57c3889cde5564c3b31839c1594"
+      "sha256": "2a9ade2e10f7ec3b34109ede2b196dcb8f109717aa4247f472b3cc9509b3b59f"
     },
     {
       "path": "src/services/CloudBackupSnapshotOperations.ts",
@@ -659,8 +679,8 @@
     },
     {
       "path": "src/components/LayoutSettingsPanel.vue",
-      "guides": ["import", "discord-posts", "data-protection"],
-      "sha256": "66d97f86a071cf1852c58d6054aededd4590671040f59efd50ef6f7fd73b4906"
+      "guides": ["import", "discord-posts", "data-protection", "appearance"],
+      "sha256": "f720676968b844045a0369ae34fba41077778398e95b43e7fe0b2800b14d2c83"
     },
     {
       "path": "src/composables/UseLibraryFileImport.ts",
@@ -685,7 +705,7 @@
     {
       "path": "src/storage/IndexedDbResourceStorage.ts",
       "guides": ["import"],
-      "sha256": "c044ce1ebcf47e7f3875a2e674303b96fb1b1f924a12c983f6306f66767c881a"
+      "sha256": "337be4b078991af06e12edc03ddd09ea8c9978aa914e066988d8e9100e9c3404"
     },
     {
       "path": "src/storage/NativeMirroredResourceStorage.ts",
@@ -735,7 +755,7 @@
     {
       "path": "src/components/ResourceHealthCenter.vue",
       "guides": ["data-protection"],
-      "sha256": "0bc1d98720d49cca74128dfc67fb4e24d2f8abb91dd2bd4f34392ed59f0bdc8a"
+      "sha256": "df4e7c865de880d39376e4c45b584fe375c31e9704a494c05b9e1a68ec2aabc5"
     },
     {
       "path": "src/storage/AndroidNativeAppDatabaseRuntime.ts",
@@ -745,12 +765,12 @@
     {
       "path": "src/services/OfficialAppService.ts",
       "guides": ["apps"],
-      "sha256": "b289df951d3177047018e1ff5df0e079f285bd9f17fcf6a79128f1ba0722990f"
+      "sha256": "fed74662ec5ceb0fccedd823710ef05a86b159ef34e62dd2c53606a7b026af14"
     },
     {
       "path": "src/components/OfficialAppManager.vue",
       "guides": ["apps"],
-      "sha256": "a8e452119e20ab616417e505cd6f9ec8d923623a41aafdf2f4c9567f9ee5eb3b"
+      "sha256": "a3387f51fe1302efdef9197d76e2ca55d542dddd4918926695930433bd4b3097"
     },
     {
       "path": "src/services/ResourceVersionRecognitionService.ts",
@@ -795,7 +815,7 @@
     {
       "path": "src/components/CharacterCardDetails.vue",
       "guides": ["world-book"],
-      "sha256": "8ef1c39b68c9b8788c6f71fbcb7592aaa25f86c0e10c6c66a451e57cbbf6b291"
+      "sha256": "7038265f619d3fa5efa7bed14a7c4be31b8906db6e24632e2ed32753db3e1d34"
     },
     {
       "path": "src/components/StructuredResourceDetails.vue",
@@ -805,7 +825,7 @@
     {
       "path": "src/composables/UseCharacterCardDetails.ts",
       "guides": ["world-book"],
-      "sha256": "30207e35f7dce92f64f4d5092de19d7554826e3b01bce3b595f7e04b45faf6b5"
+      "sha256": "dea58555df8d5eaba0d2db51ed432bcac18890f6a2e777b26c02b67c045a8e1a"
     },
     {
       "path": "src/composables/UseStructuredResourceDetails.ts",
@@ -840,12 +860,67 @@
     {
       "path": "src/components/ExternalAppHost.vue",
       "guides": ["chat-reader"],
-      "sha256": "aecf2a54f6c1f335b02ab36381e746415288177013b926124ab65fd06c426b66"
+      "sha256": "7a7ced176713b579009a0488216655a71df3eae9ac843bb621305988395086e7"
     },
     {
       "path": "src/services/CloudBackupJobStore.ts",
       "guides": ["backup"],
-      "sha256": "f63be8b83c49ff175c7ec90dabb23f01381cba8d940d20cde5fbdabbd44c22ac"
+      "sha256": "8a27723bd5f2abf196d016ab4d1aa5ee1b8b942c8b7ca824a85ed155e87d5a38"
+    },
+    {
+      "path": "src/storage/AndroidNativeDexieCore.ts",
+      "guides": ["backup", "import"],
+      "sha256": "900c853ab52747d2ae3e1f29e3c371bf92d0278140f39f8abb98e80de612d7ca"
+    },
+    {
+      "path": "src/types/Resource.ts",
+      "guides": ["backup", "import"],
+      "sha256": "bbf6933b8ef46ea17164d3e0de35ab68f20b925bf57fcc44bd09afa373e17bd8"
+    },
+    {
+      "path": "src/core/OfficialAppHostApi.ts",
+      "guides": ["apps"],
+      "sha256": "4fc57644eeeed42cda4270fcc4efe9b09188518d7534c24252c999b9e2fa8f36"
+    },
+    {
+      "path": "src/services/ExternalAppUnzip.ts",
+      "guides": ["apps"],
+      "sha256": "397b19acfe9ff262a40efdb13a7587a193856192255f2dc62c9b4f64f7341bf6"
+    },
+    {
+      "path": "src/services/ExternalAppPackage.ts",
+      "guides": ["apps"],
+      "sha256": "4f8337ae9595e3dabd53cbdef98bfd3eec35065c2f6e4882d009a9b696a20d39"
+    },
+    {
+      "path": "src/storage/InstalledOfficialAppStorage.ts",
+      "guides": ["apps"],
+      "sha256": "8c0b394f2636d0c7e41f1b96ccb62ddd3876252d3b5b4fca54594a0859c45bd6"
+    },
+    {
+      "path": "src/workers/ExternalAppUnzipWorker.ts",
+      "guides": ["apps"],
+      "sha256": "1b2a5595516b4a7cf54435222f88feca203670d382c313062104694359ab93ba"
+    },
+    {
+      "path": "src/components/NativeIntakeFiles.vue",
+      "guides": ["data-protection"],
+      "sha256": "5ab5947c00d9d3a6825bf2208e6a658496073ec95f597171c648eede34ea49b0"
+    },
+    {
+      "path": "src/utils/ShareTargetIntake.ts",
+      "guides": ["data-protection"],
+      "sha256": "2d13bd655e4606bd760f9df9cc96d0a7be56f4b8dcfd01f620dcfc4ff053f845"
+    },
+    {
+      "path": "src/core/TaskCenter.ts",
+      "guides": ["data-protection", "import"],
+      "sha256": "3ed6611f9b335968c8cc8573a9f177b5b4bc950c74dfaf0ba991f9c2d8569c2a"
+    },
+    {
+      "path": "src/services/NativePreviewAsset.ts",
+      "guides": ["appearance"],
+      "sha256": "f444b4678e207fa3c73e227d0e178a1b09da6405f8a299afb752d7ce957cd73e"
     }
   ]
 }

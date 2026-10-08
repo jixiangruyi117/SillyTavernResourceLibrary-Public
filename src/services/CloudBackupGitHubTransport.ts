@@ -339,7 +339,14 @@ export async function uploadGitHubStructuredBackup(
         respectConstraints: respectAutomaticConstraints,
       })
       context.activeMetrics?.merge(result.metrics)
-      context.activeGitHubInventory = undefined
+      // Native uploads change only these asset lists. Release IDs and untouched
+      // inventories are still valid for this job's retention/reference checks.
+      const inventory = githubInventory(context, config)
+      for (const releaseId of new Set([
+        snapshotRelease.id,
+        ...nativeObjects.map((object) => object.releaseId),
+      ]))
+        inventory?.assets.delete(releaseId)
       return {
         id: result.id,
         objectKey: result.name,
@@ -580,14 +587,14 @@ export async function readGitHubPartInventory(
   parts: GitHubBundleManifest['parts'],
 ): Promise<Map<string, GitHubAsset>> {
   const result = new Map<string, GitHubAsset>()
-  const containers = new Set(parts.map(structuredPartContainer))
-  for (const container of containers) {
+  const containers = [...new Set(parts.map(structuredPartContainer))]
+  await mapWithConcurrency(containers, 3, async (container) => {
     const release = await context.getGitHubRelease(config, secret, false, container)
-    if (!release) continue
+    if (!release) return
     for (const asset of await context.listGitHubAssets(config, secret, release.id)) {
       result.set(`${container}\u0000${asset.name}`, asset)
     }
-  }
+  })
   return result
 }
 

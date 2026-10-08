@@ -68,6 +68,11 @@ export interface GreetingView {
   theme?: string
 }
 
+interface GreetingCardView extends GreetingView {
+  excerpt: string
+  richContent: boolean
+}
+
 export interface EmbeddedRegexScript {
   id: string
   overrideKey: string
@@ -270,6 +275,28 @@ export function useCharacterCardDetails(
     if (!excerpt) return '这条开场白主要由 HTML / CSS 效果组成，请进入沉浸阅读查看。'
     return excerpt.length > 240 ? `${excerpt.slice(0, 240).trim()}…` : excerpt
   }
+
+  const greetingCards = computed<GreetingCardView[]>((previous) => {
+    const previousByKey = new Map(previous?.map((greeting) => [greeting.key, greeting]))
+    return greetings.value.map((greeting) => {
+      const cached = previousByKey.get(greeting.key)
+      if (cached && cached.content === greeting.content) {
+        return {
+          ...greeting,
+          excerpt:
+            cached.description === greeting.description
+              ? cached.excerpt
+              : greeting.description || greetingExcerpt(greeting.content),
+          richContent: cached.richContent,
+        }
+      }
+      return {
+        ...greeting,
+        excerpt: greeting.description || greetingExcerpt(greeting.content),
+        richContent: hasRichPreviewContent(greeting.content),
+      }
+    })
+  })
 
   const greetingRegexStatus = computed(() => {
     const count = greetingRegexRules.value.length
@@ -740,6 +767,7 @@ export function useCharacterCardDetails(
     greetingReplacementSources,
     updateReplacement,
     greetings,
+    greetingCards,
     openPage,
     embeddedBookEntries,
     embeddedBookName,
@@ -763,8 +791,6 @@ export function useCharacterCardDetails(
     handleGreetingTouchStart,
     handleGreetingTouchEnd,
     handleGreetingCardDoubleClick,
-    hasRichPreviewContent,
-    greetingExcerpt,
     scrollToGreeting,
     PAGE_SIZE,
     selectedRegexScript,

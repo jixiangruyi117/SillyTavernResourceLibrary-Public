@@ -95,12 +95,14 @@ const {
     </header>
 
     <div
-      v-if="view === 'preview' && active && previewEnabled && preview?.document"
+      v-if="view === 'preview' && active && previewEnabled"
       class="rich-content-preview__frame"
       :class="{ 'is-interactive': frameInteractive }"
       :style="frameContainerStyle"
+      :aria-busy="isPreviewLoading"
     >
       <iframe
+        v-if="preview?.document"
         ref="frame"
         :key="`${previewPolicy.allowRemoteResources}-${previewPolicy.allowScripts}-${renderShell}-${sourceKind}-${previewRevision}`"
         :srcdoc="preview?.document"
@@ -113,8 +115,14 @@ const {
         @load="handleFrameLoad"
       ></iframe>
       <div v-if="isPreviewLoading" class="rich-content-preview__loading" role="status">
-        <span class="rich-content-preview__loading-label">正在加载预览</span>
-        <i class="rich-content-preview__loading-bar" role="progressbar" aria-label="预览加载中"></i>
+        <div class="rich-content-preview__loading-status">
+          <span class="rich-content-preview__loading-label">正在加载预览</span>
+          <i
+            class="rich-content-preview__loading-bar"
+            role="progressbar"
+            aria-label="预览加载中"
+          ></i>
+        </div>
       </div>
       <span v-if="swipePassthrough && !isFrameInteractive">左右滑动切换开场白</span>
     </div>

@@ -36,7 +36,8 @@ export interface StartTaskOptions {
   phase?: string
   cancelable?: boolean
   background?: boolean
-  cancel?: () => void
+  /** A returned Promise acknowledges the owner's safe stop; synchronous return values stay ignored. */
+  cancel?: () => unknown
   retry?: () => Promise<unknown>
   action?: { label: string; run: () => void | Promise<void> }
 }
@@ -166,9 +167,33 @@ export class TaskCenter {
   cancel(operationId: string): boolean {
     const task = this.tasks.get(operationId)
     if (!task || task.status !== 'running' || !task.cancelable) return false
-    this.actions.get(operationId)?.cancel?.()
-    this.cancelled(operationId)
+    const stopped = this.actions.get(operationId)?.cancel?.()
+    if (
+      typeof stopped === 'object' &&
+      stopped !== null &&
+      'then' in stopped &&
+      typeof stopped.then === 'function'
+    ) {
+      this.update(operationId, { cancelable: false })
+      void Promise.resolve(stopped as PromiseLike<unknown>).then(
+        () => {
+          if (this.tasks.get(operationId) === task) this.cancelled(operationId)
+        },
+        (error) => {
+          if (this.tasks.get(operationId) === task) this.fail(operationId, error)
+        },
+      )
+    } else this.cancelled(operationId)
     return true
+  }
+
+  setAction(operationId: string, action?: StartTaskOptions['action']): void {
+    const task = this.tasks.get(operationId),
+      handlers = this.actions.get(operationId)
+    if (!task || !handlers) return
+    handlers.action = action
+    task.actionLabel = action?.label
+    this.publish()
   }
 
   async retry(operationId: string): Promise<boolean> {

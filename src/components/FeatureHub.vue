@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from 'vue'
+import { computed, onUnmounted, provide, ref, toRef, watch } from 'vue'
+import {
+  createFolderThumbnailCache,
+  folderThumbnailCacheKey,
+} from '../composables/FolderThumbnailCache'
 import FeatureAppIcon from './FeatureAppIcon.vue'
 import ActionSheet from './ActionSheet.vue'
 import FeatureShell from './FeatureShell.vue'
@@ -11,6 +15,21 @@ import {
   type FeatureHubEvents,
 } from '../composables/UseFeatureHub'
 const props = withDefaults(defineProps<FeatureHubProps>(), { active: true })
+const folderThumbnailCache = createFolderThumbnailCache()
+provide(folderThumbnailCacheKey, folderThumbnailCache)
+watch(
+  () => props.active,
+  (active) => {
+    if (!active) folderThumbnailCache.clear()
+  },
+  { flush: 'sync' },
+)
+watch(
+  () => props.resources,
+  (resources) => folderThumbnailCache.prune(resources),
+  { flush: 'sync' },
+)
+onUnmounted(() => folderThumbnailCache.clear())
 const emit = defineEmits<FeatureHubEvents>()
 const controller = useFeatureHub(props, emit)
 const assistantPages = ref<Array<'appearance' | 'assistant'>>([])

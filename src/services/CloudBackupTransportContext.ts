@@ -146,5 +146,6 @@ export interface CloudBackupTransportContext {
     config: WebDavBackupConfig,
     secret: string,
     objectKey: string,
+    onProgress?: CloudBackupProgressCallback,
   ): Promise<StructuredSnapshot>
 }

@@ -323,7 +323,7 @@ describe('official APP package lifecycle', () => {
 
   it('rejects APP archives whose file count exceeds the bounded package limit', async () => {
     const { service } = await fixture('draw', (candidate) => {
-      for (let index = 0; index < 127; index++)
+      for (let index = 0; index < 254; index++)
         candidate.files.push({
           path: `/assets/extra-${index}.js`,
           size: 1,
@@ -335,6 +335,19 @@ describe('official APP package lifecycle', () => {
     expect(records.size).toBe(0)
     expect(files.size).toBe(0)
   })
+
+  it.each([129, 256])(
+    'installs an official package with %i total entries including its manifest',
+    async (total) => {
+      const { service } = await fixture('draw', (candidate) => {
+        for (let index = 0; index < total - 3; index++)
+          candidate.files.push({ ...candidate.files[0]!, path: `/assets/extra-${index}.js` })
+      })
+      await service.install('draw')
+      expect(await service.ready('draw')).toBe(true)
+      expect(files.size).toBe(total - 1)
+    },
+  )
 
   it('rejects a second APP install instead of leaving it queued behind the active download', async () => {
     const { service, fetcher } = await fixture()

@@ -3,7 +3,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Plugin } from 'vite'
 import { unzipSync, zipSync } from 'fflate'
-import { OFFICIAL_APP_HOST_API_VERSION } from '../src/core/OfficialAppHostApi.js'
+import {
+  OFFICIAL_APP_HOST_API_VERSION,
+  OFFICIAL_APP_MAX_PACKAGE_FILES,
+} from '../src/core/OfficialAppHostApi.js'
 import {
   LEGACY_OFFICIAL_APP_CONTENT_REVISION,
   OFFICIAL_APP_CONTENT_REVISIONS,
@@ -266,9 +269,9 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           })
           if (!files.some((file) => file.path === '/' + entry))
             throw new Error(`Official APP ${id} is still eagerly reachable from the shell`)
-          // Keep the archive bounded while allowing the expanded Android-native database graph.
-          if (files.length > 128)
-            throw new Error(`Official APP ${id} exceeds package file limit: ${files.length}`)
+          // Match the installer: the archive also contains manifest.json.
+          if (files.length + 1 > OFFICIAL_APP_MAX_PACKAGE_FILES)
+            throw new Error(`Official APP ${id} exceeds package file limit: ${files.length + 1}`)
           const assetMode = 'self-contained' as const
           // Product service/database modules must resolve to the shell's module URLs too.
           // Sharing Vue alone allows an older APP to open its own inactive IndexedDB owner.

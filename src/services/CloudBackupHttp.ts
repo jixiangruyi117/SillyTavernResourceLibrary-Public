@@ -38,7 +38,11 @@ export function cloudRequestTimeout(init: RequestInit): number {
 
 const responseAbort = new WeakMap<Response, (reason: unknown) => void>()
 
-export async function fetchWithDeadline(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithDeadline(
+  url: string,
+  init: RequestInit,
+  bodyKind: 'auto' | 'metadata' = 'auto',
+): Promise<Response> {
   const sourceSignal = init.signal
   if (sourceSignal?.aborted) {
     throw sourceSignal.reason ?? new DOMException('云端请求已取消', 'AbortError')
@@ -92,7 +96,8 @@ export async function fetchWithDeadline(url: string, init: RequestInit): Promise
       `${new Headers(init.headers).get('Accept') ?? ''} ${response.headers.get('Content-Type') ?? ''}`,
     )
     const bodyTimeoutMs =
-      binary || Number(response.headers.get('Content-Length')) > 2 * 1024 * 1024
+      bodyKind !== 'metadata' &&
+      (binary || Number(response.headers.get('Content-Length')) > 2 * 1024 * 1024)
         ? CLOUD_TRANSFER_MIN_TIMEOUT_MS
         : CLOUD_METADATA_TIMEOUT_MS
     armDeadline(bodyTimeoutMs)
@@ -174,7 +179,7 @@ export function isCloudRequestTimeout(error: unknown): error is CloudRequestTime
 }
 
 export async function mapWithConcurrency<T>(
-  values: T[],
+  values: readonly T[],
   concurrency: number,
   task: (value: T) => Promise<void>,
 ): Promise<void> {

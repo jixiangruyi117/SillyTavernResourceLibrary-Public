@@ -74,7 +74,9 @@ import {
 import type { ResourceService } from './ResourceService'
 
 import {
-  listBackupResourceSummaries,
+  readBackupRestoreContents,
+  portableRestoreScopeIds,
+  selectRestorePortableData,
   selectPreparedRestore,
   selectStructuredSnapshot,
 } from './BackupRestoreSelection'
@@ -84,6 +86,7 @@ import type { RestoreService } from './RestoreService'
 import type { ResourceSummary } from '../types/Resource'
 
 import type { CloudBackupJobRecord } from './CloudBackupJobStore'
+import type { BackupScopeId } from './BackupScopeRegistry'
 
 export type { CloudBackupProgressCallback } from './CloudBackupTransportContext'
 
@@ -192,6 +195,7 @@ export class CloudBackupService extends CloudBackupTransport {
       filterPortableData,
       record.restore.resourceKeys,
       record.restore.includeGallery,
+      record.restore.portableScopeIds,
     )
   }
 
@@ -499,7 +503,14 @@ export class CloudBackupService extends CloudBackupTransport {
           } else {
             onProgress?.('备份已提交成功，正在按保留份数检查旧快照…')
             const removed = await metrics.measure('maintenanceMs', () =>
-              this.prune(resolved, credential, item.objectKey, false, structured.snapshot),
+              this.prune(
+                resolved,
+                credential,
+                item.objectKey,
+                false,
+                structured.snapshot,
+                onProgress,
+              ),
             )
             if (removed > 0) maintenanceWarning = `已按保留份数自动清理 ${removed} 份旧云端快照。`
           }
@@ -555,6 +566,7 @@ export class CloudBackupService extends CloudBackupTransport {
     config?: CloudBackupConfig,
     secret?: string,
     onProgress?: CloudBackupProgressCallback,
+    onWarning?: CloudBackupProgressCallback,
   ): Promise<CloudBackupItem[]> {
     await this.initializeCredentials()
     const resolved = config ?? this.getActiveConfig()
@@ -562,7 +574,7 @@ export class CloudBackupService extends CloudBackupTransport {
     try {
       return resolved.provider === 'github'
         ? await this.listGitHub(resolved, credential, onProgress)
-        : await this.listWebDav(resolved, credential, onProgress)
+        : await this.listWebDav(resolved, credential, onProgress, onWarning)
     } catch (error) {
       await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
       throw friendlyNetworkError(error, resolved.provider)
@@ -631,11 +643,17 @@ export class CloudBackupService extends CloudBackupTransport {
   }
 
   async listBackupResources(item: CloudBackupItem): Promise<ResourceSummary[]> {
+    return (await this.listBackupRestoreContents(item)).resources
+  }
+
+  async listBackupRestoreContents(
+    item: CloudBackupItem,
+  ): Promise<{ resources: ResourceSummary[]; portableScopeIds: BackupScopeId[] }> {
     await this.initializeCredentials()
     const resolved = this.getActiveConfig()
     const credential = this.requireSecret(resolved.provider)
     try {
-      return await listBackupResourceSummaries(
+      const contents = await readBackupRestoreContents(
         item,
         async () =>
           resolved.provider === 'github'
@@ -646,6 +664,10 @@ export class CloudBackupService extends CloudBackupTransport {
         this.categoryService,
         this.restoreService,
       )
+      return {
+        resources: contents.resources,
+        portableScopeIds: portableRestoreScopeIds(contents.portableData),
+      }
     } catch (error) {
       await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
       throw friendlyNetworkError(error, resolved.provider)
@@ -657,6 +679,7 @@ export class CloudBackupService extends CloudBackupTransport {
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
     includeGallery = true,
+    portableScopeIds?: readonly BackupScopeId[],
   ): Promise<number> {
     if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
       const resolved = this.getActiveConfig()
@@ -669,6 +692,7 @@ export class CloudBackupService extends CloudBackupTransport {
           filterPortableData,
           resourceKeys,
           includeGallery,
+          portableScopeIds,
         )
       } catch (error) {
         await this.invalidateCredentialOnConfirmed401(resolved.provider, error)
@@ -695,7 +719,10 @@ export class CloudBackupService extends CloudBackupTransport {
       includeGallery,
     )
     const report = await this.restoreService.restore(selected)
-    await this.importPreparedPortableData(selected.portableData, filterPortableData)
+    await this.importPreparedPortableData(
+      selectRestorePortableData(selected.portableData, portableScopeIds),
+      filterPortableData,
+    )
     return report.restoredResources
   }
 
@@ -706,6 +733,7 @@ export class CloudBackupService extends CloudBackupTransport {
     filterPortableData?: (data: ArchivePortableData) => Promise<ArchivePortableData>,
     resourceKeys?: readonly string[],
     includeGallery = true,
+    portableScopeIds?: readonly BackupScopeId[],
   ): Promise<number> {
     const loadedSnapshot =
       config.provider === 'github'
@@ -731,6 +759,7 @@ export class CloudBackupService extends CloudBackupTransport {
           target: this.restoreTarget(config),
           resourceKeys: snapshot.resources.map((resource) => resource.id),
           includeGallery,
+          ...(portableScopeIds === undefined ? {} : { portableScopeIds: [...portableScopeIds] }),
         }
         const planHash = await hashCloudBlob(new Blob([JSON.stringify(selection)]))
         recovery = await this.transportState.jobStore.beginRestore(planHash, selection)
@@ -749,7 +778,10 @@ export class CloudBackupService extends CloudBackupTransport {
           structuredSnapshotArchiveName(item.objectKey.split('/').at(-1) ?? item.objectKey),
         )
         const report = await this.restoreService.restoreNative(prepared)
-        await this.importPreparedPortableData(prepared.portableData, filterPortableData)
+        await this.importPreparedPortableData(
+          selectRestorePortableData(prepared.portableData, portableScopeIds),
+          filterPortableData,
+        )
         await this.transportState.jobStore.complete(recovery, item.objectKey)
         return report.restoredResources
       } catch (error) {
@@ -774,7 +806,10 @@ export class CloudBackupService extends CloudBackupTransport {
       existingCategories,
       structuredSnapshotArchiveName(item.objectKey.split('/').at(-1) ?? item.objectKey),
     )
-    await this.importPreparedPortableData(snapshot.portableData, filterPortableData)
+    await this.importPreparedPortableData(
+      selectRestorePortableData(report.portableData ?? snapshot.portableData, portableScopeIds),
+      filterPortableData,
+    )
     return report.restoredResources
   }
 
@@ -908,6 +943,7 @@ export class CloudBackupService extends CloudBackupTransport {
     protectedObjectKey?: string,
     deep = false,
     committedSnapshot?: StructuredSnapshot,
+    onProgress?: CloudBackupProgressCallback,
   ): Promise<number> {
     return prune(
       this.snapshotContext(),
@@ -916,6 +952,7 @@ export class CloudBackupService extends CloudBackupTransport {
       protectedObjectKey,
       deep,
       committedSnapshot,
+      onProgress,
     )
   }
 

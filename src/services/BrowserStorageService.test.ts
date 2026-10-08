@@ -137,6 +137,7 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       allowScripts: false,
       preloadGreetingResources: false,
       preloadBeautificationResources: false,
+      increaseDownloadConcurrency: false,
     })
 
     service.setPreviewPolicy({
@@ -151,13 +152,28 @@ describe('BrowserStorageService cabinet desktop resources', () => {
       allowScripts: false,
       preloadGreetingResources: true,
       preloadBeautificationResources: false,
+      increaseDownloadConcurrency: false,
     })
     expect(service.setPreviewPolicy({ allowRemoteResources: false, allowScripts: false })).toEqual({
       allowRemoteResources: false,
       allowScripts: false,
       preloadGreetingResources: false,
       preloadBeautificationResources: false,
+      increaseDownloadConcurrency: false,
     })
+  })
+
+  it('确认后的并发档本机保存，旧配置与换机恢复不会自动增加设备负担', () => {
+    const service = new BrowserStorageService()
+    service.setPreviewPolicy({
+      allowRemoteResources: true,
+      allowScripts: false,
+      increaseDownloadConcurrency: true,
+    })
+    expect(new BrowserStorageService().getPreviewPolicy().increaseDownloadConcurrency).toBe(true)
+    const preferences = service.exportGeneralPreferences()
+    service.importGeneralPreferences(preferences)
+    expect(service.getPreviewPolicy().increaseDownloadConcurrency).toBe(false)
   })
 
   it('persists a unique ordered list and includes it in portable preferences', () => {

@@ -14,7 +14,7 @@ final class NativeExecutors {
     private static final ExecutorService IO_LIMITED = Executors.newFixedThreadPool(3, named("srl-io"));
     private static final ExecutorService NETWORK = Executors.newFixedThreadPool(3, named("srl-network"));
     private static final ExecutorService SHARE_INTAKE = Executors.newSingleThreadExecutor(named("srl-share-intake"));
-    private static final ExecutorService PREVIEW_NETWORK = new ThreadPoolExecutor(3, 3, 0L,
+    private static final ThreadPoolExecutor PREVIEW_NETWORK = new ThreadPoolExecutor(3, 3, 0L,
         TimeUnit.MILLISECONDS, new PriorityBlockingQueue<>(), named("srl-preview-network"));
 
     private NativeExecutors() {}
@@ -24,6 +24,18 @@ final class NativeExecutors {
     static ExecutorService network() { return NETWORK; }
     static ExecutorService shareIntake() { return SHARE_INTAKE; }
     static ExecutorService previewNetwork() { return PREVIEW_NETWORK; }
+    static synchronized void configurePreviewNetwork(boolean increased) {
+        int limit = increased ? 6 : 3;
+        if (PREVIEW_NETWORK.getMaximumPoolSize() == limit) return;
+        // Raise maximum first; lower core first. Running transfers finish without interruption.
+        if (limit > PREVIEW_NETWORK.getMaximumPoolSize()) {
+            PREVIEW_NETWORK.setMaximumPoolSize(limit);
+            PREVIEW_NETWORK.setCorePoolSize(limit);
+        } else {
+            PREVIEW_NETWORK.setCorePoolSize(limit);
+            PREVIEW_NETWORK.setMaximumPoolSize(limit);
+        }
+    }
 
     private static ThreadFactory named(String prefix) {
         AtomicInteger sequence = new AtomicInteger();

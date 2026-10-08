@@ -183,7 +183,14 @@ export class IndexedDbResourceHealthStorage {
     if (isAndroidNativeAppDatabaseActive()) {
       let after: string | undefined
       do {
-        const page = await nativeAppDatabase.getRecords(store, after, 100)
+        const page = await nativeAppDatabase.getRecords(
+          store,
+          after,
+          100,
+          fields.map((field) =>
+            field === 'metadata' ? 'metadata.recoveredFromNativeObject' : field,
+          ),
+        )
         for (const row of page.rows)
           yield (await decodeAppDatabaseValue(
             project(row.value),
@@ -215,7 +222,7 @@ export class IndexedDbResourceHealthStorage {
     return identities
   }
 
-  async audit(): Promise<ResourceHealthAudit> {
+  async audit(options: { deep?: boolean } = {}): Promise<ResourceHealthAudit> {
     const [
       rawResources,
       summaries,
@@ -233,7 +240,7 @@ export class IndexedDbResourceHealthStorage {
       this.database.resourceVersionSummaries.toArray(),
       this.database.generatedImages.toCollection().primaryKeys(),
       this.database.generatedImageFiles.toCollection().primaryKeys(),
-      this.resourceStorage.listSummaries(),
+      options.deep === false ? Promise.resolve([]) : this.resourceStorage.listSummaries(),
     ])
     const resourceIds = new Set(rawResources.map(({ id }) => id))
     const imageIds = new Set(generatedImageIds.map(String))
@@ -797,8 +804,14 @@ export class IndexedDbResourceHealthStorage {
   }
 
   async optimizeDerivedSummaries() {
+    if (await this.getSummaryCompactionStatus())
+      return { alreadyCompact: true, beforeBytes: 0, afterBytes: 0 }
     await this.resourceStorage.repairDerivedIndexes()
     return compactAndroidNativeAppDatabase()
+  }
+
+  getSummaryCompactionStatus(): Promise<boolean> {
+    return this.resourceStorage.areDerivedSummariesCompact()
   }
 
   private isJsonResource(resource: Pick<ResourceSummary, 'mimeType' | 'fileName'>): boolean {

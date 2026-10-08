@@ -26,7 +26,7 @@ const runtime = vi.hoisted(() => ({
   acknowledgeHandoff: vi.fn(
     async (_request?: unknown, _delivery?: unknown, _state?: string): Promise<void> => undefined,
   ),
-  listInboxJobs: vi.fn(async () => ({
+  listInboxJobs: vi.fn(async (_after?: string) => ({
     jobs: [] as Array<{ id: string; state: string; createdAt: number }>,
     recent: [] as Array<{ id: string; state: string; createdAt: number }>,
     hasMore: false,
@@ -34,6 +34,7 @@ const runtime = vi.hoisted(() => ({
   receiveInboxJob: vi.fn(),
   notifyInboxResult: vi.fn(),
   notifyAutoBinding: vi.fn(async () => undefined),
+  readNativeInboxState: vi.fn(async () => false),
   recentCards: vi.fn(async () => [] as unknown[]),
   unboundResources: vi.fn(async (resources: readonly unknown[]) => [...resources]),
   acknowledgeInboxJob: vi.fn(async (_id?: string, _state?: string, _target?: unknown) => undefined),
@@ -99,6 +100,7 @@ const runtime = vi.hoisted(() => ({
   })),
   markPendingPng: vi.fn(async () => undefined),
   getSourceForAutomation: vi.fn(async () => undefined),
+  getSavedNativeDiscordDelivery: vi.fn(async (): Promise<unknown> => undefined),
 }))
 
 vi.mock('../core/LibraryContainer', () => ({
@@ -123,6 +125,7 @@ vi.mock('../core/CommunitySourceRuntime', () => ({
     localizeSavedMessageAttachments: runtime.localize,
     getSourceUsageByKeyHash: runtime.sourceUsageByHash,
     getSourceForAutomation: runtime.getSourceForAutomation,
+    getSavedNativeDiscordDelivery: runtime.getSavedNativeDiscordDelivery,
     updateAutomationPendingPng: runtime.markPendingPng,
   },
 }))
@@ -143,6 +146,7 @@ vi.mock('../services/DiscordHandoffService', () => ({
 vi.mock('../services/NativeDiscordInboxService', () => ({
   notifyNativeDiscordInboxResult: runtime.notifyInboxResult,
   notifyNativeDiscordAutoBinding: runtime.notifyAutoBinding,
+  readNativeDiscordInboxState: runtime.readNativeInboxState,
 }))
 
 vi.mock('../services/DiscordSourceSettingsService', () => ({
@@ -183,6 +187,154 @@ function requestNative(token: string): void {
 }
 
 describe('DiscordSourceHandoffIntake', () => {
+  it.each([
+    ['pending', true, 0, 0],
+    ['pending', false, 0, 0],
+    ['complete', true, 1, 0],
+    ['foreground_required', true, 1, 1],
+  ] as const)(
+    'respects native media state %s (running=%s) without replaying saved body or notifications',
+    async (attachmentState, running, acknowledgements, localizations) => {
+      configureInbox()
+      const envelope = {
+        ...(await delivery('native-media')),
+        delivery: { id: 'native-media', libraryId: 'library-1', capturedAt: 123 },
+      }
+      const view = await runtime.saveDiscordCapture(envelope.capture)
+      runtime.saveDiscordCapture.mockClear()
+      runtime.getSavedNativeDiscordDelivery.mockResolvedValue({
+        view,
+        notificationPosted: true,
+        messageKey: 'key',
+        attachmentState,
+      })
+      runtime.readNativeInboxState.mockResolvedValue(running)
+      runtime.receiveInboxJob.mockResolvedValue(envelope)
+      runtime.listInboxJobs.mockResolvedValueOnce({
+        jobs: [{ id: 'native-media', state: 'pending', createdAt: 1 }],
+        recent: [],
+        hasMore: false,
+      })
+      const wrapper = mount(DiscordSourceHandoffIntake, { global: { stubs: { Teleport: true } } })
+      await flushPromises()
+      expect(runtime.saveDiscordCapture).not.toHaveBeenCalled()
+      expect(runtime.recentCards).not.toHaveBeenCalled()
+      expect(runtime.notifyInboxResult).not.toHaveBeenCalled()
+      expect(runtime.acknowledgeInboxJob).toHaveBeenCalledTimes(acknowledgements)
+      expect(runtime.localize).toHaveBeenCalledTimes(localizations)
+      wrapper.unmount()
+    },
+  )
+  it('continues later posts and pages past failed pending entries without consuming their receipts', async () => {
+    configureInbox()
+    const failed = '00000000-0000-4000-a000-000000000001'
+    const later = '00000000-0000-4000-a000-000000000002'
+    runtime.listInboxJobs
+      .mockResolvedValueOnce({
+        jobs: [{ id: failed, state: 'pending', createdAt: 1 }],
+        recent: [],
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        jobs: [{ id: later, state: 'pending', createdAt: 1 }],
+        recent: [],
+        hasMore: false,
+      })
+    runtime.receiveInboxJob.mockRejectedValueOnce(new Error('first body failed'))
+    const wrapper = mount(DiscordSourceHandoffIntake, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(runtime.listInboxJobs).toHaveBeenNthCalledWith(2, `1:${failed}`)
+    expect(runtime.receiveInboxJob.mock.calls.map((call) => call[0])).toEqual([failed, later])
+    expect(runtime.acknowledgeInboxJob).toHaveBeenCalledOnce()
+    expect(runtime.acknowledgeInboxJob.mock.calls[0]?.[0]).toBe(later)
+    expect(runtime.localize).toHaveBeenCalledOnce()
+    expect(runtime.notifyInboxResult).toHaveBeenCalledWith(
+      expect.objectContaining({ id: failed, state: 'failed' }),
+    )
+    expect(runtime.notifyInboxResult).toHaveBeenCalledWith(
+      expect.objectContaining({ id: later, state: 'waiting_binding' }),
+    )
+    wrapper.unmount()
+  })
+  it('only confirms a native saved post after returning to foreground, without saving, scanning or notifying again', async () => {
+    configureInbox()
+    const envelope = {
+      ...(await delivery('job-native')),
+      delivery: { id: 'job-native', libraryId: 'library-1', capturedAt: 123 },
+    }
+    const view = await runtime.saveDiscordCapture(envelope.capture)
+    runtime.saveDiscordCapture.mockClear()
+    runtime.getSavedNativeDiscordDelivery.mockResolvedValue({
+      view,
+      notificationPosted: true,
+      messageKey: 'message-key',
+    })
+    runtime.receiveInboxJob.mockResolvedValue(envelope)
+    runtime.listInboxJobs.mockResolvedValueOnce({
+      jobs: [{ id: 'job-native', state: 'pending', createdAt: 1 }],
+      recent: [],
+      hasMore: false,
+    })
+    const wrapper = mount(DiscordSourceHandoffIntake, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(runtime.saveDiscordCapture).not.toHaveBeenCalled()
+    expect(runtime.recentCards).not.toHaveBeenCalled()
+    expect(runtime.notifyInboxResult).not.toHaveBeenCalled()
+    expect(runtime.acknowledgeInboxJob).toHaveBeenCalledWith('job-native', 'waiting_binding', {
+      workerUrl: 'https://worker.example',
+      libraryId: 'library-1',
+    })
+    expect(runtime.localize).toHaveBeenCalledOnce()
+    expect(runtime.localize.mock.invocationCallOrder[0]).toBeGreaterThan(
+      runtime.acknowledgeInboxJob.mock.invocationCallOrder[0]!,
+    )
+    wrapper.unmount()
+    runtime.getSavedNativeDiscordDelivery.mockResolvedValue(undefined)
+  })
+  it('continues attachments for consecutive native saved posts without repeating their completed phases', async () => {
+    configureInbox()
+    const jobs = ['job-native-first', 'job-native-next']
+    for (const id of jobs) {
+      const envelope = {
+        ...(await delivery(id)),
+        delivery: { id, libraryId: 'library-1', capturedAt: 123 },
+      }
+      const view = await runtime.saveDiscordCapture(envelope.capture)
+      view.source.id = id
+      runtime.receiveInboxJob.mockResolvedValueOnce(envelope)
+      runtime.getSavedNativeDiscordDelivery.mockResolvedValueOnce({
+        view,
+        notificationPosted: true,
+        messageKey: `${id}-message`,
+      })
+    }
+    runtime.saveDiscordCapture.mockClear()
+    runtime.getSourceUsage.mockResolvedValue([{ resourceId: 'card', sourceId: 'bound' }])
+    runtime.listInboxJobs.mockResolvedValueOnce({
+      jobs: jobs.map((id) => ({ id, state: 'pending', createdAt: 1 })),
+      recent: [],
+      hasMore: false,
+    })
+    const wrapper = mount(DiscordSourceHandoffIntake, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(runtime.saveDiscordCapture).not.toHaveBeenCalled()
+    expect(runtime.recentCards).not.toHaveBeenCalled()
+    expect(runtime.bindSource).not.toHaveBeenCalled()
+    expect(runtime.notifyInboxResult).not.toHaveBeenCalled()
+    expect(runtime.notifyAutoBinding).not.toHaveBeenCalled()
+    expect(runtime.acknowledgeInboxJob).toHaveBeenCalledTimes(2)
+    expect(runtime.localize.mock.calls).toEqual(jobs.map((id) => [id, 'message-1']))
+    for (let index = 0; index < jobs.length; index++) {
+      expect(runtime.acknowledgeInboxJob).toHaveBeenNthCalledWith(index + 1, jobs[index], 'saved', {
+        workerUrl: 'https://worker.example',
+        libraryId: 'library-1',
+      })
+      expect(runtime.localize.mock.invocationCallOrder[index]).toBeGreaterThan(
+        runtime.acknowledgeInboxJob.mock.invocationCallOrder[index]!,
+      )
+    }
+    wrapper.unmount()
+  })
   it('keeps gallery attachments out of the direct handoff picker while PNG cards remain bindable', async () => {
     const ordinary = {
       id: 'card-png',
@@ -260,6 +412,8 @@ describe('DiscordSourceHandoffIntake', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    runtime.getSavedNativeDiscordDelivery.mockResolvedValue(undefined)
+    runtime.readNativeInboxState.mockResolvedValue(false)
     runtime.vaultStatus.mockReturnValue({ enabled: false, locked: false })
     runtime.settings.mockReturnValue({ workerBaseUrl: 'https://worker.example' })
     runtime.listInboxJobs.mockResolvedValue({ jobs: [], recent: [], hasMore: false })

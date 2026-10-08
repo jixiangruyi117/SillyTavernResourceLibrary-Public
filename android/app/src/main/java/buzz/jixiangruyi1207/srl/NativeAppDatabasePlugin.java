@@ -64,7 +64,7 @@ public final class NativeAppDatabasePlugin extends Plugin {
             String store = required(call, "store");
             String afterKey = call.getString("afterKey", "");
             int limit = call.getInt("limit", 250);
-            JSONArray rows = database.getRecords(store, afterKey, limit);
+            JSONArray rows = database.getRecords(store, afterKey, limit, call.getArray("fields"));
             JSObject result = new JSObject();
             result.put("rows", rows);
             result.put("nextKey", rows.length() == limit ? rows.getJSONObject(rows.length() - 1).getString("key") : JSONObject.NULL);

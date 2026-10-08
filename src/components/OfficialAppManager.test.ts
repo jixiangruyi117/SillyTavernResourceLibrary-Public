@@ -45,20 +45,21 @@ it('opens APP guidance in a centered modal from the question-mark control', asyn
   expect(help.classList.contains('official-app-manager__dialog')).toBe(true)
   expect(help.textContent).toContain('程序按需下载')
   expect(help.textContent).toContain('原有数据保留')
-  await help.querySelector<HTMLButtonElement>('button')!.click()
+  await help.querySelector<HTMLButtonElement>('footer button')!.click()
   expect(help.open).toBe(false)
 })
 it('checks local integrity only from the explicit status action and reports the affected APP', async () => {
   await flushPromises()
   expect(service.checkInstalledStatus).not.toHaveBeenCalled()
+  expect(wrapper.findAll('button').some((button) => button.text() === '检查 APP 状态')).toBe(false)
   service.checkInstalledStatus.mockResolvedValue([{ id: 'chatReader', ready: false }])
-  await wrapper
-    .findAll('button')
-    .find((button) => button.text() === '检查 APP 状态')!
-    .trigger('click')
+  await wrapper.get('[aria-label="查看 APP 管理说明"]').trigger('click')
+  const help = document.querySelector<HTMLDialogElement>('#official-app-manager-help-dialog')!
+  help.querySelector<HTMLButtonElement>('.button--quiet')!.click()
   await flushPromises()
   expect(service.checkInstalledStatus).toHaveBeenCalledOnce()
   expect(wrapper.text()).toContain('需要修复：读了么')
+  expect(help.textContent).toContain('需要修复：读了么')
 })
 async function openCleanup() {
   await flushPromises()

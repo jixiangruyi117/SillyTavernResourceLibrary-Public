@@ -73,6 +73,17 @@ describe('Discord inbox transport', () => {
     setup.clear.mockResolvedValue(undefined)
   })
   afterEach(() => vi.unstubAllGlobals())
+  it('passes a validated post cursor without changing credentials and rejects malformed cursors before a request', async () => {
+    fetchMock.mockResolvedValue(Response.json({ jobs: [], recent: [], hasMore: false }))
+    const cursor = '123:00000000-0000-4000-a000-000000000001'
+    await listDiscordInboxJobs(cursor)
+    expect(fetchMock.mock.lastCall?.[0]).toBe(
+      `https://worker.example/inbox/jobs?after=${encodeURIComponent(cursor)}`,
+    )
+    const count = fetchMock.mock.calls.length
+    await expect(listDiscordInboxJobs('../other')).rejects.toThrow('游标')
+    expect(fetchMock).toHaveBeenCalledTimes(count)
+  })
 
   it('reads a receipt repeatedly and never acknowledges before the local owner commits', async () => {
     fetchMock.mockImplementation(async () => Response.json({ capture, delivery }))

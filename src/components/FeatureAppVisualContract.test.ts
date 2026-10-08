@@ -240,7 +240,7 @@ describe('Feature App visual contract', () => {
 
     expect(countSelector(bridgeCss, '.tavern-local-connect {')).toBe(1)
     expect(countSelector(bridgeCss, '.tavern-device-join {')).toBe(1)
-    expect(countSelector(bridgeCss, '.tavern-device-join input {')).toBe(1)
+    expect(bridgeCss.match(/\.tavern-device-join input(?=\s*[,{}])/gu)).toHaveLength(1)
     expect(countSelector(bridgeCss, '.tavern-device-join__code {')).toBe(1)
     expect(countSelector(bridgeCss, '.tavern-bridge__primary {')).toBe(1)
 

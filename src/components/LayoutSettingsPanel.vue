@@ -37,12 +37,13 @@ import ResourceHealthCenter from './ResourceHealthCenter.vue'
 
 // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-deploy-guide-import
 import PublicWorkerDeployGuidePage from './PublicWorkerDeployGuidePage.vue'
-defineProps<{
+const props = defineProps<{
   vaultEnabled: boolean
   allowRemotePreviews: boolean
   allowScriptPreviews: boolean
   preloadGreetingPreviews: boolean
   preloadBeautificationPreviews: boolean
+  increasePreviewDownloads?: boolean
   extractCharacterAssets: boolean
   hideCharacterAssets: boolean
   hideChatDisplayRegex: boolean
@@ -62,6 +63,7 @@ const emit = defineEmits<{
   'update:allowScriptPreviews': [value: boolean]
   'update:preloadGreetingPreviews': [value: boolean]
   'update:preloadBeautificationPreviews': [value: boolean]
+  'update:increasePreviewDownloads': [value: boolean]
   'update:extractCharacterAssets': [value: boolean]
   'update:hideCharacterAssets': [value: boolean]
   'update:hideChatDisplayRegex': [value: boolean]
@@ -78,6 +80,14 @@ const emit = defineEmits<{
   'manual-check-update': []
   close: []
 }>()
+
+function requestIncreasedDownloads(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const enabled = input.checked
+  // Reflect the saved value until the user confirms, including cancellation and dismissal.
+  input.checked = props.increasePreviewDownloads === true
+  emit('update:increasePreviewDownloads', enabled)
+}
 
 const updateCheckResult = ref('')
 const modifiedResourceSyncTags = ref(browserStorageService.getModifiedResourceSyncTags())
@@ -591,6 +601,21 @@ async function clearOfflineResources(): Promise<void> {
               @change="
                 emit('update:allowScriptPreviews', ($event.target as HTMLInputElement).checked)
               "
+            />
+            <i aria-hidden="true"></i>
+          </label>
+          <label class="settings-switch-row">
+            <span>
+              <strong>增加多线路下载</strong>
+              <small
+                >默认关闭。开启后预览素材最多 6 路并行，可能增加设备负担；新版 APK
+                下载和网页显式预下载生效，网页普通图片仍由浏览器调度。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="increasePreviewDownloads === true"
+              @change="requestIncreasedDownloads"
             />
             <i aria-hidden="true"></i>
           </label>

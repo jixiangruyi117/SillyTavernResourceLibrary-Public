@@ -2,6 +2,7 @@ import { Capacitor } from '@capacitor/core'
 
 import type { CloudBackupConfig, CloudBackupItem, CloudBackupProvider } from '../types/CloudBackup'
 import { nativeAppDatabase } from '../storage/NativeAppDatabaseBridge'
+import type { BackupScopeId } from './BackupScopeRegistry'
 
 const DATABASE_NAME = 'srl-cloud-jobs-v3'
 const DATABASE_VERSION = 4
@@ -24,6 +25,7 @@ export interface NativeCloudRestoreRecovery {
   target: CloudBackupConfig
   resourceKeys: string[]
   includeGallery: boolean
+  portableScopeIds?: BackupScopeId[]
 }
 
 export type CloudBackupObjectJobState = 'pending' | 'verified' | 'failed'

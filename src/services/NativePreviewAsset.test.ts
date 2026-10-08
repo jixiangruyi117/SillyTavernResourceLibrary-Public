@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   ),
   release: vi.fn(async () => undefined),
   cancel: vi.fn(async () => undefined),
+  configure: vi.fn(async (_options: { increaseDownloadConcurrency: boolean }) => undefined),
 }))
 
 vi.mock('@capacitor/core', () => ({
@@ -22,6 +23,7 @@ vi.mock('@capacitor/core', () => ({
     prepare: mocks.prepare,
     release: mocks.release,
     cancel: mocks.cancel,
+    configure: mocks.configure,
   }),
 }))
 
@@ -29,6 +31,7 @@ import {
   downloadNativePreviewAsset,
   isNativePreviewAssetAvailable,
   prepareNativePreviewAssets,
+  configureNativePreviewDownloadConcurrency,
 } from './NativePreviewAsset'
 
 describe('NativePreviewAsset', () => {
@@ -39,6 +42,7 @@ describe('NativePreviewAsset', () => {
     mocks.prepare.mockReset().mockResolvedValue(undefined)
     mocks.release.mockClear()
     mocks.cancel.mockClear()
+    mocks.configure.mockReset().mockResolvedValue(undefined)
   })
 
   it('仅在 Android 原生端启用', () => {
@@ -46,6 +50,23 @@ describe('NativePreviewAsset', () => {
     mocks.native = true
     mocks.platform = 'android'
     expect(isNativePreviewAssetAvailable()).toBe(true)
+  })
+
+  it('设置开关只传递两档，旧 APK 不支持时不破坏普通预览', async () => {
+    mocks.native = true
+    mocks.platform = 'android'
+    expect(await configureNativePreviewDownloadConcurrency(true)).toBe(true)
+    expect(mocks.configure).toHaveBeenLastCalledWith({ increaseDownloadConcurrency: true })
+    expect(await configureNativePreviewDownloadConcurrency(false)).toBe(true)
+    expect(mocks.configure).toHaveBeenLastCalledWith({ increaseDownloadConcurrency: false })
+    mocks.configure.mockRejectedValueOnce(new Error('UNIMPLEMENTED'))
+    expect(await configureNativePreviewDownloadConcurrency(true)).toBe(false)
+    const controller = new AbortController()
+    await prepareNativePreviewAssets(['https://cdn.example/a.png'], controller.signal, true)
+    expect(mocks.prepare).toHaveBeenLastCalledWith(
+      expect.objectContaining({ increaseDownloadConcurrency: true }),
+    )
+    controller.abort()
   })
 
   it('把 Android 缓存文件转换为 WebView 可展示地址', async () => {

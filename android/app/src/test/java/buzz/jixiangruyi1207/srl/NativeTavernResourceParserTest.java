@@ -40,6 +40,18 @@ public class NativeTavernResourceParserTest {
             new JSONObject().put("state", "imported").put("resourceType", actual.getString("type")));
         assertTrue(notification.startsWith(NativeTavernResourceParser.label(actual.getString("type"))));
         assertFalse(notification.contains("需要在前台"));
+        java.lang.reflect.Method create = NativeBackgroundResourceImporter.class.getDeclaredMethod(
+            "newResource", JSONObject.class, String.class, String.class, String.class,
+            long.class, String.class, long.class);
+        create.setAccessible(true);
+        JSONObject resource = (JSONObject) create.invoke(null, actual, file.getName(), "application/json",
+            "a".repeat(64), file.length(), "background-resource", 1L);
+        assertEquals("Stored resources and their summaries must always expose a tag array",
+            0, resource.getJSONArray("tags").length());
+        actual.put("tags", new JSONArray().put("保留标签"));
+        JSONObject tagged = (JSONObject) create.invoke(null, actual, file.getName(), "application/json",
+            "a".repeat(64), file.length(), "background-tagged-resource", 1L);
+        assertEquals("保留标签", tagged.getJSONArray("tags").getString(0));
     }
 
     private static void assertSubset(JSONObject expected, JSONObject actual) throws Exception {

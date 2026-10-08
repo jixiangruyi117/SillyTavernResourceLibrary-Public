@@ -11,7 +11,7 @@ export interface HealthIssue {
 
 export interface HealthScanner {
   id: string
-  scan(): Promise<HealthIssue[]>
+  scan(options?: { deep?: boolean }): Promise<HealthIssue[]>
 }
 
 export class HealthCenter {
@@ -24,11 +24,11 @@ export class HealthCenter {
     }
   }
 
-  async scan(): Promise<HealthIssue[]> {
+  async scan(options?: { deep?: boolean }): Promise<HealthIssue[]> {
     const results: HealthIssue[] = []
     for (const scanner of this.scanners.values()) {
       try {
-        results.push(...(await scanner.scan()))
+        results.push(...(await scanner.scan(options)))
       } catch (error) {
         results.push({
           id: `scanner-failed:${scanner.id}`,

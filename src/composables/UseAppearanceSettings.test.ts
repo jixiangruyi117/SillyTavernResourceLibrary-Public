@@ -47,6 +47,10 @@ vi.mock('../core/AppContainer', () => ({ browserStorageService: storage }))
 
 const confirmMock = vi.fn(async () => true)
 vi.mock('./UseConfirmDialog', () => ({ confirmAction: confirmMock }))
+const configureDownloads = vi.fn(async () => true)
+vi.mock('../services/NativePreviewAsset', () => ({
+  configureNativePreviewDownloadConcurrency: configureDownloads,
+}))
 
 const { useAppearanceSettings } = await import('./UseAppearanceSettings')
 
@@ -68,6 +72,56 @@ describe('useAppearanceSettings', () => {
   })
 
   const create = () => useAppearanceSettings((message) => notices.push(message))
+
+  it('增加多线路必须先确认，取消不保存也不调整原生队列', async () => {
+    confirmMock.mockResolvedValueOnce(false)
+    const appearance = create()
+    await appearance.applyIncreasedPreviewDownloads(true)
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '增加多线路下载',
+        confirmLabel: '确定',
+        cancelLabel: '取消',
+      }),
+    )
+    expect(storage.setPreviewPolicy).not.toHaveBeenCalled()
+    expect(configureDownloads).not.toHaveBeenCalled()
+    expect(appearance.previewPolicy.value.increaseDownloadConcurrency).not.toBe(true)
+  })
+
+  it('确认后保存并调整队列，关闭不再询问；其它预览开关保留该档位', async () => {
+    const appearance = create()
+    await appearance.applyIncreasedPreviewDownloads(true)
+    expect(appearance.previewPolicy.value.increaseDownloadConcurrency).toBe(true)
+    expect(configureDownloads).toHaveBeenLastCalledWith(true)
+    appearance.applyRemotePreviewPolicy(true)
+    expect(appearance.previewPolicy.value.increaseDownloadConcurrency).toBe(true)
+    await appearance.applyScriptPreviewPolicy(false)
+    expect(appearance.previewPolicy.value.increaseDownloadConcurrency).toBe(true)
+    confirmMock.mockClear()
+    await appearance.applyIncreasedPreviewDownloads(false)
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(configureDownloads).toHaveBeenLastCalledWith(false)
+    expect(appearance.previewPolicy.value.increaseDownloadConcurrency).toBe(false)
+  })
+
+  it('确认尚未完成时不会提前保存，多次点击不重复排队确认', async () => {
+    let finish!: (value: boolean) => void
+    confirmMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const appearance = create()
+    const pending = appearance.applyIncreasedPreviewDownloads(true)
+    await appearance.applyIncreasedPreviewDownloads(true)
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(storage.setPreviewPolicy).not.toHaveBeenCalled()
+    finish(true)
+    await pending
+    expect(storage.setPreviewPolicy).toHaveBeenCalledTimes(1)
+  })
 
   it('应用主题会同时写入文档属性与本地存储', () => {
     const appearance = create()
@@ -161,6 +215,7 @@ describe('useAppearanceSettings', () => {
     localStorage.setItem('srl-theme', 'dark')
 
     appearance.reloadAppearanceSettings()
+    expect(configureDownloads).toHaveBeenLastCalledWith(false)
 
     expect(appearance.theme.value).toBe('dark')
     expect(document.documentElement.dataset.theme).toBe('dark')

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { buildRichContentPreview } from './RichContentPreview'
 
@@ -12,6 +12,123 @@ function readFrontendSrcdoc(documentSource: string): string {
 }
 
 describe('RichContentPreview shared compatibility runtime', () => {
+  it.each([
+    '<main style="position:fixed;inset:0">固定层</main>',
+    '<main style="min-height:100vh">视口最小高度</main>',
+  ])('相同视口不形成父子高度反馈循环：%s', (source) => {
+    const result = buildRichContentPreview(
+      '```html\n<html><body>' + source + '</body></html>\n```',
+      'viewport loop',
+      scriptPolicy,
+      [],
+      { renderShell: 'content' },
+    )
+    const childDocument = new DOMParser().parseFromString(
+      readFrontendSrcdoc(result.document),
+      'text/html',
+    )
+    const childScript = Array.from(childDocument.scripts).find((script) =>
+      script.textContent?.includes('const updateViewport='),
+    )?.textContent
+    const hostDocument = new DOMParser().parseFromString(result.document, 'text/html')
+    const hostScript = Array.from(hostDocument.scripts).find((script) =>
+      script.textContent?.includes('const broadcast='),
+    )?.textContent
+    expect(childScript).toBeTruthy()
+    expect(hostScript).toBeTruthy()
+    let contentHeight = 12800
+    Object.defineProperty(childDocument.body, 'scrollHeight', { get: () => contentHeight })
+    const frames: (() => void)[] = []
+    const childMessages: ((event: { data: unknown }) => void)[] = []
+    const hostMessages: ((event: { data: unknown; source?: unknown }) => void)[] = []
+    const frame = {
+      style: { height: '' },
+      dataset: {} as Record<string, string>,
+      addEventListener: vi.fn(),
+      contentWindow: {},
+    }
+    const childWindow = {
+      frameElement: frame,
+      addEventListener: (type: string, listener: (event: { data: unknown }) => void) => {
+        if (type === 'message') childMessages.push(listener)
+      },
+      postMessage: (data: unknown) => childMessages.forEach((listener) => listener({ data })),
+    }
+    frame.contentWindow = childWindow
+    const hostWindow = {
+      addEventListener: (
+        type: string,
+        listener: (event: { data: unknown; source?: unknown }) => void,
+      ) => {
+        if (type === 'message') hostMessages.push(listener)
+      },
+    }
+    const postMessage = vi.fn((data: unknown) =>
+      hostMessages.forEach((listener) => listener({ data, source: childWindow })),
+    )
+    new Function('document', 'window', hostScript ?? '')(
+      {
+        readyState: 'complete',
+        querySelectorAll: () => [frame],
+        querySelector: () => null,
+      },
+      hostWindow,
+    )
+    let resize = () => {}
+    class Observer {
+      constructor(callback: () => void) {
+        resize = callback
+      }
+      observe() {}
+    }
+    new Function(
+      'document',
+      'window',
+      'parent',
+      'requestAnimationFrame',
+      'ResizeObserver',
+      'getComputedStyle',
+      childScript ?? '',
+    )(
+      childDocument,
+      childWindow,
+      { postMessage },
+      (callback: () => void) => frames.push(callback),
+      Observer,
+      () => ({ position: 'fixed', top: '0px', bottom: '0px' }),
+    )
+    const viewport = (height: number) =>
+      hostMessages.forEach((listener) =>
+        listener({ data: { type: 'SRL_HOST_VIEWPORT_HEIGHT', height } }),
+      )
+    const flushLayout = () => {
+      for (let count = 0; frames.length && count < 4; count++) frames.shift()?.()
+    }
+    viewport(844)
+    flushLayout()
+    expect(frames).toHaveLength(0)
+    expect(frame.style.height).toBe('12800px')
+    const settledCount = postMessage.mock.calls.length
+    viewport(844)
+    flushLayout()
+    expect(postMessage).toHaveBeenCalledTimes(settledCount)
+    viewport(660)
+    flushLayout()
+    expect(frames).toHaveLength(0)
+    expect(childDocument.documentElement.style.getPropertyValue('--TH-viewport-height')).toBe(
+      '660px',
+    )
+    contentHeight = 13600
+    resize()
+    flushLayout()
+    expect(frame.style.height).toBe('13600px')
+    contentHeight = 500
+    resize()
+    flushLayout()
+    expect(frame.style.height).toBe('660px')
+    expect(frames).toHaveLength(0)
+  })
+
   it('matches TavernHelper message iframe auto-height ownership', () => {
     const result = buildRichContentPreview(
       '```html\n<html><body><main>carousel</main></body></html>\n```',

@@ -21,6 +21,29 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 public class NativeDiscordAttachmentDownloadTest {
+    @Test public void postMediaBudgetRejectsDeclaredOrStreamedOversizeWithoutChangingResourceDownloadBudget() throws Exception {
+        for (String headers : List.of("Content-Length: 9\r\n", "")) {
+            File file = part(); JSONObject metadata = new JSONObject();
+            try (HttpFixture server = new HttpFixture(response(200, headers, "123456789"))) {
+                assertThrows(NativeDiscordAttachmentDownload.TerminalFailure.class, () -> NativeDiscordAttachmentDownload.download(
+                    server.client(), URL, file, metadata, saved -> {}, (done, total) -> {}, call -> {}, 8));
+                assertFalse(metadata.optBoolean("downloadComplete"));
+                assertTrue(!file.exists() || file.length() <= 8);
+            }
+        }
+        assertEquals(4L * 1024 * 1024 * 1024, NativeDiscordAttachmentDownload.MAX_BYTES);
+    }
+    @Test public void postMediaUsesTheSameRangeCheckpointAndCompletedBytesWithoutAnotherRequest() throws Exception {
+        File file = part(); JSONObject metadata = prefix(file, "\"v1\"");
+        try (HttpFixture server = new HttpFixture(response(206, "Content-Length: 5\r\nContent-Range: bytes 3-7/8\r\nETag: \"v1\"\r\n", "defgh"))) {
+            NativeDiscordAttachmentDownload.download(server.client(), URL, file, metadata, saved -> {}, (done, total) -> {}, call -> {}, 8);
+            assertTrue(server.requests.get(0).contains("Range: bytes=3-"));
+            NativeDiscordAttachmentDownload.download(server.client(), URL, file, metadata, saved -> {}, (done, total) -> {},
+                call -> { throw new AssertionError("completed media must not download again"); }, 8);
+            assertEquals("abcdefgh", read(file));
+            assertEquals(1, server.requests.size());
+        }
+    }
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private static final String URL = "https://cdn.discordapp.com/attachments/123/456/card.json?ex=abc&hm=signature";
     private String read(File file) throws Exception { return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8); }

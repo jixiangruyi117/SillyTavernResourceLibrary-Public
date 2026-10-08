@@ -1,5 +1,5 @@
 import type { EmitFn } from 'vue'
-import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { assetStore } from '../core/AppContainer'
 import {
   BrowserStorageService,
@@ -31,6 +31,7 @@ import {
 import { normalizeFolderCoverUrl } from '../utils/FolderCover'
 import { useFolderCabinetDrag } from './UseFolderCabinetDrag'
 import { enqueueThumbnailRead } from './UseResourceThumbnail'
+import { folderThumbnailCacheKey } from './FolderThumbnailCache'
 export type {
   FolderLibraryViewEvents,
   FolderLibraryViewProps,
@@ -83,6 +84,8 @@ export function useFolderLibraryView(
   const cabinetStorage = new BrowserStorageService()
 
   const pendingThumbnails = new Map<string, () => void>()
+  const thumbnailCache = inject(folderThumbnailCacheKey, undefined)
+  const thumbnailReleases = new Map<string, () => void>()
   const thumbnailSources = new Map<string, { blob?: Blob; assetId?: string; hash: string }>()
 
   const searchQuery = ref('')
@@ -367,7 +370,8 @@ export function useFolderLibraryView(
   })
 
   function revokeThumbnailUrls(): void {
-    for (const url of thumbnailUrls.value.values()) URL.revokeObjectURL(url)
+    for (const release of thumbnailReleases.values()) release()
+    thumbnailReleases.clear()
     thumbnailUrls.value = new Map()
     thumbnailSources.clear()
   }
@@ -418,8 +422,8 @@ export function useFolderLibraryView(
         pendingThumbnails.get(id)?.()
         pendingThumbnails.delete(id)
         thumbnailSources.delete(id)
-        const url = thumbnailUrls.value.get(id)
-        if (url) URL.revokeObjectURL(url)
+        thumbnailReleases.get(id)?.()
+        thumbnailReleases.delete(id)
         thumbnailUrls.value.delete(id)
       }
       thumbnailUrls.value = new Map(thumbnailUrls.value)
@@ -431,12 +435,23 @@ export function useFolderLibraryView(
           hash: resource.contentHash,
         }
         thumbnailSources.set(resource.id, source)
+        const publishLease = (lease: { url: string; release: () => void }) => {
+          thumbnailReleases.set(resource.id, lease.release)
+          thumbnailUrls.value = new Map(thumbnailUrls.value).set(resource.id, lease.url)
+        }
+        const cached = thumbnailCache?.acquire(resource)
+        if (cached) {
+          publishLease(cached)
+          continue
+        }
         const publish = (blob: Blob | undefined) => {
-          if (blob && thumbnailSources.get(resource.id) === source)
-            thumbnailUrls.value = new Map(thumbnailUrls.value).set(
-              resource.id,
-              URL.createObjectURL(blob),
-            )
+          if (!blob || thumbnailSources.get(resource.id) !== source) return
+          const lease = thumbnailCache?.acquire(resource, blob)
+          if (lease) publishLease(lease)
+          else {
+            const url = URL.createObjectURL(blob)
+            publishLease({ url, release: () => URL.revokeObjectURL(url) })
+          }
         }
         if (source.blob) {
           publish(source.blob)

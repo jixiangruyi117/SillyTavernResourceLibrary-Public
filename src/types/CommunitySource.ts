@@ -244,6 +244,15 @@ export interface CommunitySourceMessage {
   capturedAt: number
   /** Snapshot delivery time, separate from Discord's message creation time; older deliveries cannot replace it. */
   deliveryCapturedAt?: number
+  /** Local native receive receipt; never accepted from a remote capture. */
+  nativeInboxReceipt?: {
+    id: string
+    libraryId: string
+    workerUrl: string
+    captureHash: string
+    notificationState?: string
+    attachmentState?: 'pending' | 'complete' | 'foreground_required'
+  }
   updatedAt: number
 }
 

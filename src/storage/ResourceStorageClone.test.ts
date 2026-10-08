@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Resource } from '../types/Resource'
 import {
   cloneBlob,
+  cloneResourceForStorage,
   hydrateResourceFromIndexedDb,
   materializeResourceForIndexedDb,
 } from './ResourceStorageClone'
@@ -19,6 +20,56 @@ describe('cloneBlob', () => {
 })
 
 describe('IndexedDB binary boundary', () => {
+  it('preserves V2 backup parts on metadata edits and invalidates them when original content changes', async () => {
+    const resource: Resource = {
+      id: 'descriptor-resource',
+      type: 'other',
+      name: 'original',
+      description: '',
+      fileName: 'original.bin',
+      mimeType: 'application/octet-stream',
+      fileSize: 6,
+      contentHash: 'a'.repeat(64),
+      favorite: false,
+      categoryId: null,
+      tags: [],
+      metadata: {},
+      originalBlob: new Blob(['binary']),
+      createdAt: 1,
+      updatedAt: 1,
+      backupDescriptor: {
+        version: 2,
+        resourceId: 'descriptor-resource',
+        contentHash: 'a'.repeat(64),
+        size: 6,
+        updatedAt: 1,
+        parts: [
+          {
+            name: `srl-chunk--sha256-${'a'.repeat(64)}`,
+            offset: 0,
+            size: 6,
+            sha256: 'a'.repeat(64),
+          },
+        ],
+      },
+    }
+    const edited = await cloneResourceForStorage({
+      ...resource,
+      name: 'metadata edit',
+      updatedAt: 2,
+    })
+    expect(edited.backupDescriptor).toEqual(resource.backupDescriptor)
+    expect(await edited.originalBlob.text()).toBe('binary')
+    for (const changes of [{ contentHash: 'b'.repeat(64) }, { fileSize: 7 }, { id: 'new-owner' }]) {
+      const replaced = await cloneResourceForStorage({ ...resource, ...changes })
+      expect(replaced.backupDescriptor?.parts).toBeUndefined()
+      expect(replaced.backupDescriptor).toMatchObject({
+        resourceId: replaced.id,
+        contentHash: replaced.contentHash,
+        size: replaced.fileSize,
+      })
+    }
+  })
   it('stores resource bodies as ArrayBuffer and hydrates them back to Blob', async () => {
     const resource = {
       id: 'resource-1',

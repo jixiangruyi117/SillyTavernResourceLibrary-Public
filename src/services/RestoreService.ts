@@ -792,7 +792,7 @@ export class RestoreService {
     existingResources: ResourceSummary[],
     existingCategories: Category[],
     fileName: string,
-  ): Promise<RestoreReport> {
+  ): Promise<RestoreReport & { portableData?: ArchivePortableData }> {
     const prepared = await this.prepareStructured(
       snapshot.resources.map(structuredPlaceholder),
       snapshot.versions.map(structuredPlaceholder),
@@ -824,7 +824,7 @@ export class RestoreService {
       }
       return hydrated
     }
-    return this.restore(prepared, async (resource) => {
+    const report = await this.restore(prepared, async (resource) => {
       const hydrated = await materialize(resource)
       if (resource.type === RESOURCE_TYPE.USER_PERSONA) {
         const avatars = (resource.relatedResourceIds ?? []).flatMap((id) => {
@@ -839,6 +839,7 @@ export class RestoreService {
       }
       return hydrated
     })
+    return { ...report, portableData: prepared.portableData }
   }
 
   private async validateSecrets(

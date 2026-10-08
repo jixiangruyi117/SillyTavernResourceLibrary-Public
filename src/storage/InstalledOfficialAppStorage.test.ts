@@ -208,6 +208,29 @@ describe('installed official APP storage', () => {
     expect(check.mock.calls).toEqual(files.map((file) => [file.path, file.size]))
   })
 
+  it('checks 255 official files in native batches of at most 100 and stops on a missing batch', async () => {
+    vi.stubGlobal('window', { Capacitor: { isNativePlatform: () => true } })
+    const storage = new InstalledOfficialAppStorage({} as AppDatabase)
+    const files = Array.from({ length: 255 }, (_, index) => ({
+      path: `/assets/file-${index}.js`,
+      size: 1,
+    }))
+    nativeFiles.hasOfficialAppFiles.mockImplementation(async ({ files }) => {
+      if (files.length > 100) throw new Error('APP 文件清单无效')
+      return { ready: true }
+    })
+    expect(await storage.hasFiles(files)).toBe(true)
+    expect(nativeFiles.hasOfficialAppFiles.mock.calls.map(([call]) => call.files.length)).toEqual([
+      100, 100, 55,
+    ])
+    nativeFiles.hasOfficialAppFiles.mockClear()
+    nativeFiles.hasOfficialAppFiles
+      .mockResolvedValueOnce({ ready: true })
+      .mockResolvedValueOnce({ ready: false })
+    expect(await storage.hasFiles(files)).toBe(false)
+    expect(nativeFiles.hasOfficialAppFiles).toHaveBeenCalledTimes(2)
+  })
+
   it('checks native APP metadata in one bridge call and preserves missing/invalid-file failures', async () => {
     vi.stubGlobal('window', { Capacitor: { isNativePlatform: () => true } })
     const storage = new InstalledOfficialAppStorage({} as AppDatabase)

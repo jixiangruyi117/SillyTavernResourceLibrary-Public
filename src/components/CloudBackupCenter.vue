@@ -37,6 +37,7 @@ const {
   backups,
   restorePicker,
   selectedRestoreKeys,
+  hasRestoreSelection,
   restoreResourceCount,
   restoreScopeIds,
   restoreScopeModel,
@@ -325,7 +326,7 @@ onUnmounted(() => window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleScope
         >
           <header>
             <div>
-              <strong id="cloud-restore-selection-title">选择要导入的资源</strong>
+              <strong id="cloud-restore-selection-title">选择要导入的内容</strong>
               <span>{{ restorePicker.item.objectKey }}</span>
             </div>
             <span>{{ selectedRestoreKeys.size }} / {{ restoreResourceCount }} 项</span>
@@ -346,14 +347,10 @@ onUnmounted(() => window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleScope
           <div class="cloud-restore-selection__tools">
             <button
               type="button"
-              :disabled="Boolean(busyAction) || !selectedRestoreKeys.size"
+              :disabled="Boolean(busyAction) || !hasRestoreSelection"
               @click="restore(restorePicker.item)"
             >
-              {{
-                busyAction === `restore:${restorePicker.item.id}`
-                  ? '导入中…'
-                  : `导入所选（${selectedRestoreKeys.size} 项）`
-              }}
+              {{ busyAction === `restore:${restorePicker.item.id}` ? '导入中…' : '导入所选内容' }}
             </button>
             <button
               type="button"

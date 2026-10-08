@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 
@@ -14,6 +14,8 @@ vi.mock('../services/NativePreviewAsset', () => ({
 
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
 import BeautificationPreview from './BeautificationPreview.vue'
+
+enableAutoUnmount(afterEach)
 
 function makeThemeResource(source: string): Resource {
   return {
@@ -40,6 +42,95 @@ function frameDocument(wrapper: ReturnType<typeof mount>): string {
 }
 
 describe('BeautificationPreview', () => {
+  it('替换原文件仍重新读取，相同长度的内容也更新正式文档', async () => {
+    const resource = makeThemeResource('{"custom_css":"body{color:red}"}')
+    const wrapper = mount(BeautificationPreview, { props: { resource } })
+    await flushPromises()
+    const oldFrame = wrapper.find<HTMLIFrameElement>('iframe').element
+    await wrapper.setProps({
+      resource: {
+        ...resource,
+        originalBlob: makeThemeResource('{"custom_css":"body{color:tan}"}').originalBlob,
+      },
+    })
+    await flushPromises()
+    expect(frameDocument(wrapper)).toContain('body{color:tan}')
+    expect(wrapper.find('iframe').element).not.toBe(oldFrame)
+    oldFrame.dispatchEvent(new Event('load'))
+    expect(wrapper.find('.beauty-preview__loading').exists()).toBe(true)
+    await wrapper.find('iframe').trigger('load')
+    expect(wrapper.find('.beauty-preview__loading').exists()).toBe(false)
+  })
+
+  it('快速切换原生场景时，旧登记结果不能挂载旧场景', async () => {
+    nativePreviewMocks.available.mockReturnValue(true)
+    localStorage.setItem('srl.preview.allowRemoteResources', 'true')
+    localStorage.setItem('srl.preview.preloadBeautificationResources', 'true')
+    const pending: Array<() => void> = []
+    nativePreviewMocks.prepare
+      .mockImplementationOnce(() => new Promise((resolve) => pending.push(resolve)))
+      .mockImplementationOnce(() => new Promise((resolve) => pending.push(resolve)))
+    const wrapper = mount(BeautificationPreview, {
+      props: {
+        resource: makeThemeResource(
+          '{"custom_css":"body{background:url(https://cdn.example/bg.png)}"}',
+        ),
+      },
+    })
+    await flushPromises()
+    const oldSignal = nativePreviewMocks.prepare.mock.calls.at(-1)![1]
+    await wrapper.find('select[aria-label="预览场景"]').setValue('welcome')
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    pending[0]()
+    await flushPromises()
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    pending[1]()
+    await flushPromises()
+    expect(frameDocument(wrapper)).toContain('data-preview-scene="welcome"')
+  })
+
+  it('只变更标签等元数据时保留当前 iframe 与场景，不重新读取原文件', async () => {
+    const resource = makeThemeResource('{}')
+    const read = vi.spyOn(resource.originalBlob, 'text')
+    const wrapper = mount(BeautificationPreview, { props: { resource } })
+    await flushPromises()
+    await wrapper.find('select[aria-label="预览场景"]').setValue('welcome')
+    const frame = wrapper.find('.beauty-preview__frame').element
+    await wrapper.setProps({ resource: { ...resource, tags: ['新标签'], favorite: true } })
+    await flushPromises()
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.beauty-preview__frame').element).toBe(frame)
+    expect(frameDocument(wrapper)).toContain('data-preview-scene="welcome"')
+    wrapper.unmount()
+  })
+
+  it('原生素材登记未结束时不挂载空文档，正式文档仅挂载一次', async () => {
+    nativePreviewMocks.available.mockReturnValue(true)
+    localStorage.setItem('srl.preview.allowRemoteResources', 'true')
+    localStorage.setItem('srl.preview.preloadBeautificationResources', 'true')
+    let finish: (() => void) | undefined
+    nativePreviewMocks.prepare.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const wrapper = mount(BeautificationPreview, {
+      props: {
+        resource: makeThemeResource(
+          '{"custom_css":"body{background:url(https://cdn.example/bg.png)}"}',
+        ),
+      },
+    })
+    await flushPromises()
+    expect(wrapper.find('.beauty-preview__frame').exists()).toBe(false)
+    finish?.()
+    await flushPromises()
+    expect(frameDocument(wrapper)).toContain('data-preview-scene="chat"')
+    wrapper.unmount()
+  })
+
   afterEach(() => {
     localStorage.clear()
     vi.unstubAllGlobals()

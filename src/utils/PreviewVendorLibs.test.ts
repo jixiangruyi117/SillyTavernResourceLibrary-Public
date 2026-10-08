@@ -71,6 +71,21 @@ describe('detectVendorLibNeeds', () => {
 })
 
 describe('loadPreviewVendorLibs', () => {
+  it('相同需求的并发与后续预览复用同一静态库组装结果', async () => {
+    const needs = { jquery: true, vue: false, fontAwesome: true }
+    const first = loadPreviewVendorLibs(needs)
+    const concurrent = loadPreviewVendorLibs({ ...needs, toastr: false })
+    expect(concurrent).toBe(first)
+    const libs = await first
+    expect(await loadPreviewVendorLibs({ ...needs })).toBe(libs)
+    expect(Object.isFrozen(libs)).toBe(true)
+    expect(libs?.fontAwesomeCss).not.toContain('../webfonts/fa-solid-900.woff2')
+    const changed = await loadPreviewVendorLibs({ jquery: false, vue: true })
+    expect(changed).not.toBe(libs)
+    expect(changed?.jquery).toBeUndefined()
+    expect(changed?.fontAwesomeCss).toBeUndefined()
+  })
+
   it('无需求时返回 undefined，不加载任何库', async () => {
     expect(await loadPreviewVendorLibs({ jquery: false, vue: false })).toBeUndefined()
   })

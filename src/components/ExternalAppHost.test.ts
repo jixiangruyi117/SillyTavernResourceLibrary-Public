@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SRL_BACK_REQUEST_EVENT } from '../composables/UseBackStack'
 
 const {
@@ -42,8 +42,35 @@ vi.mock('../core/AppContainer', () => ({
 }))
 
 import ExternalAppHost from './ExternalAppHost.vue'
+import { readChatReaderColors, rememberChatReaderColors } from '../utils/ChatReaderAppearance'
 
 describe('ExternalAppHost', () => {
+  beforeEach(() =>
+    rememberChatReaderColors({
+      paper: '#f6f3ec',
+      ink: '#303a32',
+      muted: '#85887c',
+      line: '#dddfd3',
+      accent: '#586c4e',
+      soft: '#e8ebdf',
+    }),
+  )
+
+  it('keeps the last reader paper while waiting for the native runtime', async () => {
+    rememberChatReaderColors({ ...readChatReaderColors(), paper: '#202622' })
+    getExternalApp.mockImplementationOnce(() => new Promise(() => {}))
+    const wrapper = mount(ExternalAppHost, { props: { appId: 'com.srl.duleme', official: true } })
+    try {
+      expect(
+        (wrapper.get('.chat-reader-startup').element as HTMLElement).style.getPropertyValue(
+          '--reader-paper',
+        ),
+      ).toBe('#202622')
+      expect(wrapper.find('iframe').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('keeps an explicit return available when the built-in installation cannot load', async () => {
     getExternalApp.mockResolvedValueOnce(undefined)
     const wrapper = mount(ExternalAppHost, { props: { appId: 'com.srl.duleme', official: true } })
@@ -122,7 +149,9 @@ describe('ExternalAppHost', () => {
             colors: { paper: '#191e20', ink: '#eeeeee' },
           })
           expect(workspace.classList.contains('external-app-host__workspace--starting')).toBe(true)
-          expect((workspace as HTMLElement).style.getPropertyValue('--reader-paper')).toBe('')
+          expect((workspace as HTMLElement).style.getPropertyValue('--reader-paper')).toBe(
+            '#f6f3ec',
+          )
         }
         await request(2, 'ui.loading', { label: '' })
         expect(workspace.classList.contains('external-app-host__workspace--starting')).toBe(false)
@@ -130,6 +159,7 @@ describe('ExternalAppHost', () => {
           expect((workspace as HTMLElement).style.getPropertyValue('--reader-paper')).toBe(
             '#191e20',
           )
+          expect(readChatReaderColors().paper).toBe('#191e20')
           expect(workspace.querySelector('.feature-app-header')).toBeNull()
         }
       } finally {
@@ -487,7 +517,7 @@ describe('ExternalAppHost', () => {
       await flushPromises()
       expect((workspace as HTMLElement).style.getPropertyValue('--color-canvas')).toBe('#202622')
       expect((workspace as HTMLElement).style.getPropertyValue('--color-ink')).toBe('#d0d3c6')
-      expect((workspace as HTMLElement).style.getPropertyValue('--color-line')).toBe('')
+      expect((workspace as HTMLElement).style.getPropertyValue('--color-line')).toBe('#dddfd3')
       expect(workspace.querySelector('[data-srl-feature-header]')?.textContent).toContain(
         '聊天记录',
       )

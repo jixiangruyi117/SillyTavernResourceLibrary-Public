@@ -35,10 +35,14 @@ public class NativeShareImportService extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int pendingOperations;
     private int latestStartId;
+    private static int activeIntakes;
+
+    static boolean isReceiving() { synchronized (NativeDiscordDownloadWorker.class) { return activeIntakes > 0; } }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, notification("正在准备系统导入…", 0, 0, true));
         pendingOperations++;
+        synchronized (NativeDiscordDownloadWorker.class) { activeIntakes++; }
         latestStartId = startId;
         if (intent != null && ACTION_DOWNLOAD_DISCORD_URL.equals(intent.getAction())) {
             String token = intent.getStringExtra(EXTRA_DISCORD_URL_TOKEN);
@@ -81,6 +85,7 @@ public class NativeShareImportService extends Service {
 
     /** Keep the shared foreground notification until every queued share intake finishes. */
     private void finishOperation() {
+        synchronized (NativeDiscordDownloadWorker.class) { activeIntakes = Math.max(0, activeIntakes - 1); }
         mainHandler.post(() -> {
             pendingOperations = Math.max(0, pendingOperations - 1);
             if (pendingOperations == 0) {

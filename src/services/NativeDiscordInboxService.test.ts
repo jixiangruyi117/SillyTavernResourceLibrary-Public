@@ -163,3 +163,25 @@ it('reports the committed result without a notification failure changing its out
   mocks.notify.mockRejectedValue(new Error('permission denied'))
   await expect(notifyNativeDiscordInboxResult(result)).resolves.toBeUndefined()
 })
+
+it('keeps the post message receipt key through the native notification bridge without copying secrets', async () => {
+  const result = {
+    kind: 'post' as const,
+    state: 'saved' as const,
+    id: 'job',
+    ...mocks.connection,
+    name: '帖子',
+    messageKey: 'saved-message-key',
+  }
+  await notifyNativeDiscordInboxResult(result)
+  expect(mocks.notify).toHaveBeenCalledWith({
+    kind: 'post',
+    state: 'saved',
+    id: result.id,
+    workerUrl: result.workerUrl,
+    libraryId: result.libraryId,
+    name: result.name,
+    messageKey: result.messageKey,
+  })
+  expect(mocks.notify.mock.lastCall?.[0]).not.toHaveProperty('secret')
+})

@@ -1,7 +1,12 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
 interface NativePreviewAssetPlugin {
-  prepare(options: { sessionId: string; urls: string[] }): Promise<void>
+  configure(options: { increaseDownloadConcurrency: boolean }): Promise<void>
+  prepare(options: {
+    sessionId: string
+    urls: string[]
+    increaseDownloadConcurrency: boolean
+  }): Promise<void>
   release(options: { sessionId: string }): Promise<void>
   cancel(options: { requestId: string }): Promise<void>
   download(options: { url: string; maxBytes: number; requestId: string }): Promise<{
@@ -27,6 +32,19 @@ export interface NativePreviewAssetResult {
 
 export function isNativePreviewAssetAvailable(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
+}
+
+/** An older APK keeps its default queue; unsupported adjustment must not break previews. */
+export async function configureNativePreviewDownloadConcurrency(
+  enabled: boolean,
+): Promise<boolean> {
+  if (!isNativePreviewAssetAvailable()) return true
+  try {
+    await nativePreviewAsset.configure({ increaseDownloadConcurrency: enabled })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function downloadNativePreviewAsset(
@@ -55,13 +73,14 @@ export async function downloadNativePreviewAsset(
 export async function prepareNativePreviewAssets(
   urls: string[],
   signal: AbortSignal,
+  increaseDownloadConcurrency = false,
 ): Promise<void> {
   if (signal.aborted) return
   const sessionId = crypto.randomUUID()
   const release = () => void nativePreviewAsset.release({ sessionId }).catch(() => undefined)
   signal.addEventListener('abort', release, { once: true })
   try {
-    await nativePreviewAsset.prepare({ sessionId, urls })
+    await nativePreviewAsset.prepare({ sessionId, urls, increaseDownloadConcurrency })
     // An abort can arrive before the bridge registers the session.
     if (signal.aborted) release()
   } catch (error) {

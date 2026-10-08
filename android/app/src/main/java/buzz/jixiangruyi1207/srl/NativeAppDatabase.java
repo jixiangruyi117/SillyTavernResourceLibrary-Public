@@ -422,6 +422,32 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
     }
 
     JSONArray getRecords(String store, String afterKey, int limit) {
+        return getRecords(store, afterKey, limit, null);
+    }
+
+    static JSONObject projectRecord(JSONObject source, JSONArray fields) throws Exception {
+        if (fields == null) return source;
+        if (fields.length() > 32) throw new IllegalArgumentException("元数据字段数量无效");
+        JSONObject result = new JSONObject();
+        for (int index = 0; index < fields.length(); index++) {
+            String path = fields.getString(index);
+            if (path.length() > 128 || !path.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*"))
+                throw new IllegalArgumentException("元数据字段路径无效");
+            String[] segments = path.split("\\."); JSONObject input = source, output = result;
+            for (int segment = 0; segment < segments.length; segment++) {
+                String key = segments[segment];
+                if (!input.has(key)) break;
+                if (segment == segments.length - 1) { output.put(key, input.get(key)); break; }
+                input = input.optJSONObject(key); if (input == null) break;
+                JSONObject child = output.optJSONObject(key);
+                if (child == null) { child = new JSONObject(); output.put(key, child); }
+                output = child;
+            }
+        }
+        return result;
+    }
+
+    JSONArray getRecords(String store, String afterKey, int limit, JSONArray fields) {
         requireStore(store);
         noteRead(store);
         if (limit < 1 || limit > MAX_BATCH_SIZE) throw new IllegalArgumentException("原生数据库分页大小无效");
@@ -429,7 +455,7 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
             ? getReadableDatabase().query("app_records", new String[] {"record_key", "payload_json"}, "store_name = ?", new String[] {store}, null, null, "record_key ASC", String.valueOf(limit))
             : getReadableDatabase().query("app_records", new String[] {"record_key", "payload_json"}, "store_name = ? AND record_key > ?", new String[] {store, afterKey}, null, null, "record_key ASC", String.valueOf(limit))) {
             JSONArray rows = new JSONArray();
-            while (cursor.moveToNext()) rows.put(new JSONObject().put("key", cursor.getString(0)).put("value", new JSONObject(cursor.getString(1))));
+            while (cursor.moveToNext()) rows.put(new JSONObject().put("key", cursor.getString(0)).put("value", projectRecord(new JSONObject(cursor.getString(1)), fields)));
             return rows;
         } catch (Exception error) { throw new IllegalStateException("原生数据库分页读取失败", error); }
     }
@@ -451,6 +477,10 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
     }
 
     JSONArray getRecentRecordsByIndex(String store, String indexName, int limit) {
+        return getRecentRecordsByIndex(store, indexName, limit, null, null);
+    }
+
+    JSONArray getRecentRecordsByIndex(String store, String indexName, int limit, String filterIndex, String filterKey) {
         requireStore(store);
         noteRead(store);
         if ("communitySources".equals(store)) noteRead("resourceSourceBindings");
@@ -460,12 +490,31 @@ final class NativeAppDatabase extends SQLiteOpenHelper {
             ? " AND NOT EXISTS (SELECT 1 FROM app_record_indexes b WHERE b.store_name = 'resourceSourceBindings' " +
                 "AND b.index_name = 'sourceId' AND b.index_key = r.record_key)"
             : "";
+        String filter = filterIndex == null ? "" : " AND EXISTS (SELECT 1 FROM app_record_indexes f " +
+            "WHERE f.store_name = r.store_name AND f.record_key = r.record_key AND f.index_name = ? AND f.index_key = ?)";
+        if (filterIndex != null) { requireKey(filterIndex); requireKey(filterKey); }
+        String[] arguments = filterIndex == null ? new String[] {store, store, indexName, String.valueOf(limit)}
+            : new String[] {store, store, indexName, filterIndex, filterKey, String.valueOf(limit)};
+        if (filterIndex != null && "updatedAt".equals(indexName)) {
+            // Seek lightweight timestamp/type indexes before loading the selected five payloads.
+            try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT r.record_key, r.payload_json FROM (SELECT i.record_key, i.index_sort_key, i.record_sort_key FROM app_record_indexes i " +
+                "WHERE i.store_name = ? AND i.index_name = ? AND EXISTS " +
+                "(SELECT 1 FROM app_record_indexes f WHERE f.store_name = i.store_name AND f.record_key = i.record_key " +
+                "AND f.index_name = ? AND f.index_key = ?) ORDER BY i.index_sort_key DESC, i.record_sort_key DESC LIMIT ?) recent " +
+                "JOIN app_records r ON r.store_name = ? AND r.record_key = recent.record_key ORDER BY recent.index_sort_key DESC, recent.record_sort_key DESC",
+                new String[]{store, indexName, filterIndex, filterKey, String.valueOf(limit), store})) {
+                JSONArray rows = new JSONArray();
+                while (cursor.moveToNext()) rows.put(new JSONObject().put("key", cursor.getString(0)).put("value", new JSONObject(cursor.getString(1))));
+                return rows;
+            } catch (Exception error) { throw new IllegalStateException("原生数据库最近记录读取失败", error); }
+        }
         try (Cursor cursor = getReadableDatabase().rawQuery(
             "SELECT r.record_key, r.payload_json FROM app_records r " +
                 "JOIN app_record_indexes i ON i.store_name = r.store_name AND i.record_key = r.record_key " +
-                "WHERE r.store_name = ? AND i.store_name = ? AND i.index_name = ? " + unboundSource + " " +
+                "WHERE r.store_name = ? AND i.store_name = ? AND i.index_name = ? " + unboundSource + filter + " " +
                 "GROUP BY r.record_key ORDER BY CAST(trim(i.index_key, '\"') AS INTEGER) DESC, r.record_key DESC LIMIT ?",
-            new String[] {store, store, indexName, String.valueOf(limit)})) {
+            arguments)) {
             JSONArray rows = new JSONArray();
             while (cursor.moveToNext()) rows.put(new JSONObject()
                 .put("key", cursor.getString(0)).put("value", new JSONObject(cursor.getString(1))));

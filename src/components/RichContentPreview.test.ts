@@ -357,34 +357,39 @@ describe('RichContentPreview', () => {
     expect(wrapper.find('.rich-content-preview__loading').exists()).toBe(false)
   })
 
-  it('Android 只登记当前预览素材，由 WebView 按需读取且不创建后台重复下载', async () => {
-    nativePreviewMocks.available.mockReturnValue(true)
-    const wrapper = mount(RichContentPreview, {
-      props: {
-        source: '<img src="https://files.catbox.moe/cover.png">',
-        title: '主开场',
-        immersive: true,
-        bare: true,
-        renderShell: 'content',
-        sourceKind: 'openingArchive',
-        preloadResources: true,
-      },
-    })
-    await flushPromises()
-    expect(nativePreviewMocks.prepare).toHaveBeenCalledWith(
-      expect.arrayContaining(['https://files.catbox.moe/cover.png']),
-      expect.any(AbortSignal),
-    )
-    expect(nativePreviewMocks.download).not.toHaveBeenCalled()
-    expect(readFrameDocument(wrapper)).toContain('https://files.catbox.moe/cover.png')
-    const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
-    await wrapper.find('iframe').trigger('load')
-    await flushPromises()
-    expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
-    const signal = nativePreviewMocks.prepare.mock.calls[0]![1]
-    wrapper.unmount()
-    expect(signal.aborted).toBe(true)
-  })
+  it.each([false, true])(
+    'Android 只登记当前预览素材，不创建重复下载，并传递加速档=%s',
+    async (increased) => {
+      nativePreviewMocks.available.mockReturnValue(true)
+      localStorage.setItem('srl.preview.increaseDownloadConcurrency', String(increased))
+      const wrapper = mount(RichContentPreview, {
+        props: {
+          source: '<img src="https://files.catbox.moe/cover.png">',
+          title: '主开场',
+          immersive: true,
+          bare: true,
+          renderShell: 'content',
+          sourceKind: 'openingArchive',
+          preloadResources: true,
+        },
+      })
+      await flushPromises()
+      expect(nativePreviewMocks.prepare).toHaveBeenCalledWith(
+        expect.arrayContaining(['https://files.catbox.moe/cover.png']),
+        expect.any(AbortSignal),
+        increased,
+      )
+      expect(nativePreviewMocks.download).not.toHaveBeenCalled()
+      expect(readFrameDocument(wrapper)).toContain('https://files.catbox.moe/cover.png')
+      const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
+      await wrapper.find('iframe').trigger('load')
+      await flushPromises()
+      expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
+      const signal = nativePreviewMocks.prepare.mock.calls[0]![1]
+      wrapper.unmount()
+      expect(signal.aborted).toBe(true)
+    },
+  )
 
   it('切换开场白释放旧素材会话，迟到登记不能覆盖新预览', async () => {
     nativePreviewMocks.available.mockReturnValue(true)

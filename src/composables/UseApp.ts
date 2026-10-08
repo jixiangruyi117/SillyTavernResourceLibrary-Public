@@ -1018,6 +1018,7 @@ export function useApp() {
     applyScriptPreviewPolicy,
     applyGreetingPreviewPreload,
     applyBeautificationPreviewPreload,
+    applyIncreasedPreviewDownloads,
     applyExtractCharacterAssets,
     reloadAppearanceSettings,
   } = useAppearanceSettings(showNotice)
@@ -1547,6 +1548,7 @@ export function useApp() {
     applyScriptPreviewPolicy,
     applyGreetingPreviewPreload,
     applyBeautificationPreviewPreload,
+    applyIncreasedPreviewDownloads,
     applyExtractCharacterAssets,
     applyHideCharacterAssets,
     applyHideChatDisplayRegex,

@@ -50,6 +50,11 @@ export interface NativeDiscordAttachmentShare {
 }
 
 interface ShareReceiverPlugin {
+  listIntakeFiles(): Promise<{ entries: NativeIntakeFile[] }>
+  removeIntakeFile(options: { token: string; snapshot: string }): Promise<{ removedBytes: number }>
+  removeIntakeReceipts(options: {
+    items: Array<{ token: string; snapshot: string }>
+  }): Promise<NativeReceiptCleanupResult>
   getPendingShare(): Promise<{
     files: NativeSharedFile[]
     discordUrls?: NativeDiscordAttachmentShare[]
@@ -75,6 +80,8 @@ interface ShareReceiverPlugin {
       resourceId?: string
       name?: string
       automaticBindingPending?: boolean
+      notificationPosted?: boolean
+      cloudAckPending?: boolean
     }
     transferredBytes: number
     totalBytes?: number
@@ -89,6 +96,120 @@ type NativeShareSnapshot = Awaited<ReturnType<ShareReceiverPlugin['getPendingSha
 // 原件保留到导入提交成功，但同一 WebView 会话只投递一次。
 // Android 的 ready / 回前台事件不是新分享；进程重建后集合自然清空。
 const deliveredNativeTokens = new Set<string>()
+let nativeIntakeOperation: Promise<unknown> = Promise.resolve()
+function runNativeIntakeOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = nativeIntakeOperation.then(operation, operation)
+  nativeIntakeOperation = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+export interface NativeIntakeFile {
+  token: string
+  name: string
+  state: string
+  bytes: number
+  modifiedAt: number
+  fileCount: number
+  snapshot: string
+  protectedReason: string
+  receiptOnly?: boolean
+}
+
+export interface NativeReceiptCleanupResult {
+  removedTokens: string[]
+  removedBytes: number
+  skipped: Array<{ token: string; message: string }>
+}
+
+export async function removeNativeIntakeReceipts(
+  entries: NativeIntakeFile[],
+  control: {
+    signal: AbortSignal
+    beforeBatch(): Promise<void>
+    progress(completed: number, result: NativeReceiptCleanupResult): void
+  },
+): Promise<NativeReceiptCleanupResult> {
+  const selected = entries.filter((entry) => entry.receiptOnly && !entry.protectedReason)
+  const result: NativeReceiptCleanupResult = { removedTokens: [], removedBytes: 0, skipped: [] }
+  for (let index = 0; index < selected.length; index += 64) {
+    await control.beforeBatch()
+    if (control.signal.aborted) break
+    const batch = selected.slice(index, index + 64)
+    const next = await runNativeIntakeOperation(async () => {
+      if (control.signal.aborted) return { removedTokens: [], removedBytes: 0, skipped: [] }
+      if (!Capacitor.isNativePlatform()) throw new Error('接收回执清理仅支持 Android APK')
+      const available = batch.filter((entry) => !intakeSessionOwns(entry.token))
+      const skipped = batch
+        .filter((entry) => intakeSessionOwns(entry.token))
+        .map((entry) => ({ token: entry.token, message: '导入面板正在使用，保留' }))
+      const cleared = available.length
+        ? await shareReceiver.removeIntakeReceipts({
+            items: available.map(({ token, snapshot }) => ({ token, snapshot })),
+          })
+        : { removedTokens: [], removedBytes: 0, skipped: [] }
+      for (const token of cleared.removedTokens) {
+        if (!available.some((entry) => entry.token === token))
+          throw new Error('回执清理结果身份不匹配')
+        saveStoredRoute(token)
+        clearStoredImportAttempt(token)
+      }
+      return { ...cleared, skipped: [...skipped, ...cleared.skipped] }
+    })
+    result.removedTokens.push(...next.removedTokens)
+    result.removedBytes += next.removedBytes
+    result.skipped.push(...next.skipped)
+    control.progress(Math.min(index + batch.length, selected.length), result)
+  }
+  return result
+}
+
+function intakeSessionOwns(token: string): boolean {
+  return deliveredNativeTokens.has(token) || deliveredNativeTokens.has(`${token}-0`)
+}
+
+export async function listNativeIntakeFiles(): Promise<NativeIntakeFile[]> {
+  if (!Capacitor.isNativePlatform()) throw new Error('接收暂存列表仅支持 Android APK')
+  try {
+    const { entries } = await shareReceiver.listIntakeFiles()
+    return entries.map((entry) => ({
+      ...entry,
+      protectedReason:
+        entry.protectedReason ||
+        (intakeSessionOwns(entry.token) ? '导入面板正在使用，请先完成或取消该导入' : ''),
+    }))
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'UNIMPLEMENTED'
+    )
+      throw new Error('当前 APK 尚不支持逐项查看接收暂存，请安装包含此功能的新版 APK', {
+        cause: error,
+      })
+    throw error
+  }
+}
+
+export function removeNativeIntakeFile(entry: NativeIntakeFile): Promise<number> {
+  return runNativeIntakeOperation(async () => {
+    if (!Capacitor.isNativePlatform()) throw new Error('接收暂存清理仅支持 Android APK')
+    if (intakeSessionOwns(entry.token)) throw new Error('导入面板正在使用，请先完成或取消该导入')
+    if (entry.protectedReason) throw new Error(entry.protectedReason)
+    const { removedBytes } = await shareReceiver.removeIntakeFile({
+      token: entry.token,
+      snapshot: entry.snapshot,
+    })
+    for (const token of [entry.token, `${entry.token}-0`]) {
+      saveStoredRoute(token)
+      clearStoredImportAttempt(token)
+    }
+    return removedBytes
+  })
+}
 
 export interface SharedFileBatch {
   /** The receiver's task continues through parsing/import; do not create a second task. */
@@ -294,6 +415,10 @@ function base64File(shared: NativeSharedFile & { data: string }): File {
 }
 
 async function takeNativeSharedFiles(snapshot?: NativeShareSnapshot): Promise<SharedFileBatch> {
+  return runNativeIntakeOperation(() => takeNativeSharedFilesNow(snapshot))
+}
+
+async function takeNativeSharedFilesNow(snapshot?: NativeShareSnapshot): Promise<SharedFileBatch> {
   if (!Capacitor.isNativePlatform()) return { files: [], acknowledge: async () => undefined }
   const result = snapshot ?? (await shareReceiver.getPendingShare())
   const pendingDiscordUrl = result.discordUrls?.find(
@@ -499,40 +624,43 @@ export async function takeSharedFileBatches(
   onDownload?: (detail: { token: string; workId?: string; name?: string }) => void,
 ): Promise<SharedFileBatch[]> {
   if (Capacitor.isNativePlatform()) {
-    const received = await shareReceiver.getPendingShare()
-    for (const detail of received.downloads ?? []) onDownload?.(detail)
-    // Only the paired cloud intake may claim these files after a restart.
-    const snapshot = {
-      files: received.files.filter((file) => !file.cloudLibraryId),
-      discordUrls: received.discordUrls?.filter((file) => !file.cloudLibraryId),
-    }
-    const batches: SharedFileBatch[] = []
-    const urls = snapshot.discordUrls?.filter(
-      (attachment) => !deliveredNativeTokens.has(attachment.cleanupToken),
-    )
-    if (urls?.length) {
-      for (const attachment of urls) {
-        const batch = await takeNativeSharedFiles({ files: [], discordUrls: [attachment] })
-        if (batch.discordAttachment) batches.push(batch)
+    const nativeBatches = await runNativeIntakeOperation(async () => {
+      const received = await shareReceiver.getPendingShare()
+      for (const detail of received.downloads ?? []) onDownload?.(detail)
+      // Only the paired cloud intake may claim these files after a restart.
+      const snapshot = {
+        files: received.files.filter((file) => !file.cloudLibraryId),
+        discordUrls: received.discordUrls?.filter((file) => !file.cloudLibraryId),
+      }
+      const batches: SharedFileBatch[] = []
+      const urls = snapshot.discordUrls?.filter(
+        (attachment) => !deliveredNativeTokens.has(attachment.cleanupToken),
+      )
+      if (urls?.length) {
+        for (const attachment of urls) {
+          const batch = await takeNativeSharedFilesNow({ files: [], discordUrls: [attachment] })
+          if (batch.discordAttachment) batches.push(batch)
+        }
+        return batches
+      }
+      // A notification identifies one CDN share. Keep unrelated downloaded attachments
+      // separate; ordinary multi-file system shares retain their existing batch semantics.
+      const ordinary = snapshot.files.filter((file) => !file.discordSourceToken)
+      const groups = new Map<string, NativeSharedFile[]>()
+      for (const file of snapshot.files) {
+        if (!file.discordSourceToken) continue
+        const group = groups.get(file.discordSourceToken) ?? []
+        group.push(file)
+        groups.set(file.discordSourceToken, group)
+      }
+      for (const files of [ordinary, ...groups.values()]) {
+        if (!files.length) continue
+        const batch = await takeNativeSharedFilesNow({ files })
+        if (batch.files.length) batches.push(batch)
       }
       return batches
-    }
-    // A notification identifies one CDN share. Keep unrelated downloaded attachments
-    // separate; ordinary multi-file system shares retain their existing batch semantics.
-    const ordinary = snapshot.files.filter((file) => !file.discordSourceToken)
-    const groups = new Map<string, NativeSharedFile[]>()
-    for (const file of snapshot.files) {
-      if (!file.discordSourceToken) continue
-      const group = groups.get(file.discordSourceToken) ?? []
-      group.push(file)
-      groups.set(file.discordSourceToken, group)
-    }
-    for (const files of [ordinary, ...groups.values()]) {
-      if (!files.length) continue
-      const batch = await takeNativeSharedFiles({ files })
-      if (batch.files.length) batches.push(batch)
-    }
-    if (batches.length) return batches
+    })
+    if (nativeBatches.length) return nativeBatches
   }
   const batch = await takeWebSharedFileBatch()
   return batch.files.length ? [batch] : []
@@ -622,23 +750,27 @@ export async function readCloudDiscordResource(options: {
     resourceId?: string
     name?: string
     automaticBindingPending?: boolean
+    notificationPosted?: boolean
+    cloudAckPending?: boolean
   }
   transferredBytes: number
   totalBytes?: number
 }> {
-  const state = await shareReceiver.readCloudResource(options)
-  return {
-    active: state.active,
-    cancelled: state.cancelled,
-    error: state.error,
-    nativeImportOutcome: state.nativeImportOutcome,
-    transferredBytes: state.transferredBytes,
-    totalBytes: state.totalBytes,
-    batch: state.file ? await takeNativeSharedFiles({ files: [state.file] }) : undefined,
-  }
+  return runNativeIntakeOperation(async () => {
+    const state = await shareReceiver.readCloudResource(options)
+    return {
+      active: state.active,
+      cancelled: state.cancelled,
+      error: state.error,
+      nativeImportOutcome: state.nativeImportOutcome,
+      transferredBytes: state.transferredBytes,
+      totalBytes: state.totalBytes,
+      batch: state.file ? await takeNativeSharedFilesNow({ files: [state.file] }) : undefined,
+    }
+  })
 }
 
-/** Remove the retained local receipt only after the native import has been acknowledged upstream. */
+/** Remove a committed native receipt after upstream acknowledgement or confirmed task expiry. */
 export async function cleanupCompletedCloudDiscordResource(id: string): Promise<void> {
   if (!/^[a-f\d-]{36}$/iu.test(id)) throw new Error('资源下载任务身份无效')
   await shareReceiver.cleanupPendingShare({ tokens: [`discord-url-${id}`, `discord-url-${id}-0`] })

@@ -28,6 +28,7 @@ import {
 import * as CloudBackupWebDavTransport from './CloudBackupWebDavTransport'
 import {
   type CloudObjectPlan,
+  isStructuredSnapshotObjectKey,
   type CreatedStructuredSnapshot,
   type StructuredSnapshot,
 } from './CloudStructuredSnapshot'
@@ -116,7 +117,11 @@ export class CloudBackupTransport {
       const metrics = this.transportState.activeMetrics
       metrics?.add('httpRequestCount', 1)
       try {
-        const response = await fetchWithDeadline(target, request)
+        const bodyKind =
+          method === 'GET' && isStructuredSnapshotObjectKey(new URL(url).pathname)
+            ? 'metadata'
+            : 'auto'
+        const response = await fetchWithDeadline(target, request, bodyKind)
         // Accepted HTTP bodies, not pre-counted planned bytes or verified unique objects.
         if (response.ok && request.body instanceof Blob)
           metrics?.add('uploadedBytes', request.body.size)
@@ -476,12 +481,14 @@ export class CloudBackupTransport {
     config: WebDavBackupConfig,
     secret: string,
     onProgress?: CloudBackupProgressCallback,
+    onWarning?: CloudBackupProgressCallback,
   ): Promise<CloudBackupItem[]> {
     return CloudBackupWebDavTransport.listWebDav(
       this.getTransportContext(),
       config,
       secret,
       onProgress,
+      onWarning,
     )
   }
 
@@ -502,12 +509,14 @@ export class CloudBackupTransport {
     config: WebDavBackupConfig,
     secret: string,
     objectKey: string,
+    onProgress?: CloudBackupProgressCallback,
   ): Promise<StructuredSnapshot> {
     return CloudBackupWebDavTransport.readWebDavStructuredSnapshot(
       this.getTransportContext(),
       config,
       secret,
       objectKey,
+      onProgress,
     )
   }
 

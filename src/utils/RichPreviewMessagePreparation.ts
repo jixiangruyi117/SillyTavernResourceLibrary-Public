@@ -53,10 +53,11 @@ export function replacePreviewPickMacros(
   rawContent: string,
   previewChatId: string,
 ): string {
-  const documentSeed = hashPreviewSeed(`${previewChatId}\u0000${rawContent}`)
+  let documentSeed: number | undefined
   return value.replace(PICK_MACRO_PATTERN, (_match, listString: string, offset: number) => {
     const list = splitPreviewPickList(listString)
     if (!list.length) return ''
+    documentSeed ??= hashPreviewSeed(`${previewChatId}\u0000${rawContent}`)
     const choiceSeed = hashPreviewSeed(`${documentSeed}:${offset}`)
     return list[choiceSeed % list.length] ?? ''
   })

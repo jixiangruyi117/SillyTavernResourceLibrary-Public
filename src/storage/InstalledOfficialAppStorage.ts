@@ -110,7 +110,7 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
     if (!files.length) return true
     if (isCapacitorApp()) {
       try {
-        // NativeFileAccess accepts at most 100 paths; valid APP packages may contain 128.
+        // The installed APK bridge accepts at most 100 paths per request.
         for (let offset = 0; offset < files.length; offset += 100) {
           const result = await nativeFiles.hasOfficialAppFiles({
             files: files.slice(offset, offset + 100).map(({ path, size }) => ({ path, size })),

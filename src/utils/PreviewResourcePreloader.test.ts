@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const nativeMocks = vi.hoisted(() => ({
   available: vi.fn(() => false),
   download: vi.fn(),
+  configure: vi.fn(async () => true),
 }))
 
 vi.mock('../services/NativePreviewAsset', () => ({
   isNativePreviewAssetAvailable: nativeMocks.available,
   downloadNativePreviewAsset: nativeMocks.download,
+  configureNativePreviewDownloadConcurrency: nativeMocks.configure,
 }))
 
 import {
@@ -21,6 +23,7 @@ describe('PreviewResourcePreloader', () => {
   afterEach(() => {
     nativeMocks.available.mockReturnValue(false)
     nativeMocks.download.mockReset()
+    nativeMocks.configure.mockClear()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -37,6 +40,59 @@ describe('PreviewResourcePreloader', () => {
     )
     return { create, revoke }
   }
+
+  it.each([
+    [false, false, 4],
+    [false, true, 6],
+    [true, false, 3],
+    [true, true, 6],
+  ])('原生=%s 加速=%s 时并发严格限制为 %s，结束后资源可释放', async (native, increased, limit) => {
+    nativeMocks.available.mockReturnValue(native)
+    mockObjectUrls()
+    const pending: Array<() => void> = []
+    let started = 0
+    const response = (url: string) => {
+      started++
+      return new Promise((resolve) =>
+        pending.push(() =>
+          resolve(
+            native
+              ? {
+                  resourceUrl: 'file:/' + url,
+                  resolvedUrl: url,
+                  contentType: 'image/png',
+                  size: 1,
+                  cached: false,
+                }
+              : new Response('image', { headers: { 'content-type': 'image/png' } }),
+          ),
+        ),
+      )
+    }
+    nativeMocks.download.mockImplementation(response)
+    vi.stubGlobal('fetch', vi.fn(response))
+    const source = Array.from(
+      { length: 12 },
+      (_, index) => '<img src="https://cdn.example/' + index + '.png">',
+    ).join('')
+    const task = preloadPreviewDocumentResources(source, undefined, {
+      increaseDownloadConcurrency: increased,
+    })
+    await vi.waitFor(() => expect(started).toBe(limit))
+    expect(pending).toHaveLength(limit)
+    const initial = pending.splice(0)
+    initial[0]()
+    await vi.waitFor(() => expect(started).toBe(limit + 1))
+    initial.slice(1).forEach((finish) => finish())
+    while (started < 12 || pending.length) {
+      pending.splice(0).forEach((finish) => finish())
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    const result = await task
+    expect(result.loaded).toBe(12)
+    if (native) expect(nativeMocks.configure).toHaveBeenCalledWith(increased)
+    result.release()
+  })
 
   it('收集预览文档内图片、srcset、背景与字体的远程资源', () => {
     const urls = collectPreviewRemoteResourceUrls(

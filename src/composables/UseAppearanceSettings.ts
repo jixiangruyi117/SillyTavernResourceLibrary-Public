@@ -19,6 +19,7 @@ import type {
 } from '../services/BrowserStorageService'
 import { sanitizeCssForPreview } from '../utils/PreviewSafety'
 import { confirmAction } from './UseConfirmDialog'
+import { configureNativePreviewDownloadConcurrency } from '../services/NativePreviewAsset'
 import { readStoredTheme, writeStoredTheme, type ThemeValue } from '../utils/LibraryFormatting'
 
 const CUSTOM_UI_STYLE_ID = 'srl-custom-ui-style'
@@ -55,6 +56,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
           allowScripts: false,
           preloadGreetingResources: false,
           preloadBeautificationResources: false,
+          increaseDownloadConcurrency: false,
         }
       : storedPreviewPolicy,
   )
@@ -204,6 +206,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
 
   function applyRemotePreviewPolicy(enabled: boolean): void {
     previewPolicy.value = browserStorageService.setPreviewPolicy({
+      ...previewPolicy.value,
       allowRemoteResources: enabled,
       allowScripts: false,
       preloadGreetingResources: previewPolicy.value.preloadGreetingResources,
@@ -231,6 +234,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
       return
     }
     previewPolicy.value = browserStorageService.setPreviewPolicy({
+      ...previewPolicy.value,
       allowRemoteResources: enabled || previewPolicy.value.allowRemoteResources,
       allowScripts: enabled,
       preloadGreetingResources: previewPolicy.value.preloadGreetingResources,
@@ -258,6 +262,43 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     browserStorageService.setExtractCharacterAssets(enabled)
   }
 
+  let downloadConfirmationPending = false
+  async function applyIncreasedPreviewDownloads(enabled: boolean): Promise<void> {
+    if (
+      downloadConfirmationPending ||
+      enabled === (previewPolicy.value.increaseDownloadConcurrency === true)
+    )
+      return
+    if (enabled && isSafeModeActive()) {
+      showNotice('安全模式下不能增加预览下载并发')
+      return
+    }
+    downloadConfirmationPending = true
+    try {
+      if (
+        enabled &&
+        !(await confirmAction({
+          title: '增加多线路下载',
+          message:
+            '开启后，预览素材最多同时进行 6 个下载任务，可能加快多图开场白和酒馆美化预览。\n\n更多图片同时到达可能增加内存占用、耗电、发热或卡顿；实际提速取决于网络、图片大小和服务器。网页普通图片仍由浏览器调度，音视频不拆分下载。\n\n遇到设备负担可随时关闭，恢复默认并发。是否开启？',
+          confirmLabel: '确定',
+          cancelLabel: '取消',
+          centered: true,
+        }))
+      ) {
+        return
+      }
+      previewPolicy.value = browserStorageService.setPreviewPolicy({
+        ...previewPolicy.value,
+        increaseDownloadConcurrency: enabled,
+      })
+      const supported = await configureNativePreviewDownloadConcurrency(enabled)
+      if (!supported) showNotice('当前 APK 不支持调整预览下载并发，更新 APK 后生效')
+    } finally {
+      downloadConfirmationPending = false
+    }
+  }
+
   /** 恢复便携配置后重新读取全部外观设置，并立即应用到文档。 */
   function reloadAppearanceSettings(): void {
     theme.value = readStoredTheme()
@@ -279,8 +320,12 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
           allowScripts: false,
           preloadGreetingResources: false,
           preloadBeautificationResources: false,
+          increaseDownloadConcurrency: false,
         }
       : browserStorageService.getPreviewPolicy()
+    void configureNativePreviewDownloadConcurrency(
+      previewPolicy.value.increaseDownloadConcurrency === true,
+    )
     customUiCss.value = isSafeModeActive() ? '' : browserStorageService.getCustomUiCss()
     extractCharacterAssets.value = browserStorageService.getExtractCharacterAssets()
     showManuallyBoundResources.value = browserStorageService.getShowManuallyBoundResources()
@@ -331,6 +376,7 @@ export function useAppearanceSettings(showNotice: (message: string) => void) {
     applyScriptPreviewPolicy,
     applyGreetingPreviewPreload,
     applyBeautificationPreviewPreload,
+    applyIncreasedPreviewDownloads,
     applyExtractCharacterAssets,
     reloadAppearanceSettings,
   }

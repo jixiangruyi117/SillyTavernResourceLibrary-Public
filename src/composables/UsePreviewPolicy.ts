@@ -11,6 +11,7 @@ function safePolicy(value: PreviewPolicy): PreviewPolicy {
         allowScripts: false,
         preloadGreetingResources: false,
         preloadBeautificationResources: false,
+        increaseDownloadConcurrency: false,
       }
     : value
 }

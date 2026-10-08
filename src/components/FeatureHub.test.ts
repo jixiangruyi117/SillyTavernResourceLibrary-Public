@@ -251,6 +251,38 @@ describe('FeatureHub', () => {
     expect(document.body.classList.contains('folder-desktop-open')).toBe(false)
   })
 
+  it('retains covers across cabinet entries and clears them when library data is removed', async () => {
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    const wrapper = render()
+    await wrapper.setProps({
+      resources: [{ ...resources[0]!, thumbnailBlob: new Blob(['cover']) }],
+    })
+    await wrapper.get('.feature-app--folders').trigger('click')
+    await flushPromises()
+    const url = wrapper.get('.visual-folder__mosaic img').attributes('src')
+    await wrapper.get('.feature-app-header__back').trigger('click')
+    expect(revoke).not.toHaveBeenCalledWith(url)
+    await wrapper.get('.feature-app--folders').trigger('click')
+    expect(wrapper.get('.visual-folder__mosaic img').attributes('src')).toBe(url)
+    await wrapper.get('.feature-app-header__back').trigger('click')
+    await wrapper.setProps({ resources: [] })
+    expect(revoke).toHaveBeenCalledWith(url)
+  })
+
+  it('clears retained covers when the desktop is hidden for an ongoing assistant', async () => {
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    const wrapper = render()
+    await wrapper.setProps({
+      resources: [{ ...resources[0]!, thumbnailBlob: new Blob(['cover']) }],
+    })
+    await wrapper.get('.feature-app--folders').trigger('click')
+    await flushPromises()
+    const url = wrapper.get('.visual-folder__mosaic img').attributes('src')
+    await wrapper.get('.feature-app-header__back').trigger('click')
+    await wrapper.setProps({ active: false })
+    expect(revoke).toHaveBeenCalledWith(url)
+  })
+
   it('renders built-in feature apps in their registered order', async () => {
     const wrapper = render()
     await flushPromises()
@@ -301,6 +333,7 @@ describe('FeatureHub', () => {
     const wrapper = render()
     await flushPromises()
     await wrapper.get('.feature-app--assistant').trigger('click')
+    await vi.dynamicImportSettled()
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="assistant-page"]').exists()).toBe(true),
     )
@@ -314,6 +347,7 @@ describe('FeatureHub', () => {
     try {
       await flushPromises()
       await wrapper.get('.feature-app--assistant').trigger('click')
+      await vi.dynamicImportSettled()
       await flushPromises()
       const chat = wrapper.get('[data-testid="assistant-page"]').element
       expect(wrapper.emitted('assistant-retained')).toHaveLength(1)

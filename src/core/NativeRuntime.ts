@@ -32,7 +32,7 @@ interface NativeShareReceiverApi {
   resumeDeferredDiscordImports(): Promise<{ resumed: number }>
   addListener(
     eventName: 'cloudInboxReady',
-    listener: (event: { running: boolean }) => void,
+    listener: (event: { running: boolean; postsSaved?: boolean }) => void,
   ): Promise<PluginListenerHandle>
   addListener(
     eventName: 'discordDownloadStarted',
@@ -170,9 +170,10 @@ async function installNativeShareListener(): Promise<void> {
     const detail = (event as CustomEvent<{ workerUrl: string; libraryId: string }>).detail
     checkNativeDiscordInboxTarget(detail.workerUrl, detail.libraryId)
   })
-  await NativeShareReceiver.addListener('cloudInboxReady', ({ running }) => {
+  await NativeShareReceiver.addListener('cloudInboxReady', ({ running, postsSaved }) => {
     publishNativeDiscordInboxState(running === true)
     if (running) window.dispatchEvent(new Event('srl:receive-discord-inbox'))
+    if (postsSaved) window.dispatchEvent(new Event('srl:community-sources-changed'))
   })
   await readNativeDiscordInboxState().catch(() => false)
   await NativeShareReceiver.addListener('discordDownloadStarted', (detail) => {

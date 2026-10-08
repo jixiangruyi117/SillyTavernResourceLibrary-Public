@@ -27,16 +27,48 @@ import {createApp,h} from 'vue'
 import Mode from '${source('src/components/DiscordNativeInboxMode.vue')}'
 import Posts from '${source('src/components/DiscordInboxPanel.vue')}'
 import Resources from '${source('src/components/DiscordResourceDownloadPanel.vue')}'
+import Pending from '${source('src/components/DiscordPendingSources.vue')}'
+import Settings from '${source('src/components/LayoutSettingsPanel.vue')}'
+import Activity from '${source('src/components/ProjectActivityCenter.vue')}'
+import {noticeCenter} from '${source('src/core/NoticeCenter.ts')}'
 import '${source('src/styles/Foundation.css')}'
 import '${source('src/styles/GlassRefinement.css')}'
+import '${source('src/styles/LayoutAndResponsive.css')}'
 document.documentElement.dataset.theme = new URL(location.href).searchParams.get('theme') || 'light'
-createApp({render:()=>h('main',[h(Mode),h(Posts),h(Resources)])}).mount('#app')
+let posts
+const bindingNotices=()=>{for(const id of ['A','B'])noticeCenter.push({id:'discord-auto-binding:fixture:'+id,type:'success',persistent:true,message:'帖子“测试帖子'+id+'”已绑定角色卡“测试角色'+id+'”'})}
+const settingsProps={vaultEnabled:false,allowRemotePreviews:true,allowScriptPreviews:false,preloadGreetingPreviews:true,preloadBeautificationPreviews:true,extractCharacterAssets:false,hideCharacterAssets:false,hideChatDisplayRegex:true,showManuallyBoundResources:true,blurThumbnails:false,autoDownloadDiscordShareLinks:false,persistResourceVersionMatchCache:true,skipVersionComparisonOnImport:false,showPerformanceMonitor:false,hiddenCharacterAssetCount:0}
+createApp({render:()=>new URL(location.href).searchParams.get('view')==='health'?h(Settings,settingsProps):h('main',[h(Mode),h('button',{onClick:()=>posts.openCloudCleanup()},'清理云端'),h('button',{onClick:bindingNotices},'模拟绑定完成'),h(Activity),h(Posts,{ref:value=>{posts=value}}),h(Resources),h(Pending,{pageView:true})])}).mount('#app')
 `,
 )
 const mocks = {
+  ResourcePicker: `export default {render:()=>null};`,
+  AppContainer: `export const resourceService={listResourceListSummaries:async()=>[]};
+    export const browserStorageService={getHealth:async()=>({}),getModifiedResourceSyncTags:()=>[],setModifiedResourceSyncTags:()=>{}};
+    export const communitySourceService={downloadedMediaUsage:async()=>({count:0,bytes:0})};
+    export const nativeResourceRecoveryService={listCandidates:async()=>({candidates:[],scanned:0}),storageAccounting:async()=>({}),nativeMirrorDuplicationSummary:async()=>({currentCount:0,versionCount:0,reclaimableBytes:0})};`,
+  HealthCenter: `export const healthCenter={scan:async()=>[],repairSafe:async()=>0};`,
+  PlatformService: `export const platform={update:{isAndroidApk:()=>true},security:{getState:async()=>null},backup:{getStatus:async()=>null},systemUi:{getState:async()=>null}};export const getPlatformInfo=async()=>({kind:'android'});`,
+  NativeResourceFileMirror: `export const getNativeResourceStorageInfo=async()=>({path:'/storage/emulated/0/Android/data/buzz.jixiangruyi1207.srl/files/Documents/SillyTavernResourceLibrary/objects',currentCount:263,versionCount:99,objectCount:361,objectBytes:444176794,totalBytes:444176794,recoveryMetadataVersion:1});export const clearNativeTemporaryCaches=async()=>0;`,
+  PerformanceMonitor: `export const resetPerformanceMonitorPosition=()=>{};`,
+  OfflineResources: `export const getOfflineResourceStatus=async()=>null;export const downloadFullOfflineResources=async()=>{};export const removeFullOfflineResources=async()=>{};`,
+  NativeHaptics: `export const isNativeHapticsEnabled=()=>false;export const setNativeHapticsEnabled=()=>{};`,
+  ServiceWorkerUpdate: `export const forceRefresh=()=>{};export const manualCheckForUpdate=async()=>{};`,
+  MainApiSettings: `export default {render:()=>null};`,
+  SecretProtectionSettings: `export default {render:()=>null};`,
+  LibraryContainer: `
+    export const browserStorageService={getModifiedResourceSyncTags:()=>[],setModifiedResourceSyncTags:()=>{}};
+    export const communitySourceService={listRecentAutoBindings:async()=>[],listAutoBindReviews:async()=>[],countPendingSources:async()=>1};
+    export const discordInboxAutomationSettingsService={load:async()=>({})};`,
+  CommunitySourceRuntime: `export const communitySourceService={
+    repairInvalidResourceBindings:async()=>0,
+    listPendingSources:async()=>[{source:{id:'pending-long-url',title:'含长链接的待整理来源',updatedAt:1791345600000,canonicalUrl:'https://discord.com/channels/123/456/789'},
+      messages:[{authorName:'作者',content:'# 图片说明：'+'https://discord.com/channels/'+ '1234567890'.repeat(20),attachments:[],embeds:[]}]}]
+  };`,
   NativeDiscordInboxService: `
     let running=true;
     export const isNativeDiscordInboxAvailable=()=>true;
+    export const notifyNativeDiscordAutoBinding=async()=>{};
     export const readNativeDiscordInboxState=async()=>running;
     const state=value=>{running=value;window.dispatchEvent(new CustomEvent('srl:cloud-inbox-state',{detail:{running}}))};
     export const startNativeDiscordInbox=async()=>state(true);
@@ -72,7 +104,10 @@ await build({
       name: 'inbox-ui-fixture',
       enforce: 'pre',
       resolveId(id) {
-        const name = id.split('/').at(-1)?.replace(/\.ts$/u, '')
+        const name = id
+          .split('/')
+          .at(-1)
+          ?.replace(/\.(?:ts|vue)$/u, '')
         return Object.hasOwn(mocks, name) ? '\0fixture:' + name : undefined
       },
       load(id) {
@@ -104,6 +139,10 @@ try {
         await page.goto(url + '?theme=' + theme)
         const stop = page.getByRole('button', { name: '停止收件', exact: true })
         await stop.waitFor()
+        await page.getByText('含长链接的待整理来源', { exact: true }).waitFor()
+        const pendingPreview = page.locator('.discord-pending__summary p')
+        if (await pendingPreview.evaluate((element) => element.scrollWidth > element.clientWidth))
+          throw new Error('Pending source URL overflow')
         const box = await stop.boundingBox()
         if (!box || box.height < 44 || box.width < 44) throw new Error('Stop button touch size')
         const style = await stop.evaluate((element) => ({
@@ -128,7 +167,8 @@ try {
             throw new Error('Touch did not collapse history')
         }
         await page.getByRole('button', { name: '清理云端', exact: true }).tap()
-        await page.getByText('已清理云端记录：帖子 1 条，资源 1 项。').waitFor()
+        await page.getByRole('dialog').getByRole('button', { name: '继续', exact: true }).tap()
+        await page.getByText('已清理：帖子 1 条，资源 1 项。').waitFor()
         await page.getByRole('button', { name: '取消 正在下载.json', exact: true }).tap()
         await page
           .locator('li')
@@ -144,11 +184,50 @@ try {
         await start.waitFor()
         await start.tap()
         await stop.waitFor()
+        await page.clock.install()
+        await page.getByRole('button', { name: '模拟绑定完成', exact: true }).tap()
+        await page.clock.fastForward(5000)
+        const activityTrigger = page.locator('.activity-center__trigger')
+        await activityTrigger.tap()
+        const bindingMessages = page
+          .locator('.activity-card strong')
+          .filter({ hasText: '已绑定角色卡' })
+        if ((await bindingMessages.count()) !== 2)
+          throw new Error('Binding notices expired or replaced each other')
+        for (const id of ['A', 'B'])
+          await page
+            .locator('#srl-activity-panel')
+            .getByText('帖子“测试帖子' + id + '”已绑定角色卡“测试角色' + id + '”', { exact: true })
+            .waitFor()
+        await page.getByRole('button', { name: '清理完成项', exact: true }).tap()
+        await activityTrigger.waitFor({ state: 'detached' })
+        await page.clock.resume()
         if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
           throw new Error('Horizontal overflow')
         if (errors.length) throw new Error(errors.join('\n'))
         await page.screenshot({
           path: resolve(output, `${engine}-${width}-${theme}.png`),
+          fullPage: true,
+        })
+        await page.goto(url + '?view=health&theme=' + theme)
+        const nativePath = page
+          .locator('.settings-number-row small')
+          .filter({ hasText: '/storage/emulated/0/' })
+        await nativePath.waitFor()
+        if (await nativePath.evaluate((element) => element.scrollWidth > element.clientWidth))
+          throw new Error('Native directory path overflow')
+        const scan = page.getByRole('button', { name: '扫描', exact: true })
+        await scan.tap()
+        await page.getByText('索引与引用未发现问题', { exact: true }).waitFor()
+        if (await scan.isDisabled()) throw new Error('Health scan did not release busy state')
+        await scan.tap()
+        await page.getByText('索引与引用未发现问题', { exact: true }).waitFor()
+        if (await scan.isDisabled()) throw new Error('Repeated health scan did not complete')
+        if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
+          throw new Error('Settings horizontal overflow')
+        if (errors.length) throw new Error(errors.join('\n'))
+        await page.screenshot({
+          path: resolve(output, `${engine}-${width}-${theme}-health.png`),
           fullPage: true,
         })
         scenarios += 1

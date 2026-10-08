@@ -299,6 +299,7 @@ const {
   applyScriptPreviewPolicy,
   applyGreetingPreviewPreload,
   applyBeautificationPreviewPreload,
+  applyIncreasedPreviewDownloads,
   applyExtractCharacterAssets,
   applyHideCharacterAssets,
   applyHideChatDisplayRegex,
@@ -1373,6 +1374,7 @@ const isBatchBarVisible = computed(
       :allow-script-previews="previewPolicy.allowScripts"
       :preload-greeting-previews="previewPolicy.preloadGreetingResources === true"
       :preload-beautification-previews="previewPolicy.preloadBeautificationResources === true"
+      :increase-preview-downloads="previewPolicy.increaseDownloadConcurrency === true"
       :extract-character-assets="extractCharacterAssets"
       :hide-character-assets="hideCharacterAssets"
       :hide-chat-display-regex="hideChatDisplayRegex"
@@ -1389,6 +1391,7 @@ const isBatchBarVisible = computed(
       @update:allow-script-previews="applyScriptPreviewPolicy"
       @update:preload-greeting-previews="applyGreetingPreviewPreload"
       @update:preload-beautification-previews="applyBeautificationPreviewPreload"
+      @update:increase-preview-downloads="applyIncreasedPreviewDownloads"
       @update:extract-character-assets="applyExtractCharacterAssets"
       @update:hide-character-assets="applyHideCharacterAssets"
       @update:hide-chat-display-regex="applyHideChatDisplayRegex"

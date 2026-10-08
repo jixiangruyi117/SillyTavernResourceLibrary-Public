@@ -20,6 +20,8 @@ const runtime = vi.hoisted(() => ({
   backupProgress: vi.fn(),
   restoreProgress: vi.fn(),
   reconcile: vi.fn(),
+  restore: vi.fn(),
+  contents: vi.fn(),
 }))
 vi.mock('@capacitor/core', () => ({
   Capacitor: { isNativePlatform: () => true, getPlatform: () => 'android' },
@@ -38,6 +40,8 @@ vi.mock('../core/AppContainer', () => ({
     getActiveNativeBackupProgress: runtime.backupProgress,
     getNativeRestoreProgress: runtime.restoreProgress,
     reconcileNativeJob: runtime.reconcile,
+    restoreBackup: runtime.restore,
+    listBackupRestoreContents: runtime.contents,
   },
 }))
 vi.mock('./UseConfirmDialog', () => ({ confirmAction: runtime.confirm }))
@@ -73,6 +77,11 @@ beforeEach(() => {
   runtime.backupProgress.mockResolvedValue(null)
   runtime.restoreProgress.mockResolvedValue(null)
   runtime.reconcile.mockResolvedValue(undefined)
+  runtime.restore.mockResolvedValue(0)
+  runtime.contents.mockResolvedValue({
+    resources: [],
+    portableScopeIds: ['extra.chatReader', 'extra.assistantData', 'extra.credentials'],
+  })
 })
 afterEach(() => noticeCenter.dismiss('cloud-restore:pending-test'))
 
@@ -114,6 +123,29 @@ it('locks list preflight and prevents duplicate requests or provider changes bef
   }
 })
 
+it('preserves valid backups and validation warnings when a list refresh finishes', async () => {
+  runtime.list.mockImplementationOnce(async (_config, _secret, _progress, warning) => {
+    warning('Koofr 有 1 份备份未通过校验：清单 JSON 无效')
+    return [item]
+  })
+  const { center, wrapper } = mountCenter()
+  try {
+    await flushPromises()
+    await center.loadBackups()
+    expect(center.backups.value).toEqual([item])
+    expect(center.message.value).toContain('已读取 1 个云端备份')
+    expect(center.message.value).toContain('1 份备份未通过校验')
+    expect(center.busyAction.value).toBe('')
+    runtime.list.mockRejectedValueOnce(new Error('Koofr 网络读取失败'))
+    await center.loadBackups()
+    expect(center.backups.value).toEqual([item])
+    expect(center.message.value).toBe('Koofr 网络读取失败')
+    expect(center.busyAction.value).toBe('')
+  } finally {
+    wrapper.unmount()
+  }
+})
+
 it('locks a restore during confirmation and releases it after cancellation without writing', async () => {
   let decide!: (value: boolean) => void
   runtime.confirm.mockImplementationOnce(() => new Promise((resolve) => (decide = resolve)))
@@ -147,6 +179,47 @@ it('previews only selected resources against the latest library using the shared
     resources.value = [resource('same', 'old'), resource('imported', 'new')]
     expect(center.restorePreview.value).toEqual({ added: 0, skipped: 2, conflicts: 0 })
     expect(center.backupScopeResources.value).toHaveLength(2)
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it('allows restoring selected settings without resources and forwards the exact scope', async () => {
+  const { center, wrapper, emit } = mountCenter()
+  try {
+    await flushPromises()
+    center.restorePicker.value = { item, resources: [] }
+    center.restoreScopeModel.value = { resourceIds: [], scopeIds: ['extra.generalPreferences'] }
+    runtime.confirm.mockResolvedValue(true)
+    await center.restore(item)
+    expect(runtime.restore).toHaveBeenCalledWith(item, expect.any(Function), [], false, [
+      'extra.generalPreferences',
+    ])
+    expect(emit).toHaveBeenCalledWith('library-changed')
+    expect(center.busyAction.value).toBe('')
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it('opens a settings-only picker with available extras and leaves sensitive content unchecked', async () => {
+  const { center, wrapper } = mountCenter()
+  try {
+    await flushPromises()
+    await center.restore(item)
+    expect(runtime.contents).toHaveBeenCalledOnce()
+    expect(center.restoreScopeIds.value).toEqual([
+      'extra.chatReader',
+      'extra.assistantData',
+      'extra.credentials',
+    ])
+    expect(center.restoreScopeModel.value.scopeIds).toEqual(['extra.chatReader'])
+    expect(center.hasRestoreSelection.value).toBe(true)
+    center.restoreScopeModel.value = { resourceIds: [], scopeIds: [] }
+    await center.restore(item)
+    expect(runtime.restore).not.toHaveBeenCalled()
+    expect(center.hasRestoreSelection.value).toBe(false)
+    expect(center.message.value).toBe('请至少选择一项资源或附加数据')
   } finally {
     wrapper.unmount()
   }

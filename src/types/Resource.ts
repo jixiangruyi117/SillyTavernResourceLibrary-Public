@@ -257,6 +257,7 @@ function toResourceListMetadata(metadata: Record<string, unknown>): Record<strin
 export function toResourceListSummary(resource: ResourceReference): ResourceListSummary {
   const summary: Partial<Resource> = {
     ...resource,
+    tags: resource.tags ?? [],
     metadata: toResourceListMetadata(resource.metadata),
   }
   delete summary.originalBlob
@@ -265,7 +266,7 @@ export function toResourceListSummary(resource: ResourceReference): ResourceList
 }
 
 export function toResourceSummary(resource: Resource): ResourceSummary {
-  const summary: Partial<Resource> = { ...resource }
+  const summary: Partial<Resource> = { ...resource, tags: resource.tags ?? [] }
   delete summary.originalBlob
   delete summary.thumbnailBlob
   return summary as ResourceSummary
@@ -651,7 +652,7 @@ export function normalizeResource(resource: Resource): Resource {
   const categoryIds = getResourceCategoryIds(resource)
   const existingDescriptor = resource.backupDescriptor
   const backupDescriptor: ResourceBackupDescriptor =
-    existingDescriptor?.version === 1 &&
+    (existingDescriptor?.version === 1 || existingDescriptor?.version === 2) &&
     existingDescriptor.resourceId === resource.id &&
     existingDescriptor.contentHash === resource.contentHash.toLowerCase() &&
     existingDescriptor.size === resource.fileSize
@@ -665,6 +666,7 @@ export function normalizeResource(resource: Resource): Resource {
         }
   return {
     ...resource,
+    tags: resource.tags ?? [],
     categoryId: categoryIds[0] ?? null,
     categoryIds,
     relatedResourceIds: getRelatedResourceIds(resource),

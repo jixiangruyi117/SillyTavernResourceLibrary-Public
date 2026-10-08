@@ -317,9 +317,6 @@ onMounted(async () => {
       </button>
     </template>
   </FeatureAppHeader>
-  <button type="button" class="button button--quiet" :disabled="busy" @click="checkStatus">
-    检查 APP 状态
-  </button>
   <section class="official-app-manager" :aria-busy="busy">
     <p v-if="message" role="status">{{ message }}</p>
     <p v-if="updateCheckError" role="status">暂时无法检查 APP 更新：{{ updateCheckError }}</p>
@@ -402,6 +399,10 @@ onMounted(async () => {
       <p>
         程序按需下载。资源库升级后，兼容且完整的已安装版本会继续使用；有新版本时可在此更新，原有数据保留。
       </p>
+      <button type="button" class="button button--quiet" :disabled="busy" @click="checkStatus">
+        检查 APP 状态
+      </button>
+      <p v-if="message" role="status">{{ message }}</p>
       <footer>
         <button type="button" autofocus @click="closeHelp">知道了</button>
       </footer>

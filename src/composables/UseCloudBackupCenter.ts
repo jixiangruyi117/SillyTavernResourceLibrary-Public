@@ -57,6 +57,7 @@ import type { GitHubRepositoryInspection } from '../services/CloudBackupService'
 import { type Category, type ResourceSummary } from '../types/Resource'
 
 import {
+  BACKUP_SCOPE_REGISTRY,
   resourceRestoreScopeIds,
   toCloudContentSelection,
   type BackupScopeId,
@@ -122,14 +123,23 @@ export function useCloudBackupCenter(
 
   const backups = ref<CloudBackupItem[]>([])
 
-  const restorePicker = ref<{ item: CloudBackupItem; resources: ResourceSummary[] }>()
+  const restorePicker = ref<{
+    item: CloudBackupItem
+    resources: ResourceSummary[]
+    scopeIds?: BackupScopeId[]
+  }>()
   const selectedRestoreKeys = ref(new Set<string>())
   const selectedRestoreScopes = ref<BackupScopeId[]>([])
   const restoreResourceCount = computed(
     () => restorePicker.value?.resources.filter((r) => !isResourceGalleryImage(r)).length ?? 0,
   )
-  const restoreScopeIds = computed(() =>
-    resourceRestoreScopeIds(restorePicker.value?.resources ?? [], true),
+  const restoreScopeIds = computed(() => restorePicker.value?.scopeIds ?? [])
+  const hasRestoreSelection = computed(
+    () =>
+      selectedRestoreKeys.value.size > 0 ||
+      selectedRestoreScopes.value.some(
+        (scope) => scope.startsWith('extra.') && scope !== 'extra.communitySources',
+      ),
   )
   const restoreScopeModel = computed({
     get: () => ({
@@ -641,12 +651,14 @@ export function useCloudBackupCenter(
     if (!(await saveConfig(true))) return
     busyAction.value = 'list'
     try {
+      const warnings: string[] = []
       backups.value = await cloudBackupService.listBackups(
         activeConfig.value,
         activeSecret.value || undefined,
         (progress) => {
           message.value = progress
         },
+        (warning) => warnings.push(warning),
       )
       message.value = backups.value.length
         ? `已读取 ${backups.value.length} 个云端备份${
@@ -655,6 +667,7 @@ export function useCloudBackupCenter(
               : ''
           }`
         : '云端暂无备份'
+      if (warnings.length) message.value += `\n${warnings.join('\n')}`
     } catch (error) {
       message.value = error instanceof Error ? error.message : '云端列表读取失败'
     } finally {
@@ -697,15 +710,19 @@ export function useCloudBackupCenter(
       busyAction.value = `restore:${item.id}`
       message.value = '正在读取云端资源清单…'
       try {
-        const resources = await cloudBackupService.listBackupResources(item)
-        restorePicker.value = { item, resources }
+        const contents = await cloudBackupService.listBackupRestoreContents(item)
+        const { resources, portableScopeIds } = contents
+        const scopeIds = [...new Set([...resourceRestoreScopeIds(resources), ...portableScopeIds])]
+        restorePicker.value = { item, resources, scopeIds }
         selectedRestoreKeys.value = new Set(
           resources.filter((r) => !isResourceGalleryImage(r)).map((resource) => resource.id),
         )
-        selectedRestoreScopes.value = resourceRestoreScopeIds(resources, true)
-        message.value = resources.length
-          ? '请选择要导入的资源；历史版本会随所属资源一起导入。'
-          : '这个备份没有可导入的资源'
+        selectedRestoreScopes.value = scopeIds.filter(
+          (id) => !BACKUP_SCOPE_REGISTRY.find((scope) => scope.id === id)?.sensitive,
+        )
+        message.value = scopeIds.length
+          ? '请选择要导入的资源和附加数据；历史版本会随所属资源一起导入。'
+          : '这个备份没有可导入的内容'
       } catch (error) {
         message.value = error instanceof Error ? error.message : '读取云端资源清单失败'
       } finally {
@@ -714,14 +731,14 @@ export function useCloudBackupCenter(
       return
     }
     const selectedKeys = [...selectedRestoreKeys.value]
-    if (!selectedKeys.length) {
-      message.value = '请至少选择一项资源'
+    if (!hasRestoreSelection.value) {
+      message.value = '请至少选择一项资源或附加数据'
       return
     }
     if (
       !(await confirmAction({
         title: '从云端导入',
-        message: `将从“${item.objectKey}”导入选中的 ${selectedKeys.length} 项资源吗？预计新增 ${restorePreview.value.added} 项，已有内容 ${restorePreview.value.skipped} 项；${restorePreview.value.conflicts} 项 ID 冲突将保留两份。历史另行合并，实际以导入结果为准；不会清空现有资源。${activeContentSelection.value.credentials ? '该备份可能包含你明确选择迁移的 API 凭据，恢复后会写入本机受保护存储。' : ''}`,
+        message: `将从“${item.objectKey}”导入选中的 ${selectedKeys.length} 项资源和勾选的附加数据吗？预计新增 ${restorePreview.value.added} 项，已有内容 ${restorePreview.value.skipped} 项；${restorePreview.value.conflicts} 项 ID 冲突将保留两份。历史另行合并，实际以导入结果为准；不会清空现有资源。${selectedRestoreScopes.value.includes('extra.credentials') ? '该备份可能包含你明确选择迁移的 API 凭据，恢复后会写入本机受保护存储。' : ''}`,
         confirmLabel: '导入',
       }))
     )
@@ -735,8 +752,11 @@ export function useCloudBackupCenter(
         confirmPortableCredentialImport,
         selectedKeys,
         selectedRestoreScopes.value.includes('extra.resourceGallery'),
+        [...selectedRestoreScopes.value],
       )
-      message.value = count ? `已从云端加入 ${count} 项新资源` : '导入完成，没有发现新的资源'
+      message.value = count
+        ? `所选内容已导入，加入 ${count} 项新资源`
+        : '所选内容已导入，没有新增资源'
       emit('library-changed')
       restorePicker.value = undefined
       selectedRestoreKeys.value = new Set()
@@ -937,6 +957,7 @@ export function useCloudBackupCenter(
     backups,
     restorePicker,
     selectedRestoreKeys,
+    hasRestoreSelection,
     restoreScopeIds,
     restoreScopeModel,
     restorePreview,

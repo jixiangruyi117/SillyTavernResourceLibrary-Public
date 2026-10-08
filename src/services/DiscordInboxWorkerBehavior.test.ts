@@ -924,6 +924,63 @@ describe('Discord inbox Worker behavior', () => {
       ).jobs,
     ).toHaveLength(0)
   })
+  it('pages posts past an unchanged pending first page with equal timestamps and library isolation', async () => {
+    const pair = await newPair()
+    await bind(pair)
+    const now = Date.now()
+    const insert = database.sqlite.prepare(
+      "INSERT INTO inbox_deliveries (id,handoff_token_hash,library_id,dedupe_scope,fingerprint,source_key_hash,state,title,created_at,expires_at) VALUES (?,?,?,?,?,?,'pending',?,?,?)",
+    )
+    for (let i = 0; i < 45; i++) {
+      const id = `00000000-0000-4000-a000-${i.toString(16).padStart(12, '0')}`
+      insert.run(
+        id,
+        `hash-${i}`,
+        pair.libraryId,
+        `scope-${i}`,
+        `fp-${i}`,
+        `source-${i}`,
+        id,
+        now,
+        now + 60_000,
+      )
+    }
+    let cursor = ''
+    const ids = new Set<string>()
+    for (let page = 0; page < 3; page++) {
+      const payload = await (
+        await request(`/inbox/jobs${cursor ? '?after=' + encodeURIComponent(cursor) : ''}`, {
+          headers: headers(pair),
+        })
+      ).json()
+      for (const job of payload.jobs) {
+        expect(ids.has(job.id)).toBe(false)
+        ids.add(job.id)
+      }
+      const last = payload.jobs.at(-1)
+      cursor = `${last.createdAt}:${last.id}`
+      expect(payload.hasMore).toBe(page < 2)
+    }
+    expect(ids.size).toBe(45)
+    expect((await request('/inbox/jobs?after=invalid', { headers: headers(pair) })).status).toBe(
+      400,
+    )
+    const other = await newPair('其它库')
+    expect(
+      (
+        await (
+          await request(`/inbox/jobs?after=${encodeURIComponent(cursor)}`, {
+            headers: headers(other),
+          })
+        ).json()
+      ).jobs,
+    ).toHaveLength(0)
+    expect(
+      database.sqlite
+        .prepare("SELECT COUNT(*) AS n FROM inbox_deliveries WHERE state='pending'")
+        .get()?.n,
+    ).toBe(45)
+  })
 
   it('rejects unpaired resource jobs and arbitrary external/private download addresses', async () => {
     await interaction(postData('', '22222', '下载资源到SRL（云端暂存）'))

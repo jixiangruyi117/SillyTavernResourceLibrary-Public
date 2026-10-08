@@ -4,37 +4,35 @@
     "draw": {
       "owner": "src/services/CharacterDrawService.ts",
       "tests": ["src/services/CharacterDrawService.test.ts"],
-      "backup": {
-        "policy": "supported",
-        "scopes": ["extra.characterDraw"]
-      },
+      "backup": { "policy": "supported", "scopes": ["extra.characterDraw"] },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "chatReader": {
       "owner": "src/services/ChatReaderService.ts",
       "tests": ["src/services/ChatReaderService.test.ts"],
-      "backup": {
-        "policy": "supported",
-        "scopes": ["resource.chat", "extra.chatReader"]
-      },
+      "backup": { "policy": "supported", "scopes": ["resource.chat", "extra.chatReader"] },
       "starter": "none",
       "starterReason": "阅读外观使用读了么自身设置；当前通用示例映射没有阅读器样式",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "appearance": {
       "owner": "src/services/AppearanceScopeService.ts",
-      "tests": ["src/services/AppearanceScopeService.test.ts"],
+      "tests": [
+        "src/services/AppearanceScopeService.test.ts",
+        "src/components/RichContentPreview.loading.test.ts",
+        "src/components/BeautificationPreview.test.ts",
+        "src/components/LayoutSettingsPanel.test.ts",
+        "src/composables/UseAppearanceSettings.test.ts",
+        "src/services/NativePreviewAsset.test.ts",
+        "src/utils/PreviewResourcePreloader.test.ts"
+      ],
       "backup": {
         "policy": "supported",
-        "scopes": ["extra.appearance"]
+        "scopes": ["extra.appearance"],
+        "reason": "外观与预览权限沿原便携设置；增加多线路下载为本机负担偏好，恢复时关闭，需本机再次确认"
       },
+      "appearance": "正式设置入口App.vue绑定多线路状态与事件；NativeIntakeFilesAudit在完整APP内覆盖取消、确认、重开保留和关闭，不能只用隔离设置组件替代",
       "starter": "available",
       "cleanup": {
         "policy": "not-applicable",
@@ -45,14 +43,25 @@
       "owner": "src/services/ExportService.ts",
       "tests": [
         "src/services/ExportService.test.ts",
+        "src/services/ExportService.download.test.ts",
+        "src/composables/UseNativeResourceExport.download.test.ts",
+        "src/components/ConfirmDialog.test.ts",
         "src/composables/UseLibraryArchive.test.ts",
         "src/composables/UseLibraryProtection.test.ts",
+        "src/storage/AndroidNativeAppDatabaseRuntime.test.ts",
+        "src/storage/AndroidNativeDexieCore.test.ts",
+        "src/storage/NativeAppDatabaseBridge.test.ts",
+        "src/components/ResourceHealthCenter.test.ts",
+        "src/components/StorageUsageChart.test.ts",
         "src/components/RestorePanel.test.ts",
         "src/components/DuplicateCleaner.test.ts",
         "src/components/ExtractedAssetCleaner.test.ts",
         "src/components/VersionRecognitionPanel.test.ts",
         "src/services/BrowserStorageService.test.ts",
-        "src/storage/IndexedDbResourceHealthStorage.test.ts"
+        "src/storage/IndexedDbResourceHealthStorage.test.ts",
+        "src/components/NativeIntakeFiles.test.ts",
+        "src/utils/ShareTargetIntake.cleanup.test.ts",
+        "src/core/TaskCenter.test.ts"
       ],
       "backup": {
         "policy": "archive-core",
@@ -62,26 +71,39 @@
       "starter": "available",
       "cleanup": {
         "policy": "not-applicable",
-        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner"
-      }
+        "reason": "系统入口不提供官方 APP 卸载；数据操作复用各自既有 Owner；Android 接收暂存沿 ShareTargetIntake/ShareReceiver 逐项确认，已处理无附件回执支持一键确认与批次暂停/停止，传输、导入会话及恢复源保留，不涉及已入库资源"
+      },
+      "appearance": "NativeIntakeFiles 按需加载局部样式，复用主题与原确认框；四手机宽度浅深色触控回归归 scripts/NativeIntakeFilesAudit.mjs。无新增持久化外观范围。"
     },
     "inbox": {
       "owner": "src/services/CommunitySourceService.ts",
       "tests": [
+        "src/services/CommunitySourceArchiveHardening.test.ts",
+        "src/services/DiscordInboxAutomationSettings.test.ts",
+        "src/storage/IndexedDbCommunitySourceStorage.test.ts",
+        "src/components/LayoutSettingsPanel.test.ts",
         "src/services/CommunitySourceRestoreService.test.ts",
         "src/components/DiscordPendingSources.test.ts",
         "src/composables/UseDiscordResourceInbox.test.ts",
         "src/composables/UseAppSharedIntake.test.ts",
         "src/services/NativeDiscordInboxService.test.ts",
+        "src/core/NativeRuntime.test.ts",
+        "src/components/DiscordSourceHandoffIntake.test.ts",
+        "src/services/DiscordInboxAutoBinding.test.ts",
+        "src/parser/NativeTavernParserParity.test.ts",
         "src/components/DiscordNativeInboxMode.test.ts",
         "src/services/DiscordInboxWorkerBehavior.test.ts",
+        "src/services/DiscordBridgeWorkerContract.test.ts",
         "src/services/DiscordResourceInboxService.test.ts",
+        "src/components/DiscordInboxPanel.test.ts",
+        "src/components/DiscordResourceDownloadPanel.test.ts",
+        "src/components/ProjectActivityCenter.test.ts",
         "src/composables/UseLibraryRefresh.test.ts"
       ],
       "backup": {
         "policy": "partial",
         "scopes": ["extra.communitySources"],
-        "reason": "已保存社区内容可归档；云端短期收件任务与 Android 当前收件会话不作为本机恢复副本"
+        "reason": "已保存社区正文与现存附件可归档；显式清理后的媒体仅保留远程链接，远程失效时无法从链接恢复本地文件；云端短期收件任务与 Android 当前收件会话不作为本机恢复副本；未入库的接收暂存不作为资源备份，显式放弃后需重新分享或下载"
       },
       "starter": "none",
       "starterReason": "收件箱已有运行样式，尚未登记通用 CSS 示例来源",
@@ -98,10 +120,7 @@
         "src/core/TaskCenter.test.ts",
         "src/services/RestoreService.identity.test.ts"
       ],
-      "backup": {
-        "policy": "supported",
-        "scopes": ["extra.cloudBackup", "extra.credentials"]
-      },
+      "backup": { "policy": "supported", "scopes": ["extra.cloudBackup", "extra.credentials"] },
       "starter": "available",
       "cleanup": {
         "policy": "not-applicable",
@@ -125,15 +144,9 @@
     "stitch": {
       "owner": "src/services/BrowserStorageService.ts",
       "tests": ["src/services/BrowserStorageService.test.ts"],
-      "backup": {
-        "policy": "supported",
-        "scopes": ["resource.preset", "extra.stitchWork"]
-      },
+      "backup": { "policy": "supported", "scopes": ["resource.preset", "extra.stitchWork"] },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "frontendWorkshop": {
       "owner": "src/services/FrontendWorkshopProjectService.ts",
@@ -144,10 +157,7 @@
         "reason": "落库资源可归档；现有 ZIP 选择合同未单独包含 Source 项目与组件库，不宣称整库归档覆盖工作台全部项目"
       },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "imageGeneration": {
       "owner": "src/services/FrontendWorkshopImageGenerationService.ts",
@@ -161,10 +171,7 @@
         "reason": "现有 ZIP 选择合同未单独声明生图配置与草稿；生成结果的导出复用相册专属流程"
       },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "imageAlbum": {
       "owner": "src/services/GeneratedImageAlbumService.ts",
@@ -175,10 +182,7 @@
         "reason": "现有 ZIP 选择合同没有生图相册范围；相册专属导出不能冒充资源库整库备份覆盖"
       },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "userPersona": {
       "owner": "src/services/UserPersonaService.ts",
@@ -189,10 +193,7 @@
         "reason": "已保存人设原件可归档；本机模板偏好未在现有额外范围中独立声明"
       },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "resourceBundle": {
       "owner": "src/components/ResourceBundleApp.vue",
@@ -203,10 +204,7 @@
         "reason": "资源原件沿核心归档保存；配套模板与装配偏好需独立恢复验收，当前范围表未声明"
       },
       "starter": "available",
-      "cleanup": {
-        "policy": "app-owned",
-        "owner": "src/storage/OfficialAppDataStorage.ts"
-      }
+      "cleanup": { "policy": "app-owned", "owner": "src/storage/OfficialAppDataStorage.ts" }
     },
     "extensions": {
       "owner": "src/services/ExternalAppService.ts",

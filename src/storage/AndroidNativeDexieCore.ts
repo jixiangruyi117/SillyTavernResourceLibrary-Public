@@ -302,28 +302,20 @@ class NativeTransactionFacade implements NativeTransaction {
           onsuccess: null,
           onerror: null,
         }
-        if (key === Number.NEGATIVE_INFINITY || key === Number.POSITIVE_INFINITY) {
-          // Dexie's waitFor() issues get(-Infinity) requests as keep-alives while it awaits
-          // native async work. Cancel any pending auto-close so a slow bridge round-trip
-          // cannot close the readwrite transaction before Dexie resumes it.
-          this.pauseAutoComplete()
-          setTimeout(() => {
-            request.onsuccess?.()
-            // A final waitFor() may be followed by no more reads/writes. Resume completion
-            // after the spin callback; a further spin/request cancels this pending completion.
-            this.scheduleAutoComplete()
-          }, 0)
-          return request
-        }
-        void this.runRequest(() => this.get(name, key)).then(
-          (value) => {
-            request.result = value
+        void this.runRequest(async () => {
+          if (key !== Number.NEGATIVE_INFINITY && key !== Number.POSITIVE_INFINITY)
+            request.result = await this.get(name, key)
+          await new Promise<void>((resolve) => {
             setTimeout(() => {
-              request.onsuccess?.()
-              this.scheduleAutoComplete()
+              try {
+                request.onsuccess?.()
+              } finally {
+                resolve()
+              }
             }, 0)
-          },
-          (error) => request.onerror?.(new ErrorEvent('error', { error }) as unknown as Event),
+          })
+        }).catch((error) =>
+          request.onerror?.(new ErrorEvent('error', { error }) as unknown as Event),
         )
         return request
       },
@@ -602,15 +594,27 @@ class NativeTransactionFacade implements NativeTransaction {
     this.autoCompleteTimer = undefined
   }
 
-  async runRequest<T>(operation: () => Promise<T>): Promise<T> {
+  beginRequest(): () => void {
+    if (this.finished || this.aborted)
+      throw new DOMException('原生数据库事务已经结束', 'TransactionInactiveError')
     this.pauseAutoComplete()
     this.activeRequests += 1
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.activeRequests -= 1
+      if (this.activeRequests === 0) this.scheduleAutoComplete()
+    }
+  }
+
+  async runRequest<T>(operation: () => Promise<T>): Promise<T> {
+    const release = this.beginRequest()
     try {
       await this.waitUntilReady()
       return await operation()
     } finally {
-      this.activeRequests -= 1
-      if (this.activeRequests === 0) this.scheduleAutoComplete()
+      release()
     }
   }
 
@@ -718,6 +722,11 @@ function createCursor(
   let resolveIteration: ((value?: unknown) => void) | undefined
   let hydratedRow: (typeof rows)[number] | undefined
   let seek: Pick<NativeKeyPageQuery, 'seekKey' | 'seekPrimaryKey'> = {}
+  const requests = new Set<() => void>()
+  const releaseRequests = () => {
+    for (const release of requests) release()
+    requests.clear()
+  }
   const releaseValue = () => {
     if (hydratedRow) {
       hydratedRow.value = undefined
@@ -795,6 +804,7 @@ function createCursor(
       done = true
       releaseValue()
       rows = []
+      releaseRequests()
       nativeTransaction.scheduleAutoComplete()
       resolveIteration?.(value)
       resolveIteration = undefined
@@ -803,6 +813,7 @@ function createCursor(
       done = true
       releaseValue()
       rows = []
+      releaseRequests()
       nativeTransaction.scheduleAutoComplete()
       // Dexie's cursor consumer owns the promise rejection through this method.
       resolveIteration?.(Promise.reject(error))
@@ -829,7 +840,10 @@ function createCursor(
 
   async function run(): Promise<void> {
     if (done) return
+    let release: (() => void) | undefined
     try {
+      release = nativeTransaction.beginRequest()
+      requests.add(release)
       await nativeTransaction.waitUntilReady()
       if (done) return
       if (position >= rows.length && fetchPage && rows.length) {
@@ -864,6 +878,11 @@ function createCursor(
     } catch (error) {
       if (done) return
       cursor.fail(error as Error)
+    } finally {
+      if (release) {
+        requests.delete(release)
+        release()
+      }
     }
   }
   return cursor

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import StorageUsageChart, { type StorageUsageSlice } from './StorageUsageChart.vue'
+import NativeIntakeFiles from './NativeIntakeFiles.vue'
 
 import { BUILD_INFO } from '../core/BuildInfo'
 import { domainEvents } from '../core/DomainEvents'
@@ -70,6 +71,17 @@ const issues = ref<HealthIssue[]>([])
 const scanning = ref(false)
 const repairing = ref(false)
 const scanned = ref(false)
+const scannedDeep = ref(false)
+const summariesCompact = ref<boolean>()
+let summaryStatusRevision = 0
+for (const event of ['ResourceImported', 'ResourceUpdated', 'ResourceDeleted'] as const)
+  onUnmounted(
+    domainEvents.on(event, () => {
+      summaryStatusRevision++
+      summariesCompact.value = undefined
+      accountingStale.value = true
+    }),
+  )
 const nativeStorage = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
 const browserStorage = ref<Awaited<ReturnType<typeof browserStorageService.getHealth>>>()
 const inspectionError = ref('')
@@ -99,12 +111,15 @@ const clearingRetiredModels = ref(false)
 const clearingAppCaches = ref(false)
 const optimizingSummaries = ref(false)
 const clearingPostMedia = ref(false)
+const showingIntakeFiles = ref(false)
+const intakeBusy = ref(false)
 const postMedia = ref<{ count: number; bytes: number }>()
 const postMediaError = ref('')
 const cleanupBusy = computed(
   () =>
     optimizingSummaries.value ||
     clearingPostMedia.value ||
+    intakeBusy.value ||
     reclaimingMirrors.value ||
     clearingRetiredModels.value ||
     clearingAppCaches.value ||
@@ -206,7 +221,10 @@ async function showStoragePart(id: string): Promise<void> {
       text: '这里是内置 APP 的程序文件，用来离线打开读了么、收藏柜等 APP，不是你的角色或收藏数据。\n\n删掉程序会影响离线打开 APP，因此这里保留它们。',
     },
     intake: {
-      text: '其他应用分享进来或后台下载后，文件会先放在这里，等保存进资源库后再交给接收流程清理。也可能有以前未清理成功的残留。\n\n还没有逐项确认哪些已完成入库，所以这里先保留，避免丢掉正在接收的资源。',
+      text: '这里保存分享、下载后的接收副本，可能有待导入文件、失败或已处理的残留。没有正在接收的任务，也可能仍有占用。\n\n可以查看名称、大小和状态，再逐项确认清理。正在传输、被导入面板或恢复任务使用的文件会保留。',
+      action: async () => {
+        showingIntakeFiles.value = true
+      },
     },
     webview: {
       text: '这是 APK 的页面运行环境，包括页面自己的存储、网络缓存和临时文件。\n\n它不全是缓存，直接清空可能丢失页面设置或尚未迁移的数据，因此这里不会整批清空。',
@@ -262,6 +280,18 @@ async function clearAppCaches(): Promise<void> {
     clearingAppCaches.value = false
   }
 }
+
+function intakeFilesChanged(remainingBytes: number): void {
+  // Only this directory was remeasured; keep the original timestamp for the other categories.
+  const storage = nativeStorage.value
+  const groups = storage?.internalBreakdown?.fileGroups
+  if (!storage || !groups) return
+  const delta = remainingBytes - (groups['srl-shared-intake'] ?? 0)
+  groups['srl-shared-intake'] = remainingBytes
+  if (storage.totalBytes !== undefined) storage.totalBytes += delta
+  if (storage.internalBreakdown) storage.internalBreakdown.filesBytes += delta
+  accountingStale.value = true
+}
 const recoveryCandidateByHash = computed(
   () => new Map(recoveryCandidates.value.map((item) => [item.contentHash, item])),
 )
@@ -282,7 +312,8 @@ async function scanNativeRecovery(reset = true, includeAccounting = false): Prom
     if (!reset && !cursor) return
     const request = ++storageRequest
     if (includeAccounting) postMediaError.value = ''
-    const [info, media] = await Promise.all([
+    const summaryRevision = summaryStatusRevision
+    const [info, media, compact] = await Promise.all([
       getNativeResourceStorageInfo({ includeDetails: includeAccounting }),
       includeAccounting
         ? communitySourceService.downloadedMediaUsage().catch((error: unknown) => {
@@ -291,7 +322,12 @@ async function scanNativeRecovery(reset = true, includeAccounting = false): Prom
             return undefined
           })
         : Promise.resolve(postMedia.value),
+      includeAccounting
+        ? browserStorageService.getSummaryCompactionStatus().catch(() => undefined)
+        : Promise.resolve(undefined),
     ])
+    if (includeAccounting && summaryRevision === summaryStatusRevision)
+      summariesCompact.value = compact
     if (includeAccounting) postMedia.value = media
     if (request === storageRequest) {
       nativeStorage.value = info
@@ -376,6 +412,7 @@ async function clearRetiredModels(): Promise<void> {
 async function optimizeSummaries(): Promise<void> {
   if (
     cleanupBusy.value ||
+    summariesCompact.value === true ||
     !(await confirmAction({
       title: '精简重复摘要',
       message:
@@ -388,13 +425,18 @@ async function optimizeSummaries(): Promise<void> {
   optimizingSummaries.value = true
   try {
     const report = await browserStorageService.optimizeDerivedSummaries()
+    summariesCompact.value = true
+    accountingStale.value = true
     noticeCenter.push({
       type: 'success',
-      message: report
-        ? `摘要已精简，数据库释放 ${formatBytes(Math.max(0, report.beforeBytes - report.afterBytes))}。`
-        : '摘要已精简；浏览器会自行回收数据库空间。',
+      message:
+        report && 'alreadyCompact' in report
+          ? '摘要已精简，无需重复重建或压缩数据库。'
+          : report
+            ? `摘要已精简，数据库释放 ${formatBytes(Math.max(0, report.beforeBytes - report.afterBytes))}。`
+            : '摘要已精简；浏览器会自行回收数据库空间。',
     })
-    await scanNativeRecovery(true, true)
+    // The successful maintenance receipt is enough; do not repeat recovery/media/accounting.
   } catch (error) {
     noticeCenter.push({
       type: 'error',
@@ -538,12 +580,12 @@ async function recoverSelected(): Promise<void> {
   }
 }
 
-async function scan(): Promise<void> {
+async function scan(deep = false): Promise<void> {
   if (scanning.value) return
   scanning.value = true
   try {
-    issues.value = await healthCenter.scan()
-    await scanNativeRecovery(true, true).catch(() => undefined)
+    issues.value = await healthCenter.scan({ deep })
+    scannedDeep.value = deep
     scanned.value = true
   } finally {
     scanning.value = false
@@ -555,7 +597,7 @@ async function repairSafe(): Promise<void> {
   repairing.value = true
   try {
     await healthCenter.repairSafe(issues.value)
-    await scan()
+    await scan(scannedDeep.value)
   } finally {
     repairing.value = false
   }
@@ -622,7 +664,9 @@ async function exportDiagnostics(): Promise<void> {
       <span>
         <strong>资源库健康与修复</strong>
         <small v-if="scanning">正在扫描引用、摘要与本地状态…</small>
-        <small v-else-if="scanned && !issues.length">资源库状态正常</small>
+        <small v-else-if="scanned && !issues.length">{{
+          scannedDeep ? '本次完整检查未发现问题' : '索引与引用未发现问题'
+        }}</small>
         <small v-else-if="issues.length">发现 {{ issues.length }} 项需要查看的问题</small>
         <small v-else>只报告问题，不会静默删除用户文件</small>
       </span>
@@ -638,11 +682,26 @@ async function exportDiagnostics(): Promise<void> {
         class="button button--quiet"
         type="button"
         :disabled="scanning || recovering || recoveryScanBusy"
-        @click="scan"
+        @click="scan()"
       >
         扫描
       </button>
     </div>
+    <small
+      >检查原件与空间：盘点占用、寻找未关联原件。扫描：检查索引与引用，不解析所有原文件或联网检查。</small
+    >
+    <details>
+      <summary>深度检查</summary>
+      <p>逐项解析 JSON / 聊天原文件并检查外部链接，库越大或网络越慢，耗时越长。</p>
+      <button
+        class="button button--quiet"
+        type="button"
+        :disabled="scanning || recoveryScanBusy || cleanupBusy"
+        @click="scan(true)"
+      >
+        检查文件与链接
+      </button>
+    </details>
     <p v-if="inspectionError" role="alert">{{ inspectionError }}</p>
 
     <section v-if="browserStorage && !nativeStorage" class="resource-health__native">
@@ -755,6 +814,26 @@ async function exportDiagnostics(): Promise<void> {
     />
     <section v-if="accounting" class="resource-health__cleanup" aria-label="数据清理">
       <header><strong>数据清理</strong><small>只处理可精简或可确认的副本</small></header>
+      <div v-if="nativeStorage" class="resource-health__cleanup-row">
+        <span
+          ><strong>接收暂存文件</strong><small>逐项查看与手动清理 · 使用中的文件保留</small></span
+        >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="cleanupBusy"
+          @click="showingIntakeFiles = !showingIntakeFiles"
+        >
+          {{ showingIntakeFiles ? '收起列表' : '查看文件' }}
+        </button>
+      </div>
+      <NativeIntakeFiles
+        v-if="showingIntakeFiles"
+        :disabled="cleanupBusy && !intakeBusy"
+        @busy="intakeBusy = $event"
+        @changed="intakeFilesChanged"
+        @close="showingIntakeFiles = false"
+      />
       <div class="resource-health__cleanup-row">
         <span
           ><strong>查询摘要</strong
@@ -770,10 +849,10 @@ async function exportDiagnostics(): Promise<void> {
         <button
           class="button button--quiet"
           type="button"
-          :disabled="cleanupBusy"
+          :disabled="cleanupBusy || summariesCompact === true"
           @click="optimizeSummaries"
         >
-          {{ optimizingSummaries ? '正在精简…' : '精简摘要' }}
+          {{ optimizingSummaries ? '正在精简…' : summariesCompact ? '已精简' : '精简摘要' }}
         </button>
       </div>
       <div class="resource-health__cleanup-row">

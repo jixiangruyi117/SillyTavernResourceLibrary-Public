@@ -151,6 +151,7 @@ const PREVIEW_SCRIPTS_KEY = 'srl.preview.allowScripts'
 const PREVIEW_GREETING_PRELOAD_KEY = 'srl.preview.preloadGreetingResources'
 
 const PREVIEW_BEAUTIFICATION_PRELOAD_KEY = 'srl.preview.preloadBeautificationResources'
+const PREVIEW_DOWNLOAD_CONCURRENCY_KEY = 'srl.preview.increaseDownloadConcurrency'
 
 const CUSTOM_UI_CSS_KEY = 'srl.ui.customCss'
 
@@ -171,13 +172,19 @@ const SEARCH_HISTORY_LIMIT = 10
 export class BrowserStorageService {
   private readonly maintenance?: Pick<
     IndexedDbResourceHealthStorage,
-    'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory' | 'optimizeDerivedSummaries'
+    | 'legacyLibraryHistoryCleanup'
+    | 'clearLegacyLibraryHistory'
+    | 'optimizeDerivedSummaries'
+    | 'getSummaryCompactionStatus'
   >
 
   constructor(
     maintenance?: Pick<
       IndexedDbResourceHealthStorage,
-      'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory' | 'optimizeDerivedSummaries'
+      | 'legacyLibraryHistoryCleanup'
+      | 'clearLegacyLibraryHistory'
+      | 'optimizeDerivedSummaries'
+      | 'getSummaryCompactionStatus'
     >,
   ) {
     this.maintenance = maintenance
@@ -195,6 +202,10 @@ export class BrowserStorageService {
   async optimizeDerivedSummaries() {
     if (!this.maintenance) throw new Error('本机存储维护未初始化')
     return this.maintenance.optimizeDerivedSummaries()
+  }
+
+  async getSummaryCompactionStatus(): Promise<boolean | undefined> {
+    return this.maintenance?.getSummaryCompactionStatus()
   }
 
   exportStitchWork(): {
@@ -287,6 +298,7 @@ export class BrowserStorageService {
     if (value?.tavernSendContent !== undefined) this.setTavernSendContent(value.tavernSendContent)
     if (value?.modifiedResourceSyncTags !== undefined)
       this.setModifiedResourceSyncTags(value.modifiedResourceSyncTags)
+    // Device load preferences require confirmation on this device rather than backup opt-in.
     this.setPreviewPolicy({
       allowRemoteResources: value?.previewPolicy?.allowRemoteResources === true,
       allowScripts: value?.previewPolicy?.allowScripts === true,
@@ -406,6 +418,8 @@ export class BrowserStorageService {
         preloadGreetingResources: localStorage.getItem(PREVIEW_GREETING_PRELOAD_KEY) === 'true',
         preloadBeautificationResources:
           localStorage.getItem(PREVIEW_BEAUTIFICATION_PRELOAD_KEY) === 'true',
+        increaseDownloadConcurrency:
+          localStorage.getItem(PREVIEW_DOWNLOAD_CONCURRENCY_KEY) === 'true',
       }
     } catch {
       return {
@@ -413,6 +427,7 @@ export class BrowserStorageService {
         allowScripts: false,
         preloadGreetingResources: false,
         preloadBeautificationResources: false,
+        increaseDownloadConcurrency: false,
       }
     }
   }
@@ -423,6 +438,7 @@ export class BrowserStorageService {
       allowRemoteResources: value.allowScripts || value.allowRemoteResources,
       preloadGreetingResources: value.preloadGreetingResources === true,
       preloadBeautificationResources: value.preloadBeautificationResources === true,
+      increaseDownloadConcurrency: value.increaseDownloadConcurrency === true,
     }
     try {
       localStorage.setItem(PREVIEW_REMOTE_RESOURCES_KEY, String(normalized.allowRemoteResources))
@@ -434,6 +450,10 @@ export class BrowserStorageService {
       localStorage.setItem(
         PREVIEW_BEAUTIFICATION_PRELOAD_KEY,
         String(normalized.preloadBeautificationResources),
+      )
+      localStorage.setItem(
+        PREVIEW_DOWNLOAD_CONCURRENCY_KEY,
+        String(normalized.increaseDownloadConcurrency),
       )
       window.dispatchEvent(new CustomEvent(PREVIEW_POLICY_EVENT, { detail: normalized }))
     } catch {

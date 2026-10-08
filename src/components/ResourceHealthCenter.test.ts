@@ -17,9 +17,20 @@ const api = vi.hoisted(() => ({
   mediaUsage: vi.fn(),
   clearMedia: vi.fn(),
   optimize: vi.fn(),
+  compactStatus: vi.fn(),
+  intakeList: vi.fn(),
+  intakeRemove: vi.fn(),
+}))
+vi.mock('../utils/ShareTargetIntake', () => ({
+  listNativeIntakeFiles: api.intakeList,
+  removeNativeIntakeFile: api.intakeRemove,
 }))
 vi.mock('../core/AppContainer', () => ({
-  browserStorageService: { getHealth: api.browserHealth, optimizeDerivedSummaries: api.optimize },
+  browserStorageService: {
+    getHealth: api.browserHealth,
+    optimizeDerivedSummaries: api.optimize,
+    getSummaryCompactionStatus: api.compactStatus,
+  },
   communitySourceService: {
     downloadedMediaUsage: api.mediaUsage,
     clearDownloadedMedia: api.clearMedia,
@@ -63,7 +74,9 @@ const report = { created: 1, updated: 0, existing: 0, unsupported: 0, failed: 0,
 beforeEach(() => {
   vi.resetAllMocks()
   api.scan.mockResolvedValue([])
+  api.compactStatus.mockResolvedValue(false)
   api.mediaUsage.mockResolvedValue({ count: 0, bytes: 0 })
+  api.intakeList.mockResolvedValue([])
   api.info.mockResolvedValue({
     recoveryMetadataVersion: 1,
     totalBytes: 700,
@@ -96,6 +109,93 @@ beforeEach(() => {
   })
 })
 describe('ResourceHealthCenter recovery controls', () => {
+  it('separates quick index scanning from explicit original and link inspection', async () => {
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '扫描')!
+      .trigger('click')
+    await flushPromises()
+    expect(api.scan).toHaveBeenLastCalledWith({ deep: false })
+    expect(api.info).not.toHaveBeenCalled()
+    expect(api.candidates).not.toHaveBeenCalled()
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查文件与链接')!
+      .trigger('click')
+    await flushPromises()
+    expect(api.scan).toHaveBeenLastCalledWith({ deep: true })
+    expect(view.text()).toContain('本次完整检查未发现问题')
+    expect(api.accounting).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
+  it('shows verified compact summaries as already compact and invalidates after a resource change', async () => {
+    api.compactStatus.mockResolvedValue(true)
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查原件与空间')!
+      .trigger('click')
+    await flushPromises()
+    expect(
+      view
+        .findAll('button')
+        .find((button) => button.text() === '已精简')!
+        .attributes('disabled'),
+    ).toBeDefined()
+    expect(api.optimize).not.toHaveBeenCalled()
+    domainEvents.emit('ResourceImported', { resourceIds: ['new-resource'], operationId: 'import' })
+    await flushPromises()
+    expect(view.findAll('button').some((button) => button.text() === '精简摘要')).toBe(true)
+    view.unmount()
+  })
+
+  it('marks a successful compaction without repeating original or space scans', async () => {
+    api.confirm.mockResolvedValue(true)
+    api.optimize.mockResolvedValue({ beforeBytes: 100, afterBytes: 30 })
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查原件与空间')!
+      .trigger('click')
+    await flushPromises()
+    const reads = api.info.mock.calls.length
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '精简摘要')!
+      .trigger('click')
+    await flushPromises()
+    expect(api.optimize).toHaveBeenCalledOnce()
+    expect(api.info).toHaveBeenCalledTimes(reads)
+    expect(api.scan).not.toHaveBeenCalled()
+    expect(
+      view
+        .findAll('button')
+        .find((button) => button.text() === '已精简')!
+        .attributes('disabled'),
+    ).toBeDefined()
+    view.unmount()
+  })
+  it('opens intake inventory on demand without clearing files or rescanning originals', async () => {
+    const view = mount(ResourceHealthCenter)
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '检查原件与空间')!
+      .trigger('click')
+    await flushPromises()
+    const reads = api.info.mock.calls.length
+    await view
+      .findAll('button')
+      .find((button) => button.text() === '查看文件')!
+      .trigger('click')
+    await flushPromises()
+    expect(api.intakeList).toHaveBeenCalledOnce()
+    expect(api.intakeRemove).not.toHaveBeenCalled()
+    expect(api.info).toHaveBeenCalledTimes(reads)
+    expect(view.text()).toContain('没有接收暂存文件')
+    view.unmount()
+  })
   it('keeps numeric space inspection available when locked post media cannot be decoded', async () => {
     api.mediaUsage.mockRejectedValue(new Error('请先解锁保险库'))
     const view = mount(ResourceHealthCenter)
@@ -386,7 +486,7 @@ describe('ResourceHealthCenter recovery controls', () => {
     const view = mount(ResourceHealthCenter)
     await view
       .findAll('.resource-health__summary button')
-      .find((button) => button.text() === '扫描')!
+      .find((button) => button.text() === '检查原件与空间')!
       .trigger('click')
     await flushPromises()
     expect(view.text()).toContain('找回的角色')
@@ -403,7 +503,7 @@ describe('ResourceHealthCenter recovery controls', () => {
         fileName: '崩溃前角色卡.json',
       },
     ])
-    expect(api.scan).toHaveBeenCalledOnce()
+    expect(api.scan).not.toHaveBeenCalled()
     expect(api.candidates).toHaveBeenCalledTimes(2)
     expect(view.emitted('library-changed')).toHaveLength(1)
     view.unmount()
@@ -412,14 +512,14 @@ describe('ResourceHealthCenter recovery controls', () => {
     const view = mount(ResourceHealthCenter)
     await view
       .findAll('.resource-health__summary button')
-      .find((button) => button.text() === '扫描')!
+      .find((button) => button.text() === '检查原件与空间')!
       .trigger('click')
     await flushPromises()
     const repair = view.findAll('button').find((button) => button.text().includes('补全以前'))!
     await repair.trigger('click')
     await flushPromises()
     expect(api.repair).toHaveBeenCalledOnce()
-    expect(api.scan).toHaveBeenCalledOnce()
+    expect(api.scan).not.toHaveBeenCalled()
     expect(view.text()).toContain('不能与总量相加')
     expect(view.text()).toContain('本地恢复副本')
     expect(view.text()).toContain('其中缩略图')
@@ -457,7 +557,7 @@ describe('ResourceHealthCenter recovery controls', () => {
     const view = mount(ResourceHealthCenter)
     await view
       .findAll('.resource-health__summary button')
-      .find((button) => button.text() === '扫描')!
+      .find((button) => button.text() === '检查原件与空间')!
       .trigger('click')
     await flushPromises()
     expect(api.preview).not.toHaveBeenCalled()

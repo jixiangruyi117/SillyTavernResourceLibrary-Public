@@ -349,7 +349,7 @@ let queued=false;let viewportHeight=0;let observer;
 const hasViewportBoundLayer=()=>Array.from(document.body?.querySelectorAll('*')||[]).some(element=>{const style=getComputedStyle(element);return style.position==='fixed'&&style.top!=='auto'&&style.bottom!=='auto'});
 const measure=()=>{queued=false;const body=document.body;if(!body)return;const contentHeight=body.scrollHeight;const viewportBound=${hasDeclaredViewportMinimum ? 'true' : 'hasViewportBoundLayer()'};const height=viewportBound&&viewportHeight>0?Math.max(contentHeight,viewportHeight):contentHeight;const frame=window.frameElement;if(frame&&Number.isFinite(height)&&height>0)frame.style.height=Math.ceil(height)+'px';parent.postMessage({type:'SRL_FRAME_LAYOUT_READY',viewportBound,height:Math.ceil(height)},'*')};
 const queue=()=>{if(queued)return;queued=true;requestAnimationFrame(measure)};
-const updateViewport=value=>{const next=Number(value);if(!Number.isFinite(next)||next<=0)return;viewportHeight=Math.ceil(next);rootStyle().setProperty('--TH-viewport-height',viewportHeight+'px');queue()};
+const updateViewport=value=>{const next=Math.ceil(Number(value));if(!Number.isFinite(next)||next<=0||next===viewportHeight)return;viewportHeight=next;rootStyle().setProperty('--TH-viewport-height',viewportHeight+'px');queue()};
 const rootStyle=()=>document.documentElement.style;
 const mount=()=>{const body=document.body;if(!body)return;queue();if(typeof ResizeObserver==='function'){observer=new ResizeObserver(queue);observer.observe(body)}else{observer=new MutationObserver(queue);observer.observe(body,{subtree:true,childList:true,attributes:true,characterData:true})}};
 window.addEventListener('message',event=>{if(event.data?.type==='SRL_VIEWPORT_HEIGHT')updateViewport(event.data.height)});

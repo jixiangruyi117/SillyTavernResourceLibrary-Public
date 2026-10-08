@@ -1,6 +1,7 @@
+import type { BackupScopeId } from './BackupScopeRegistry'
 import { collectCommunitySourceLocalAssetIds } from './CommunitySourceAttachmentArchive'
 import { includeResourceGalleryIds } from '../types/ResourceGallery'
-import type { PreparedRestore } from '../types/Backup'
+import type { ArchivePortableData, PreparedRestore } from '../types/Backup'
 import type { CloudBackupItem } from '../types/CloudBackup'
 import {
   isUserPersonaAvatarAttachment,
@@ -193,18 +194,22 @@ export function listStructuredBackupResources(snapshot: StructuredSnapshot): Res
   }))
 }
 
-export async function listBackupResourceSummaries(
+export async function readBackupRestoreContents(
   item: CloudBackupItem,
   readStructuredSnapshot: () => Promise<StructuredSnapshot>,
   downloadBackup: () => Promise<Blob>,
   resourceService: Pick<ResourceService, 'listResourceListSummaries'>,
   categoryService: Pick<CategoryService, 'list'>,
   restoreService: Pick<RestoreService, 'prepare'>,
-): Promise<ResourceSummary[]> {
+): Promise<{ resources: ResourceSummary[]; portableData?: ArchivePortableData }> {
   if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
-    return listStructuredBackupResources(await readStructuredSnapshot())
+    const snapshot = await readStructuredSnapshot()
+    return {
+      resources: listStructuredBackupResources(snapshot),
+      portableData: snapshot.portableData,
+    }
   }
-  return listArchiveBackupResources(
+  return readArchiveRestoreContents(
     item,
     downloadBackup,
     resourceService,
@@ -213,13 +218,13 @@ export async function listBackupResourceSummaries(
   )
 }
 
-export async function listArchiveBackupResources(
+async function readArchiveRestoreContents(
   item: Pick<CloudBackupItem, 'archiveName' | 'objectKey'>,
   downloadBackup: () => Promise<Blob>,
   resourceService: Pick<ResourceService, 'listResourceListSummaries'>,
   categoryService: Pick<CategoryService, 'list'>,
   restoreService: Pick<RestoreService, 'prepare'>,
-): Promise<ResourceListSummary[]> {
+): Promise<{ resources: ResourceListSummary[]; portableData?: ArchivePortableData }> {
   const blob = await downloadBackup()
   const [resources, categories] = await Promise.all([
     resourceService.listResourceListSummaries(),
@@ -232,10 +237,56 @@ export async function listArchiveBackupResources(
     true,
   )
   try {
-    return [...prepared.resources, ...(prepared.galleryOwners ?? [])].map((resource) =>
-      toResourceListSummary(resource),
-    )
+    return {
+      resources: [...prepared.resources, ...(prepared.galleryOwners ?? [])].map((resource) =>
+        toResourceListSummary(resource),
+      ),
+      portableData: prepared.portableData,
+    }
   } finally {
     await prepared.dispose?.()
+  }
+}
+
+const PORTABLE_SCOPE_FIELDS: Partial<
+  Record<BackupScopeId, readonly (keyof Omit<ArchivePortableData, 'version'>)[]>
+> = {
+  'extra.resourceGallery': ['resourceGalleryCategories'],
+  'extra.externalApps': ['externalApps'],
+  'extra.chatReader': ['chatReader'],
+  'extra.assistantData': ['assistantData'],
+  'extra.aiTaggingState': ['aiTaggingState'],
+  'extra.stitchWork': ['stitchWork'],
+  'extra.frontendWorkshopComponents': ['frontendWorkshopComponents'],
+  'extra.appearance': ['appearance'],
+  'extra.generalPreferences': ['generalPreferences'],
+  'extra.characterDraw': ['characterDraw'],
+  'extra.cloudBackup': ['cloudBackup'],
+  'extra.credentials': ['mainApiProfiles', 'credentials'],
+  'extra.plaintextSecretCopy': ['plaintextSecretCopies'],
+}
+
+export function portableRestoreScopeIds(data?: ArchivePortableData): BackupScopeId[] {
+  return data
+    ? Object.entries(PORTABLE_SCOPE_FIELDS)
+        .filter(([, fields]) => fields.some((field) => data[field] !== undefined))
+        .map(([id]) => id as BackupScopeId)
+    : []
+}
+
+export function selectRestorePortableData(
+  data: ArchivePortableData | undefined,
+  scopeIds?: readonly BackupScopeId[],
+): ArchivePortableData | undefined {
+  if (!data || scopeIds === undefined) return data
+  return {
+    version: 1,
+    ...Object.fromEntries(
+      scopeIds.flatMap((id) =>
+        (PORTABLE_SCOPE_FIELDS[id] ?? [])
+          .filter((field) => data[field] !== undefined)
+          .map((field) => [field, data[field]]),
+      ),
+    ),
   }
 }

@@ -3,6 +3,7 @@ import process from 'node:process'
 import console from 'node:console'
 import { Buffer } from 'node:buffer'
 import { TextDecoder } from 'node:util'
+import { URL } from 'node:url'
 import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
@@ -10,6 +11,13 @@ import { unzipSync } from 'fflate'
 import { officialAppIds } from './Check-FeatureContracts.mjs'
 
 const directory = resolve(process.argv[2] ?? 'dist')
+// Read the shared runtime policy without requiring Node's optional TypeScript loader.
+const maxPackageFiles = Number(
+  readFileSync(new URL('../src/core/OfficialAppHostApi.ts', import.meta.url), 'utf8').match(
+    /export const OFFICIAL_APP_MAX_PACKAGE_FILES = (\d+)/u,
+  )?.[1],
+)
+assert.ok(Number.isSafeInteger(maxPackageFiles) && maxPackageFiles > 0)
 const read = (path) => readFileSync(resolve(directory, path.replace(/^\//u, '')))
 const json = (path) => JSON.parse(read(path).toString('utf8'))
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -132,7 +140,7 @@ for (const [id, download] of Object.entries(catalog.apps)) {
   assert.equal(manifest.entry, download.entry)
   assert.equal(manifest.runtimeEntry, download.runtimeEntry)
   assert.ok(manifest.hostFiles.some((file) => file.path === manifest.runtimeEntry))
-  assert.ok(manifest.files.length <= 128)
+  assert.ok(Object.keys(archive).length <= maxPackageFiles, `${id}: too many archive entries`)
   assert.equal(Object.keys(archive).length, manifest.files.length + 1)
   assert.ok(manifest.files.some((file) => file.path === manifest.entry && !file.bundled))
   for (const file of manifest.files) {
@@ -182,6 +190,10 @@ for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
     assert.equal(bytes.length, download.downloadBytes, `${build.name}/${id}`)
     assert.equal(hash(bytes), download.sha256, `${build.name}/${id}`)
     const archive = unzipSync(bytes)
+    assert.ok(
+      Object.keys(archive).length <= maxPackageFiles,
+      `${build.name}/${id}: too many archive entries`,
+    )
     if (id === 'frontendWorkshop')
       needsLegacyWorkbenchCover ||= Object.entries(archive).some(
         ([path, content]) =>

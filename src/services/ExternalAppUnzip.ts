@@ -1,10 +1,12 @@
 import { Unzip, UnzipInflate } from 'fflate'
 import { zipArchiveChunks } from '../utils/ZipArchiveStream'
+import { OFFICIAL_APP_MAX_PACKAGE_FILES } from '../core/OfficialAppHostApi'
 export const MAX_PACKAGE_BYTES = 50 * 1024 * 1024
 
 export const MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
 
 export const MAX_EXTRACTED_FILES = 128
+export type PackageFileLimit = typeof MAX_EXTRACTED_FILES | typeof OFFICIAL_APP_MAX_PACKAGE_FILES
 
 export const MAX_SINGLE_FILE_BYTES = 25 * 1024 * 1024
 
@@ -25,7 +27,12 @@ export function requireSafePath(value: string, label: string): string {
 }
 
 /** Bound actual inflated bytes as well as directory sizes, on both worker and fallback paths. */
-export async function boundedUnzipPackage(bytes: ArrayBuffer): Promise<Record<string, Uint8Array>> {
+export async function boundedUnzipPackage(
+  bytes: ArrayBuffer,
+  maxFiles: PackageFileLimit = MAX_EXTRACTED_FILES,
+): Promise<Record<string, Uint8Array>> {
+  if (maxFiles !== MAX_EXTRACTED_FILES && maxFiles !== OFFICIAL_APP_MAX_PACKAGE_FILES)
+    throw new Error('安装包文件数量上限无效')
   const files: Record<string, Uint8Array> = Object.create(null)
   const paths = new Set<string>()
   let total = 0
@@ -36,7 +43,7 @@ export async function boundedUnzipPackage(bytes: ArrayBuffer): Promise<Record<st
     const path = requireSafePath(entry.name, '安装包')
     if (paths.has(path)) throw new Error('安装包包含重复文件')
     paths.add(path)
-    if (paths.size > MAX_EXTRACTED_FILES) throw new Error('安装包文件数量超过限制')
+    if (paths.size > maxFiles) throw new Error('安装包文件数量超过限制')
     if (entry.compression !== 0 && entry.compression !== 8)
       throw new Error('安装包使用了不支持的压缩算法')
     declared += entry.originalSize ?? 0

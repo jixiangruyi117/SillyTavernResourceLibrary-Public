@@ -47,7 +47,11 @@ import { readNativeResourceObject } from './NativeResourceFileMirror'
 import { isAndroidNativeAppDatabaseActive, runAndroidNativeRead } from './AndroidNativeDexieCore'
 import { decodeAppDatabaseValue, encodeAppDatabaseKey } from './AndroidAppDatabaseMigration'
 import { nativeAppDatabase } from './NativeAppDatabaseBridge'
-import { readResourceMetadata, readResourceSource } from './ResourceReadSource'
+import {
+  readResourceMetadata,
+  readResourceMetadataBatch,
+  readResourceSource,
+} from './ResourceReadSource'
 
 import {
   cloneResourceForStorage,
@@ -589,14 +593,22 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         ])
         for (const store of ['resources', 'resourceVersions'] as const) {
           const ids = await this.database[store].toCollection().primaryKeys()
-          for (const id of ids) {
-            const record = await readResourceMetadata(this.database, id, store)
-            if (!record) throw new Error('摘要精简期间原始记录缺失，未提交修改')
-            const light = await Dexie.waitFor(this.compactStoredSummary(record, store))
+          for (let offset = 0; offset < ids.length; offset += 64) {
+            const records = await readResourceMetadataBatch(
+              this.database,
+              ids.slice(offset, offset + 64),
+              store,
+            )
+            const lights: StoredResourceSummary[] = []
+            for (const record of records) {
+              if (!record) throw new Error('摘要精简期间原始记录缺失，未提交修改')
+              const light = await Dexie.waitFor(this.compactStoredSummary(record, store))
+              lights.push(light)
+            }
             if (store === 'resources') {
-              await this.database.resourceSummaries.put(light)
-              await this.database.resourceListSummaries.put(light)
-            } else await this.database.resourceVersionSummaries.put(light)
+              await this.database.resourceSummaries.bulkPut(lights)
+              await this.database.resourceListSummaries.bulkPut(lights)
+            } else await this.database.resourceVersionSummaries.bulkPut(lights)
           }
         }
         await this.database.settings.put({
@@ -604,6 +616,46 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
           value: true,
           updatedAt: Date.now(),
         })
+      },
+    )
+  }
+
+  async areDerivedSummariesCompact(): Promise<boolean> {
+    const tables = [
+      this.database.resourceSummaries,
+      this.database.resourceListSummaries,
+      this.database.resourceVersionSummaries,
+    ]
+    return this.database.transaction(
+      'r',
+      [...tables, this.database.resources, this.database.resourceVersions],
+      async () => {
+        const currentCount = await this.database.resources.count(),
+          versionCount = await this.database.resourceVersions.count()
+        for (const table of tables) {
+          const ids = await table.toCollection().primaryKeys()
+          if (
+            ids.length !==
+            (table === this.database.resourceVersionSummaries ? versionCount : currentCount)
+          )
+            return false
+          for (let offset = 0; offset < ids.length; offset += 64) {
+            for (const stored of await table.bulkGet(ids.slice(offset, offset + 64))) {
+              if (!stored) return false
+              const summary = this.vault
+                ? await Dexie.waitFor(this.vault.decodeResourceSummary(stored))
+                : (stored as ResourceSummary)
+              const compact = toResourceListSummary(summary)
+              if (
+                summary.thumbnailBlob ||
+                'originalBlob' in summary ||
+                JSON.stringify(summary.metadata) !== JSON.stringify(compact.metadata)
+              )
+                return false
+            }
+          }
+        }
+        return true
       },
     )
   }

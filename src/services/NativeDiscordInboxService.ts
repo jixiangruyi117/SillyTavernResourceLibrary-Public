@@ -16,6 +16,7 @@ export type DiscordInboxResult =
   | (DiscordInboxResultBase & {
       kind: 'post'
       state: 'saved' | 'waiting_binding' | 'failed'
+      messageKey?: string
     })
 
 interface Receiver {
@@ -123,17 +124,18 @@ export function checkNativeDiscordInboxTarget(workerUrl: string, libraryId: stri
 export async function notifyNativeDiscordInboxResult(result: DiscordInboxResult): Promise<void> {
   if (!isNativeDiscordInboxAvailable()) return
   try {
-    const fields = {
-      id: result.id,
-      workerUrl: result.workerUrl,
-      libraryId: result.libraryId,
-      name: result.name,
-    }
-    if (result.kind === 'resource') {
-      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
-    } else {
-      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
-    }
+    const { id, workerUrl, libraryId, name } = result
+    const base = { id, workerUrl, libraryId, name }
+    await receiver.notifyCloudInboxResult(
+      result.kind === 'resource'
+        ? { ...base, kind: 'resource', state: result.state }
+        : {
+            ...base,
+            kind: 'post',
+            state: result.state,
+            ...(result.messageKey ? { messageKey: result.messageKey } : {}),
+          },
+    )
   } catch {
     // Notification permission or an older APK must not change the persisted result.
   }

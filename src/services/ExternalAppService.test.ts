@@ -81,6 +81,23 @@ afterEach(async () => {
 })
 
 describe('ExternalAppService', () => {
+  it.each([128, 129])(
+    'keeps the third-party package boundary at %i total archive entries',
+    async (total) => {
+      const service = createService(`third-party-file-boundary-${total}-${crypto.randomUUID()}`)
+      const extras = Object.fromEntries(
+        Array.from({ length: total - 5 }, (_, index) => [`extra-${index}.txt`, 'fixture']),
+      )
+      const installing = service.install(createPackage(manifest, extras))
+      if (total === 128) {
+        await installing
+        expect(await service.getSummary(manifest.id)).toBeDefined()
+      } else {
+        await expect(installing).rejects.toThrow('安装包文件数量超过限制')
+        expect(await service.getSummary(manifest.id)).toBeUndefined()
+      }
+    },
+  )
   it('reads live installation summaries without loading executable package data', async () => {
     const database = new AppDatabase(`summary-${crypto.randomUUID()}`)
     databases.push(database)

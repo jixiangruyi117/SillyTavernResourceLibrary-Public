@@ -28,6 +28,14 @@ describe('assistant focused work and result-only replies', () => {
 })
 
 describe('assistant verified feature guidance', () => {
+  it('解释多线路预览下载的确认、平台范围和设备负担', () => {
+    const guide = findAssistantFeatureGuides('增加多线路下载怎么开启')[0]
+    expect(guide?.id).toBe('appearance')
+    expect(guide?.steps.join()).toContain('HTML / CSS 预览安全')
+    expect(guide?.steps.join()).toContain('3路提高到最多6路')
+    expect(guide?.steps.join()).toContain('网页普通图片仍由浏览器调度')
+    expect(guide?.troubleshooting.join()).toContain('不保证两倍速度')
+  })
   it.each(['怎么从dc保存帖子', 'discord的帖子内容保存', '收件箱配对', '保存帖子到SRL'])(
     'finds dedicated post-saving guidance for %s instead of file download',
     (query) => {

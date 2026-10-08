@@ -22,7 +22,68 @@ public class ShareReceiverPlugin extends Plugin {
     private static final Object LISTENER_LOCK = new Object();
     private static WeakReference<ShareReceiverPlugin> activePlugin = new WeakReference<>(null);
 
+    private Set<String> intakeActiveTokens() throws Exception {
+        Set<String> active = NativeDiscordDownloadWorker.activeTokens(getContext());
+        active.addAll(NativeDiscordDownloadWorker.transferringTokens());
+        return active;
+    }
+
+    @PluginMethod public void listIntakeFiles(PluginCall call) {
+        NativeExecutors.ioLimited().execute(() -> {
+            try {
+                synchronized (NativeDiscordDownloadWorker.class) {
+                    JSArray entries = new JSArray();
+                    File folder = new File(getContext().getFilesDir(), CACHE_FOLDER);
+                    for (ShareReceiverIntakeFiles.Entry entry : ShareReceiverIntakeFiles.list(folder,
+                        intakeActiveTokens(), NativeArchiveTasks.retainedSourcePaths(getContext()), NativeShareImportService.isReceiving()))
+                        entries.put(entry.json());
+                    call.resolve(new JSObject().put("entries", entries));
+                }
+            } catch (Exception error) { call.reject("无法列出接收暂存：" + error.getMessage(), error); }
+        });
+    }
+
+    @PluginMethod public void removeIntakeFile(PluginCall call) {
+        NativeExecutors.ioLimited().execute(() -> {
+            try {
+                synchronized (NativeDiscordDownloadWorker.class) {
+                    String token = call.getString("token", "");
+                    long bytes = ShareReceiverIntakeFiles.remove(new File(getContext().getFilesDir(), CACHE_FOLDER),
+                        token, call.getString("snapshot", ""), intakeActiveTokens(),
+                        NativeArchiveTasks.retainedSourcePaths(getContext()), NativeShareImportService.isReceiving());
+                    if (NativeDiscordDownloadWorker.validToken(token)) NativeDiscordDownloadWorker.clearNotification(getContext(), token);
+                    call.resolve(new JSObject().put("removedBytes", bytes));
+                }
+            } catch (Exception error) { call.reject("清理接收暂存失败：" + error.getMessage(), error); }
+        });
+    }
+
     @Override public void load() { synchronized (LISTENER_LOCK) { activePlugin = new WeakReference<>(this); } }
+
+    @PluginMethod public void removeIntakeReceipts(PluginCall call) {
+        NativeExecutors.ioLimited().execute(() -> {
+            try {
+                JSArray items = call.getArray("items", new JSArray());
+                if (items.length() > 64) throw new java.io.IOException("回执清理每批最多64项");
+                JSArray removed = new JSArray(), skipped = new JSArray(); long bytes = 0;
+                synchronized (NativeDiscordDownloadWorker.class) {
+                    File folder = new File(getContext().getFilesDir(), CACHE_FOLDER);
+                    Set<String> active = intakeActiveTokens(), retained = NativeArchiveTasks.retainedSourcePaths(getContext());
+                    boolean receiving = NativeShareImportService.isReceiving();
+                    for (int index = 0; index < items.length(); index++) {
+                        JSONObject item = items.optJSONObject(index);
+                        String token = item == null ? "" : item.optString("token");
+                        try {
+                            if (item == null) throw new java.io.IOException("回执标识无效，保留");
+                            bytes += ShareReceiverIntakeFiles.removeReceipt(folder, token, item.optString("snapshot"), active, retained, receiving);
+                            removed.put(token);
+                        } catch (Exception error) { skipped.put(new JSONObject().put("token", token).put("message", error.getMessage())); }
+                    }
+                }
+                call.resolve(new JSObject().put("removedTokens", removed).put("removedBytes", bytes).put("skipped", skipped));
+            } catch (Exception error) { call.reject("清理回执失败：" + error.getMessage(), error); }
+        });
+    }
 
     static void notifyShareReady() {
         ShareReceiverPlugin plugin;
@@ -233,7 +294,7 @@ public class ShareReceiverPlugin extends Plugin {
         try {
             NativeDiscordInboxService.notifyResult(getContext(), call.getString("kind", ""),
                 call.getString("id", ""), call.getString("workerUrl", ""), call.getString("libraryId", ""),
-                call.getString("name", ""), call.getString("state", ""));
+                call.getString("name", ""), call.getString("state", ""), call.getString("messageKey", ""));
             call.resolve();
         } catch (Exception error) { call.reject("收件结果通知未能显示"); }
     }
@@ -248,9 +309,12 @@ public class ShareReceiverPlugin extends Plugin {
         } catch (Exception error) { call.reject("自动绑定通知未能显示"); }
     }
     static void notifyCloudInboxReady(boolean running) {
+        notifyCloudInboxReady(running, false);
+    }
+    static void notifyCloudInboxReady(boolean running, boolean postsSaved) {
         ShareReceiverPlugin plugin;
         synchronized (LISTENER_LOCK) { plugin = activePlugin.get(); }
-        if (plugin != null) plugin.notifyListeners("cloudInboxReady", new JSObject().put("running", running));
+        if (plugin != null) plugin.notifyListeners("cloudInboxReady", new JSObject().put("running", running).put("postsSaved", postsSaved), postsSaved);
     }
 
     @PluginMethod
@@ -264,7 +328,9 @@ public class ShareReceiverPlugin extends Plugin {
                 File ready = new File(folder, staged + ".json"), payload = new File(folder, staged);
                 File source = new File(folder, token + ".json");
                 JSObject result = new JSObject();
+                boolean active;
                 synchronized (NativeDiscordDownloadWorker.class) {
+                    active = NativeDiscordDownloadWorker.isActiveToken(getContext(), token);
                     JSONObject metadata = readMetadata(ready.isFile() ? ready : source);
                     assertCloudTarget(metadata, call.getString("libraryId", ""), call.getString("workerUrl", ""));
                     result.put("error", metadata.optString("error", ""));
@@ -276,12 +342,15 @@ public class ShareReceiverPlugin extends Plugin {
                     if (nativeImport != null) {
                         JSObject outcome = new JSObject(nativeImport.toString());
                         outcome.put("automaticBindingPending", metadata.optBoolean("cloudAutoBindingPending", false));
+                        outcome.put("notificationPosted", NativeDiscordInboxService.resourceResultNotificationPosted(metadata,
+                            NativeDiscordInboxService.resourceNotificationState(nativeImport)));
+                        outcome.put("cloudAckPending", metadata.optBoolean("nativeAckPending", true));
                         result.put("nativeImportOutcome", outcome);
                     }
                     if (recoverCloudReceipt(folder, token, call.getString("libraryId", ""), call.getString("workerUrl", ""))) {
                         String importState = nativeImport == null ? "" : nativeImport.optString("state");
                         if (!"imported".equals(importState) && !"duplicate_file".equals(importState)
-                            && !"duplicate_card".equals(importState)) {
+                            && !"duplicate_card".equals(importState) && cloudResourceReadyForForeground(metadata, active)) {
                             JSObject file = new JSObject(metadata.toString());
                             file.put("uri", Uri.fromFile(payload).toString());
                             result.put("file", file);
@@ -290,10 +359,16 @@ public class ShareReceiverPlugin extends Plugin {
                 }
                 // Queued/running work remains active even while waiting for network. Finished or
                 // cancelled work without a published file must not leave the WebView spinning.
-                if (!result.has("file")) result.put("active", NativeDiscordDownloadWorker.isActiveToken(getContext(), token));
+                if (!result.has("file")) result.put("active", active);
                 call.resolve(result);
             } catch (Exception error) { call.reject("无法读取云端资源下载进度：" + error.getMessage(), error); }
         });
+    }
+
+    static boolean cloudResourceReadyForForeground(JSONObject metadata, boolean active) {
+        // Download staging precedes native parsing. The WebView may only take over at its end,
+        // or after WorkManager has actually stopped (including process-death recovery).
+        return !active || metadata.optBoolean("nativeBackgroundImportFinished", false);
     }
 
     // Recover process death after a verified staging commit but before its download receipt was flushed.
@@ -454,6 +529,7 @@ public class ShareReceiverPlugin extends Plugin {
     }
 
     private void deleteStaleFiles(File folder, Set<String> active) {
+        if (NativeShareImportService.isReceiving()) return;
         File[] files = folder.listFiles();
         if (files == null) return;
         long cutoff = System.currentTimeMillis() - STALE_FILE_AGE_MS;

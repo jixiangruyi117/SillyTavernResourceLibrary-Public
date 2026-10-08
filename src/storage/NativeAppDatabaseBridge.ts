@@ -50,7 +50,12 @@ interface NativeAppDatabasePlugin {
     store: string
   }): Promise<{ records: number; files: number; bytes: number }>
   getRecord(options: { store: string; key: string }): Promise<{ found: boolean; value?: unknown }>
-  getRecords(options: { store: string; afterKey?: string; limit: number }): Promise<{
+  getRecords(options: {
+    store: string
+    afterKey?: string
+    limit: number
+    fields?: readonly string[]
+  }): Promise<{
     rows: Array<{ key: string; value: Record<string, unknown> }>
     nextKey?: string | null
   }>
@@ -232,12 +237,13 @@ export const nativeAppDatabase = {
     store: NativeAppDatabaseStore,
     afterKey: string | undefined,
     limit = 250,
+    fields?: readonly string[],
   ): Promise<{
     rows: Array<{ key: string; value: Record<string, unknown> }>
     nextKey?: string | null
   }> {
     assertAndroidDatabase()
-    return databasePlugin.getRecords({ store, afterKey, limit })
+    return databasePlugin.getRecords({ store, afterKey, limit, ...(fields ? { fields } : {}) })
   },
 
   async getRecordKeys(

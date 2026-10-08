@@ -23,7 +23,10 @@ import {
   type DiscordHandoffRequest,
 } from '../services/DiscordHandoffService'
 import { loadDiscordSourceConnectionSettings } from '../services/DiscordSourceSettingsService'
-import { notifyNativeDiscordInboxResult } from '../services/NativeDiscordInboxService'
+import {
+  notifyNativeDiscordInboxResult,
+  readNativeDiscordInboxState,
+} from '../services/NativeDiscordInboxService'
 import { autoBindPostToRecentCard, markPostForNextPng } from '../services/DiscordInboxAutoBinding'
 import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
 import type { NativeDeepLink } from '../core/NativeRuntime'
@@ -172,14 +175,24 @@ async function saveDelivery(
   const receiptId = envelope.delivery
     ? receiptKey(workerUrl, envelope.delivery.libraryId, envelope.delivery.id)
     : JSON.stringify([workerUrl, envelope.capture.canonicalUrl, envelope.capture.messageId])
-  const saved = await communitySourceService.saveDiscordCapture(envelope.capture, {
-    capturedAt: envelope.delivery?.capturedAt,
-    deferAttachmentLocalization: true,
-  })
+  const retained =
+    automatic && envelope.delivery?.libraryId
+      ? await communitySourceService.getSavedNativeDiscordDelivery(
+          envelope.capture,
+          { ...envelope.delivery, libraryId: envelope.delivery.libraryId },
+          workerUrl,
+        )
+      : undefined
+  const saved =
+    retained?.view ??
+    (await communitySourceService.saveDiscordCapture(envelope.capture, {
+      capturedAt: envelope.delivery?.capturedAt,
+      deferAttachmentLocalization: true,
+    }))
   if (!saved.messages.some((message) => message.messageId === envelope.capture.messageId))
     throw new Error('本机正文读回校验未完成，云端内容仍保留；请稍后重试。')
   onLocalSaved?.()
-  if (automatic && envelope.delivery?.libraryId) {
+  if (!retained && automatic && envelope.delivery?.libraryId) {
     const automationSettings = await discordInboxAutomationSettingsService
       .load()
       .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
@@ -205,7 +218,16 @@ async function saveDelivery(
   }
   const existingBindings = await communitySourceService.getSourceUsage(saved.source.id)
   const state: DeliveryState = existingBindings.length ? 'saved' : 'waiting_binding'
-  if (automatic && envelope.delivery?.libraryId)
+  // Native still owns this unfinished media phase and its ACK. Foreground consumes the body only.
+  if (retained?.attachmentState === 'pending') {
+    if (!(await readNativeDiscordInboxState()))
+      showTransientStatus(
+        '正文和已有绑定已保存；附件收件已停止，请显式开启收件模式继续原断点。',
+        6_000,
+      )
+    return { state, sourceKeyHash: saved.source.sourceKeyHash }
+  }
+  if (!retained?.notificationPosted && automatic && envelope.delivery?.libraryId)
     await notifyNativeDiscordInboxResult({
       kind: 'post',
       id: envelope.delivery.id,
@@ -213,6 +235,7 @@ async function saveDelivery(
       libraryId: envelope.delivery.libraryId,
       name: saved.source.title || envelope.capture.title || 'Discord 帖子',
       state,
+      ...(retained ? { messageKey: retained.messageKey } : {}),
     })
   window.dispatchEvent(
     new CustomEvent('srl:community-sources-changed', {
@@ -246,7 +269,8 @@ async function saveDelivery(
     }
   }
   if (acknowledgementError) throw acknowledgementError
-  queueAttachments(saved.source.id, envelope.capture.messageId)
+  if (retained?.attachmentState !== 'complete')
+    queueAttachments(saved.source.id, envelope.capture.messageId)
   return { state, sourceKeyHash: saved.source.sourceKeyHash }
 }
 
@@ -363,11 +387,14 @@ async function receiveInboxBatch(): Promise<void> {
   if (!settings.inboxLibraryId || !settings.inboxSecret) return
   progress('receiving')
   const seen = new Set<string>()
+  let cursor: string | undefined
+  let failedPosts = 0
+  let lastFailure = ''
   let currentPost: { id: string; name: string } | undefined
   try {
     for (let batch = 0; batch < 5 && !disposed; batch++) {
       assertInboxConnection(settings)
-      const listing = await listDiscordInboxJobs()
+      const listing = await listDiscordInboxJobs(cursor)
       const { jobs, hasMore } = listing
       const candidates = jobs.filter((job) => !seen.has(job.id)).slice(0, 20)
       if (!candidates.length) break
@@ -380,34 +407,61 @@ async function receiveInboxBatch(): Promise<void> {
         assertInboxConnection(settings)
         seen.add(job.id)
         currentPost = { id: job.id, name: job.title || 'Discord 帖子' }
-        const envelope = await receiveDiscordInboxJob(job.id)
-        assertInboxConnection(settings)
-        if (envelope.delivery?.libraryId !== settings.inboxLibraryId)
-          throw new Error('这条帖子属于其它收件库，未写入当前资源库。请检查默认目标。')
-        const { state } = await saveDelivery(
-          envelope,
-          (value) => {
-            assertInboxConnection(settings)
-            return acknowledgeDiscordInboxJob(job.id, value, {
+        try {
+          const envelope = await receiveDiscordInboxJob(job.id)
+          assertInboxConnection(settings)
+          if (envelope.delivery?.libraryId !== settings.inboxLibraryId)
+            throw new Error('这条帖子属于其它收件库，未写入当前资源库。请检查默认目标。')
+          const { state } = await saveDelivery(
+            envelope,
+            (value) => {
+              assertInboxConnection(settings)
+              return acknowledgeDiscordInboxJob(job.id, value, {
+                workerUrl: settings.workerBaseUrl,
+                libraryId: settings.inboxLibraryId!,
+              })
+            },
+            true,
+            settings.workerBaseUrl,
+            () => {
+              currentPost = undefined
+            },
+          )
+          currentPost = undefined
+          received++
+          if (state === 'waiting_binding') waitingBinding++
+          progress('receiving')
+        } catch (error) {
+          if (disposed) return
+          assertInboxConnection(settings)
+          if (vaultService.getStatus().locked) throw error
+          failedPosts++
+          lastFailure = inboxError(error)
+          if (currentPost)
+            await notifyNativeDiscordInboxResult({
+              kind: 'post',
+              ...currentPost,
               workerUrl: settings.workerBaseUrl,
               libraryId: settings.inboxLibraryId!,
+              state: 'failed',
             })
-          },
-          true,
-          settings.workerBaseUrl,
-          () => {
-            currentPost = undefined
-          },
-        )
-        currentPost = undefined
-        received++
-        if (state === 'waiting_binding') waitingBinding++
-        progress('receiving')
+          currentPost = undefined
+          progress('error', lastFailure)
+        }
       }
       if (!hasMore) break
+      const last = jobs.at(-1)!
+      const next = `${last.createdAt}:${last.id}`
+      if (next === cursor) break
+      cursor = next
     }
     await reconcileBoundSources(settings)
-    progress(vaultService.getStatus().locked ? 'locked' : 'ready')
+    if (failedPosts)
+      progress(
+        'error',
+        `${failedPosts} 条帖子未完成，云端内容仍保留；其它帖子已继续处理。${lastFailure}`,
+      )
+    else progress(vaultService.getStatus().locked ? 'locked' : 'ready')
   } catch (error) {
     if (currentPost)
       await notifyNativeDiscordInboxResult({

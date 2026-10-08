@@ -244,6 +244,7 @@ public final class NativeDiscordDownloadWorker extends Worker {
         metadata.remove("error");
         metadata.remove("downloadCancelled");
         metadata.remove("downloadFailures");
+        metadata.remove("nativeResultNotificationState");
         metadata.put("downloadWorkId", workId);
     }
 
@@ -285,7 +286,9 @@ public final class NativeDiscordDownloadWorker extends Worker {
 
     static Set<String> activeTokens(Context context) throws Exception {
         Set<String> result = new HashSet<>();
-        for (WorkInfo info : WorkManager.getInstance(context).getWorkInfosByTag(TAG).get()) {
+        WorkQuery query = WorkQuery.Builder.fromTags(java.util.Collections.singletonList(TAG))
+            .addStates(java.util.Arrays.asList(WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.BLOCKED)).build();
+        for (WorkInfo info : WorkManager.getInstance(context).getWorkInfos(query).get()) {
             if (info.getState().isFinished()) continue;
             for (String tag : info.getTags()) if (tag.startsWith(WORK_PREFIX)) result.add(tag.substring(WORK_PREFIX.length()));
         }
@@ -419,16 +422,6 @@ public final class NativeDiscordDownloadWorker extends Worker {
                     .put("nativeAckPending", metadata.has("cloudLibraryId") && importedOrDuplicate);
                 ready.put("nativeCharacterCardResult", processed);
                 NativeShareImportService.writeMetadata(folder, stagedToken, ready);
-                if (metadata.has("cloudLibraryId") && importedOrDuplicate) {
-                    try {
-                        boolean acknowledged = NativeDiscordInboxService.acknowledgeResource(getApplicationContext(),
-                            token.substring("discord-url-".length()), "imported", "");
-                        if (acknowledged) {
-                            ready.put("nativeAckPending", false);
-                            NativeShareImportService.writeMetadata(folder, stagedToken, ready);
-                        }
-                    } catch (Exception ignored) { /* Retried by the receive service or APK inbox. */ }
-                }
                 metadata.put("nativeCharacterCardResult", processed);
                 metadata.put("nativeImportOutcome", nativeImport);
             } catch (Exception parseError) {
@@ -459,22 +452,55 @@ public final class NativeDiscordDownloadWorker extends Worker {
             }
             boolean importedOrDuplicate = "imported".equals(importState)
                 || "duplicate_file".equals(importState) || "duplicate_card".equals(importState);
-            if (metadata.has("cloudLibraryId") && "waiting_version".equals(importState)) {
+            if (!isStopped() && metadata.has("cloudLibraryId") && "waiting_version".equals(importState)) {
                 try { NativeDiscordInboxService.acknowledgeResource(getApplicationContext(),
                     token.substring("discord-url-".length()), "waiting_version", "需要在前台确认历史版本"); }
                 catch (Exception ignored) { /* The receive service retries terminal acknowledgement. */ }
-            } else if (metadata.has("cloudLibraryId") && !importedOrDuplicate
+            } else if (!isStopped() && metadata.has("cloudLibraryId") && !importedOrDuplicate
                 && !"deferred".equals(importState) && !"foreground_required".equals(importState)) {
                 try { NativeDiscordInboxService.acknowledgeResource(getApplicationContext(),
                     token.substring("discord-url-".length()), "failed", nativeImport.optString("message", "原生解析或导入失败")); }
                 catch (Exception ignored) { /* The receive service retries terminal acknowledgement. */ }
             }
             String completionText = completionText(processed, nativeImport);
-            notifyFinished(getApplicationContext(), token, getId().toString(),
+            boolean completionNotified = false;
+            if (metadata.has("cloudLibraryId")) {
+                try {
+                    NativeDiscordInboxService.notifyResult(getApplicationContext(), "resource", token.substring("discord-url-".length()),
+                        metadata.getString("cloudWorkerUrl"), metadata.getString("cloudLibraryId"), metadata.optString("name", "云端资源"),
+                        NativeDiscordInboxService.resourceNotificationState(nativeImport));
+                    completionNotified = true;
+                } catch (Exception ignored) { /* A notification failure cannot change a committed import; resume can restore the notice. */ }
+            } else {
+                notifyFinished(getApplicationContext(), token, getId().toString(),
                 importedOrDuplicate ? metadata.optString("name", "云端资源") + "：" + ("imported".equals(importState) ? "解析成功并已导入" : "已存在，未重复添加")
-                    : metadata.has("cloudLibraryId") ? metadata.optString("name", "云端资源") + "：已下载" : "SRL 文件已就绪",
+                    : "SRL 文件已就绪",
                 completionText, false);
-            markCompletionNotificationPosted(getApplicationContext(), token);
+                completionNotified = true;
+            }
+            if (completionNotified) markCompletionNotificationPosted(getApplicationContext(), token);
+            // A complete cohort can bind and notify even while the WebView is suspended or
+            // the next cloud request fails. Incomplete older cohorts still retain their boundary.
+            if (!isStopped() && metadata.optBoolean("cloudAutoBindingPending", false)) {
+                try { NativeDiscordInboxService.reconcilePendingAutoBindings(getApplicationContext(), this::isStopped); }
+                catch (Exception ignored) { /* Retain the binding receipt for the existing check. */ }
+            }
+            if (!isStopped() && metadata.has("cloudLibraryId") && importedOrDuplicate) {
+                try {
+                    boolean acknowledged = NativeDiscordInboxService.acknowledgeResource(getApplicationContext(),
+                        token.substring("discord-url-".length()), "imported", "");
+                    if (acknowledged) synchronized (NativeDiscordDownloadWorker.class) {
+                        String stagedToken = NativeShareImportService.stagedToken(token, 0);
+                        File readyMetadata = new File(folder, stagedToken + ".json");
+                        // Foreground cleanup may have consumed this receipt while ACK was in flight.
+                        if (readyMetadata.isFile()) {
+                            JSONObject ready = NativeShareImportService.readMetadata(readyMetadata);
+                            ready.put("nativeAckPending", false);
+                            NativeShareImportService.writeMetadata(folder, stagedToken, ready);
+                        }
+                    }
+                } catch (Exception ignored) { /* Retried by the receive service or APK inbox. */ }
+            }
             ShareReceiverPlugin.notifyDiscordDownloadCompleted(token, getId().toString(), metadata.has("cloudLibraryId"));
             ShareReceiverPlugin.notifyShareReady();
             return Result.success();
@@ -631,8 +657,11 @@ public final class NativeDiscordDownloadWorker extends Worker {
             synchronized (NativeDiscordDownloadWorker.class) {
                 requireCurrent(source);
                 JSONObject metadata = NativeShareImportService.readMetadata(source);
-                notifyFinished(getApplicationContext(), token, getId().toString(),
-                    metadata.has("cloudLibraryId") ? metadata.optString("name", "云端资源") + "：下载失败" : "SRL 下载未完成", safeMessage(error), true);
+                if (metadata.has("cloudLibraryId")) NativeDiscordInboxService.notifyResult(getApplicationContext(), "resource",
+                    token.substring("discord-url-".length()), metadata.getString("cloudWorkerUrl"), metadata.getString("cloudLibraryId"),
+                    metadata.optString("name", "云端资源"), "failed");
+                else notifyFinished(getApplicationContext(), token, getId().toString(),
+                    "SRL 下载未完成", safeMessage(error), true);
                 // WorkInfo may still be RUNNING; persisted failed metadata is already visible to SRL.
                 ShareReceiverPlugin.notifyDiscordDownloadFailed(token, getId().toString(), metadata.has("cloudLibraryId"));
             }
@@ -693,16 +722,22 @@ public final class NativeDiscordDownloadWorker extends Worker {
             : "duplicate_file".equals(state) || "duplicate_card".equals(state)
                 ? name + "：已存在，未重复添加" : name + "：已下载";
         JSONObject parsed = ready.optJSONObject("nativeCharacterCardResult");
-        notifyFinished(context, token, ready.optString("downloadWorkId", ""), title,
+        if (ready.has("cloudLibraryId")) {
+            try { NativeDiscordInboxService.notifyResult(context, "resource", token.substring("discord-url-".length()),
+                ready.getString("cloudWorkerUrl"), ready.getString("cloudLibraryId"), name,
+                NativeDiscordInboxService.resourceNotificationState(outcome)); }
+            catch (Exception ignored) { return; }
+        } else notifyFinished(context, token, ready.optString("downloadWorkId", ""), title,
             completionText(parsed, outcome), false);
         try {
+            ready = NativeShareImportService.readMetadata(new File(folder, stagedToken + ".json"));
             ready.put("nativeCompletionNotificationPosted", true);
             NativeShareImportService.writeMetadata(folder, stagedToken, ready);
         }
         catch (Exception ignored) { /* A later resume can safely replace the same notification again. */ }
     }
 
-    private static void markCompletionNotificationPosted(Context context, String token) {
+    private static synchronized void markCompletionNotificationPosted(Context context, String token) {
         File folder = new File(context.getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER);
         String stagedToken = NativeShareImportService.stagedToken(token, 0);
         File metadataFile = new File(folder, stagedToken + ".json");

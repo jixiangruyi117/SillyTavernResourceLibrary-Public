@@ -49,7 +49,11 @@ const sourceText = ref('')
 const sourceError = ref('')
 const isSourceLoading = ref(true)
 const canRenderPreview = computed(
-  () => previewEnabled.value && !isSourceLoading.value && !sourceError.value,
+  () =>
+    previewEnabled.value &&
+    !isSourceLoading.value &&
+    !sourceError.value &&
+    !!preparedPreviewDocument.value,
 )
 const previewScene = ref<PreviewScene>('chat')
 const animationEpoch = ref(0)
@@ -99,6 +103,8 @@ let loadGeneration = 0
 let preloadGeneration = 0
 let preloadAbortController: AbortController | undefined
 const preparedPreviewDocument = ref('')
+const preparedDocumentRevision = ref(0)
+const previewFrame = ref<HTMLIFrameElement>()
 const previewRevision = ref(0)
 
 function readString(value: unknown): string {
@@ -127,8 +133,8 @@ function safeNumber(value: unknown, fallback: number, min: number, max: number):
 }
 
 watch(
-  () => props.resource,
-  async (resource) => {
+  [() => props.resource.id, () => props.resource.originalBlob],
+  async () => {
     const generation = ++loadGeneration
     isSourceLoading.value = true
     sourceText.value = ''
@@ -136,7 +142,7 @@ watch(
     previewScene.value = 'chat'
     animationEpoch.value += 1
     try {
-      const text = await resource.originalBlob.text()
+      const text = await props.resource.originalBlob.text()
       if (generation === loadGeneration) sourceText.value = text
     } catch {
       if (generation === loadGeneration) sourceError.value = '无法读取美化文件内容'
@@ -164,11 +170,6 @@ const customCss = computed(() =>
     allowExternalResources: previewPolicy.value.allowRemoteResources,
   }),
 )
-const previewKey = computed(
-  () =>
-    `${props.resource.id}-${sourceText.value.length}-${customCss.value.length}-${previewScene.value}-${animationEpoch.value}-${previewPolicy.value.allowRemoteResources}-${previewPolicy.value.allowScripts}`,
-)
-
 const colorEntries = computed(() => {
   const themeValue = theme.value
   const themeColors = themeValue
@@ -517,6 +518,7 @@ watch(
   async ([documentSource, preloadResources], _previous, onCleanup) => {
     const generation = ++preloadGeneration
     isPreviewLoading.value = true
+    preparedPreviewDocument.value = ''
     preloadAbortController?.abort()
     preloadAbortController = undefined
     const shouldWarmNativeResources =
@@ -530,9 +532,11 @@ watch(
       await prepareNativePreviewAssets(
         collectPreviewRemoteResourceUrls(documentSource, true),
         controller.signal,
+        previewPolicy.value.increaseDownloadConcurrency === true,
       ).catch(() => undefined)
       if (generation !== preloadGeneration || controller.signal.aborted) return
     }
+    preparedDocumentRevision.value = generation
     preparedPreviewDocument.value = documentSource
   },
   { immediate: true },
@@ -589,7 +593,8 @@ function resetTheme(): void {
   previewRevision.value += 1
 }
 
-function handlePreviewFrameLoad(): void {
+function handlePreviewFrameLoad(event: Event): void {
+  if (event.currentTarget !== previewFrame.value) return
   isPreviewLoading.value = false
 }
 </script>
@@ -700,7 +705,8 @@ function handlePreviewFrameLoad(): void {
           <div class="beauty-preview__canvas" :style="canvasStyle">
             <iframe
               v-if="canRenderPreview"
-              :key="`${previewKey}-${previewRevision}`"
+              ref="previewFrame"
+              :key="`${preparedDocumentRevision}-${animationEpoch}-${previewRevision}`"
               class="beauty-preview__frame"
               :style="frameStyle"
               :srcdoc="preparedPreviewDocument"

@@ -129,10 +129,41 @@ export async function loadPreviewVendorLibsForSource(
   return loadPreviewVendorLibs(mergePreviewVendorLibNeeds([source]))
 }
 
-export async function loadPreviewVendorLibs(
+const VENDOR_NEED_KEYS: Array<keyof PreviewVendorLibNeeds> = [
+  'fontAwesome',
+  'jquery',
+  'jqueryUi',
+  'jqueryUiTouchPunch',
+  'lodash',
+  'showdown',
+  'tailwind',
+  'toastr',
+  'vue',
+  'vueRouter',
+  'yamlAndZod',
+]
+
+// Keep only the latest static bundle, shared by resource and source previews. Author state
+// remains in each iframe; a failed import is never retained as a reusable result.
+let latestVendorBundle: { key: string; promise: Promise<PreviewVendorLibs | undefined> } | undefined
+
+export function loadPreviewVendorLibs(
   needs: PreviewVendorLibNeeds,
 ): Promise<PreviewVendorLibs | undefined> {
-  if (!Object.values(needs).some(Boolean)) return undefined
+  if (!Object.values(needs).some(Boolean)) return Promise.resolve(undefined)
+  const key = VENDOR_NEED_KEYS.map((name) => (needs[name] ? '1' : '0')).join('')
+  if (latestVendorBundle?.key === key) return latestVendorBundle.promise
+  const promise = assemblePreviewVendorLibs({ ...needs }).catch((error: unknown) => {
+    if (latestVendorBundle?.promise === promise) latestVendorBundle = undefined
+    throw error
+  })
+  latestVendorBundle = { key, promise }
+  return promise
+}
+
+async function assemblePreviewVendorLibs(
+  needs: PreviewVendorLibNeeds,
+): Promise<PreviewVendorLibs | undefined> {
   const [
     fontAwesomeCssSource,
     fontBrands,
@@ -219,7 +250,7 @@ export async function loadPreviewVendorLibs(
     .replaceAll('../webfonts/fa-regular-400.woff2', fontRegular ?? '')
     .replaceAll('../webfonts/fa-solid-900.woff2', fontSolid ?? '')
     .replaceAll('../webfonts/fa-v4compatibility.woff2', fontV4 ?? '')
-  return {
+  return Object.freeze({
     fontAwesomeCss,
     jquery,
     jqueryUi,
@@ -233,5 +264,5 @@ export async function loadPreviewVendorLibs(
     vue,
     vueRouter,
     vendorGlobals,
-  }
+  })
 }

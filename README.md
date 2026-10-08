@@ -167,16 +167,16 @@ pnpm secret:scan --base <上次已审计的完整提交SHA>
 
 也可以将 fork 后的仓库连接到 Cloudflare，由 `main` 分支的提交自动构建和部署。创建 Worker 时按下表填写：
 
-| Cloudflare 项目字段 | 填写内容 |
-| --- | --- |
-| Repository | 你 fork 的 `SillyTavernResourceLibrary-Public` |
-| Production branch | `main` |
-| Project name | `srl-resource-library` |
-| Build command | `pnpm run build` |
-| Deploy command | `pnpm exec wrangler deploy --config wrangler.example.jsonc` |
-| Preview command | 保留默认 `npx wrangler preview`；首次部署建议关闭 **Enable Preview builds** |
-| Protect with Cloudflare Access | 关闭 |
-| Advanced settings | 保持默认；如果出现 Node.js 版本选项，选择 `22` |
+| Cloudflare 项目字段            | 填写内容                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| Repository                     | 你 fork 的 `SillyTavernResourceLibrary-Public`                              |
+| Production branch              | `main`                                                                      |
+| Project name                   | `srl-resource-library`                                                      |
+| Build command                  | `pnpm run build`                                                            |
+| Deploy command                 | `pnpm exec wrangler deploy --config wrangler.example.jsonc`                 |
+| Preview command                | 保留默认 `npx wrangler preview`；首次部署建议关闭 **Enable Preview builds** |
+| Protect with Cloudflare Access | 关闭                                                                        |
+| Advanced settings              | 保持默认；如果出现 Node.js 版本选项，选择 `22`                              |
 
 `Project name` 必须与 `wrangler.example.jsonc` 中的 Worker 名称 `srl-resource-library` 一致。部署命令显式使用仓库内的通用配置模板；不要改成默认的 `npx wrangler deploy`，也不要把个人的 `wrangler.jsonc`、账号信息或凭据提交到 fork。首次部署时，Cloudflare 会引导授权 GitHub 仓库和 Cloudflare 账号；部署完成后，在 Worker 的 Overview 页面查看站点地址。若之后要启用 Preview builds，Preview command 也要指定模板：`pnpm exec wrangler preview --config wrangler.example.jsonc`。
 

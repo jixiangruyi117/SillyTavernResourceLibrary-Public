@@ -90,6 +90,13 @@ public class NativePreviewAssetPlugin extends Plugin {
         .build();
 
     @PluginMethod
+    public void configure(PluginCall call) {
+        if (destroyed) { call.reject("预览会话已结束"); return; }
+        NativeExecutors.configurePreviewNetwork(call.getBoolean("increaseDownloadConcurrency", false));
+        call.resolve();
+    }
+
+    @PluginMethod
     public void prepare(PluginCall call) {
         try {
             String sessionId = requiredId(call, "sessionId");
@@ -102,6 +109,7 @@ public class NativePreviewAssetPlugin extends Plugin {
             }
             synchronized (this) {
                 if (destroyed) throw new IOException("预览会话已结束");
+                NativeExecutors.configurePreviewNetwork(call.getBoolean("increaseDownloadConcurrency", false));
                 sessions.put(sessionId, registered);
                 activePlugin = this;
             }

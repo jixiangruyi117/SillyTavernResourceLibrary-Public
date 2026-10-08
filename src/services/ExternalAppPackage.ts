@@ -5,6 +5,7 @@ import {
   MAX_EXTRACTED_BYTES,
   MAX_EXTRACTED_FILES,
   MAX_SINGLE_FILE_BYTES,
+  type PackageFileLimit,
 } from './ExternalAppUnzip'
 export {
   requireSafePath,
@@ -89,13 +90,16 @@ export function getUnzipWorker(): Worker | undefined {
   }
 }
 
-export async function unzipPackage(bytes: ArrayBuffer): Promise<Record<string, Uint8Array>> {
+export async function unzipPackage(
+  bytes: ArrayBuffer,
+  maxFiles: PackageFileLimit = MAX_EXTRACTED_FILES,
+): Promise<Record<string, Uint8Array>> {
   const worker = getUnzipWorker()
-  if (!worker) return boundedUnzipPackage(bytes)
+  if (!worker) return boundedUnzipPackage(bytes, maxFiles)
   const id = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     unzipRequests.set(id, { resolve, reject })
-    worker.postMessage({ id, bytes }, [bytes])
+    worker.postMessage({ id, bytes, maxFiles }, [bytes])
   })
 }
 

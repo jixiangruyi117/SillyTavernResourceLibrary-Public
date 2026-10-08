@@ -17,6 +17,12 @@ import {
   type ExternalAppToolDescriptor,
 } from '../types/ExternalApp'
 import FeatureAppHeader from './FeatureAppHeader.vue'
+import ChatReaderStartup from './ChatReaderStartup.vue'
+import {
+  chatReaderAppearance,
+  readChatReaderColors,
+  rememberChatReaderColors,
+} from '../utils/ChatReaderAppearance'
 import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 import { APPLIED_CSS_CHANGED_EVENT } from '../core/AppearanceScopes'
 import {
@@ -63,16 +69,11 @@ async function syncReaderUiCss() {
 const readerPage = ref<'roles' | 'chats' | 'reader'>('roles')
 const readerReady = ref(false)
 const readerCover = ref(false)
-const readerColors = ref<Record<string, string>>({})
-const readerAppearance = computed(() => ({
-  '--reader-paper': readerColors.value.paper,
-  '--color-canvas': readerColors.value.paper,
-  '--color-ink': readerColors.value.ink,
-  '--color-ink-soft': readerColors.value.muted,
-  '--color-line': readerColors.value.line,
-  '--color-accent': readerColors.value.accent,
-  '--color-accent-soft': readerColors.value.soft,
-}))
+const readerColors = ref(readChatReaderColors())
+const startupColors = readChatReaderColors()
+const readerAppearance = computed(() =>
+  chatReaderAppearance(readerReady.value ? readerColors.value : startupColors),
+)
 
 function readerAction(action: 'back' | 'search' | 'cover'): void {
   if (action === 'back' && !port) {
@@ -530,7 +531,10 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             typeof request.payload?.label === 'string' ? request.payload.label.trim() : ''
           if (label.length > 120) throw new Error('加载提示不能超过 120 个字符')
           loadingLabel.value = label
-          if (isBuiltinReader.value && !label) readerReady.value = true
+          if (isBuiltinReader.value && !label) {
+            rememberChatReaderColors(readerColors.value)
+            readerReady.value = true
+          }
           await reply(request.id, true, null)
           return
         }
@@ -591,6 +595,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             if (typeof value === 'string' && /^#[\da-f]{6}$/iu.test(value))
               readerColors.value[key] = value
           }
+          if (readerReady.value) rememberChatReaderColors(readerColors.value)
           await reply(request.id, true, null)
           return
         }
@@ -980,6 +985,7 @@ onBeforeUnmount(() => {
     :class="{ 'external-app-host--fullscreen': isFullscreen }"
     class="external-app-host"
   >
+    <ChatReaderStartup v-if="isBuiltinReader && !app && !errorMessage" />
     <FeatureAppHeader
       v-if="!isFullscreen && (!isBuiltinReader || errorMessage)"
       :title="hostTitle || app?.manifest.name || (isBuiltinReader ? '读了么' : '第三方 APP')"
@@ -1030,7 +1036,7 @@ onBeforeUnmount(() => {
         }"
         :style="{
           '--external-app-splash': app.manifest.splashColor || '#237f87',
-          ...(isBuiltinReader && readerReady ? readerAppearance : {}),
+          ...(isBuiltinReader ? readerAppearance : {}),
         }"
         :aria-label="official ? '读了么阅读工作区' : '第三方 APP 独立工作区'"
         :data-reader-page="isBuiltinReader ? readerPage : undefined"

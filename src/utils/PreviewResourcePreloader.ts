@@ -1,6 +1,7 @@
 import {
   downloadNativePreviewAsset,
   isNativePreviewAssetAvailable,
+  configureNativePreviewDownloadConcurrency,
 } from '../services/NativePreviewAsset'
 import { resolveAndroidHttpResponseUrl } from './AndroidHttpInterceptor'
 
@@ -35,6 +36,7 @@ export interface PreviewResourceFailure {
 
 export interface PreviewResourcePreloadOptions {
   signal?: AbortSignal
+  increaseDownloadConcurrency?: boolean
 }
 
 interface DownloadedPreviewResource {
@@ -450,6 +452,10 @@ export async function preloadPreviewDocumentResources(
   const prioritizeStylesheets = () =>
     queue.sort((a, b) => Number(/\.css(?:$|[?#])/i.test(b)) - Number(/\.css(?:$|[?#])/i.test(a)))
   prioritizeStylesheets()
+  if (isNativePreviewAssetAvailable()) {
+    await configureNativePreviewDownloadConcurrency(options.increaseDownloadConcurrency === true)
+    throwIfAborted(options.signal)
+  }
   const report = (activeUrl?: string) =>
     onProgress?.({ total: urls.length, completed, failed: failures.size, activeUrl })
   const enqueue = (url: string, requiresDataUrl = false) => {
@@ -491,7 +497,12 @@ export async function preloadPreviewDocumentResources(
   await new Promise<void>((resolve, reject) => {
     let active = 0
     let failure: unknown
-    const concurrency = isNativePreviewAssetAvailable() ? 3 : PREVIEW_RESOURCE_CONCURRENCY
+    const concurrency =
+      options.increaseDownloadConcurrency === true
+        ? 6
+        : isNativePreviewAssetAvailable()
+          ? 3
+          : PREVIEW_RESOURCE_CONCURRENCY
     const pump = () => {
       if (options.signal?.aborted) failure ??= createAbortError()
       while (!failure && active < concurrency && queue.length) {

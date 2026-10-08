@@ -9,6 +9,7 @@ import {
   replacePreviewMacros,
   requiresSynchronousGreetingFormatting,
 } from './RichContentPreview'
+import { replacePreviewPickMacros } from './RichPreviewMessagePreparation'
 
 const staticPolicy = { allowRemoteResources: false, allowScripts: false }
 const scriptPolicy = { allowRemoteResources: true, allowScripts: true }
@@ -583,6 +584,32 @@ describe('RichContentPreview 兼容渲染链', () => {
     expect(first).toBe(second)
     expect(first).toMatch(/^林默 \/ 顾黎 \/ (甲|乙) \/ \{\{roll::1d6\}\}$/)
     expect(first).not.toContain('{{pick::')
+  })
+
+  it('没有 pick 时不遍历全文计算随机种子', () => {
+    const source = '长开场正文'.repeat(10000)
+    const seedSource = `fixture-chat\u0000${source}`
+    let seedReads = 0
+    const iterator = String.prototype[Symbol.iterator]
+    const spy = vi.spyOn(String.prototype, Symbol.iterator).mockImplementation(function (
+      this: string,
+    ) {
+      if (this.toString() === seedSource) seedReads++
+      return iterator.call(this)
+    })
+    try {
+      expect(replacePreviewPickMacros(source, source, 'fixture-chat')).toBe(source)
+      expect(seedReads).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('惰性种子保留多个 pick、大小写、转义逗号和替换后偏移的既有选择', () => {
+    const source = '{{char}} / {{pick::甲::乙::丙}} / {{PICK:一\\,二,三}} / {{pick::红::蓝}}'
+    expect(replacePreviewMacros(source, { charName: '角色', chatId: 'fixture-chat' })).toBe(
+      '角色 / 乙 / 三 / 蓝',
+    )
   })
 
   it('兼容消息壳在同一文档保留 mes DOM，并由独立网格布局分配头像与正文', () => {

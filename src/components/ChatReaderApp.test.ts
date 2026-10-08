@@ -86,6 +86,18 @@ describe('built-in reader package preparation', () => {
 })
 
 describe('ChatReaderApp cold entry', () => {
+  it('uses the reader paper during package preparation, including night reentry', async () => {
+    const { readChatReaderColors, rememberChatReaderColors } =
+      await import('../utils/ChatReaderAppearance')
+    const colors = readChatReaderColors()
+    rememberChatReaderColors({ ...colors, paper: '#202622' })
+    service.getSummary.mockImplementationOnce(() => new Promise(() => {}))
+    const wrapper = await open()
+    expect(wrapper.find('external-app-host-stub').exists()).toBe(false)
+    const startup = wrapper.get('.chat-reader-startup').element as HTMLElement
+    expect(startup.style.getPropertyValue('--reader-paper')).toBe('#202622')
+    expect(wrapper.get('[role="status"]').text()).toBe('正在打开读了么…')
+  })
   it('reads only metadata before mounting the host and seeds the official shell before SDK readiness', async () => {
     const wrapper = await open()
     try {

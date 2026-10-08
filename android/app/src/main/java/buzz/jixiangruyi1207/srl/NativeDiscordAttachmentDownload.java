@@ -49,10 +49,16 @@ final class NativeDiscordAttachmentDownload {
 
     static void download(OkHttpClient client, String url, File partial, JSONObject metadata,
         Checkpoint checkpoint, Progress progress, Consumer<Call> onCall) throws Exception {
+        download(client, url, partial, metadata, checkpoint, progress, onCall, MAX_BYTES);
+    }
+
+    static void download(OkHttpClient client, String url, File partial, JSONObject metadata,
+        Checkpoint checkpoint, Progress progress, Consumer<Call> onCall, long maximumBytes) throws Exception {
+        if (maximumBytes <= 0 || maximumBytes > MAX_BYTES) throw new IllegalArgumentException("附件下载上限无效");
         DiscordAttachmentUrl.fromSharedText(url);
         long offset = partial.isFile() ? partial.length() : 0;
         long expected = metadata.optLong("downloadSize", -1);
-        if (expected > 0 && expected <= MAX_BYTES && offset == expected) {
+        if (expected > 0 && expected <= maximumBytes && offset == expected) {
             // All declared bytes reached disk before a process stop at the final checkpoint.
             if (!metadata.optBoolean("downloadComplete")) {
                 metadata.put("downloadComplete", true);
@@ -113,7 +119,7 @@ final class NativeDiscordAttachmentDownload {
                 offset = 0;
                 total = body.contentLength();
             } else throw new TerminalFailure("Discord 附件下载响应无效");
-            if (total > MAX_BYTES) throw new TerminalFailure("附件超过 4 GiB，无法导入");
+            if (total > maximumBytes) throw new TerminalFailure("附件超过本次自动下载上限");
             long usable = partial.getParentFile().getUsableSpace();
             if (total > 0 && usable > 0 && total - offset > usable) throw new TerminalFailure("设备可用空间不足，无法暂存附件");
             // Truncate before committing a new validator: a crash must never associate an old prefix with a new file.
@@ -140,7 +146,7 @@ final class NativeDiscordAttachmentDownload {
                     int count;
                     while ((count = input.read(buffer)) != -1) {
                         if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Discord 下载已暂停；已保留断点");
-                        if (written > MAX_BYTES - count || (total >= 0 && written > total - count)) {
+                        if (written > maximumBytes - count || (total >= 0 && written > total - count)) {
                             throw new TerminalFailure("Discord 附件超过声明大小");
                         }
                         try { output.write(buffer, 0, count); }

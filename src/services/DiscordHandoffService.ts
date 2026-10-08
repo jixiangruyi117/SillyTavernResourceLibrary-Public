@@ -336,6 +336,15 @@ export function inboxConnection(): { workerUrl: string; libraryId: string; secre
   }
 }
 
+export class DiscordInboxTaskExpiredError extends Error {
+  readonly kind: 'resource' | 'delivery'
+  constructor(kind: 'resource' | 'delivery') {
+    super('云端任务已过期或已不存在。')
+    this.name = 'DiscordInboxTaskExpiredError'
+    this.kind = kind
+  }
+}
+
 export async function inboxRequest(
   path: string,
   method = 'GET',
@@ -376,7 +385,9 @@ export async function inboxRequest(
         payload?.error === 'delivery_not_found_or_expired' ||
         payload?.error === 'resource_task_not_found_or_expired'
       ) {
-        throw new Error('云端任务已过期或已不存在。')
+        throw new DiscordInboxTaskExpiredError(
+          payload.error === 'resource_task_not_found_or_expired' ? 'resource' : 'delivery',
+        )
       }
       if (path === '/cleanup-scoped') {
         throw new Error(
@@ -564,12 +575,16 @@ function parseInboxJobs(value: unknown, pending: boolean): DiscordInboxJob[] {
   })
 }
 
-export async function listDiscordInboxJobs(): Promise<{
+export async function listDiscordInboxJobs(after?: string): Promise<{
   jobs: DiscordInboxJob[]
   recent: DiscordInboxJob[]
   hasMore: boolean
 }> {
-  const payload = (await (await inboxRequest('/jobs')).json()) as Record<string, unknown>
+  if (after !== undefined && !/^\d{1,13}:[a-f\d-]{36}$/u.test(after))
+    throw new Error('云端帖子分页游标无效')
+  const payload = (await (
+    await inboxRequest(`/jobs${after ? '?after=' + encodeURIComponent(after) : ''}`)
+  ).json()) as Record<string, unknown>
   if (typeof payload.hasMore !== 'boolean') throw new Error('云端收件列表无效')
   return {
     jobs: parseInboxJobs(payload.jobs, true),

@@ -14,7 +14,11 @@ import {
 import { noticeCenter } from '../core/NoticeCenter'
 import { taskCenter } from '../core/TaskCenter'
 import { requestNativeNotifications } from '../core/NativeSecurity'
-import { inboxConnection, type DiscordInboxTarget } from '../services/DiscordHandoffService'
+import {
+  DiscordInboxTaskExpiredError,
+  inboxConnection,
+  type DiscordInboxTarget,
+} from '../services/DiscordHandoffService'
 import {
   acknowledgeDiscordResource,
   downloadWebDiscordResource,
@@ -59,6 +63,8 @@ interface ActiveResource {
   confirming?: Promise<void>
   staging?: SharedFileBatch
   webCycle?: WebResourceCycle
+  nativeOutcome?: Awaited<ReturnType<typeof readCloudDiscordResource>>['nativeImportOutcome']
+  nativeAckSettled?: boolean
 }
 
 /** Transport coordination only: every file and decision goes through the existing share importer. */
@@ -68,6 +74,7 @@ export function useDiscordResourceInbox(
   refreshNativeResources?: () => Promise<void>,
 ) {
   const active = new Map<string, ActiveResource>()
+  const nativeReads = new Map<string, ReturnType<typeof readCloudDiscordResource>>()
   const native = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
   let disposed = false
   let running = false
@@ -90,6 +97,16 @@ export function useDiscordResourceInbox(
     } catch {
       return false
     }
+  }
+  function readNativeResource(id: string, target: DiscordInboxTarget) {
+    const key = JSON.stringify([target.workerUrl, target.libraryId, id])
+    const pending = nativeReads.get(key)
+    if (pending) return pending
+    const operation = readCloudDiscordResource({ id, ...target }).finally(() => {
+      nativeReads.delete(key)
+    })
+    nativeReads.set(key, operation)
+    return operation
   }
   async function state(
     entry: ActiveResource,
@@ -145,6 +162,13 @@ export function useDiscordResourceInbox(
   ): Promise<boolean> {
     if (!['imported', 'duplicate_file', 'duplicate_card'].includes(outcome.state ?? ''))
       return false
+    entry.nativeOutcome = outcome
+    if (entry.imported) {
+      // A later binding receipt releases the original staging without replaying the import.
+      if (!outcome.automaticBindingPending && entry.nativeAckSettled && !entry.confirming)
+        await entry.confirm?.()
+      return true
+    }
     entry.imported = true
     taskCenter.update(entry.taskId, { phase: '后台已导入资源库' })
     // Android writes directly to SQLite, bypassing the foreground import owner's refresh.
@@ -160,25 +184,48 @@ export function useDiscordResourceInbox(
         })
       }
     }
-    if (document.visibilityState !== 'hidden') {
-      taskCenter.complete(entry.taskId)
-      taskCenter.dismiss(entry.taskId)
-    }
+    taskCenter.complete(entry.taskId)
+    taskCenter.dismiss(entry.taskId)
     try {
       entry.confirm = async () => {
-        await state(entry, 'imported')
-        const resultState = outcome.state === 'imported' ? 'imported' : 'duplicate'
-        await notifyResult(entry, resultState)
-        if (!outcome.automaticBindingPending)
-          await cleanupCompletedCloudDiscordResource(entry.job.id).catch(() => undefined)
+        if (entry.confirming) return entry.confirming
+        const confirmation = (async () => {
+          let expired = false
+          try {
+            if (!entry.nativeAckSettled && entry.nativeOutcome?.cloudAckPending !== false)
+              await state(entry, 'imported')
+            entry.nativeAckSettled = true
+          } catch (error) {
+            // A verified native commit outlives its cloud task. Expiry ends this receipt,
+            // while authentication, network and unrelated HTTP failures remain retryable.
+            if (!(error instanceof DiscordInboxTaskExpiredError) || error.kind !== 'resource')
+              throw error
+            expired = true
+            entry.nativeAckSettled = true
+          }
+          if (!expired && !outcome.notificationPosted) {
+            const resultState = outcome.state === 'imported' ? 'imported' : 'duplicate'
+            await notifyResult(entry, resultState)
+            outcome.notificationPosted = true
+          }
+          // Completion events can update this receipt after the background binding batch settles.
+          const bindingPending = entry.nativeOutcome?.automaticBindingPending
+          if (!bindingPending) await cleanupCompletedCloudDiscordResource(entry.job.id)
+          taskCenter.update(entry.taskId, { phase: '后台已导入资源库' })
+          taskCenter.complete(entry.taskId)
+          taskCenter.dismiss(entry.taskId)
+          if (!bindingPending) active.delete(entry.job.id)
+          noticeCenter.dismiss(entry.taskId)
+          changed()
+        })()
+        entry.confirming = confirmation
+        try {
+          await confirmation
+        } finally {
+          entry.confirming = undefined
+        }
       }
       await entry.confirm()
-      taskCenter.update(entry.taskId, { phase: '后台已导入资源库' })
-      taskCenter.complete(entry.taskId)
-      if (native && document.visibilityState !== 'hidden') taskCenter.dismiss(entry.taskId)
-      active.delete(entry.job.id)
-      noticeCenter.dismiss(entry.taskId)
-      changed()
     } catch (error) {
       startEntryTask(entry, '已导入，云端确认未完成')
       taskCenter.fail(entry.taskId, '资源已在后台导入，云端确认失败；打开收件箱后可重试确认。')
@@ -395,13 +442,9 @@ export function useDiscordResourceInbox(
     readingNative = true
     try {
       for (const entry of active.values()) {
-        if (entry.delivered || !targetCurrent(entry.target)) continue
+        if (entry.delivered || entry.imported || !targetCurrent(entry.target)) continue
         try {
-          const result = await readCloudDiscordResource({
-            id: entry.job.id,
-            libraryId: entry.target.libraryId,
-            workerUrl: entry.target.workerUrl,
-          })
+          const result = await readNativeResource(entry.job.id, entry.target)
           // A completion event can deliver this entry while its progress read is in flight.
           if (entry.delivered) continue
           if (await finishNativeImport(entry, result.nativeImportOutcome ?? {})) continue
@@ -438,7 +481,9 @@ export function useDiscordResourceInbox(
       native &&
       !disposed &&
       document.visibilityState !== 'hidden' &&
-      [...active.values()].some((entry) => !entry.delivered && targetCurrent(entry.target))
+      [...active.values()].some(
+        (entry) => !entry.delivered && !entry.imported && targetCurrent(entry.target),
+      )
     )
       nativeTimer = window.setTimeout(() => void readNative(), 1_000)
   }
@@ -516,11 +561,7 @@ export function useDiscordResourceInbox(
         }
         // A native receive session may have finished this file while the WebView was absent.
         // Use its target-checked staging before an expiring CDN link is needed again.
-        const retained = await readCloudDiscordResource({
-          id: job.id,
-          libraryId: target.libraryId,
-          workerUrl: target.workerUrl,
-        }).catch(() => undefined)
+        const retained = await readNativeResource(job.id, target).catch(() => undefined)
         if (
           retained?.nativeImportOutcome &&
           (await finishNativeImport(entry, retained.nativeImportOutcome))
@@ -528,6 +569,11 @@ export function useDiscordResourceInbox(
           return
         if (retained?.batch?.files.length) {
           deliver(entry, retained.batch)
+          return
+        }
+        if (retained?.active) {
+          // The original WorkManager attempt owns its partial bytes and parsing checkpoint.
+          scheduleNative()
           return
         }
         if (entry.delivered) return
@@ -584,7 +630,7 @@ export function useDiscordResourceInbox(
       const target = { workerUrl: connection.workerUrl, libraryId: connection.libraryId }
       // Native staging checks the stored worker/library and payload size before returning a file.
       // A completed file must not wait for the separate network queue/progress acknowledgement.
-      const result = await readCloudDiscordResource({ id, ...target })
+      const result = await readNativeResource(id, target)
       if (
         result.nativeImportOutcome?.state === 'imported' ||
         result.nativeImportOutcome?.state === 'duplicate_file' ||

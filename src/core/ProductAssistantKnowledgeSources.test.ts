@@ -2,13 +2,34 @@
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
+const checkerFixture = `
+  import { createHash } from 'node:crypto';
+  import { checkAssistantKnowledge } from './scripts/Check-AssistantKnowledge.mjs';
+  const source = Buffer.from('export const entry = "fixture"');
+  const knowledge = Buffer.from("id: 'fixture'");
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  const manifest = { knowledgeSha256: hash(knowledge), sources: [{
+    path: 'src/Fixture.ts', guides: ['fixture'], sha256: hash(source)
+  }] };
+  const read = async path => path.endsWith('.json') ? JSON.stringify(manifest) :
+    path.endsWith('ProductAssistantKnowledge.ts') ? knowledge : source;
+`
+
 describe('assistant knowledge update gate', () => {
-  it('requires reviewed fingerprints for the real documented owners before shipping', () => {
-    const result = execFileSync(process.execPath, ['scripts/Check-AssistantKnowledge.mjs'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    })
-    expect(result).toContain('知识源检查通过')
+  it('accepts matching documented fingerprints without gating shipping on unrelated edits', () => {
+    const result = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `${checkerFixture} console.log(await checkAssistantKnowledge(process.cwd(), read));`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      },
+    )
+    expect(result.trim()).toBe('1')
   })
   it('blocks a changed owner until its instructions are reviewed', () => {
     const result = execFileSync(
@@ -16,13 +37,11 @@ describe('assistant knowledge update gate', () => {
       [
         '--input-type=module',
         '-e',
-        `
-      import { readFile } from 'node:fs/promises';
-      import { checkAssistantKnowledge } from './scripts/Check-AssistantKnowledge.mjs';
+        `${checkerFixture}
       try {
-        await checkAssistantKnowledge(process.cwd(), async (path, ...options) => {
-          const content = await readFile(path, ...options);
-          return path.endsWith('UseFeatureHub.ts') ? Buffer.concat([content, Buffer.from('// new entry')]) : content;
+        await checkAssistantKnowledge(process.cwd(), async path => {
+          const content = await read(path);
+          return path.endsWith('Fixture.ts') ? Buffer.concat([content, Buffer.from('// new entry')]) : content;
         });
         process.exit(2);
       } catch (error) { console.log(error.message) }
@@ -30,7 +49,7 @@ describe('assistant knowledge update gate', () => {
       ],
       { encoding: 'utf8' },
     )
-    expect(result).toContain('UseFeatureHub.ts')
+    expect(result).toContain('src/Fixture.ts')
     expect(result).toContain('知识需要复核')
   })
 })

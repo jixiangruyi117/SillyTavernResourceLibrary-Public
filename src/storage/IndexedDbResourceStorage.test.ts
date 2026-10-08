@@ -42,6 +42,40 @@ function createResource(index: number): Resource {
 }
 
 describe('IndexedDbResourceStorage', () => {
+  it('reads background imports without tags without rewriting originals or losing existing tags', async () => {
+    const database = new AppDatabase(`background-missing-tags-${crypto.randomUUID()}`)
+    try {
+      const storage = new IndexedDbResourceStorage(database)
+      const legacy = { ...createResource(901), tags: undefined } as unknown as Resource
+      const tagged = createResource(902)
+      await database.resources.bulkPut([legacy, tagged])
+      await database.resourceListSummaries.bulkPut([
+        { ...toResourceSummary(legacy), tags: undefined } as unknown as Resource,
+        toResourceSummary(tagged),
+      ])
+      await database.settings.put({
+        id: 'index.resourceListSummaries.v20',
+        value: true,
+        updatedAt: 1,
+      })
+
+      const listed = await storage.listResourceListSummaries()
+      expect(listed.find((resource) => resource.id === legacy.id)?.tags).toEqual([])
+      expect(listed.find((resource) => resource.id === tagged.id)?.tags).toEqual(tagged.tags)
+      expect((await storage.get(legacy.id))?.tags).toEqual([])
+      expect((await storage.getSummary(legacy.id))?.tags).toEqual([])
+      const original = await database.resources.get(legacy.id)
+      const originalSummary = await database.resourceListSummaries.get(legacy.id)
+      expect(original && 'tags' in original ? original.tags : undefined).toBeUndefined()
+      expect(
+        originalSummary && 'tags' in originalSummary ? originalSummary.tags : undefined,
+      ).toBeUndefined()
+      expect((await database.resources.get(legacy.id))?.contentHash).toBe(legacy.contentHash)
+    } finally {
+      await database.delete()
+    }
+  })
+
   it('compacts old current/history summaries atomically while retaining full content and metadata edits', async () => {
     const database = new AppDatabase(`compact-summaries-${crypto.randomUUID()}`)
     try {
@@ -57,7 +91,9 @@ describe('IndexedDbResourceStorage', () => {
       await storage.saveVersion(history)
       await database.resourceSummaries.put(toResourceSummary(current))
       await database.resourceVersionSummaries.put(toResourceSummary(history))
+      expect(await storage.areDerivedSummariesCompact()).toBe(false)
       await storage.repairDerivedIndexes()
+      expect(await storage.areDerivedSummariesCompact()).toBe(true)
       for (const table of [database.resourceSummaries, database.resourceVersionSummaries]) {
         const rows = await table.toArray()
         expect(JSON.stringify(rows).length).toBeLessThan(3000)
@@ -72,12 +108,14 @@ describe('IndexedDbResourceStorage', () => {
       })
       expect((await storage.get(current.id))?.originalBlob.size).toBe(current.originalBlob.size)
       const put = vi
-        .spyOn(database.resourceVersionSummaries, 'put')
+        .spyOn(database.resourceVersionSummaries, 'bulkPut')
         .mockRejectedValueOnce(new Error('write failed'))
       await expect(storage.repairDerivedIndexes()).rejects.toThrow('write failed')
       put.mockRestore()
       expect(await database.resourceSummaries.count()).toBe(1)
       expect(await database.resourceVersionSummaries.count()).toBe(1)
+      await database.resourceVersionSummaries.put(toResourceSummary(history))
+      expect(await storage.areDerivedSummariesCompact()).toBe(false)
     } finally {
       database.close()
       await database.delete()

@@ -26,6 +26,7 @@ final class NativeBackgroundResourceImporter {
     private static final int MAX_MATCHES = 100;
     private static final int MAX_ROW_JSON_CHARS = 4 * 1024 * 1024;
     private static final int AUTO_BIND_FUTURE_LIMIT = 5;
+    static final long POST_ATTACHMENT_AUTO_BYTES = 8L * 1024 * 1024;
 
     private static final class DuplicateHashLookup {
         final boolean found;
@@ -37,6 +38,211 @@ final class NativeBackgroundResourceImporter {
     }
 
     private NativeBackgroundResourceImporter() {}
+
+    static JSONObject saveCloudPostIfSafe(Context context, JSONObject envelope, String id, String library, String worker) throws Exception {
+        NativeAppDatabase database = new NativeAppDatabase(context);
+        try { return saveCloudPostIfSafe(database, envelope, id, library, worker); }
+        finally { database.close(); }
+    }
+
+    /** New captures commit through the same guarded shared database as resource imports. */
+    static synchronized JSONObject saveCloudPostIfSafe(NativeAppDatabase database, JSONObject envelope, String id, String library, String worker) throws Exception {
+        JSONObject delivery = envelope.getJSONObject("delivery");
+        if (!id.equals(delivery.getString("id")) || !library.equals(delivery.optString("libraryId"))
+            || delivery.has("claimedLibraryId") && !library.equals(delivery.getString("claimedLibraryId"))
+            || delivery.optLong("capturedAt", 0) <= 0) throw new IllegalArgumentException("帖子收件目标不匹配");
+        JSONObject capture = NativeDiscordPostCapture.normalize(envelope.getJSONObject("capture"));
+        return database.withReadGuard(() -> {
+            JSONObject active = parseState(database.getState(ACTIVE_STATE));
+            if (active == null || "legacy".equals(active.optString("mode")) || "rolling-back".equals(active.optString("mode"))
+                || !"verified-v1".equals(database.getState("migration:appdb:indexes:v1:active")))
+                return outcome("foreground_required", "本机主库尚未就绪，请回前台完成保存");
+            JSONObject vault = database.getRecord("settings", VAULT_SETTING);
+            if (vault != null && vault.optJSONObject("value") != null)
+                return outcome("foreground_required", "帖子需要在前台解锁保险库后保存");
+            JSONObject settings = readAutomationSettings(database);
+            String sourceHash = NativeDiscordPostCapture.sourceHash(capture);
+            JSONArray sources = database.queryKeyPage("communitySources", new JSONObject().put("indexName", "sourceKeyHash")
+                .put("lower", JSONObject.quote(sourceHash)).put("upper", JSONObject.quote(sourceHash)).put("limit", 2)).getJSONArray("rows");
+            long now = System.currentTimeMillis(), capturedAt = delivery.getLong("capturedAt");
+            String sourceId = sources.length() == 0 ? java.util.UUID.randomUUID().toString()
+                : database.getRecord("communitySources", sources.getJSONObject(0).getString("primaryKey")).getString("id");
+            JSONObject message = NativeDiscordPostCapture.message(capture, sourceId, capturedAt, now);
+            String key = JSONObject.quote(message.getString("id"));
+            String fingerprint = NativeDiscordPostCapture.hash(capture.toString());
+            if (sources.length() > 0) {
+                JSONObject existing = database.getRecord("communitySourceMessages", key);
+                JSONObject receipt = existing == null ? null : existing.optJSONObject("nativeInboxReceipt");
+                if (receipt != null && id.equals(receipt.optString("id")) && library.equals(receipt.optString("libraryId"))
+                    && worker.equals(receipt.optString("workerUrl"))
+                    && fingerprint.equals(receipt.optString("captureHash")) && capturedAt == existing.optLong("deliveryCapturedAt"))
+                    return new JSONObject().put("state", "saved").put("sourceId", sourceId).put("messageKey", message.getString("id"))
+                        .put("alreadySaved", true).put("notificationPosted", !receipt.optString("notificationState", "").isEmpty())
+                        .put("attachmentDownloadPending", postAttachmentsNeedDownload(existing, settings));
+                // The foreground owner preserves edits, revisions, ignored messages and local attachment identities.
+                return outcome("foreground_required", "已有帖子的更新需在前台合并，云端原文仍保留");
+            }
+            JSONObject source = NativeDiscordPostCapture.source(capture, sourceId, capturedAt, now, settings);
+            message.put("nativeInboxReceipt", new JSONObject().put("id", id).put("libraryId", library).put("workerUrl", worker).put("captureHash", fingerprint)
+                .put("attachmentState", postAttachmentsNeedDownload(message, settings) ? "pending" : "complete"));
+            if (message.toString().length() > NativeAppDatabase.MAX_ROW_JSON_CHARS)
+                return outcome("foreground_required", "帖子超过当前原生单条保存预算，请回前台领取；正文未截断");
+            database.applyBatch(new JSONArray().put(putOperation("communitySources", JSONObject.quote(sourceId), source))
+                .put(putOperation("communitySourceMessages", key, message)), true);
+            JSONObject savedSource = database.getRecord("communitySources", JSONObject.quote(sourceId));
+            JSONObject savedMessage = database.getRecord("communitySourceMessages", key);
+            if (savedSource == null || !sourceHash.equals(savedSource.optString("sourceKeyHash")) || savedMessage == null
+                || !message.toString().equals(savedMessage.toString())) throw new IllegalStateException("帖子保存读回验证失败");
+            return new JSONObject().put("state", "saved").put("sourceId", sourceId).put("messageKey", message.getString("id"))
+                .put("alreadySaved", false).put("notificationPosted", false)
+                .put("attachmentDownloadPending", postAttachmentsNeedDownload(message, settings));
+        });
+    }
+
+    static boolean postAttachmentsNeedDownload(JSONObject message, JSONObject settings) {
+        if (!settings.optBoolean("downloadPostMedia", false)) return false;
+        JSONArray attachments = message.optJSONArray("attachments");
+        if (attachments == null) return false;
+        for (int index = 0; index < attachments.length(); index++) {
+            JSONObject attachment = attachments.optJSONObject(index);
+            // The existing automatic attachment owner leaves files over 8 MiB as remote links.
+            if (attachment != null && attachment.optDouble("size", 0) <= POST_ATTACHMENT_AUTO_BYTES
+                && attachment.optString("localAssetId", "").isBlank()) return true;
+        }
+        return false;
+    }
+
+    static JSONArray pendingPostAttachments(NativeAppDatabase database, String messageKey) throws Exception {
+        return database.withReadGuard(() -> {
+            requirePostAttachmentLibrary(database);
+            JSONObject message = database.getRecord("communitySourceMessages", JSONObject.quote(messageKey));
+            if (message == null) throw new IllegalStateException("帖子已不存在");
+            JSONArray result = new JSONArray(), attachments = message.optJSONArray("attachments");
+            if (!readAutomationSettings(database).optBoolean("downloadPostMedia") || attachments == null) return result;
+            for (int i = 0; i < attachments.length(); i++) {
+                JSONObject attachment = attachments.getJSONObject(i);
+                if (attachment.optDouble("size", 0) <= POST_ATTACHMENT_AUTO_BYTES && attachment.optString("localAssetId").isBlank())
+                    result.put(new JSONObject(attachment.toString()));
+            }
+            return result;
+        });
+    }
+
+    private static void requirePostAttachmentLibrary(NativeAppDatabase database) throws Exception {
+        JSONObject active = parseState(database.getState(ACTIVE_STATE));
+        if (active == null || active.optInt("version") != 1 || !("active".equals(active.optString("mode", "active")) || active.optString("mode").isEmpty())
+            || !"verified-v1".equals(database.getState("migration:appdb:indexes:v1:active"))) throw new IllegalStateException("本机主库尚未就绪");
+        JSONObject vault = database.getRecord("settings", VAULT_SETTING);
+        if (vault != null && vault.optJSONObject("value") != null) throw new IllegalStateException("帖子附件需要解锁保险库");
+    }
+
+    static void setPostAttachmentState(NativeAppDatabase database, String messageKey, String state) throws Exception {
+        database.withReadGuard(() -> {
+            requirePostAttachmentLibrary(database);
+            JSONObject message = database.getRecord("communitySourceMessages", JSONObject.quote(messageKey));
+            if (message != null && message.optJSONObject("nativeInboxReceipt") != null) {
+                message.getJSONObject("nativeInboxReceipt").put("attachmentState", state);
+                database.applyBatch(new JSONArray().put(putOperation("communitySourceMessages", JSONObject.quote(messageKey), message)), true);
+            }
+            return null;
+        });
+    }
+
+    static synchronized void savePostAttachment(NativeAppDatabase database, String messageKey, JSONObject identity,
+        File payload, String mimeType, java.util.function.BooleanSupplier cancelled) throws Exception {
+        if (cancelled.getAsBoolean()) throw new java.io.InterruptedIOException("收件已停止，附件断点仍保留");
+        database.withReadGuard(() -> {
+            if (cancelled.getAsBoolean()) throw new java.io.InterruptedIOException("收件已停止，附件断点仍保留");
+            requirePostAttachmentLibrary(database);
+            if (!readAutomationSettings(database).optBoolean("downloadPostMedia")) return null;
+            JSONObject message = database.getRecord("communitySourceMessages", JSONObject.quote(messageKey));
+            if (message == null) throw new IllegalStateException("帖子已不存在");
+            JSONObject target = null;
+            JSONArray attachments = message.getJSONArray("attachments");
+            for (int i = 0; i < attachments.length(); i++) {
+                JSONObject attachment = attachments.getJSONObject(i);
+                if (identity.getString("id").equals(attachment.optString("id")) && identity.getString("url").equals(attachment.optString("url"))
+                    && identity.optDouble("size") == attachment.optDouble("size")) target = attachment;
+            }
+            if (target == null) throw new IllegalStateException("帖子附件已变化，保留下载文件供核对");
+            if (!target.optString("localAssetId").isBlank()) return null;
+            long size = payload.length();
+            if (size <= 0 || size > POST_ATTACHMENT_AUTO_BYTES) throw new IllegalArgumentException("附件超过本次自动下载上限");
+            String contentHash = hashFile(payload), assetId = "asset-" + contentHash, key = JSONObject.quote(assetId);
+            JSONObject asset = database.getRecord("assets", key);
+            if (asset != null && asset.optBoolean("encrypted")) throw new IllegalStateException("已有附件需要解锁保险库");
+            JSONObject file = database.getRecord("assetFiles", key);
+            long now = System.currentTimeMillis();
+            if (file == null) {
+                NativeAppDatabase.BlobTransfer transfer = database.beginBlob("assetFiles", key, THUMBNAIL_PATH, size, mimeType, contentHash);
+                long offset = transfer.offset;
+                try (java.io.RandomAccessFile input = new java.io.RandomAccessFile(payload, "r")) {
+                    input.seek(offset);
+                    while (offset < size) {
+                        if (cancelled.getAsBoolean()) throw new java.io.InterruptedIOException("收件已停止，附件断点仍保留");
+                        byte[] chunk = new byte[(int) Math.min(NativeAppDatabase.MAX_BLOB_CHUNK_BYTES, size - offset)];
+                        input.readFully(chunk); offset = database.appendBlob(transfer.token, offset, chunk);
+                    }
+                }
+                JSONObject stored = database.completeBlob(transfer.token);
+                file = new JSONObject().put("assetId", assetId).put("updatedAt", now)
+                    .put("blob", blobReference(key, size, mimeType, stored, THUMBNAIL_PATH));
+            }
+            if (asset == null) asset = new JSONObject().put("assetId", assetId).put("contentHash", contentHash).put("mimeType", mimeType)
+                .put("size", size).put("source", "remote").put("thumbnailRefs", new JSONObject()).put("webStorageRef", assetId)
+                .put("remoteUrl", identity.getString("url")).put("encrypted", false).put("createdAt", now);
+            asset.put("vaultProtected", true);
+            target.put("localAssetId", assetId).put("localState", "local");
+            if (cancelled.getAsBoolean()) throw new java.io.InterruptedIOException("收件已停止，附件断点仍保留");
+            database.applyBatch(new JSONArray().put(putOperation("assets", key, asset)).put(putOperation("assetFiles", key, file))
+                .put(putOperation("communitySourceMessages", JSONObject.quote(messageKey), message)), true);
+            JSONObject readBack = database.getRecord("communitySourceMessages", JSONObject.quote(messageKey));
+            if (readBack == null || !readBack.toString().equals(message.toString()) || database.getBlobPath("assetFiles", key, THUMBNAIL_PATH) == null)
+                throw new IllegalStateException("附件保存读回校验失败");
+            return null;
+        });
+    }
+
+    static String cloudPostNotificationState(Context context, String messageKey, String id, String worker, String library, String state) throws Exception {
+        if (messageKey == null || messageKey.isBlank()) return "";
+        NativeAppDatabase database = new NativeAppDatabase(context);
+        try { return cloudPostNotificationState(database, messageKey, id, worker, library, state); }
+        finally { database.close(); }
+    }
+
+    static boolean canConfirmCloudSourceBound(NativeAppDatabase database, String hash) throws Exception {
+        return database.withReadGuard(() -> {
+            JSONObject active = parseState(database.getState(ACTIVE_STATE));
+            if (active == null || "legacy".equals(active.optString("mode")) || "rolling-back".equals(active.optString("mode"))
+                || !"verified-v1".equals(database.getState("migration:appdb:indexes:v1:active"))) return false;
+            JSONObject vault = database.getRecord("settings", VAULT_SETTING);
+            if (vault != null && vault.optJSONObject("value") != null) return false;
+            JSONArray sources = database.queryKeyPage("communitySources", new JSONObject().put("indexName", "sourceKeyHash")
+                .put("lower", JSONObject.quote(hash)).put("upper", JSONObject.quote(hash)).put("limit", 2)).getJSONArray("rows");
+            for (int index = 0; index < sources.length(); index++) {
+                JSONObject source = database.getRecord("communitySources", sources.getJSONObject(index).getString("primaryKey"));
+                if (source != null && hash.equals(source.optString("sourceKeyHash"))
+                    && database.countIndexEntries("resourceSourceBindings", "sourceId", JSONObject.quote(source.getString("id"))) > 0) return true;
+            }
+            return false;
+        });
+    }
+    static String cloudPostNotificationState(NativeAppDatabase database, String messageKey, String id, String worker, String library, String state) throws Exception {
+        return database.withReadGuard(() -> {
+                JSONObject message = database.getRecord("communitySourceMessages", JSONObject.quote(messageKey));
+                JSONObject receipt = message == null ? null : message.optJSONObject("nativeInboxReceipt");
+                if (receipt == null || !id.equals(receipt.optString("id")) || !worker.equals(receipt.optString("workerUrl"))
+                    || !library.equals(receipt.optString("libraryId"))) return "";
+                String previous = receipt.optString("notificationState", "");
+                if (state != null && !state.equals(previous)) {
+                    JSONObject vault = database.getRecord("settings", VAULT_SETTING);
+                    if (vault != null && vault.optJSONObject("value") != null) return previous;
+                    receipt.put("notificationState", state);
+                    database.applyBatch(new JSONArray().put(putOperation("communitySourceMessages", JSONObject.quote(messageKey), message)), true);
+                }
+                return previous;
+        });
+    }
 
     static boolean requiresForegroundImport(JSONObject metadata) {
         JSONObject outcome = metadata.optJSONObject("nativeImportOutcome");
@@ -79,14 +285,18 @@ final class NativeBackgroundResourceImporter {
 
     /** Reconcile completed automatic receives together at the inbox's 30-second check boundary. */
     static synchronized JSONArray reconcileAutoReceiveCycle(Context context, String receiveWindow) throws Exception {
+        NativeAppDatabase database = new NativeAppDatabase(context);
+        try { return reconcileAutoReceiveCycle(context, database, receiveWindow, new File(context.getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER)); }
+        finally { database.close(); }
+    }
+
+    static synchronized JSONArray reconcileAutoReceiveCycle(Context context, NativeAppDatabase database, String receiveWindow, File folder) throws Exception {
         JSONArray reconciledTokens = new JSONArray();
         if (receiveWindow == null || !receiveWindow.matches("[0-9]{1,13}")) return reconciledTokens;
-        File folder = new File(context.getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER);
         File[] receipts = folder.listFiles((dir, name) -> name.endsWith(".json"));
-        if (receipts == null) return reconciledTokens;
-        NativeAppDatabase database = new NativeAppDatabase(context);
-        try {
-            return database.withReadGuard(() -> {
+        if (receipts == null) receipts = new File[0];
+        final File[] receiveReceipts = receipts;
+        return database.withReadGuard(() -> {
             JSONObject active = parseState(database.getState(ACTIVE_STATE));
             if (active == null || "legacy".equals(active.optString("mode"))
                 || "rolling-back".equals(active.optString("mode"))
@@ -100,7 +310,7 @@ final class NativeBackgroundResourceImporter {
             ArrayList<File> completedReceipts = new ArrayList<>();
             ArrayList<JSONObject> completedMetadata = new ArrayList<>();
             Set<String> finishedDownloads = null;
-            for (File receipt : receipts) {
+            for (File receipt : receiveReceipts) {
                 JSONObject metadata;
                 try { metadata = NativeShareImportService.readMetadata(receipt); }
                 catch (Exception ignored) { continue; }
@@ -127,7 +337,7 @@ final class NativeBackgroundResourceImporter {
                 JSONObject row = database.getRecord("resourceListSummaries", JSONObject.quote(resourceId));
                 if (row != null && "characterCard".equals(row.optString("type"))) incoming.add(row);
             }
-            if (completedReceipts.isEmpty()) return reconciledTokens;
+            if (completedReceipts.isEmpty() && !"0".equals(receiveWindow)) return reconciledTokens;
 
             JSONArray pendingRows = database.getRecentRecordsByIndex("communitySources", "updatedAt", 100);
             ArrayList<JSONObject> pending = new ArrayList<>();
@@ -146,6 +356,10 @@ final class NativeBackgroundResourceImporter {
             JSONArray bindingNotices = new JSONArray();
             HashSet<String> claimedResources = new HashSet<>();
             long now = System.currentTimeMillis();
+            ArrayList<JSONObject> recentCards = new ArrayList<>();
+            JSONArray recentRows = pending.isEmpty() ? new JSONArray() : database.getRecentRecordsByIndex("resourceListSummaries", "updatedAt", AUTO_BIND_FUTURE_LIMIT,
+                "type", JSONObject.quote("characterCard"));
+            for (int index = 0; index < recentRows.length(); index++) recentCards.add(recentRows.getJSONObject(index).getJSONObject("value"));
             for (JSONObject source : pending) {
                 if (operations.length() >= 96) {
                     database.applyBatch(operations, true);
@@ -161,12 +375,19 @@ final class NativeBackgroundResourceImporter {
                 if (future == null) future = new JSONArray();
                 HashSet<String> scannedIds = jsonStringSet(scanned);
                 HashSet<String> futureIds = jsonStringSet(future);
+                boolean initialScan = source.optBoolean("nativeInitialAutoBindPending", false)
+                    && scan != null && "scanning".equals(scan.optString("status"));
                 ArrayList<JSONObject> fresh = new ArrayList<>();
-                for (JSONObject resource : incoming) {
+                for (JSONObject resource : initialScan ? recentCards : incoming) {
                     String id = resource.optString("id", "");
                     if (!id.isBlank() && !scannedIds.contains(id) && !claimedResources.contains(id)
                         && database.countIndexEntries("resourceSourceBindings", "resourceId", JSONObject.quote(id)) == 0
-                        && currentVersionImportedAt(resource) >= source.optLong("createdAt")) fresh.add(resource);
+                        && (initialScan || currentVersionImportedAt(resource) >= source.optLong("createdAt"))) fresh.add(resource);
+                }
+                if (initialScan) {
+                    source.remove("nativeInitialAutoBindPending");
+                    source.put("updatedAt", now);
+                    if (fresh.isEmpty()) operations.put(putOperation("communitySources", JSONObject.quote(sourceId), source));
                 }
                 if (fresh.isEmpty()) continue;
 
@@ -230,6 +451,7 @@ final class NativeBackgroundResourceImporter {
                         String id = resource.optString("id", "");
                         if (resource.optString("type").equals("characterCard")
                             && resource.optString("fileName", "").toLowerCase(Locale.ROOT).endsWith(".png")
+                            && currentVersionImportedAt(resource) >= source.optLong("createdAt")
                             && !claimedResources.contains(id)) { png = resource; break; }
                     }
                     if (png != null) {
@@ -242,7 +464,7 @@ final class NativeBackgroundResourceImporter {
 
                 if (!eligible.isEmpty()) {
                     JSONArray nextScanned = mergeStringArrays(scanned, eligible, "id");
-                    JSONArray nextFuture = mergeStringArrays(future, eligible, "id");
+                    JSONArray nextFuture = initialScan ? future : mergeStringArrays(future, eligible, "id");
                     source.put("autoBindScan", new JSONObject().put("version", 1)
                         .put("status", nextFuture.length() >= AUTO_BIND_FUTURE_LIMIT ? "exhausted" : "scanning")
                         .put("scannedResourceIds", nextScanned).put("futureResourceIds", nextFuture));
@@ -253,16 +475,22 @@ final class NativeBackgroundResourceImporter {
             if (operations.length() > 0) database.applyBatch(operations, true);
             NativeDiscordInboxService.notifyAutoBindings(context, bindingNotices);
             for (int index = 0; index < completedReceipts.size(); index++) {
-                JSONObject metadata = completedMetadata.get(index);
-                metadata.put("cloudAutoBindingPending", false).put("cloudAutoBindingReconciledAt", System.currentTimeMillis());
-                metadata.remove("cloudAutoReceiveWindow");
                 String receiptName = completedReceipts.get(index).getName();
                 String receiptToken = receiptName.substring(0, receiptName.length() - ".json".length());
-                NativeShareImportService.writeMetadata(folder, receiptToken, metadata);
+                synchronized (NativeDiscordDownloadWorker.class) {
+                    JSONObject metadata = NativeShareImportService.readMetadata(completedReceipts.get(index));
+                    JSONObject settled = completedMetadata.get(index);
+                    if (settled.optBoolean("nativeBackgroundImportFinished", false)) metadata.put("nativeBackgroundImportFinished", true);
+                    if (!metadata.has("nativeImportOutcome") && settled.has("nativeImportOutcome"))
+                        metadata.put("nativeImportOutcome", settled.getJSONObject("nativeImportOutcome"));
+                    if (requiresForegroundImport(metadata)) metadata.getJSONObject("nativeImportOutcome").put("state", "foreground_required");
+                    metadata.put("cloudAutoBindingPending", false).put("cloudAutoBindingReconciledAt", System.currentTimeMillis());
+                    metadata.remove("cloudAutoReceiveWindow");
+                    NativeShareImportService.writeMetadata(folder, receiptToken, metadata);
+                }
             }
             return reconciledTokens;
             });
-        } finally { database.close(); }
     }
 
     static JSONArray pendingAutoReceiveWindows(Context context) {
@@ -324,6 +552,7 @@ final class NativeBackgroundResourceImporter {
         String sourceId = source.optString("id", ""), resourceId = resource.optString("id", "");
         if (sourceId.isBlank() || resourceId.isBlank()) return;
         source.remove("autoBindScan");
+        source.remove("nativeInitialAutoBindPending");
         source.remove("autoBindPendingPng");
         source.put("updatedAt", now);
         JSONObject binding = new JSONObject().put("id", resourceId + ":source:" + sourceId)
@@ -693,6 +922,7 @@ final class NativeBackgroundResourceImporter {
     private static JSONObject newResource(JSONObject parsed, String fileName, String type, String fileHash,
                                             long size, String id, long now) throws Exception {
         return new JSONObject(parsed.toString())
+            .put("tags", parsed.optJSONArray("tags") == null ? new JSONArray() : parsed.getJSONArray("tags"))
             .put("id", id).put("fileName", fileName).put("mimeType", type).put("fileSize", size)
             .put("contentHash", fileHash)
             .put("backupDescriptor", new JSONObject().put("version", 1).put("resourceId", id)
@@ -1207,6 +1437,12 @@ final class NativeBackgroundResourceImporter {
             addIndex(result, "resourceId", value.opt("resourceId"));
             addIndex(result, "sourceId", value.opt("sourceId"));
             addIndex(result, "createdAt", value.opt("createdAt"));
+            return result;
+        }
+        if ("communitySourceMessages".equals(store)) {
+            for (String field : new String[]{"id", "sourceId", "messageKeyHash", "kind", "capturedAt"}) addIndex(result, field, value.opt(field));
+            for (String field : new String[]{"kind", "messageKeyHash"}) result.put(new JSONObject().put("name", "[sourceId+" + field + "]")
+                .put("keys", new JSONArray().put(new JSONArray().put(value.getString("sourceId")).put(value.getString(field)).toString())));
             return result;
         }
         if (!"resources".equals(store) && !"resourceSummaries".equals(store)

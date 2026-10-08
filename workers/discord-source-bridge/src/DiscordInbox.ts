@@ -519,10 +519,21 @@ export async function handleInboxRequest(
     }
     if (path === '/inbox/jobs' && request.method === 'GET') {
       const now = Date.now()
+      const after = new URL(request.url).searchParams.get('after')
+      const cursor = after === null ? undefined : /^(\d{1,13}):([a-f\d-]{36})$/u.exec(after)
+      if (after !== null && !cursor) throw new InboxError(400, 'invalid_post_cursor')
       const [pending, recent] = await env.DB.batch<Delivery>([
         env.DB.prepare(
-          "SELECT * FROM inbox_deliveries WHERE library_id = ? AND state = 'pending' AND expires_at > ? ORDER BY created_at ASC, id ASC LIMIT ?",
-        ).bind(endpoint.library_id, now, PAGE_SIZE + 1),
+          `SELECT * FROM inbox_deliveries WHERE library_id = ? AND state = 'pending' AND expires_at > ?
+           AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC LIMIT ?`,
+        ).bind(
+          endpoint.library_id,
+          now,
+          Number(cursor?.[1] ?? 0),
+          Number(cursor?.[1] ?? 0),
+          cursor?.[2] ?? '',
+          PAGE_SIZE + 1,
+        ),
         env.DB.prepare(
           "SELECT * FROM inbox_deliveries WHERE library_id = ? AND state <> 'pending' AND expires_at > ? ORDER BY acknowledged_at DESC, id DESC LIMIT ?",
         ).bind(endpoint.library_id, now, PAGE_SIZE),

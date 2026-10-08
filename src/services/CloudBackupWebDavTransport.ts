@@ -411,10 +411,21 @@ export async function listWebDav(
   config: WebDavBackupConfig,
   secret: string,
   onProgress?: CloudBackupProgressCallback,
+  onWarning?: CloudBackupProgressCallback,
 ): Promise<CloudBackupItem[]> {
   onProgress?.('正在读取 Koofr 远端对象索引…')
   const objects = await context.listWebDavObjects(config, secret)
   const objectByName = new Map(objects.map((object) => [object.objectKey, object]))
+  const issues: string[] = []
+  const recordIssue = (objectKey: string, error: unknown): void => {
+    if (
+      isCloudRequestTimeout(error) ||
+      error instanceof TypeError ||
+      (typeof error === 'object' && error !== null && 'status' in error)
+    )
+      throw error
+    issues.push(`${objectKey}：${error instanceof Error ? error.message : '清单校验失败'}`)
+  }
   const backups: CloudBackupItem[] = objects
     .filter((item) => /\.zip$/i.test(item.objectKey))
     .map((item) => ({
@@ -437,8 +448,8 @@ export async function listWebDav(
         partCount: manifest.parts.length,
         archiveName: manifest.fileName,
       })
-    } catch {
-      // A missing or invalid manifest is never exposed as a restorable backup.
+    } catch (error) {
+      recordIssue(item.objectKey, error)
     }
   }
   const snapshotObjects = objects.filter((entry) => isStructuredSnapshotObjectKey(entry.objectKey))
@@ -448,13 +459,19 @@ export async function listWebDav(
   }
   await mapWithConcurrency(snapshotObjects, 2, async (item) => {
     try {
-      const snapshot = await context.readWebDavStructuredSnapshot(config, secret, item.objectKey)
+      const snapshot = await context.readWebDavStructuredSnapshot(
+        config,
+        secret,
+        item.objectKey,
+        (stage) =>
+          onProgress?.(`${stage}（已校验 ${checkedSnapshots}/${snapshotObjects.length}）…`),
+      )
       const parts = structuredSnapshotParts(snapshot)
-      if (
-        parts.some((part) => objectByName.get(structuredPartObjectKey(part))?.size !== part.size)
-      ) {
-        return
-      }
+      const missing = parts.find(
+        (part) => objectByName.get(structuredPartObjectKey(part))?.size !== part.size,
+      )
+      if (missing)
+        throw new Error(`引用的内容对象缺失或大小不符：${structuredPartObjectKey(missing)}`)
       backups.push({
         id: item.objectKey,
         objectKey: item.objectKey,
@@ -468,13 +485,17 @@ export async function listWebDav(
         archiveName: structuredSnapshotArchiveName(item.objectKey),
       })
     } catch (error) {
-      if (isCloudRequestTimeout(error)) throw error
-      // Invalid or incomplete snapshots are never exposed as restorable backups.
+      recordIssue(item.objectKey, error)
     } finally {
       checkedSnapshots += 1
       onProgress?.(`正在校验云端快照 ${checkedSnapshots} / ${snapshotObjects.length}…`)
     }
   })
+  if (issues.length) {
+    const warning = `Koofr 有 ${issues.length} 份备份未通过校验：\n${issues.join('\n')}`
+    if (!backups.length) throw new Error(`${warning}\n无法确认有效备份列表；这不代表云端没有备份。`)
+    onWarning?.(warning)
+  }
   return backups.sort((left, right) => right.createdAt - left.createdAt)
 }
 
@@ -500,7 +521,9 @@ export async function readWebDavStructuredSnapshot(
   config: WebDavBackupConfig,
   secret: string,
   objectKey: string,
+  onProgress?: CloudBackupProgressCallback,
 ): Promise<StructuredSnapshot> {
+  onProgress?.('正在下载快照清单')
   const response = await context.cloudFetch(
     joinUrl(config.baseUrl, normalizeFolder(config.folder), objectKey),
     { headers: { Authorization: basicAuthorization(config.username, secret) } },
@@ -509,7 +532,9 @@ export async function readWebDavStructuredSnapshot(
   if (!response.ok) {
     throw cloudHttpError(`Koofr 对象快照清单读取失败（${response.status}）`, response.status)
   }
-  return decodeStructuredSnapshot(await context.readResponseBlob(response))
+  const blob = await context.readResponseBlob(response)
+  onProgress?.('正在解压并解析快照清单')
+  return decodeStructuredSnapshot(blob)
 }
 
 export function createWebDavObjectReader(

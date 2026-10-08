@@ -25,6 +25,206 @@ import static org.junit.Assert.assertTrue;
 
 @RunWith(AndroidJUnit4.class)
 public class NativeBackgroundPngPreferenceTest {
+    @Test public void inboxCheckIsolatesBadPostAndMediaThenAcknowledgesLaterPostWithoutReplayingResults() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-inbox-chain-" + java.util.UUID.randomUUID();
+        File directory = new File(app.getCacheDir(), name); assertTrue(directory.mkdir());
+        Context fixture = new android.content.ContextWrapper(app) {
+            @Override public Context getApplicationContext() { return this; }
+            @Override public File getFilesDir() { return directory; }
+            @Override public File getDatabasePath(String ignored) { return app.getDatabasePath(name); }
+        };
+        NativeAppDatabase database = new NativeAppDatabase(fixture);
+        NativeDiscordInboxService service = new NativeDiscordInboxService();
+        java.lang.reflect.Method attach = android.content.ContextWrapper.class.getDeclaredMethod("attachBaseContext", Context.class);
+        attach.setAccessible(true); attach.invoke(service, fixture);
+        java.util.Map<String, Integer> requests = new java.util.HashMap<>();
+        java.util.Set<String> acknowledged = new java.util.HashSet<>();
+        String bad = java.util.UUID.randomUUID().toString(), first = java.util.UUID.randomUUID().toString(), next = java.util.UUID.randomUUID().toString();
+        String library = "test-library";
+        android.app.NotificationManager manager = (android.app.NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+        try {
+            database.putState("migration:appdb:v1:active", "{\"version\":1,\"mode\":\"active\"}");
+            database.putState("migration:appdb:indexes:v1:active", "verified-v1");
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("discordInbox.automation.v1"))
+                .put("value", new JSONObject().put("id", "discordInbox.automation.v1").put("value", new JSONObject().put("bindSameName", true).put("downloadPostMedia", true)))));
+            java.util.Map<String, JSONObject> envelopes = new java.util.HashMap<>();
+            for (int index = 0; index < 2; index++) {
+                String id = index == 0 ? first : next, title = index == 0 ? "链路小明" : "链路小红", cardId = "chain-card-" + index;
+                JSONObject card = new JSONObject().put("id", cardId).put("name", title).put("type", "characterCard").put("fileName", "card.png")
+                    .put("createdAt", index + 1).put("updatedAt", index + 1).put("metadata", new JSONObject());
+                database.putRecords("resourceListSummaries", new JSONArray().put(new JSONObject().put("key", JSONObject.quote(cardId)).put("value", card)
+                    .put("indexes", new JSONArray().put(new JSONObject().put("name", "type").put("keys", new JSONArray().put(JSONObject.quote("characterCard"))))
+                        .put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put(Integer.toString(index + 1)))))));
+                JSONArray attachments = new JSONArray();
+                for (String file : index == 0 ? new String[] {"bad.png", "good.png"} : new String[] {"next.png"})
+                    attachments.put(new JSONObject().put("id", file).put("name", file).put("url", "https://cdn.discordapp.com/attachments/a/b/" + file).put("size", 3).put("contentType", "image/png"));
+                JSONObject capture = new JSONObject().put("guildId", "guild").put("channelId", "channel").put("threadId", id).put("messageId", id)
+                    .put("isStarter", true).put("authorId", "author").put("authorName", "作者").put("title", title).put("content", title + "正文")
+                    .put("canonicalUrl", "https://discord.com/channels/guild/channel/" + id).put("timestamp", "2026-10-09T00:00:00Z").put("attachments", attachments);
+                envelopes.put(id, new JSONObject().put("capture", capture).put("delivery", new JSONObject().put("id", id).put("libraryId", library).put("capturedAt", index + 10)));
+            }
+            okhttp3.OkHttpClient transport = new okhttp3.OkHttpClient.Builder().addInterceptor(chain -> {
+                String path = chain.request().url().encodedPath(); requests.merge(path, 1, Integer::sum);
+                String body = "{}"; int code = 200; String mime = "application/json";
+                try {
+                    if (path.startsWith("/attachments/")) {
+                        // All bodies and bindings must commit before the first media request, including after the bad body.
+                        assertEquals(2L, database.countRecords("communitySources")); assertEquals(2L, database.countRecords("resourceSourceBindings"));
+                        code = path.endsWith("bad.png") ? 403 : 200; body = code == 200 ? "img" : ""; mime = "image/png";
+                    } else if (path.equals("/inbox/status")) body = new JSONObject().put("libraryId", library).put("paired", true).put("isDefault", true).toString();
+                    else if (path.equals("/inbox/resources")) body = "{\"jobs\":[],\"hasMore\":false}";
+                    else if (path.equals("/inbox/waiting-sources")) body = "{\"sourceKeyHashes\":[],\"nextCursor\":null}";
+                    else if (path.equals("/inbox/jobs")) {
+                        JSONArray jobs = new JSONArray();
+                        for (String id : new String[] {bad, first, next}) if (!acknowledged.contains(id)) jobs.put(new JSONObject().put("id", id).put("createdAt", 1).put("title", "链路帖子"));
+                        body = new JSONObject().put("jobs", jobs).put("hasMore", false).toString();
+                    } else if (path.endsWith("/ack")) acknowledged.add(path.split("/")[3]);
+                    else if (path.startsWith("/inbox/jobs/")) { JSONObject envelope = envelopes.get(path.substring("/inbox/jobs/".length())); body = envelope == null ? "{}" : envelope.toString(); }
+                } catch (Exception error) { throw new java.io.IOException(error); }
+                return new okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(code).message("fixture")
+                    .body(okhttp3.ResponseBody.create(body, okhttp3.MediaType.parse(mime))).build();
+            }).build();
+            for (String field : new String[] {"worker", "library", "secret", "client", "mediaClient"}) {
+                java.lang.reflect.Field target = NativeDiscordInboxService.class.getDeclaredField(field); target.setAccessible(true);
+                target.set(service, "worker".equals(field) ? "https://worker.example" : "library".equals(field) ? library : "secret".equals(field) ? "S".repeat(40) : transport);
+            }
+            java.lang.reflect.Method check = NativeDiscordInboxService.class.getDeclaredMethod("check"); check.setAccessible(true); check.invoke(service);
+            assertFalse(acknowledged.contains(bad)); assertFalse(acknowledged.contains(first)); assertTrue(acknowledged.contains(next));
+            assertEquals(1L, database.countRecords("assets"));
+            java.util.Map<String, Integer> before = new java.util.HashMap<>(requests);
+            java.util.Map<String, Long> resultTimes = new java.util.HashMap<>();
+            for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
+                if (notification.getId() == 2131 || notification.getId() == 2133) resultTimes.put(notification.getTag(), notification.getPostTime());
+            assertTrue(resultTimes.size() >= 4);
+            check.invoke(service);
+            for (String path : before.keySet()) if (path.startsWith("/attachments/") || path.startsWith("/inbox/jobs/")) assertEquals(before.get(path), requests.get(path));
+            for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
+                if (resultTimes.containsKey(notification.getTag())) assertEquals(resultTimes.get(notification.getTag()).longValue(), notification.getPostTime());
+        } finally {
+            service.onDestroy();
+            for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
+                if (notification.getId() == 2130 || notification.getNotification().extras.toString().contains("链路")) manager.cancel(notification.getTag(), notification.getId());
+            database.close(); app.deleteDatabase(name);
+            try (java.util.stream.Stream<java.nio.file.Path> paths = java.nio.file.Files.walk(directory.toPath())) {
+                for (java.nio.file.Path path : paths.sorted(java.util.Comparator.reverseOrder()).toArray(java.nio.file.Path[]::new)) path.toFile().delete();
+            }
+        }
+    }
+    @Test public void cloudPostAfterCardPersistsReopensAndBindsWithoutForegroundReview() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-background-post-" + java.util.UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(app, name);
+        File directory = new File(app.getCacheDir(), name);
+        assertTrue(directory.mkdir());
+        String library = "test-library", id = java.util.UUID.randomUUID().toString();
+        String bindingTag = null;
+        java.util.ArrayList<String> extraBindingTags = new java.util.ArrayList<>();
+        File media = new File(directory, "post-media.png");
+        try {
+            database.putState("migration:appdb:v1:active", "{\"version\":1,\"mode\":\"active\"}");
+            database.putState("migration:appdb:indexes:v1:active", "verified-v1");
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("discordInbox.automation.v1"))
+                .put("value", new JSONObject().put("id", "discordInbox.automation.v1").put("value", new JSONObject().put("bindSameName", true).put("downloadPostMedia", true)))));
+            JSONObject card = new JSONObject().put("id", "card-before-post").put("name", "小明").put("type", "characterCard")
+                .put("fileName", "card.png").put("createdAt", 1).put("versionImportedAt", 1).put("updatedAt", 2).put("metadata", new JSONObject());
+            database.putRecords("resourceListSummaries", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("card-before-post"))
+                .put("value", card).put("indexes", new JSONArray().put(new JSONObject().put("name", "type").put("keys", new JSONArray().put(JSONObject.quote("characterCard"))))
+                    .put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put("2"))))));
+            JSONObject capture = new JSONObject().put("guildId", "guild").put("channelId", "channel").put("threadId", "thread")
+                .put("messageId", "message").put("isStarter", true).put("authorId", "author").put("authorName", "作者")
+                .put("title", "小明的故事").put("content", "小明的完整正文\n".repeat(1000))
+                .put("canonicalUrl", "https://discord.com/channels/guild/thread/message").put("timestamp", "2026-10-08T00:00:00Z");
+            capture.put("attachments", new JSONArray().put(new JSONObject().put("id", "image").put("name", "image.png")
+                .put("url", "https://cdn.discordapp.com/attachments/a/b/image.png").put("size", 100).put("contentType", "image/png")));
+            JSONObject envelope = new JSONObject().put("capture", capture).put("delivery", new JSONObject().put("id", id).put("libraryId", library).put("capturedAt", 10));
+            JSONObject saved = NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example");
+            assertEquals("saved", saved.getString("state"));
+            assertFalse(saved.getBoolean("alreadySaved"));
+            assertTrue(saved.getBoolean("attachmentDownloadPending"));
+            String sourceId = saved.getString("sourceId");
+            database.close();
+            database = new NativeAppDatabase(app, name);
+            String messageKey = JSONObject.quote(sourceId + ":message:" + NativeDiscordPostCapture.hash(sourceId + "\0message"));
+            assertEquals(capture.getString("content"), database.getRecord("communitySourceMessages", messageKey).getString("content"));
+            assertEquals(1L, database.countIndexEntries("communitySourceMessages", "[sourceId+kind]", new JSONArray().put(sourceId).put("starter").toString()));
+            String sourceHash = NativeDiscordPostCapture.sourceHash(NativeDiscordPostCapture.normalize(capture));
+            assertFalse(NativeBackgroundResourceImporter.canConfirmCloudSourceBound(database, sourceHash));
+            NativeBackgroundResourceImporter.reconcileAutoReceiveCycle(app, database, "0", directory);
+            assertEquals(1L, database.countIndexEntries("resourceSourceBindings", "sourceId", JSONObject.quote(sourceId)));
+            assertTrue(NativeBackgroundResourceImporter.canConfirmCloudSourceBound(database, sourceHash));
+            assertFalse(NativeBackgroundResourceImporter.canConfirmCloudSourceBound(database, "a".repeat(64)));
+            assertEquals("same-name", database.getRecord("resourceSourceBindings", JSONObject.quote("card-before-post:source:" + sourceId)).getString("autoBindingRule"));
+            assertFalse(database.getRecord("communitySources", JSONObject.quote(sourceId)).has("autoBindScan"));
+            bindingTag = NativeDiscordInboxService.autoBindingNotificationTag(new JSONObject().put("sourceId", sourceId).put("resourceId", "card-before-post"));
+            android.app.NotificationManager manager = (android.app.NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+            boolean notified = false;
+            for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
+                if (bindingTag.equals(notification.getTag())) notified = notification.getNotification().extras.getString(android.app.Notification.EXTRA_TEXT).contains("小明的故事");
+            assertTrue("Binding result must appear before any foreground review", notified);
+            try (FileOutputStream output = new FileOutputStream(media)) { output.write(new byte[100]); }
+            NativeAppDatabase reopened = database;
+            JSONObject mediaIdentity = capture.getJSONArray("attachments").getJSONObject(0);
+            org.junit.Assert.assertThrows(java.io.InterruptedIOException.class, () -> NativeBackgroundResourceImporter.savePostAttachment(
+                reopened, saved.getString("messageKey"), mediaIdentity, media, "image/png", () -> true));
+            assertEquals(0L, database.countRecords("assets"));
+            NativeBackgroundResourceImporter.savePostAttachment(database, saved.getString("messageKey"), mediaIdentity, media, "image/png", () -> false);
+            assertEquals(0, NativeBackgroundResourceImporter.pendingPostAttachments(database, saved.getString("messageKey")).length());
+            JSONObject localMedia = database.getRecord("communitySourceMessages", messageKey).getJSONArray("attachments").getJSONObject(0);
+            assertEquals("local", localMedia.getString("localState"));
+            assertNotNull(database.getBlobPath("assetFiles", JSONObject.quote(localMedia.getString("localAssetId")), "$/blob"));
+            NativeBackgroundResourceImporter.setPostAttachmentState(database, saved.getString("messageKey"), "complete");
+            assertFalse(NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example").getBoolean("attachmentDownloadPending"));
+            assertTrue(NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example").getBoolean("alreadySaved"));
+            assertFalse(NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example").getBoolean("notificationPosted"));
+            NativeBackgroundResourceImporter.cloudPostNotificationState(database, saved.getString("messageKey"), id, "https://worker.example", library, "saved");
+            database.close();
+            database = new NativeAppDatabase(app, name);
+            assertTrue(NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example").getBoolean("notificationPosted"));
+            assertEquals("foreground_required", NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://other.example").getString("state"));
+            assertEquals(1L, database.countRecords("communitySources"));
+            assertEquals(1L, database.countRecords("communitySourceMessages"));
+            capture.put("content", "后来更新的正文");
+            assertEquals("foreground_required", NativeBackgroundResourceImporter.saveCloudPostIfSafe(database, envelope, id, library, "https://worker.example").getString("state"));
+            assertTrue(database.getRecord("communitySourceMessages", messageKey).getString("content").startsWith("小明的完整正文"));
+            for (int index = 0; index < 2; index++) {
+                String nameOfCard = index == 0 ? "小红" : "小兰", cardId = "following-card-" + index;
+                JSONObject followingCard = new JSONObject(card.toString()).put("id", cardId).put("name", nameOfCard).put("updatedAt", index + 3);
+                database.putRecords("resourceListSummaries", new JSONArray().put(new JSONObject().put("key", JSONObject.quote(cardId)).put("value", followingCard)
+                    .put("indexes", new JSONArray().put(new JSONObject().put("name", "type").put("keys", new JSONArray().put(JSONObject.quote("characterCard"))))
+                        .put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put(Integer.toString(index + 3)))))));
+                JSONObject followingCapture = new JSONObject(capture.toString()).put("threadId", "following-thread-" + index)
+                    .put("messageId", "following-message-" + index).put("title", nameOfCard + "的故事").put("content", nameOfCard + "的正文");
+                String followingId = java.util.UUID.randomUUID().toString();
+                JSONObject following = NativeBackgroundResourceImporter.saveCloudPostIfSafe(database,
+                    new JSONObject().put("capture", followingCapture).put("delivery", new JSONObject().put("id", followingId).put("libraryId", library).put("capturedAt", index + 11)),
+                    followingId, library, "https://worker.example");
+                assertEquals("saved", following.getString("state"));
+                assertTrue(following.getBoolean("attachmentDownloadPending"));
+                NativeBackgroundResourceImporter.reconcileAutoReceiveCycle(app, database, "0", directory);
+                assertEquals(1L, database.countIndexEntries("resourceSourceBindings", "sourceId", JSONObject.quote(following.getString("sourceId"))));
+                String followingTag = NativeDiscordInboxService.autoBindingNotificationTag(new JSONObject().put("sourceId", following.getString("sourceId")).put("resourceId", cardId));
+                extraBindingTags.add(followingTag);
+                boolean followingNotified = false;
+                for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
+                    if (followingTag.equals(notification.getTag())) followingNotified = notification.getNotification().extras.getString(android.app.Notification.EXTRA_TEXT).contains(nameOfCard + "的故事");
+                assertTrue("Each following post must bind and notify without foreground", followingNotified);
+                NativeBackgroundResourceImporter.savePostAttachment(database, following.getString("messageKey"), mediaIdentity, media, "image/png", () -> false);
+                NativeBackgroundResourceImporter.setPostAttachmentState(database, following.getString("messageKey"), "complete");
+                assertEquals(0, NativeBackgroundResourceImporter.pendingPostAttachments(database, following.getString("messageKey")).length());
+            }
+            assertEquals(3L, database.countRecords("communitySources"));
+            assertEquals(1L, database.countRecords("assets"));
+            assertEquals(1L, database.countRecords("assetFiles"));
+        } finally {
+            database.clearStore("assetFiles"); database.clearStore("assets");
+            database.close(); app.deleteDatabase(name);
+            if (bindingTag != null) ((android.app.NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(bindingTag, 2133);
+            for (String tag : extraBindingTags) ((android.app.NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(tag, 2133);
+            media.delete(); directory.delete();
+        }
+    }
+
     @Test public void standaloneWorldBookImportsInBackgroundAndSurvivesReopenWithoutBindingOrDuplicate() throws Exception {
         Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name = "srl-world-book-" + java.util.UUID.randomUUID();

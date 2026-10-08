@@ -43,10 +43,11 @@ export async function listRetentionBackups(
       context.getGitHubRelease(config, secret, false, LEGACY_RELEASE_TAG),
       context.getGitHubRelease(config, secret, false, SNAPSHOT_RELEASE_TAG),
     ])
-    const assets = [
-      ...(legacy ? await context.listGitHubAssets(config, secret, legacy.id) : []),
-      ...(snapshots ? await context.listGitHubAssets(config, secret, snapshots.id) : []),
-    ]
+    const inventories = await Promise.all([
+      legacy ? context.listGitHubAssets(config, secret, legacy.id) : [],
+      snapshots ? context.listGitHubAssets(config, secret, snapshots.id) : [],
+    ])
+    const assets = inventories.flat()
     return assets
       .flatMap((asset): CloudBackupItem[] => {
         const createdAt = Date.parse(asset.created_at) || 0
@@ -119,6 +120,7 @@ export async function referencedPartIdentities(
   secret: string,
   backups: CloudBackupItem[],
   cached?: { objectKey: string; snapshot: import('./CloudStructuredSnapshot').StructuredSnapshot },
+  onChecked?: () => void,
 ): Promise<Set<string>> {
   const referenced = new Set<string>()
   await mapWithConcurrency(backups, 3, async (item) => {
@@ -145,6 +147,7 @@ export async function referencedPartIdentities(
           config.provider === 'github' ? `${LEGACY_RELEASE_TAG}\u0000${part.name}` : part.name,
         )
     }
+    onChecked?.()
   })
   return referenced
 }
@@ -156,7 +159,11 @@ export async function prune(
   protectedObjectKey?: string,
   deep = false,
   committedSnapshot?: import('./CloudStructuredSnapshot').StructuredSnapshot,
+  onProgress?: (message: string) => void,
 ): Promise<number> {
+  const report = (message: string): void =>
+    onProgress?.(`${protectedObjectKey ? '备份已提交成功；' : ''}${message}`)
+  report('正在读取旧快照列表…')
   const backups = await context.listRetentionBackups(config, secret)
   const normalKept = backups.slice(0, normalizeRetention(config.retention))
   const protectedItem = protectedObjectKey
@@ -174,7 +181,10 @@ export async function prune(
       ? `github:${config.owner}/${config.repository}`
       : `webdav:${config.baseUrl.replace(/\/+$/u, '')}/${normalizeFolder(config.folder)}`
   const pending = await context.transportState.jobStore.pendingOrphans(orphanScope)
-  if (!deep && !removed.length && !pending.length) return 0
+  if (!deep && !removed.length && !pending.length) {
+    report('保留份数检查完成，无需清理。')
+    return 0
+  }
   const cached =
     protectedObjectKey && committedSnapshot
       ? { objectKey: protectedObjectKey, snapshot: committedSnapshot }
@@ -182,20 +192,27 @@ export async function prune(
 
   // Only retained and about-to-expire manifests are read during normal automatic maintenance.
   // A malformed one aborts before its snapshot can be deleted.
+  let checked = 0
+  const checkTotal = kept.length + removed.length
+  report(`正在核对快照引用（0/${checkTotal}）…`)
+  const onChecked = (): void => report(`正在核对快照引用（${++checked}/${checkTotal}）…`)
   const [keptParts, retiredParts] = await Promise.all([
-    referencedPartIdentities(context, config, secret, kept, cached),
-    referencedPartIdentities(context, config, secret, removed, cached),
+    referencedPartIdentities(context, config, secret, kept, cached, onChecked),
+    referencedPartIdentities(context, config, secret, removed, cached, onChecked),
   ])
 
   // 先让超出 retention 的清单退出可见快照集合；只要任一清单删除失败，
   // 本轮就不会继续回收内容对象，避免留下“仍可见但缺对象”的旧快照。
-  for (const item of removed) {
+  let deleted = 0
+  report(`正在清理过期快照（0/${removed.length}）…`)
+  await mapWithConcurrency(removed, 3, async (item) => {
     if (config.provider === 'github') {
       await context.githubFetch(config, secret, `/releases/assets/${item.id}`, { method: 'DELETE' })
     } else {
       await context.deleteWebDavObject(config, secret, item.objectKey)
     }
-  }
+    report(`正在清理过期快照（${++deleted}/${removed.length}）…`)
+  })
 
   const now = Date.now()
   const candidates = new Set(
@@ -218,6 +235,7 @@ export async function prune(
     for (const container of containers) {
       for (const asset of await context.listGitHubAssets(config, secret, container.release.id)) {
         const identity = `${container.tag}\u0000${asset.name}`
+        orphanAssets.set(identity, asset)
         if (isVerifiedChunkObjectName(asset.name) && !keptParts.has(identity))
           candidates.add(identity)
       }
@@ -240,6 +258,7 @@ export async function prune(
   }
 
   if (config.provider === 'github') {
+    report('正在检查可回收内容对象…')
     const eligible = await context.transportState.jobStore.eligibleOrphans(
       orphanScope,
       candidates,
@@ -247,20 +266,25 @@ export async function prune(
       ORPHAN_CHUNK_GRACE_MS,
     )
     const assetsByIdentity = new Map<string, GitHubAsset>()
-    for (const container of new Set(eligible.map((identity) => identity.split('\u0000', 1)[0]!))) {
+    const containers = [...new Set(eligible.map((identity) => identity.split('\u0000', 1)[0]!))]
+    await mapWithConcurrency(containers, 3, async (container) => {
       const release = await context.getGitHubRelease(config, secret, false, container)
-      if (!release) continue
+      if (!release) return
       for (const asset of await context.listGitHubAssets(config, secret, release.id))
         assetsByIdentity.set(`${container}\u0000${asset.name}`, asset)
-    }
-    for (const identity of eligible) {
+    })
+    let reclaimed = 0
+    report(`正在处理无引用内容对象（0/${eligible.length}）…`)
+    await mapWithConcurrency(eligible, 3, async (identity) => {
       const asset = assetsByIdentity.get(identity)
       if (asset)
         await context.githubFetch(config, secret, `/releases/assets/${asset.id}`, {
           method: 'DELETE',
         })
       await context.transportState.jobStore.clearOrphan(orphanScope, identity)
-    }
+      report(`正在处理无引用内容对象（${++reclaimed}/${eligible.length}）…`)
+    })
+    report('旧快照维护完成。')
     return removed.length
   }
 
@@ -277,9 +301,13 @@ export async function prune(
     now,
     ORPHAN_CHUNK_GRACE_MS,
   )
-  for (const objectKey of eligible) {
+  let reclaimed = 0
+  report(`正在处理无引用内容对象（0/${eligible.length}）…`)
+  await mapWithConcurrency(eligible, 3, async (objectKey) => {
     await context.deleteWebDavObject(config, secret, objectKey)
     await context.transportState.jobStore.clearOrphan(orphanScope, objectKey)
-  }
+    report(`正在处理无引用内容对象（${++reclaimed}/${eligible.length}）…`)
+  })
+  report('旧快照维护完成。')
   return removed.length
 }

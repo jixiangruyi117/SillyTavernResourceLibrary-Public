@@ -74,4 +74,46 @@ describe('TaskCenter', () => {
     expect(center.list()[0]?.status).toBe('completed')
     expect(center.list()[0]?.progress).toBe(1)
   })
+  it('keeps an asynchronous stop running until its owner reaches a safe boundary', async () => {
+    const center = new TaskCenter()
+    let finish!: () => void
+    const id = center.start({
+      name: 'receipt cleanup',
+      cancelable: true,
+      cancel: () => {
+        center.update(id, { phase: '正在停止' })
+        return new Promise<void>((resolve) => {
+          finish = resolve
+        })
+      },
+    })
+    expect(center.cancel(id)).toBe(true)
+    expect(center.list()[0]?.status).toBe('running')
+    expect(center.list()[0]?.phase).toBe('正在停止')
+    expect(center.cancel(id)).toBe(false)
+    finish()
+    await Promise.resolve()
+    expect(center.list()[0]?.status).toBe('cancelled')
+    center.complete(id)
+    expect(center.list()[0]?.status).toBe('cancelled')
+  })
+  it('does not cancel a replacement task when an old asynchronous stop finishes', async () => {
+    const center = new TaskCenter()
+    let finish!: () => void
+    const id = center.start({
+      operationId: 'same',
+      name: 'old',
+      cancelable: true,
+      cancel: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    })
+    center.cancel(id)
+    center.start({ operationId: id, name: 'new' })
+    finish()
+    await Promise.resolve()
+    expect(center.list()[0]?.name).toBe('new')
+    expect(center.list()[0]?.status).toBe('running')
+  })
 })

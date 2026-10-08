@@ -4,6 +4,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest'
 import { useDiscordResourceInbox } from './UseDiscordResourceInbox'
 import { taskCenter } from '../core/TaskCenter'
+import { DiscordInboxTaskExpiredError } from '../services/DiscordHandoffService'
 import type { SharedFileBatch } from '../utils/ShareTargetIntake'
 import type { VaultStatus } from '../types/Vault'
 import type { ImportResult } from '../types/Import'
@@ -51,7 +52,8 @@ vi.mock('../core/NoticeCenter', () => ({ noticeCenter: { push: setup.notice, dis
 vi.mock('../services/NativeImportKeepAlive', () => ({
   notifyNativeImportAwaitingChoice: setup.notify,
 }))
-vi.mock('../services/DiscordHandoffService', () => ({
+vi.mock('../services/DiscordHandoffService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/DiscordHandoffService')>()),
   inboxConnection: () => ({ ...setup.target }),
 }))
 vi.mock('../services/DiscordResourceInboxService', () => ({
@@ -132,6 +134,170 @@ afterEach(() => {
   }
 })
 describe('cloud resource coordination', () => {
+  it('keeps the same native attempt when returning to a half-downloaded attachment', async () => {
+    setup.native = true
+    setup.nativeRead.mockResolvedValue({ active: true, transferredBytes: 6, totalBytes: 12 })
+    const intake = start()
+    await flushPromises()
+    window.dispatchEvent(new Event('srl:native-active'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(setup.stage).not.toHaveBeenCalled()
+    expect(setup.read).not.toHaveBeenCalled()
+    expect(setup.ack).not.toHaveBeenCalled()
+    expect(intake.receive).not.toHaveBeenCalled()
+    expect(taskCenter.list()[0]?.status).toBe('running')
+  })
+  it('does not replay a posted background result or cloud ACK while binding-owned staging is retained', async () => {
+    setup.native = true
+    setup.nativeRead.mockResolvedValue({
+      transferredBytes: 12,
+      nativeImportOutcome: {
+        state: 'imported',
+        resourceId: 'saved-resource',
+        notificationPosted: true,
+        cloudAckPending: false,
+        automaticBindingPending: true,
+      },
+    })
+    const intake = start()
+    await flushPromises()
+    const completion = () =>
+      window.dispatchEvent(
+        new CustomEvent('srl:native-share-download-completed', {
+          detail: { cloud: true, token: `discord-url-${job.id}` },
+        }),
+      )
+    completion()
+    completion()
+    await flushPromises()
+    expect(setup.notify).not.toHaveBeenCalled()
+    expect(setup.ack).not.toHaveBeenCalled()
+    expect(setup.refresh).toHaveBeenCalledOnce()
+    expect(taskCenter.list()).toEqual([])
+    expect(intake.receive).not.toHaveBeenCalled()
+    expect(setup.cleanupNative).not.toHaveBeenCalled()
+    setup.nativeRead.mockResolvedValue({
+      transferredBytes: 12,
+      nativeImportOutcome: {
+        state: 'imported',
+        resourceId: 'saved-resource',
+        notificationPosted: true,
+        cloudAckPending: false,
+        automaticBindingPending: false,
+      },
+    })
+    completion()
+    await flushPromises()
+    expect(setup.cleanupNative).toHaveBeenCalledOnce()
+    expect(setup.notify).not.toHaveBeenCalled()
+    expect(setup.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('shares an in-flight native read between a progress check and duplicate completion events', async () => {
+    setup.native = true
+    setup.list.mockResolvedValue({ jobs: [], recent: [], hasMore: false })
+    const intake = start()
+    await flushPromises()
+    let resolve!: (value: unknown) => void
+    setup.nativeRead.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done
+        }),
+    )
+    for (let index = 0; index < 3; index++)
+      window.dispatchEvent(
+        new CustomEvent('srl:native-share-download-completed', {
+          detail: { cloud: true, token: `discord-url-${job.id}` },
+        }),
+      )
+    await flushPromises()
+    expect(setup.nativeRead).toHaveBeenCalledOnce()
+    resolve({
+      transferredBytes: 12,
+      nativeImportOutcome: {
+        state: 'duplicate_card',
+        resourceId: 'saved-resource',
+        notificationPosted: true,
+        cloudAckPending: false,
+      },
+    })
+    await flushPromises()
+    expect(intake.receive).not.toHaveBeenCalled()
+    expect(setup.cleanupNative).toHaveBeenCalledOnce()
+    expect(taskCenter.list()).toEqual([])
+  })
+
+  it('settles an expired cloud receipt after a verified native duplicate without importing or notifying again', async () => {
+    setup.native = true
+    setup.nativeRead.mockResolvedValue({
+      transferredBytes: 12,
+      nativeImportOutcome: { state: 'duplicate_file', resourceId: 'existing-resource' },
+    })
+    setup.ack.mockRejectedValue(new DiscordInboxTaskExpiredError('resource'))
+    const intake = start()
+    await flushPromises()
+    expect(setup.cleanupNative).toHaveBeenCalledWith(job.id)
+    expect(taskCenter.list()).toEqual([])
+    expect(intake.receive).not.toHaveBeenCalled()
+    expect(setup.stage).not.toHaveBeenCalled()
+    expect(setup.notify).not.toHaveBeenCalled()
+    expect(setup.notice).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    new Error('HTTP 503'),
+    new Error('配对已失效'),
+    new DiscordInboxTaskExpiredError('delivery'),
+  ])(
+    'retains failed native confirmation for explicit retry without polling or replaying the import: %s',
+    async (error) => {
+      vi.useFakeTimers()
+      try {
+        setup.native = true
+        setup.nativeRead.mockResolvedValue({
+          transferredBytes: 12,
+          nativeImportOutcome: { state: 'imported', resourceId: 'saved-resource' },
+        })
+        setup.ack.mockRejectedValue(error)
+        start()
+        await flushPromises()
+        const reads = setup.nativeRead.mock.calls.length
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(setup.ack).toHaveBeenCalledOnce()
+        expect(setup.nativeRead).toHaveBeenCalledTimes(reads)
+        expect(setup.cleanupNative).not.toHaveBeenCalled()
+        expect(setup.notice).toHaveBeenCalledOnce()
+        expect(taskCenter.list()[0]?.status).toBe('failed')
+        setup.ack.mockResolvedValue(undefined)
+        expect(await taskCenter.retry(`discord-resource-${job.id}`)).toBe(true)
+        expect(setup.cleanupNative).toHaveBeenCalledOnce()
+        expect(taskCenter.list()).toEqual([])
+        expect(setup.stage).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('retains binding-owned staging even when the committed cloud task has expired', async () => {
+    setup.native = true
+    setup.nativeRead.mockResolvedValue({
+      transferredBytes: 12,
+      nativeImportOutcome: {
+        state: 'imported',
+        resourceId: 'saved-resource',
+        automaticBindingPending: true,
+      },
+    })
+    setup.ack.mockRejectedValue(new DiscordInboxTaskExpiredError('resource'))
+    start()
+    await flushPromises()
+    expect(setup.cleanupNative).not.toHaveBeenCalled()
+    expect(taskCenter.list()).toEqual([])
+    expect(setup.notice).not.toHaveBeenCalled()
+  })
   it('removes completed receive tasks on native resume while retaining pending and failed tasks', async () => {
     setup.native = true
     setup.list.mockResolvedValue({ jobs: [], recent: [], hasMore: false })
@@ -465,6 +631,52 @@ describe('cloud resource coordination', () => {
     expect(setup.list).toHaveBeenNthCalledWith(2, target, `${job.createdAt}:${job.id}`)
     expect(setup.stage).toHaveBeenCalledTimes(2)
   })
+  it('continues native staging after another resource fails to start downloading', async () => {
+    setup.native = true
+    const next = { ...job, id: '22222222-2222-4222-a222-222222222222' }
+    setup.list.mockResolvedValueOnce({ jobs: [job, next], recent: [], hasMore: false })
+    setup.stage.mockRejectedValueOnce(new Error('first transfer failed'))
+    start()
+    await flushPromises()
+    expect(setup.stage).toHaveBeenCalledTimes(2)
+    expect(setup.stage.mock.calls[1]?.[0]).toMatchObject({ id: next.id })
+    expect(setup.ack).toHaveBeenCalledWith(job.id, 'failed', target, 'first transfer failed')
+  })
+  it.each(['下载失败', '解析失败', '导入失败'])(
+    'continues the next resource and its binding after %s',
+    async (phase) => {
+      const next = { ...job, id: '22222222-2222-4222-a222-222222222222', name: 'next.png' }
+      setup.list.mockResolvedValueOnce({ jobs: [job, next], recent: [], hasMore: false })
+      setup.automation.mockResolvedValue({ bindForeground: true, bindSameAuthor: true })
+      setup.summary.mockResolvedValue({
+        id: 'later-card',
+        type: 'characterCard',
+        name: '后续角色卡',
+        fileName: 'next.png',
+      })
+      if (phase === '下载失败') setup.download.mockRejectedValueOnce(new Error(phase))
+      const intake = start()
+      await flushPromises()
+      if (phase !== '下载失败') {
+        const first = intake.receive.mock.calls[0]![0]
+        await first.onItemComplete?.({ status: 'failed', message: phase } as ImportResult)
+        await first.acknowledge()
+        await flushPromises()
+      }
+      const second = intake.receive.mock.calls.at(-1)![0]
+      await second.onItemComplete?.({
+        status: 'imported',
+        resource: { id: 'later-card', type: 'characterCard' },
+      } as ImportResult)
+      await second.acknowledge()
+      await flushPromises()
+      expect(setup.download).toHaveBeenCalledTimes(2)
+      expect(setup.ack.mock.calls).toContainEqual(expect.arrayContaining([job.id, 'failed']))
+      expect(setup.ack.mock.calls).toContainEqual(expect.arrayContaining([next.id, 'imported']))
+      expect(setup.summary).toHaveBeenCalledWith('later-card')
+      expect(setup.bindCards).toHaveBeenCalledOnce()
+    },
+  )
   it('checks new cloud jobs while hidden only when the Android receive session is enabled', async () => {
     setup.native = true
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
@@ -661,7 +873,7 @@ describe('cloud resource coordination', () => {
     setup.nativeRead.mockResolvedValue({ active: true, transferredBytes: 3, totalBytes: 12 })
     await taskCenter.retry(id)
     await flushPromises()
-    expect(setup.stage).toHaveBeenCalledTimes(2)
+    expect(setup.stage).toHaveBeenCalledOnce()
     expect(setup.ack.mock.calls.map((call) => call[1])).toContain('queued')
     expect(taskCenter.list().find((item) => item.operationId === id)?.status).toBe('running')
   })
@@ -672,7 +884,7 @@ describe('cloud resource coordination', () => {
     const intake = start()
     await flushPromises()
     await intake.request()
-    expect(setup.stage).toHaveBeenCalledOnce()
+    expect(setup.stage).not.toHaveBeenCalled()
     expect(setup.ack.mock.calls.map((call) => call[1])).not.toContain('failed')
     expect(setup.notice).not.toHaveBeenCalled()
   })

@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest'
+import { DiscordInboxTaskExpiredError } from './DiscordHandoffService'
 const setup = vi.hoisted(() => ({
   workerBaseUrl: 'https://worker.example',
   inboxLibraryId: 'library-1',
@@ -32,6 +33,27 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 describe('resource inbox transport', () => {
+  it('distinguishes exact expired resource tasks from other HTTP failures without reporting remote success', async () => {
+    fetcher.mockResolvedValue(
+      Response.json({ error: 'resource_task_not_found_or_expired' }, { status: 404 }),
+    )
+    await expect(acknowledgeDiscordResource(job.id, 'imported', target)).rejects.toMatchObject({
+      name: 'DiscordInboxTaskExpiredError',
+      kind: 'resource',
+    })
+    for (const status of [401, 403, 409, 503]) {
+      fetcher.mockResolvedValue(
+        Response.json({ error: 'resource_task_not_found_or_expired' }, { status }),
+      )
+      await expect(
+        acknowledgeDiscordResource(job.id, 'imported', target),
+      ).rejects.not.toBeInstanceOf(DiscordInboxTaskExpiredError)
+    }
+    fetcher.mockResolvedValue(Response.json({ error: 'unknown_route' }, { status: 404 }))
+    await expect(acknowledgeDiscordResource(job.id, 'imported', target)).rejects.not.toBeInstanceOf(
+      DiscordInboxTaskExpiredError,
+    )
+  })
   it('forwards a validated queue cursor and rejects malformed cursors before a request', async () => {
     fetcher.mockResolvedValue(Response.json({ jobs: [job], recent: [], hasMore: false }))
     await listDiscordResourceJobs(target, `1:${job.id}`)

@@ -11,6 +11,7 @@ import { externalAppService } from '../core/AppContainer'
 import { CHAT_READER_APP_ID } from '../core/ChatReaderIdentity'
 import ExternalAppHost from './ExternalAppHost.vue'
 import FeatureStateView from './FeatureStateView.vue'
+import ChatReaderStartup from './ChatReaderStartup.vue'
 import manifest from '../../extensions/duleme/manifest.json'
 import document from '../../extensions/duleme/index.html?raw'
 import script from '../../extensions/duleme/app.js?raw'
@@ -61,7 +62,8 @@ onMounted(async () => {
 
 <template>
   <ExternalAppHost v-if="ready" :app-id="CHAT_READER_APP_ID" official @back="emit('back')" />
-  <FeatureStateView v-else :state="error ? 'error' : 'loading'" :title="error || '正在打开读了么…'">
+  <ChatReaderStartup v-else-if="!error" />
+  <FeatureStateView v-else state="error" :title="error">
     <template #actions
       ><button v-if="error" class="button" @click="emit('back')">返回</button></template
     >

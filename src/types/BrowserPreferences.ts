@@ -59,6 +59,7 @@ export interface PreviewPolicy {
   allowScripts: boolean
   preloadGreetingResources?: boolean
   preloadBeautificationResources?: boolean
+  increaseDownloadConcurrency?: boolean
 }
 
 export type CustomCssScope =

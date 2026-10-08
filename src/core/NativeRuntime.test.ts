@@ -44,6 +44,25 @@ import { createNativeResourceDeepLink, installNativeRuntime } from './NativeRunt
 import { noticeCenter } from './NoticeCenter'
 
 describe('NativeRuntime back handling', () => {
+  it('updates existing source views after background posts are saved, without emitting a binding success', async () => {
+    const changed = vi.fn()
+    window.addEventListener('srl:community-sources-changed', changed)
+    installNativeRuntime()
+    try {
+      await vi.waitFor(() =>
+        expect(nativeMocks.shareHandlers.cloudInboxReady).toBeTypeOf('function'),
+      )
+      nativeMocks.shareHandlers.cloudInboxReady?.({ running: true })
+      expect(changed).not.toHaveBeenCalled()
+      nativeMocks.shareHandlers.cloudInboxReady?.({ running: true, postsSaved: true })
+      expect(changed).toHaveBeenCalledOnce()
+      expect(
+        noticeCenter.list().some((notice) => notice.id.startsWith('discord-auto-binding:')),
+      ).toBe(false)
+    } finally {
+      window.removeEventListener('srl:community-sources-changed', changed)
+    }
+  })
   it('shows committed native binding results in the existing notice center and updates pending sources', async () => {
     const changed = vi.fn()
     window.addEventListener('srl:community-sources-changed', changed)

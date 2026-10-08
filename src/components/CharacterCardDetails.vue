@@ -44,6 +44,7 @@ const {
   greetingReplacementSources,
   updateReplacement,
   greetings,
+  greetingCards,
   openPage,
   embeddedBookEntries,
   embeddedBookName,
@@ -66,8 +67,6 @@ const {
   handleGreetingTouchStart,
   handleGreetingTouchEnd,
   handleGreetingCardDoubleClick,
-  hasRichPreviewContent,
-  greetingExcerpt,
   scrollToGreeting,
   PAGE_SIZE,
   selectedRegexScript,
@@ -329,7 +328,7 @@ const {
             @touchend.passive="handleGreetingTouchEnd"
           >
             <article
-              v-for="(greeting, index) in greetings"
+              v-for="(greeting, index) in greetingCards"
               :key="greeting.key"
               role="listitem"
               :class="{ 'is-active': activeGreetingIndex === index }"
@@ -346,11 +345,11 @@ const {
                   <em v-if="greeting.theme && greeting.theme !== greeting.group">
                     {{ greeting.theme }}
                   </em>
-                  <em>{{ hasRichPreviewContent(greeting.content) ? '富内容' : '纯文本' }}</em>
+                  <em>{{ greeting.richContent ? '富内容' : '纯文本' }}</em>
                 </span>
               </header>
               <p class="character-greeting-card__excerpt">
-                {{ greeting.description || greetingExcerpt(greeting.content) }}
+                {{ greeting.excerpt }}
               </p>
               <footer class="character-greeting-card__footer">
                 <small>左右滑动切换，本页只展示摘要</small>

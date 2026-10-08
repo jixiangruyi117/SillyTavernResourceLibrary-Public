@@ -47,6 +47,8 @@ const nativeCloud = vi.hoisted(() => ({
 vi.mock('./NativeCloudTransfer', () => nativeCloud)
 
 import { CloudBackupService } from './CloudBackupService'
+import { CloudBackupTransport } from './CloudBackupTransport'
+import { CloudBackupMetricsTracker } from './CloudBackupMetrics'
 
 function createSnapshot(blob: Blob): CreatedStructuredSnapshot {
   const hash = 'a'.repeat(64)
@@ -200,7 +202,17 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
       kind: 'githubSnapshot' as const,
     }
     const summaries = vi.fn().mockResolvedValue([{ id: 'fresh-local-summary' }])
-    const prepare = vi.fn().mockResolvedValue({ portableData: { version: 1 } })
+    const prepare = vi.fn().mockResolvedValue({
+      portableData: {
+        version: 1,
+        assistantData: [],
+        credentials: { version: 1, cloudBackup: { github: 'fixture-secret' } },
+      },
+    })
+    const imported = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('portable import failed'))
+      .mockResolvedValue(undefined)
     const restore = vi.fn().mockResolvedValue({ restoredResources: 1 })
     const fixture = () => {
       const service = new CloudBackupService(
@@ -212,6 +224,8 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
           prepareStructuredNative: prepare,
           restoreNative: restore,
         } as unknown as RestoreService,
+        undefined,
+        imported,
       )
       const internals = service as unknown as {
         readGitHubStructuredSnapshot: ReturnType<typeof vi.fn>
@@ -233,19 +247,28 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
     nativeCloud.restoreNativeStructuredObjects.mockRejectedValueOnce(
       new Error('WebView interrupted'),
     )
-    await expect(first.restoreBackup(item, undefined, ['selected'], false)).rejects.toThrow(
-      'WebView interrupted',
-    )
+    await expect(
+      first.restoreBackup(item, undefined, ['selected'], false, ['extra.assistantData']),
+    ).rejects.toThrow('WebView interrupted')
     expect(summaries).not.toHaveBeenCalled()
     const records = await first.pendingNativeRestores()
     expect(records).toHaveLength(1)
     expect(records[0]?.restore?.resourceKeys).toEqual(['selected'])
+    expect(records[0]?.restore?.portableScopeIds).toEqual(['extra.assistantData'])
     expect(JSON.stringify(records)).not.toContain('token')
     nativeCloud.readNativeCloudCredential.mockResolvedValue({ state: 'valid', secret: 'token' })
     const reopened = fixture()
+    await expect(reopened.resumeNativeRestore(records[0]!)).rejects.toThrow(
+      'portable import failed',
+    )
+    expect(await reopened.pendingNativeRestores()).toHaveLength(1)
     expect(await reopened.resumeNativeRestore(records[0]!)).toBe(1)
+    expect(imported.mock.calls.map(([data]) => data)).toEqual([
+      { version: 1, assistantData: [] },
+      { version: 1, assistantData: [] },
+    ])
     expect(prepare.mock.calls[0]?.[0]).toEqual([expect.objectContaining({ id: 'selected' })])
-    expect(summaries).toHaveBeenCalledOnce()
+    expect(summaries).toHaveBeenCalledTimes(2)
     expect(await reopened.pendingNativeRestores()).toEqual([])
   })
 
@@ -378,6 +401,70 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
     )
 
     expect(nativeCloud.invalidateNativeCloudCredential).not.toHaveBeenCalled()
+  })
+
+  it('refreshes only native-written inventories and preserves untouched container reads', async () => {
+    const config = {
+      provider: 'github' as const,
+      owner: 'owner',
+      repository: 'backups',
+      retention: 7,
+      autoBackup: false,
+    }
+    const asset = { id: 1, name: 'untouched', size: 1, url: '', created_at: '' }
+    class NativeProbe extends CloudBackupTransport {
+      constructor() {
+        super()
+        this.transportState.activeMetrics = new CloudBackupMetricsTracker()
+        this.transportState.activeGitHubInventory = {
+          key: 'owner/backups',
+          releases: new Map([
+            ['srl-cloud-snapshots', { id: 10, assets: [] }],
+            ['srl-cloud-objects-0001', { id: 20, assets: [] }],
+            ['srl-cloud-objects-0002', { id: 30, assets: [] }],
+          ]),
+          assets: new Map([
+            [10, new Map()],
+            [20, new Map([[asset.id, asset]])],
+            [30, new Map()],
+          ]),
+        }
+      }
+      upload() {
+        return this.uploadGitHubStructuredBackup(
+          config,
+          'fixture',
+          createSnapshot(new Blob(['new'])),
+        )
+      }
+      assets(id: number) {
+        return this.listGitHubAssets(config, 'fixture', id)
+      }
+      release() {
+        return this.getGitHubRelease(config, 'fixture', false, 'srl-cloud-snapshots')
+      }
+    }
+    const fresh = { ...asset, id: 99, name: 'fresh' }
+    const fetch = vi.fn(async (target: string) => {
+      const path = new URL(target).pathname
+      if (path.endsWith('/releases'))
+        return Response.json([
+          { id: 20, tag_name: 'srl-cloud-objects-0001' },
+          { id: 30, tag_name: 'srl-cloud-objects-0002' },
+        ])
+      if (path.endsWith('/assets')) return Response.json([fresh])
+      throw new Error(`redundant release query: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    nativeCloud.canUseNativeStructuredSnapshotHandoff.mockResolvedValue(true)
+    nativeCloud.uploadNativeStructuredSnapshot.mockResolvedValue({ id: '99', name: 'new-manifest' })
+    const probe = new NativeProbe()
+    await probe.upload()
+    expect(await probe.assets(20)).toEqual([asset])
+    expect(await probe.release()).toMatchObject({ id: 10 })
+    expect(await probe.assets(30)).toEqual([fresh])
+    expect(await probe.assets(10)).toEqual([fresh])
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 
   it('does not start a second APK backup while a persisted WorkManager job is queued', async () => {

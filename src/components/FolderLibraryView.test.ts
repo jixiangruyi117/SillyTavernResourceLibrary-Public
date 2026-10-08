@@ -12,6 +12,10 @@ import {
 } from '../types/Resource'
 import FolderLibraryView from './FolderLibraryView.vue'
 import { assetStore } from '../core/AppContainer'
+import {
+  createFolderThumbnailCache,
+  folderThumbnailCacheKey,
+} from '../composables/FolderThumbnailCache'
 
 const categories: Category[] = [
   {
@@ -52,6 +56,7 @@ function render(
   categoryItems = categories,
   resourceItems = [resource('a', '青衣', ['folder-a']), resource('b', '待整理')],
   cabinetResourceIds: string[] = [],
+  cache?: ReturnType<typeof createFolderThumbnailCache>,
 ) {
   return mount(FolderLibraryView, {
     props: {
@@ -61,6 +66,7 @@ function render(
       cabinetResourceIds,
     },
     global: {
+      provide: cache ? { [folderThumbnailCacheKey as symbol]: cache } : {},
       stubs: { teleport: true },
     },
   })
@@ -99,6 +105,53 @@ async function dispatchPointer(
 }
 
 describe('FolderLibraryView', () => {
+  it('reuses ready covers synchronously on reentry and reloads a changed cover', async () => {
+    const cache = createFolderThumbnailCache()
+    const card = {
+      ...resource('cached-cover', '封面', ['folder-a']),
+      thumbnailAssetId: 'asset-old',
+    }
+    const getBlob = vi.spyOn(assetStore, 'getBlob').mockResolvedValue(new Blob(['cover']))
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    let wrapper = render(categories, [card], [], cache)
+    try {
+      await flushPromises()
+      const url = wrapper.get('.visual-folder__mosaic img').attributes('src')
+      wrapper.unmount()
+      expect(revoke).not.toHaveBeenCalledWith(url)
+      wrapper = render(categories, [card], [], cache)
+      await nextTick()
+      expect(wrapper.get('.visual-folder__mosaic img').attributes('src')).toBe(url)
+      expect(getBlob).toHaveBeenCalledTimes(1)
+      await wrapper.setProps({ resources: [{ ...card, thumbnailAssetId: 'asset-new' }] })
+      await flushPromises()
+      expect(getBlob).toHaveBeenCalledTimes(2)
+      expect(wrapper.get('.visual-folder__mosaic img').attributes('src')).not.toBe(url)
+      expect(revoke).toHaveBeenCalledWith(url)
+    } finally {
+      wrapper.unmount()
+      cache.clear()
+    }
+  })
+
+  it('does not retain a thumbnail whose native read finishes after leaving the cabinet', async () => {
+    const cache = createFolderThumbnailCache()
+    const card = { ...resource('late-cover', '封面', ['folder-a']), thumbnailAssetId: 'late-asset' }
+    let finish!: (blob: Blob) => void
+    vi.spyOn(assetStore, 'getBlob').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const wrapper = render(categories, [card], [], cache)
+    await nextTick()
+    wrapper.unmount()
+    finish(new Blob(['late']))
+    await flushPromises()
+    expect(cache.acquire(card)).toBeUndefined()
+    cache.clear()
+  })
   beforeEach(() => localStorage.clear())
 
   afterEach(() => {

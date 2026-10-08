@@ -183,6 +183,66 @@ afterEach(() => {
 })
 
 describe('CommunitySourceService archive hardening', () => {
+  it('reads a native saved delivery without writes and rejects other targets, modified bodies and old delivery times', async () => {
+    const storage = new MemoryCommunitySourceStorage()
+    const service = new CommunitySourceService(storage)
+    const capture = starter('native full body')
+    const view = await service.saveDiscordCapture(capture, { capturedAt: 123 })
+    const message = view.messages[0]!
+    message.nativeInboxReceipt = {
+      id: 'job-native',
+      libraryId: 'library-1',
+      workerUrl: 'https://worker.example',
+      captureHash: 'a'.repeat(64),
+      notificationState: 'waiting_binding',
+      attachmentState: 'pending',
+    }
+    await storage.putMessage(message)
+    const putSource = vi.spyOn(storage, 'putSource'),
+      putMessage = vi.spyOn(storage, 'putMessage')
+    const receipt = { id: 'job-native', libraryId: 'library-1', capturedAt: 123 }
+    const result = await service.getSavedNativeDiscordDelivery(
+      capture,
+      receipt,
+      'https://worker.example',
+    )
+    expect(result?.notificationPosted).toBe(true)
+    expect(result?.attachmentState).toBe('pending')
+    expect(result?.view.messages[0]?.content).toBe('native full body')
+    expect(
+      await service.getSavedNativeDiscordDelivery(capture, receipt, 'https://other.example'),
+    ).toBeUndefined()
+    expect(
+      await service.getSavedNativeDiscordDelivery(
+        capture,
+        { ...receipt, libraryId: 'other-library' },
+        'https://worker.example',
+      ),
+    ).toBeUndefined()
+    expect(
+      await service.getSavedNativeDiscordDelivery(
+        capture,
+        { ...receipt, capturedAt: 124 },
+        'https://worker.example',
+      ),
+    ).toBeUndefined()
+    expect(
+      await service.getSavedNativeDiscordDelivery(
+        { ...capture, content: 'new edit' },
+        receipt,
+        'https://worker.example',
+      ),
+    ).toBeUndefined()
+    expect(putSource).not.toHaveBeenCalled()
+    expect(putMessage).not.toHaveBeenCalled()
+    expect(
+      await service.getSavedNativeDiscordDelivery(
+        { ...capture, authorId: 'changed-author' },
+        receipt,
+        'https://worker.example',
+      ),
+    ).toBeUndefined()
+  })
   it('waits for background metadata writes so cleanup cannot restore stale revision references', async () => {
     const storage = new MemoryCommunitySourceStorage()
     const cleanup = vi.fn(async () => {

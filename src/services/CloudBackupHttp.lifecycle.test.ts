@@ -78,6 +78,29 @@ it('enforces the body deadline and aborts the transport, not only the waiting pr
   })
 })
 
+it('uses the existing metadata idle deadline for gzip manifests without changing large transfer deadlines', async () => {
+  await withFakeNetwork(async (timers) => {
+    let signal: AbortSignal | null | undefined
+    globalThis.fetch = async (_url, init) => {
+      signal = init?.signal
+      return new Response(new ReadableStream(), {
+        headers: { 'Content-Type': 'application/gzip', 'Content-Length': '3145728' },
+      })
+    }
+    const response = await fetchWithDeadline(
+      'https://example.invalid/snapshot.json.gz',
+      {},
+      'metadata',
+    )
+    const rejected = assert.rejects(response.blob(), CloudRequestTimeoutError)
+    assert.equal([...timers.values()][0]?.delay, CLOUD_METADATA_TIMEOUT_MS)
+    ;[...timers.values()][0]!.callback()
+    await rejected
+    assert.equal(signal?.aborted, true)
+    assert.equal(timers.size, 0)
+  })
+})
+
 it('does not eagerly drain large responses and refreshes the idle deadline on new bytes', async () => {
   await withFakeNetwork(async (timers) => {
     let pulls = 0

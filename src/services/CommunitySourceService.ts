@@ -339,6 +339,53 @@ export class CommunitySourceService {
     return this.storage.listBindingsForSource(sourceId)
   }
 
+  async getSavedNativeDiscordDelivery(
+    captureInput: DiscordCapture,
+    delivery: { id: string; libraryId: string; capturedAt: number },
+    workerUrl: string,
+  ): Promise<
+    | {
+        view: ResourceCommunitySourceView
+        notificationPosted: boolean
+        messageKey: string
+        attachmentState?: 'pending' | 'complete' | 'foreground_required'
+      }
+    | undefined
+  > {
+    const capture = normalizeCapture(captureInput)
+    const retained = await this.findDiscordSourceForCapture(capture)
+    const message = retained?.messages.find((item) => item.messageId === capture.messageId)
+    const receipt = message?.nativeInboxReceipt
+    if (
+      !retained ||
+      !message ||
+      !receipt ||
+      receipt.id !== delivery.id ||
+      receipt.libraryId !== delivery.libraryId ||
+      receipt.workerUrl !== workerUrl ||
+      message.deliveryCapturedAt !== delivery.capturedAt ||
+      message.authorId !== capture.authorId ||
+      message.canonicalUrl !== capture.canonicalUrl ||
+      discordMessageChanged(message, capture).changed
+    )
+      return undefined
+    return {
+      view: {
+        source: retained.source,
+        messages: retained.messages,
+        binding: retained.bindings[0] ?? {
+          id: '',
+          sourceId: retained.source.id,
+          resourceId: '',
+          createdAt: retained.source.createdAt,
+        },
+      },
+      notificationPosted: Boolean(receipt.notificationState),
+      messageKey: message.id,
+      attachmentState: receipt.attachmentState,
+    }
+  }
+
   async getSourceUsageByKeyHash(sourceKeyHash: string): Promise<ResourceSourceBinding[]> {
     if (!/^[a-f0-9]{64}$/iu.test(sourceKeyHash)) throw new Error('社区来源哈希无效')
     const source = await this.storage.getSourceByKeyHash(sourceKeyHash.toLowerCase())

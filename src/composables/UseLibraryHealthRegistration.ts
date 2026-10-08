@@ -51,9 +51,9 @@ export function useLibraryHealthRegistration(context: LibraryHealthRegistrationC
 
   healthCenter.register({
     id: 'local-library-integrity',
-    async scan() {
+    async scan(options) {
       const [audit, nativeMirror, offlineCache] = await Promise.all([
-        resourceHealthStorage.audit(),
+        resourceHealthStorage.audit(options),
         getNativeMirrorHealth(),
         auditOfflineResourceCache(),
       ])

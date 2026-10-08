@@ -95,6 +95,26 @@ describe('IndexedDbResourceHealthStorage', () => {
     )
     expect(binary).not.toHaveBeenCalled()
     expect(getRecords.mock.calls.every((call) => call[2] === 100)).toBe(true)
+    expect(getRecords.mock.calls.every((call) => Array.isArray(call[3]))).toBe(true)
+    expect(getRecords.mock.calls.some((call) => call[3]?.includes('originalBlob'))).toBe(true)
+    expect(getRecords.mock.calls.every((call) => !call[3]?.includes('metadata'))).toBe(true)
+  })
+
+  it('keeps corrupt original parsing in explicit deep audits and skips it for quick scans', async () => {
+    await storage.save(resource('corrupt', '{invalid json'))
+    const quick = await health.audit({ deep: false })
+    expect(quick.corruptJsonResources).toEqual([])
+    const deep = await health.audit({ deep: true })
+    expect(deep.corruptJsonResources).toEqual(['corrupt'])
+  })
+
+  it('does not rebuild already compact summaries or compact the native database again', async () => {
+    await storage.save(resource('compact'))
+    const rebuild = vi.spyOn(storage, 'repairDerivedIndexes')
+    await expect(health.getSummaryCompactionStatus()).resolves.toBe(true)
+    await expect(health.optimizeDerivedSummaries()).resolves.toMatchObject({ alreadyCompact: true })
+    expect(rebuild).not.toHaveBeenCalled()
+    expect((await storage.get('compact'))?.originalBlob.size).toBe(11)
   })
 
   it('clears only the confirmed whole-library history, preserving recycler, cloud records and resource versions', async () => {
