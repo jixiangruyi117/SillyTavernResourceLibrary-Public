@@ -1,4 +1,5 @@
 import { localCredentialStore, type LocalCredentialRepository } from './LocalCredentialStore'
+import { requestMainApiText } from './MainApiTextTransport'
 import {
   anthropicMessages,
   estimateMainApiTokens,
@@ -107,6 +108,8 @@ export interface MainApiRequestOptions {
   timeoutMs?: number | null
   /** Allows long-running callers to cancel the in-flight fetch immediately. */
   signal?: AbortSignal
+  /** Opt-in native cancellation for complete-text batch jobs. */
+  cancellableNative?: boolean
   /** Received text before parsing; used by editors to retain interrupted replies. */
   onText?: (text: string) => void
 }
@@ -508,8 +511,20 @@ export class MainApiService {
       const response = options?.webSearch
         ? await this.requestWebSearch(config, messages, controller.signal)
         : config.protocol === 'anthropic-compatible'
-          ? await this.requestAnthropic(config, messages, controller.signal, options?.tools)
-          : await this.requestOpenAi(config, messages, controller.signal, options?.tools)
+          ? await this.requestAnthropic(
+              config,
+              messages,
+              controller.signal,
+              options?.tools,
+              options?.cancellableNative,
+            )
+          : await this.requestOpenAi(
+              config,
+              messages,
+              controller.signal,
+              options?.tools,
+              options?.cancellableNative,
+            )
       if (!response.ok) throw new Error(`API 返回 ${response.status}：${await readError(response)}`)
       const result = config.stream
         ? await this.readStream(response, config.protocol, options?.onText)
@@ -640,6 +655,7 @@ export class MainApiService {
     messages: MainApiMessage[],
     signal: AbortSignal,
     tools?: readonly MainApiTool[],
+    cancellableNative = false,
   ): Promise<Response> {
     const body: Record<string, unknown> = {
       model: config.model,
@@ -663,15 +679,19 @@ export class MainApiService {
     }
     if (config.maxTokens > 0) body.max_tokens = config.maxTokens
     if (config.reasoningEffort !== 'auto') body.reasoning_effort = config.reasoningEffort
-    return fetch(endpointFor(config), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+    return requestMainApiText(
+      endpointFor(config),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal,
       },
-      body: JSON.stringify(body),
-      signal,
-    })
+      cancellableNative && !config.stream,
+    )
   }
 
   private requestAnthropic(
@@ -679,6 +699,7 @@ export class MainApiService {
     messages: MainApiMessage[],
     signal: AbortSignal,
     tools?: readonly MainApiTool[],
+    cancellableNative = false,
   ): Promise<Response> {
     if (config.maxTokens <= 0)
       throw new Error('Anthropic Messages 协议要求明确填写输出 Token 上限，不能留空')
@@ -686,34 +707,38 @@ export class MainApiService {
       .filter((message) => message.role === 'system')
       .map((message) => textOnly(message.content))
       .join('\n\n')
-    return fetch(endpointFor(config), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
+    return requestMainApiText(
+      endpointFor(config),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
+        },
+        body: JSON.stringify({
+          model: config.model,
+          system,
+          messages: anthropicMessages(messages),
+          ...(tools?.length
+            ? {
+                tools: tools.map((tool) => ({
+                  name: tool.name,
+                  description: tool.description,
+                  input_schema: tool.parameters,
+                })),
+                tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+              }
+            : {}),
+          temperature: config.temperature,
+          top_p: config.topP,
+          max_tokens: config.maxTokens,
+          stream: config.stream,
+        }),
+        signal,
       },
-      body: JSON.stringify({
-        model: config.model,
-        system,
-        messages: anthropicMessages(messages),
-        ...(tools?.length
-          ? {
-              tools: tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.parameters,
-              })),
-              tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-            }
-          : {}),
-        temperature: config.temperature,
-        top_p: config.topP,
-        max_tokens: config.maxTokens,
-        stream: config.stream,
-      }),
-      signal,
-    })
+      cancellableNative && !config.stream,
+    )
   }
 
   private async readStream(

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { ChatResourceParser, readChatMessages, jsonChatRecords } from './ChatResourceParser'
+import {
+  ChatResourceParser,
+  readChatMessages,
+  readChatMessageEntries,
+  jsonChatRecords,
+} from './ChatResourceParser'
 import { JsonResourceParser } from './JsonResourceParser'
 
 async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
@@ -64,6 +69,33 @@ describe('ChatResourceParser', () => {
   it('handles split UTF-8 characters, headerless chats and keeps all original message fields', async () => {
     const large = { ...first, mes: '中'.repeat(100_000) }
     expect(await collect(readChatMessages(jsonl([large, second])))).toEqual([large, second])
+  })
+  it('resumes at exact UTF-8 byte boundaries across BOM, CRLF, empty lines and chunk splits', async () => {
+    const large = { ...first, mes: '中🌧'.repeat(60_000) }
+    const file = new File(
+      [
+        '\uFEFF' +
+          JSON.stringify(header) +
+          '\r\n\r\n' +
+          JSON.stringify(large) +
+          '\r\n\n' +
+          JSON.stringify(second),
+      ],
+      'positions.jsonl',
+    )
+    const entries = await collect(readChatMessageEntries(file))
+    expect(entries.map((entry) => entry.message)).toEqual([large, second])
+    expect(entries.map((entry) => entry.position?.line)).toEqual([3, 5])
+    const position = entries[1]!.position!
+    expect(await file.slice(position.byteOffset).text()).toBe(JSON.stringify(second))
+    expect(await collect(readChatMessageEntries(file, 'jsonl', position))).toEqual([entries[1]])
+    const broken = new File(
+      [await file.slice(0, position.byteOffset).text(), '{broken'],
+      'broken.jsonl',
+    )
+    await expect(collect(readChatMessageEntries(broken, 'jsonl', position))).rejects.toThrow(
+      '第 5 行',
+    )
   })
   it('recognizes strict JSON chat arrays without stealing unrelated resource formats', async () => {
     const parsed = await new JsonResourceParser().parse(

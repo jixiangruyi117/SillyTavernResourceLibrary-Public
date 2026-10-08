@@ -4,7 +4,7 @@ import type { CloudBackupConfig, CloudBackupItem, CloudBackupProvider } from '..
 import { nativeAppDatabase } from '../storage/NativeAppDatabaseBridge'
 
 const DATABASE_NAME = 'srl-cloud-jobs-v3'
-const DATABASE_VERSION = 3
+const DATABASE_VERSION = 4
 const NATIVE_MIGRATION_KEY = 'migration:cloud-backup-jobs:v1'
 
 type NativeJobDatabase = Pick<
@@ -39,6 +39,18 @@ export interface CloudBackupJobRecord {
   updatedAt: number
   kind?: 'restore'
   restore?: NativeCloudRestoreRecovery
+}
+
+interface CloudBackupObjectStateRecord {
+  jobId: string
+  objectName: string
+  state: CloudBackupObjectJobState
+  updatedAt: number
+}
+function applyObjectState(record: CloudBackupJobRecord, entry: CloudBackupObjectStateRecord): void {
+  record.objects[entry.objectName] = entry.state
+  if (entry.state === 'failed') record.status = 'failed'
+  record.updatedAt = Math.max(record.updatedAt, entry.updatedAt)
 }
 
 interface CloudBackupOrphanRecord {
@@ -99,14 +111,21 @@ export class CloudBackupJobStore {
     if (marker === 'verified-v1') return native
 
     const database = await this.open()
-    const source = database.transaction(['jobs', 'orphans'], 'readonly')
+    const source = database.transaction(['jobs', 'orphans', 'objectStates'], 'readonly')
     const jobsRequest = source.objectStore('jobs').getAll()
     const orphansRequest = source.objectStore('orphans').getAll()
-    const [sourceJobs, sourceOrphans] = (await Promise.all([
+    const statesRequest = source.objectStore('objectStates').getAll()
+    const [sourceJobs, sourceOrphans, objectStates] = (await Promise.all([
       requestResult(jobsRequest),
       requestResult(orphansRequest),
-    ])) as [CloudBackupJobRecord[], CloudBackupOrphanRecord[]]
+      requestResult(statesRequest),
+    ])) as [CloudBackupJobRecord[], CloudBackupOrphanRecord[], CloudBackupObjectStateRecord[]]
     await transactionDone(source)
+    const jobsById = new Map(sourceJobs.map((job) => [job.id, job]))
+    for (const entry of objectStates) {
+      const job = jobsById.get(entry.jobId)
+      if (job) applyObjectState(job, entry)
+    }
     await this.copyAndVerifyNativeStore(native, 'cloudBackupJobs', sourceJobs)
     await this.copyAndVerifyNativeStore(native, 'cloudBackupOrphans', sourceOrphans)
     await native.putState(NATIVE_MIGRATION_KEY, 'verified-v1')
@@ -167,9 +186,18 @@ export class CloudBackupJobStore {
 
   private open(): Promise<IDBDatabase> {
     if (this.database) return this.database
-    this.database = new Promise((resolve, reject) => {
+    const pending: Promise<IDBDatabase> = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
+      let abandoned = false
+      request.onblocked = () => {
+        abandoned = true
+        reject(new Error('云备份任务数据库升级被旧页面占用，请关闭其他资源库页面后重试'))
+      }
       request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains('objectStates')) {
+          const states = request.result.createObjectStore('objectStates', { keyPath: 'id' })
+          states.createIndex('jobId', 'jobId')
+        }
         if (!request.result.objectStoreNames.contains('jobs')) {
           request.result.createObjectStore('jobs', { keyPath: 'id' })
         }
@@ -180,10 +208,26 @@ export class CloudBackupJobStore {
           request.result.createObjectStore('orphans', { keyPath: 'id' })
         }
       }
-      request.onsuccess = () => resolve(request.result)
+      request.onsuccess = () => {
+        const database = request.result
+        // A blocked request may finish after its caller has already received the error.
+        if (abandoned) {
+          database.close()
+          return
+        }
+        database.onversionchange = () => {
+          database.close()
+          if (this.database === pending) this.database = undefined
+        }
+        resolve(database)
+      }
       request.onerror = () => reject(request.error ?? new Error('无法打开浏览器云备份任务数据库'))
+    }).catch((error) => {
+      if (this.database === pending) this.database = undefined
+      throw error
     })
-    return this.database
+    this.database = pending
+    return pending
   }
 
   private id(provider: CloudBackupProvider, planHash: string): string {
@@ -231,21 +275,19 @@ export class CloudBackupJobStore {
     provider: CloudBackupProvider,
     planHash: string,
     objectNames: Iterable<string>,
+    verifiedNames?: Iterable<string>,
   ): Promise<CloudBackupJobRecord> {
     const id = this.id(provider, planHash)
-    const native = await this.getNative()
-    const existing = native
-      ? ((await native.getRecord('cloudBackupJobs', JSON.stringify(id))) as
-          CloudBackupJobRecord | undefined)
-      : ((await requestResult(
-          (await this.open()).transaction('jobs', 'readonly').objectStore('jobs').get(id),
-        )) as CloudBackupJobRecord | undefined)
+    const existing = verifiedNames === undefined ? await this.read(provider, planHash) : undefined
     const objects = Object.fromEntries([...objectNames].map((name) => [name, 'pending'])) as Record<
       string,
       CloudBackupObjectJobState
     >
     for (const [name, state] of Object.entries(existing?.objects ?? {})) {
       if (name in objects && state === 'verified') objects[name] = state
+    }
+    for (const name of verifiedNames ?? []) {
+      if (name in objects) objects[name] = 'verified'
     }
     const record: CloudBackupJobRecord = {
       id,
@@ -267,7 +309,20 @@ export class CloudBackupJobStore {
     job.objects[objectName] = state
     job.status = state === 'failed' ? 'failed' : 'running'
     job.updatedAt = Date.now()
-    await this.put(job)
+    if (await this.getNative()) {
+      await this.put(job)
+    } else {
+      const database = await this.open()
+      const transaction = database.transaction('objectStates', 'readwrite')
+      transaction.objectStore('objectStates').put({
+        id: `${job.id}\0${objectName}`,
+        jobId: job.id,
+        objectName,
+        state,
+        updatedAt: job.updatedAt,
+      })
+      await transactionDone(transaction)
+    }
   }
 
   async complete(job: CloudBackupJobRecord, manifestName: string): Promise<void> {
@@ -296,9 +351,21 @@ export class CloudBackupJobStore {
         CloudBackupJobRecord | undefined
     }
     const database = await this.open()
-    return (await requestResult(
-      database.transaction('jobs', 'readonly').objectStore('jobs').get(id),
-    )) as CloudBackupJobRecord | undefined
+    const transaction = database.transaction(['jobs', 'objectStates'], 'readonly')
+    const [record, states] = await Promise.all([
+      requestResult(transaction.objectStore('jobs').get(id)) as Promise<
+        CloudBackupJobRecord | undefined
+      >,
+      requestResult(transaction.objectStore('objectStates').index('jobId').getAll(id)) as Promise<
+        CloudBackupObjectStateRecord[]
+      >,
+    ])
+    if (record) {
+      for (const entry of states) {
+        applyObjectState(record, entry)
+      }
+    }
+    return record
   }
 
   async eligibleOrphans(
@@ -430,8 +497,11 @@ export class CloudBackupJobStore {
       return
     }
     const database = await this.open()
-    const transaction = database.transaction('jobs', 'readwrite')
+    const transaction = database.transaction(['jobs', 'objectStates'], 'readwrite')
     transaction.objectStore('jobs').put(record)
+    const states = transaction.objectStore('objectStates')
+    const ids = await requestResult(states.index('jobId').getAllKeys(record.id))
+    for (const id of ids) states.delete(id)
     await transactionDone(transaction)
   }
 }

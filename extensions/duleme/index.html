@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-reader-starting>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
@@ -25,8 +25,8 @@
       <div class="search-wrap" id="librarySearchWrap" hidden>
         <input id="librarySearch" class="searchbox" placeholder="搜索角色名称" aria-label="搜索" />
       </div>
-      <div id="libraryContent"></div>
-      <button class="footer-note" id="aboutBtn">聊天原件保存在资源库 · 关于读了么</button>
+      <div id="libraryContent"><p class="loading">正在读取聊天列表…</p></div>
+      <button class="footer-note" id="aboutBtn" hidden>聊天原件保存在资源库 · 关于读了么</button>
     </main>
     <section id="reader" class="reader-hide" hidden aria-label="聊天阅读器">
       <button class="icon reader-menu" id="readerMenu" aria-label="展开阅读工具"></button>

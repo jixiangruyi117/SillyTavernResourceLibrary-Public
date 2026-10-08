@@ -9,6 +9,7 @@ export {
 import { selectCloudResources, type PersonalResourceSelection } from './PersonalResourceBackup'
 
 import type { ArchivePortableData } from '../types/Backup'
+import type { Category, ResourceSummary } from '../types/Resource'
 
 import type { CloudBackupConfig, CloudBackupItem, GitHubBackupConfig } from '../types/CloudBackup'
 
@@ -228,23 +229,46 @@ export async function materializeStructuredArchive(
   )[0]!
 }
 
+export interface StructuredBackupIndex {
+  resources: ResourceSummary[]
+  versions: ResourceSummary[]
+  categories: Category[]
+  resourceCount: number
+}
+
+export async function readStructuredBackupIndex(
+  context: CloudBackupSnapshotOperationsContext,
+  personalResources?: PersonalResourceSelection,
+): Promise<StructuredBackupIndex> {
+  const [all, versions, categories] = await Promise.all([
+    context.resourceService.listResourceListSummaries?.() ??
+      context.resourceService.listSummaries(),
+    context.resourceService.listVersionSummaries?.(true) ?? Promise.resolve([]),
+    context.categoryService.list(),
+  ])
+  return {
+    resources: selectCloudResources(all, personalResources),
+    versions,
+    categories,
+    resourceCount: all.length,
+  }
+}
+
 export async function createStructuredFingerprint(
   context: CloudBackupSnapshotOperationsContext,
   config: CloudBackupConfig,
   portableData: ArchivePortableData,
+  index?: StructuredBackupIndex,
 ): Promise<string> {
-  const summaries = selectCloudResources(
-    await (context.resourceService.listResourceListSummaries?.() ??
-      context.resourceService.listSummaries()),
+  index ??= await readStructuredBackupIndex(
+    context,
     normalizeContentSelection(config.contentSelection).personalResources,
   )
+  const summaries = index.resources
   const includedIds = new Set(summaries.map((resource) => resource.id))
-  const versionSummaries =
-    typeof context.resourceService.listVersionSummaries === 'function'
-      ? (await context.resourceService.listVersionSummaries(true)).filter((resource) =>
-          includedIds.has(resource.versionGroupId ?? ''),
-        )
-      : []
+  const versionSummaries = index.versions.filter((resource) =>
+    includedIds.has(resource.versionGroupId ?? ''),
+  )
   const compact = (resource: (typeof summaries)[number]) => ({
     id: resource.id,
     contentHash: resource.contentHash,
@@ -266,9 +290,7 @@ export async function createStructuredFingerprint(
     destination,
     resources: summaries.map(compact).sort((left, right) => left.id.localeCompare(right.id)),
     versions: versionSummaries.map(compact).sort((left, right) => left.id.localeCompare(right.id)),
-    categories: (await context.categoryService.list()).sort((left, right) =>
-      left.id.localeCompare(right.id),
-    ),
+    categories: [...index.categories].sort((left, right) => left.id.localeCompare(right.id)),
     portableData,
   })
   const fingerprintBlob = new Blob([JSON.stringify(fingerprintValue)], {
@@ -359,19 +381,24 @@ export async function buildStructuredBackup(
   portableData: ArchivePortableData,
   onProgress?: CloudBackupProgressCallback,
   personalResources?: PersonalResourceSelection,
+  index?: StructuredBackupIndex,
 ): Promise<CreatedStructuredSnapshot> {
   onProgress?.('正在逐项读取资源，构建对象级快照…')
-  const summaries = selectCloudResources(
-    await (context.resourceService.listResourceListSummaries?.() ??
-      context.resourceService.listSummaries()),
-    personalResources,
-  )
+  index ??= await readStructuredBackupIndex(context, personalResources)
+  const summaries = index.resources
   const resourceService = context.resourceService
   async function* resources() {
     for (const summary of summaries) {
       yield {
         summary,
         summaryIsPartial: true,
+        loadSummary: resourceService.getSummary
+          ? async () => {
+              const metadata = await resourceService.getSummary(summary.id, false)
+              if (!metadata) throw new Error(`云备份期间资源已不存在：${summary.fileName}`)
+              return metadata
+            }
+          : undefined,
         load: async () => {
           const resource = await resourceService.get(summary.id)
           if (!resource) throw new Error(`云备份规划期间资源已不存在：${summary.fileName}`)
@@ -382,7 +409,7 @@ export async function buildStructuredBackup(
   }
   async function* versions() {
     const currentIds = new Set(summaries.map((summary) => summary.id))
-    for (const summary of await resourceService.listVersionSummaries(true)) {
+    for (const summary of index!.versions) {
       if (
         currentIds.has(summary.id) ||
         !summary.versionGroupId ||
@@ -394,6 +421,13 @@ export async function buildStructuredBackup(
       yield {
         summary,
         summaryIsPartial: true,
+        loadSummary: resourceService.getSummary
+          ? async () => {
+              const metadata = await resourceService.getSummary(summary.id, true)
+              if (!metadata) throw new Error(`云备份期间资源已不存在：${summary.fileName}`)
+              return metadata
+            }
+          : undefined,
         load: async () => {
           const resource = await resourceService.getVersion(summary.id)
           if (!resource) throw new Error(`云备份规划期间历史版本已不存在：${summary.fileName}`)
@@ -402,10 +436,5 @@ export async function buildStructuredBackup(
       }
     }
   }
-  return createStructuredSnapshot(
-    resources(),
-    versions(),
-    await context.categoryService.list(),
-    portableData,
-  )
+  return createStructuredSnapshot(resources(), versions(), index.categories, portableData)
 }

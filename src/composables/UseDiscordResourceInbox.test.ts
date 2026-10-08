@@ -22,6 +22,10 @@ const setup = vi.hoisted(() => ({
   native: false,
   inboxMode: false,
   release: vi.fn(),
+  automation: vi.fn(),
+  summary: vi.fn(),
+  bindCards: vi.fn(),
+  refresh: vi.fn(),
 }))
 vi.mock('../services/NativeDiscordInboxService', () => ({
   isNativeDiscordInboxRunning: () => setup.inboxMode,
@@ -32,7 +36,16 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: vi.fn(() => ({})),
 }))
 vi.mock('../core/AppContainer', () => ({ initializeVaultOnce: async () => undefined }))
-vi.mock('../core/LibraryContainer', () => ({ initializeVaultOnce: async () => undefined }))
+vi.mock('../core/LibraryContainer', () => ({
+  initializeVaultOnce: async () => undefined,
+  communitySourceService: {},
+  discordInboxAutomationSettingsService: { load: setup.automation },
+  resourceService: { getResourceListSummary: setup.summary },
+}))
+vi.mock('../services/DiscordInboxAutoBinding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/DiscordInboxAutoBinding')>()),
+  autoBindIncomingCardBatch: setup.bindCards,
+}))
 vi.mock('../core/NativeSecurity', () => ({ requestNativeNotifications: async () => true }))
 vi.mock('../core/NoticeCenter', () => ({ noticeCenter: { push: setup.notice, dismiss: vi.fn() } }))
 vi.mock('../services/NativeImportKeepAlive', () => ({
@@ -77,7 +90,7 @@ function start(locked = false) {
   const wrapper = mount(
     defineComponent({
       setup() {
-        intake = useDiscordResourceInbox(vault, receive)
+        intake = useDiscordResourceInbox(vault, receive, setup.refresh)
         return () => null
       },
     }),
@@ -90,8 +103,17 @@ beforeEach(() => {
   setup.native = false
   setup.inboxMode = false
   setup.target = { ...target }
-  setup.list.mockResolvedValue({ jobs: [job], recent: [], hasMore: false })
-  setup.ack.mockResolvedValue(undefined)
+  setup.automation.mockResolvedValue({ bindForeground: false })
+  setup.bindCards.mockResolvedValue([])
+  const states = new Map<string, string>()
+  setup.list.mockImplementation(async () => ({
+    jobs: ['imported', 'failed', 'cancelled'].includes(states.get(job.id) ?? '') ? [] : [job],
+    recent: [],
+    hasMore: false,
+  }))
+  setup.ack.mockImplementation(async (id: string, state: string) => {
+    states.set(id, state)
+  })
   setup.download.mockResolvedValue(new File(['{}'], 'card.json'))
   setup.read.mockResolvedValue({
     ...job,
@@ -100,6 +122,7 @@ beforeEach(() => {
   setup.stage.mockResolvedValue(undefined)
   setup.nativeRead.mockResolvedValue({ transferredBytes: 3, totalBytes: 12 })
   setup.cleanupNative.mockResolvedValue(undefined)
+  setup.refresh.mockResolvedValue(undefined)
 })
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
@@ -109,20 +132,90 @@ afterEach(() => {
   }
 })
 describe('cloud resource coordination', () => {
-  it('acknowledges a native background import without re-delivering the file to the JS importer', async () => {
+  it('removes completed receive tasks on native resume while retaining pending and failed tasks', async () => {
+    setup.native = true
+    setup.list.mockResolvedValue({ jobs: [], recent: [], hasMore: false })
+    start()
+    await flushPromises()
+    taskCenter.start({
+      operationId: 'discord-resource-completed',
+      name: 'complete',
+      phase: '已导入资源库',
+    })
+    taskCenter.complete('discord-resource-completed')
+    taskCenter.start({
+      operationId: 'discord-resource-pending',
+      name: 'pending',
+      phase: '已下载，等待解析导入',
+    })
+    taskCenter.start({ operationId: 'discord-resource-failed', name: 'failed', phase: '未完成' })
+    taskCenter.fail('discord-resource-failed', 'import failed')
+    taskCenter.start({ operationId: 'other-completed', name: 'other', phase: 'done' })
+    taskCenter.complete('other-completed')
+    window.dispatchEvent(new Event('srl:native-active'))
+    await flushPromises()
+    expect(
+      taskCenter
+        .list()
+        .map((task) => task.operationId)
+        .sort(),
+    ).toEqual(['discord-resource-failed', 'discord-resource-pending', 'other-completed'])
+  })
+  it.each([
+    'characterCard',
+    'worldBook',
+    'preset',
+    'regex',
+    'script',
+    'beautification',
+    'quickReply',
+    'userPersona',
+    'chat',
+    'greeting',
+    'plugin',
+    'other',
+  ])(
+    'acknowledges a native background %s without re-delivering the file to the JS importer',
+    async (resourceType) => {
+      setup.native = true
+      setup.nativeRead.mockResolvedValue({
+        transferredBytes: 12,
+        nativeImportOutcome: {
+          state: 'imported',
+          resourceId: 'native-resource-1',
+          name: 'Mira',
+          resourceType,
+        },
+      })
+      const intake = start()
+      await flushPromises()
+      expect(intake.receive).not.toHaveBeenCalled()
+      expect(setup.ack).toHaveBeenCalledWith(job.id, 'imported', target, undefined)
+      expect(setup.notify).toHaveBeenCalledWith(expect.objectContaining({ state: 'imported' }))
+      expect(setup.cleanupNative).toHaveBeenCalledWith(job.id)
+      expect(taskCenter.list()).toEqual([])
+      expect(setup.stage).not.toHaveBeenCalled()
+      expect(setup.refresh).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('refreshes committed native rows before an offline cloud acknowledgement, including repaired duplicates', async () => {
     setup.native = true
     setup.nativeRead.mockResolvedValue({
       transferredBytes: 12,
-      nativeImportOutcome: { state: 'imported', resourceId: 'native-resource-1', name: 'Mira' },
+      nativeImportOutcome: { state: 'duplicate_card', resourceId: 'existing-card' },
+    })
+    setup.ack.mockImplementation(async (_id, state) => {
+      if (state === 'imported') {
+        expect(setup.refresh).toHaveBeenCalledOnce()
+        return new Promise(() => undefined)
+      }
     })
     const intake = start()
     await flushPromises()
+    expect(setup.refresh).toHaveBeenCalledOnce()
     expect(intake.receive).not.toHaveBeenCalled()
-    expect(setup.ack).toHaveBeenCalledWith(job.id, 'imported', target, undefined)
-    expect(setup.notify).toHaveBeenCalledWith(expect.objectContaining({ state: 'imported' }))
-    expect(setup.cleanupNative).toHaveBeenCalledWith(job.id)
-    expect(taskCenter.list()[0]?.status).toBe('completed')
-    expect(setup.stage).not.toHaveBeenCalled()
+    expect(setup.cleanupNative).not.toHaveBeenCalled()
   })
 
   it('notifies a native duplicate as already present while acknowledging the cloud job as consumed', async () => {
@@ -137,7 +230,7 @@ describe('cloud resource coordination', () => {
     expect(setup.notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'resource', state: 'duplicate' }),
     )
-    expect(taskCenter.list()[0]?.status).toBe('completed')
+    expect(taskCenter.list()).toEqual([])
     expect(intake.receive).not.toHaveBeenCalled()
   })
 
@@ -161,7 +254,7 @@ describe('cloud resource coordination', () => {
     expect(intake.receive).toHaveBeenCalledOnce()
     expect(setup.stage).not.toHaveBeenCalled()
     expect(setup.ack.mock.calls.map((call) => call[1])).toEqual(['imported', 'imported'])
-    expect(taskCenter.list()[0]?.status).toBe('completed')
+    expect(taskCenter.list()).toEqual([])
   })
 
   it('exposes a native version decision even when the cloud progress acknowledgement never returns', async () => {
@@ -398,6 +491,98 @@ describe('cloud resource coordination', () => {
     await flushPromises()
     expect(intake.receive).toHaveBeenCalledOnce()
   })
+  it('delivers each Web attachment before downloading the next one', async () => {
+    const next = { ...job, id: '22222222-2222-4222-a222-222222222222', name: 'second.png' }
+    setup.list.mockResolvedValueOnce({ jobs: [job, next], recent: [], hasMore: false })
+    setup.download
+      .mockResolvedValueOnce(new File(['one'], job.name))
+      .mockResolvedValueOnce(new File(['two'], 'second.png'))
+    const intake = start()
+    await flushPromises()
+    expect(intake.receive).toHaveBeenCalledOnce()
+    const firstBatch = intake.receive.mock.calls[0]![0]
+    expect(firstBatch.files.map((file) => file.name)).toEqual([job.name])
+    expect(firstBatch.automaticCloud).toBe(true)
+    expect(setup.download).toHaveBeenCalledOnce()
+    await firstBatch.onItemComplete?.({
+      status: 'imported',
+      resource: { id: 'card-1', type: 'characterCard' },
+    } as ImportResult)
+    await firstBatch.acknowledge()
+    await flushPromises()
+    expect(firstBatch.files).toEqual([])
+    expect(intake.receive).toHaveBeenCalledTimes(2)
+    expect(intake.receive.mock.calls[1]![0].files.map((file) => file.name)).toEqual(['second.png'])
+  })
+  it('does not auto-bind files received by an explicit manual receive action', async () => {
+    setup.list
+      .mockResolvedValueOnce({ jobs: [], recent: [], hasMore: false })
+      .mockResolvedValueOnce({ jobs: [job], recent: [], hasMore: false })
+    const intake = start()
+    await flushPromises()
+    window.dispatchEvent(new Event('srl:receive-discord-resources'))
+    await flushPromises()
+    expect(intake.receive).toHaveBeenCalledOnce()
+    expect(intake.receive.mock.calls[0]![0].automaticCloud).toBe(false)
+  })
+  it('settles five containers and a resolved history choice as two final logical cards', async () => {
+    const names = ['A.png', 'A.json', 'A-old.json', 'B.png', 'B.json']
+    const jobs = names.map((name, index) => ({
+      ...job,
+      name,
+      id: `${String(index + 1).repeat(8)}-1111-4111-a111-111111111111`,
+    }))
+    setup.list.mockResolvedValueOnce({ jobs, recent: [], hasMore: false })
+    setup.download.mockImplementation(async (item) => new File(['{}'], item.name))
+    setup.automation.mockResolvedValue({ bindForeground: true, bindSameAuthor: true })
+    const finalCards = ['A', 'B'].map((id) => ({
+      id,
+      type: 'characterCard',
+      name: `${id} final`,
+      fileName: `${id}.png`,
+    }))
+    setup.summary.mockImplementation(async (id) => finalCards.find((card) => card.id === id))
+    const intake = start()
+    await flushPromises()
+    for (let index = 0; index < jobs.length; index += 1) {
+      const batch = intake.receive.mock.calls[index]![0]
+      expect(setup.download).toHaveBeenCalledTimes(index + 1)
+      expect(batch.deferAutomaticBinding).toBe(true)
+      if (index === 2) {
+        await batch.onItemComplete?.({ status: 'versionCandidate' } as ImportResult)
+        await batch.acknowledge()
+        expect(setup.download).toHaveBeenCalledTimes(3)
+        expect(setup.bindCards).not.toHaveBeenCalled()
+        await batch.onVersionResolved?.('a'.repeat(64), 'A')
+      } else {
+        await batch.onItemComplete?.({
+          status: 'imported',
+          resource: { id: index < 3 ? 'A' : 'B', type: 'characterCard' },
+        } as ImportResult)
+      }
+      expect(setup.bindCards).not.toHaveBeenCalled()
+      await batch.acknowledge()
+      await flushPromises()
+      expect(batch.files).toEqual([])
+    }
+    expect(setup.summary.mock.calls.map(([id]) => id)).toEqual(['A', 'B'])
+    expect(setup.bindCards).toHaveBeenCalledOnce()
+    expect(setup.bindCards.mock.calls[0]![1]).toEqual(finalCards)
+  })
+  it('leaves all files unclaimed when a later metadata page fails and can resume on the next check', async () => {
+    const next = { ...job, id: '22222222-2222-4222-a222-222222222222' }
+    setup.list
+      .mockResolvedValueOnce({ jobs: [job], recent: [], hasMore: true })
+      .mockRejectedValueOnce(new Error('HTTP 503'))
+      .mockResolvedValueOnce({ jobs: [job, next], recent: [], hasMore: false })
+    const intake = start()
+    await flushPromises()
+    expect(setup.download).not.toHaveBeenCalled()
+    expect(intake.receive).not.toHaveBeenCalled()
+    await intake.request()
+    expect(setup.download).toHaveBeenCalledOnce()
+    expect(intake.receive).toHaveBeenCalledOnce()
+  })
   it('does not acknowledge an import when download completes or when a version still needs a decision', async () => {
     const intake = start()
     await flushPromises()
@@ -558,6 +743,10 @@ describe('cloud resource coordination', () => {
     const intake = start()
     await flushPromises()
     const batch = intake.receive.mock.calls[0]![0]
+    await batch.onItemComplete?.({
+      status: 'imported',
+      resource: { id: 'card-1', type: 'characterCard' },
+    } as ImportResult)
     setup.ack.mockRejectedValueOnce(new Error('HTTP 503'))
     await expect(batch.acknowledge()).rejects.toThrow('HTTP 503')
     await batch.onFailure?.('HTTP 503')

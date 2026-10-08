@@ -183,6 +183,131 @@ afterEach(() => {
 })
 
 describe('CommunitySourceService archive hardening', () => {
+  it('waits for background metadata writes so cleanup cannot restore stale revision references', async () => {
+    const storage = new MemoryCommunitySourceStorage()
+    const cleanup = vi.fn(async () => {
+      for (const source of storage.sources.values()) delete source.revisions
+      return { count: 0, bytes: 0, retainedCount: 0 }
+    })
+    const service = new CommunitySourceService(
+      Object.assign(storage, { clearDownloadedMedia: cleanup }),
+    )
+    const created = await service.saveDiscordCapture(starter())
+    await storage.putSource({ ...created.source, revisions: [] })
+    let release!: () => void, started!: () => void
+    const start = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const pause = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const putSource = storage.putSource.bind(storage)
+    vi.spyOn(storage, 'putSource').mockImplementationOnce(async (source) => {
+      started()
+      await pause
+      await putSource(source)
+    })
+    const updating = service.recordRemoteCheck(
+      created.source.id,
+      COMMUNITY_SOURCE_REMOTE_STATE.AVAILABLE,
+    )
+    await start
+    const cleaning = service.clearDownloadedMedia()
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(cleanup).not.toHaveBeenCalled()
+    } finally {
+      release()
+    }
+    await updating
+    await cleaning
+    expect(await storage.getSource(created.source.id)).toMatchObject({
+      remoteState: COMMUNITY_SOURCE_REMOTE_STATE.AVAILABLE,
+    })
+    expect((await storage.getSource(created.source.id))?.revisions).toBeUndefined()
+  })
+
+  it('waits for in-flight media saves before cleanup', async () => {
+    const storage = new MemoryCommunitySourceStorage()
+    let release!: () => void, started!: () => void
+    const start = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const pause = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        started()
+        await pause
+        return new Response('image')
+      }),
+    )
+    const cleanup = vi.fn(async () => ({ count: 1, bytes: 5, retainedCount: 0 }))
+    const service = new CommunitySourceService(
+      Object.assign(storage, { clearDownloadedMedia: cleanup }),
+      { put: async () => ({ assetId: 'asset-local' }), getBlob: async () => undefined },
+    )
+    const saving = service.saveDiscordCapture({
+      ...starter(),
+      attachments: [
+        { id: 'img', name: 'image.png', size: 5, url: 'https://cdn.discordapp.com/image.png' },
+      ],
+    })
+    await start
+    const cleaning = service.clearDownloadedMedia()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(cleanup).not.toHaveBeenCalled()
+    release()
+    await saving
+    await cleaning
+    expect(cleanup).toHaveBeenCalledOnce()
+  })
+  it('honors the post-media switch for capture, deferred work and refresh, while allowing explicit downloads', async () => {
+    const storage = new MemoryCommunitySourceStorage()
+    const fetcher = vi.fn(async () => new Response('image'))
+    vi.stubGlobal('fetch', fetcher)
+    const put = vi.fn(async () => ({ assetId: 'asset-local' }))
+    let enabled = false
+    const service = new CommunitySourceService(
+      storage,
+      { put, getBlob: async () => undefined },
+      () => enabled,
+    )
+    const capture = {
+      ...starter('完整正文'.repeat(3000)),
+      attachments: [
+        {
+          id: 'img',
+          name: 'image.png',
+          contentType: 'image/png',
+          size: 5,
+          url: 'https://cdn.discordapp.com/attachments/a/image.png',
+        },
+      ],
+    }
+    const saved = await service.saveDiscordCapture(capture)
+    await service.localizeSavedMessageAttachments(saved.source.id, capture.messageId)
+    await service.applyDiscordRefresh(
+      saved.source.id,
+      [{ ...capture, content: `${capture.content}更新` }],
+      { keepPrevious: true },
+    )
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
+    const refreshed = await service.exportAll()
+    expect(refreshed.messages[0]?.content).toBe(`${capture.content}更新`)
+    expect(refreshed.messages[0]?.attachments[0]).toMatchObject({
+      url: capture.attachments[0]!.url,
+      localState: 'remoteOnly',
+    })
+    await service.saveAttachmentToLocal(saved.source.id, capture.messageId, 'img')
+    expect(fetcher).toHaveBeenCalledOnce()
+    enabled = true
+    await service.saveDiscordCapture({ ...capture, messageId: '44444', isStarter: false })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
   it('preserves known pin status for legacy captures and applies explicit unpin without duplicating a message', async () => {
     const service = new CommunitySourceService(new MemoryCommunitySourceStorage())
     const first = await service.saveDiscordCapture(
@@ -556,7 +681,10 @@ describe('CommunitySourceService archive hardening', () => {
   it('requests the existing browser lock mechanism per source and lets unrelated posts save independently', async () => {
     const storage = new MemoryCommunitySourceStorage()
     const service = new CommunitySourceService(storage)
-    const request = vi.fn(async (_name: string, operation: () => Promise<unknown>) => operation())
+    const request = vi.fn(
+      async (_name: string, optionsOrOperation: unknown, operation?: () => Promise<unknown>) =>
+        (operation ?? (optionsOrOperation as () => Promise<unknown>))(),
+    )
     vi.stubGlobal('navigator', { locks: { request } })
     let release!: () => void, start!: () => void
     const started = new Promise<void>((resolve) => {
@@ -580,8 +708,11 @@ describe('CommunitySourceService archive hardening', () => {
     expect(independent.messages[0]?.content).toBe('second')
     release()
     await pending
-    expect(request).toHaveBeenCalledTimes(2)
-    expect(request.mock.calls[0]?.[0]).not.toBe(request.mock.calls[1]?.[0])
+    const sourceLocks = request.mock.calls.filter(
+      ([name]) => !name.endsWith(':discord-local-media'),
+    )
+    expect(sourceLocks).toHaveLength(2)
+    expect(sourceLocks[0]?.[0]).not.toBe(sourceLocks[1]?.[0])
   })
 
   it('keeps an in-flight explicit refresh from overwriting a later delivery', async () => {

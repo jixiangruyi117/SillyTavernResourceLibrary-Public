@@ -23,7 +23,6 @@ import {
   type ResourceType,
 } from '../types/Resource'
 import {
-  hasCharacterCardOverrides,
   readCharacterCardOverrides,
   type CharacterCardOverrides,
 } from '../utils/CharacterCardCustomization'
@@ -152,6 +151,11 @@ export function useResourceOrganizer(
   const characterContentEdits = ref<CharacterCardContentEdit[]>([])
   const characterEditorDirty = ref(false)
   const characterWorkbenchOpen = ref(false)
+  const structuredEditorDirty = ref(false)
+  const structuredWorkbenchOpen = ref(false)
+  const structuredContent = useTemplateRef<{ prepareSave: () => Promise<boolean> }>(
+    'structuredContent',
+  )
   const characterContent = useTemplateRef<{ prepareSave: () => Promise<boolean> }>(
     'characterContent',
   )
@@ -210,10 +214,6 @@ export function useResourceOrganizer(
   const metadataJson = computed(() => JSON.stringify(props.resource.metadata, null, 2))
 
   const isCharacter = computed(() => props.resource.type === RESOURCE_TYPE.CHARACTER_CARD)
-
-  const hasCharacterModifications = computed(() =>
-    hasCharacterCardOverrides(characterOverrides.value),
-  )
 
   const availableBoundResources = computed(() =>
     props.boundResources.filter((resource) => relatedResourceIds.value.has(resource.id)),
@@ -433,6 +433,7 @@ export function useResourceOrganizer(
   const isDirty = computed(
     () =>
       characterEditorDirty.value ||
+      structuredEditorDirty.value ||
       hasResourceDetailDraftChanges(
         {
           name: name.value,
@@ -508,6 +509,8 @@ export function useResourceOrganizer(
       if (!previous || previous.id !== resource.id) {
         characterEditorDirty.value = false
         characterWorkbenchOpen.value = false
+        structuredEditorDirty.value = false
+        structuredWorkbenchOpen.value = false
         activeTab.value = props.initialTab ?? 'overview'
         tabScrollPositions.clear()
       }
@@ -533,6 +536,10 @@ export function useResourceOrganizer(
   async function handleSubmit(): Promise<void> {
     if (!isDirty.value || props.busy) return
     if (characterContent.value && !(await characterContent.value.prepareSave())) {
+      activeTab.value = 'content'
+      return
+    }
+    if (structuredContent.value && !(await structuredContent.value.prepareSave())) {
       activeTab.value = 'content'
       return
     }
@@ -650,7 +657,6 @@ export function useResourceOrganizer(
     formattedFileSize,
     visibleTags,
     hiddenTagCount,
-    hasCharacterModifications,
     artworkPickerStatus,
     handleSubmit,
     visibleDetailTabs,
@@ -671,6 +677,8 @@ export function useResourceOrganizer(
     characterContentEdits,
     characterEditorDirty,
     characterWorkbenchOpen,
+    structuredEditorDirty,
+    structuredWorkbenchOpen,
     StructuredResourceDetails,
     relatedDownloadCount,
     relatedDownloadIds,

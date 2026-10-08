@@ -62,5 +62,10 @@ export async function clearOfficialAppData(
   if (id === 'imageGeneration')
     for (const provider of ['openai', 'novelai', 'custom'])
       await localCredentialStore.clear(`image-generation:${provider}`)
+  if (id === 'assistant') {
+    await database.settings.where('id').startsWith('assistant.').delete()
+    const { clearAssistantPetAssets } = await import('../services/ProductAssistantPetAssets')
+    await clearAssistantPetAssets()
+  }
   for (const key of keys[id] ?? []) localStorage.removeItem(key)
 }

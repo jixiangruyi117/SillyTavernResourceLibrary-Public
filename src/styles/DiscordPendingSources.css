@@ -10,6 +10,60 @@
   padding: 16px 0;
 }
 
+.discord-pending--page {
+  box-sizing: border-box;
+  max-width: 52rem;
+  margin: 16px auto 0;
+  padding: 18px;
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  background: var(--color-surface-raised);
+}
+
+.discord-pending--page .discord-pending__header {
+  justify-content: flex-end;
+}
+
+.discord-pending--page .discord-pending__header > span {
+  background: var(--color-surface);
+}
+
+.discord-pending--page .discord-pending__list {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.discord-pending--page .discord-pending__item {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+
+.discord-pending--page .discord-pending__state {
+  margin: 0;
+  padding: 16px 14px;
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+
+.discord-pending--page .discord-pending__actions button,
+.discord-pending--page .discord-pending__actions a {
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.discord-pending--page .discord-pending__actions .discord-pending__delete {
+  color: var(--color-danger);
+}
+
 .discord-pending--inbox .discord-pending__header strong {
   font-size: 16px;
   font-weight: 650;
@@ -93,6 +147,11 @@
 .discord-pending__summary strong,
 .discord-pending__summary small {
   display: block;
+  overflow-wrap: anywhere;
+}
+
+.discord-pending__summary > div {
+  flex: 1;
 }
 
 .discord-pending__summary strong {
@@ -105,6 +164,7 @@
 
 .discord-pending__summary p {
   max-width: 600px;
+  overflow-wrap: anywhere;
   margin: 8px 0 0;
   color: var(--color-ink-soft);
   font-size: 0.74rem;

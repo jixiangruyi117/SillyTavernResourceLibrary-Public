@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   },
   start: vi.fn(),
   notify: vi.fn(),
+  autoBinding: vi.fn(),
   stop: vi.fn(),
   permission: vi.fn(),
   state: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({
     startCloudInbox: mocks.start,
     notifyCloudInboxResult: mocks.notify,
+    notifyCloudInboxAutoBinding: mocks.autoBinding,
     stopCloudInbox: mocks.stop,
     cloudInboxStatus: mocks.state,
   }),
@@ -26,6 +28,7 @@ vi.mock('./DiscordHandoffService', () => ({ inboxConnection: () => ({ ...mocks.c
 import {
   checkNativeDiscordInboxTarget,
   notifyNativeDiscordInboxResult,
+  notifyNativeDiscordAutoBinding,
   isNativeDiscordInboxRunning,
   publishNativeDiscordInboxState,
   startNativeDiscordInbox,
@@ -45,6 +48,28 @@ beforeEach(() => {
   }))
 })
 describe('native receive session', () => {
+  it('publishes a binding result independently of whether the background receive service is running', async () => {
+    await notifyNativeDiscordAutoBinding('帖子 A', '角色卡 A')
+    expect(mocks.autoBinding).toHaveBeenCalledWith({
+      sourceTitle: '帖子 A',
+      resourceName: '角色卡 A',
+    })
+    mocks.autoBinding.mockRejectedValueOnce(new Error('permission denied'))
+    await expect(notifyNativeDiscordAutoBinding('帖子 B', '角色卡 B')).resolves.toBeUndefined()
+  })
+  it('passes stable binding identities without forwarding pairing credentials', async () => {
+    await notifyNativeDiscordAutoBinding('帖子 A', '角色卡 A', {
+      sourceId: 'post-a',
+      resourceId: 'card-a',
+    })
+    expect(mocks.autoBinding).toHaveBeenCalledWith({
+      sourceTitle: '帖子 A',
+      resourceName: '角色卡 A',
+      sourceId: 'post-a',
+      resourceId: 'card-a',
+    })
+    expect(mocks.autoBinding.mock.lastCall?.[0]).not.toHaveProperty('secret')
+  })
   it('does not show enabled when native startup only accepted an Intent or reported failure', async () => {
     mocks.start.mockImplementationOnce(async () => {
       publishNativeDiscordInboxState(true) // Older native code emits this before its empty reply.

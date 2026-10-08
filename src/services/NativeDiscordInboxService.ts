@@ -19,6 +19,12 @@ export type DiscordInboxResult =
     })
 
 interface Receiver {
+  notifyCloudInboxAutoBinding(options: {
+    sourceTitle: string
+    resourceName: string
+    sourceId?: string
+    resourceId?: string
+  }): Promise<void>
   notifyCloudInboxResult(options: DiscordInboxResult): Promise<void>
   startCloudInbox(options: {
     workerUrl: string
@@ -29,6 +35,19 @@ interface Receiver {
   cloudInboxStatus(): Promise<{ running: boolean; workerUrl?: string; libraryId?: string }>
 }
 const receiver = registerPlugin<Receiver>('ShareReceiver')
+/** Foreground save-time and manual-version binding commits also need a system result. */
+export async function notifyNativeDiscordAutoBinding(
+  sourceTitle: string,
+  resourceName: string,
+  identity?: { sourceId: string; resourceId: string },
+): Promise<void> {
+  if (!isNativeDiscordInboxAvailable()) return
+  try {
+    await receiver.notifyCloudInboxAutoBinding({ sourceTitle, resourceName, ...identity })
+  } catch {
+    // A denied notification or older APK must not undo the saved binding.
+  }
+}
 let running = false
 let target: { workerUrl: string; libraryId: string } | undefined
 export const isNativeDiscordInboxAvailable = () =>
@@ -104,28 +123,17 @@ export function checkNativeDiscordInboxTarget(workerUrl: string, libraryId: stri
 export async function notifyNativeDiscordInboxResult(result: DiscordInboxResult): Promise<void> {
   if (!isNativeDiscordInboxAvailable()) return
   try {
-    // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=discord-inbox-result-type-narrowing
-    const { id, workerUrl, libraryId, name } = result
-    if (result.kind === 'resource') {
-      await receiver.notifyCloudInboxResult({
-        kind: 'resource',
-        id,
-        workerUrl,
-        libraryId,
-        name,
-        state: result.state,
-      })
-    } else {
-      await receiver.notifyCloudInboxResult({
-        kind: 'post',
-        id,
-        workerUrl,
-        libraryId,
-        name,
-        state: result.state,
-      })
+    const fields = {
+      id: result.id,
+      workerUrl: result.workerUrl,
+      libraryId: result.libraryId,
+      name: result.name,
     }
-    // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=discord-inbox-result-type-narrowing
+    if (result.kind === 'resource') {
+      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
+    } else {
+      await receiver.notifyCloudInboxResult({ kind: result.kind, state: result.state, ...fields })
+    }
   } catch {
     // Notification permission or an older APK must not change the persisted result.
   }

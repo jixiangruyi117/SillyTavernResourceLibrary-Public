@@ -14,7 +14,8 @@ function run(command, args) {
 }
 
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=main-build-preflights
-// Public does not include the private main repository's audit commands.
+// Validate the reviewed Public knowledge owners without account-service contracts.
+run('node', ['scripts/Check-AssistantKnowledge.mjs'])
 // SRL-PUBLIC-SYNC: END REPLACE id=main-build-preflights
 run('pnpm', ['exec', 'vue-tsc', '-b'])
 run('pnpm', ['exec', 'vite', 'build'])

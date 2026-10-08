@@ -585,11 +585,36 @@ export class TavernBridgeService extends EventTarget {
 
   async pullResources(
     items: TavernResourceItem[],
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; exportBatchId?: string } = {},
   ): Promise<File[]> {
     throwIfAborted(options.signal)
+    if (
+      items.some(
+        (item) =>
+          item.kind === 'chat' &&
+          item.readingScriptIds !== undefined &&
+          (!Array.isArray(item.readingScriptIds) ||
+            item.readingScriptIds.length > 8 ||
+            item.readingScriptIds.some(
+              (id) =>
+                typeof id !== 'string' ||
+                id.length > 512 ||
+                !/^(scriptGlobal|scriptPreset):.+$/.test(id),
+            )),
+      )
+    )
+      throw new Error('请选择最多 8 份全局或预设阅读脚本')
+    if (
+      items.some(
+        (item) =>
+          item.kind === 'chat' &&
+          (item.readingScriptIds?.length || item.carryReadingScripts === false),
+      ) &&
+      (this.directory || !this.peerCapabilities.includes('chat-reading-scripts-v1'))
+    )
+      throw new Error('附带阅读脚本需要新版酒馆互传扩展的实时连接')
     if (this.directory) {
-      const files = await this.directory.pullResources(items)
+      const files = await this.directory.pullResources(items, options.exportBatchId)
       throwIfAborted(options.signal)
       return files
     }
@@ -621,7 +646,16 @@ export class TavernBridgeService extends EventTarget {
     )
     void this.send('pull-request', {
       requestId,
-      items: items.map(({ id }) => ({ id })),
+      ...(options.exportBatchId && this.peerCapabilities.includes('pull-export-batch-v1')
+        ? { exportBatchId: options.exportBatchId }
+        : {}),
+      items: items.map(({ id, kind, readingScriptIds, carryReadingScripts }) => ({
+        id,
+        ...(kind === 'chat' && carryReadingScripts !== undefined ? { carryReadingScripts } : {}),
+        ...(kind === 'chat' && readingScriptIds?.length
+          ? { readingScriptIds: [...readingScriptIds] }
+          : {}),
+      })),
       localDirect: this.isLocalTavernDirectAvailable(),
     }).catch((error) =>
       this.failPull(requestId, error instanceof Error ? error.message : '发送取回请求失败', false),
@@ -738,6 +772,12 @@ export class TavernBridgeService extends EventTarget {
       this.cancelledPulls.delete(oldest)
     }
     window.setTimeout(() => this.cancelledPulls.delete(requestId), PULL_ABSOLUTE_TIMEOUT_MS)
+  }
+
+  async finishPullBatch(exportBatchId: string): Promise<void> {
+    this.directory?.finishPullBatch(exportBatchId)
+    if (this.port && this.peerCapabilities.includes('pull-export-batch-v1'))
+      await this.send('pull-batch-end', { exportBatchId })
   }
 
   disconnect(detail = '连接已断开'): void {

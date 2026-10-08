@@ -27,9 +27,6 @@ async function open() {
   error.value = ''
   try {
     await ensurePreinstalledOfficialApps()
-    hasInstallationRecord.value = (await officialAppService.list()).some(
-      (app) => app.id === props.appId,
-    )
     release = await acquireOfficialAppUse(props.appId)
     if (disposed) {
       release()
@@ -41,6 +38,7 @@ async function open() {
     if (!loaded) {
       release()
       release = undefined
+      hasInstallationRecord.value = Boolean(await officialAppService.getInstalled(props.appId))
       return
     }
     if (!disposed) component.value = loaded

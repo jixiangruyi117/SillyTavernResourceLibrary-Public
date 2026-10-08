@@ -54,6 +54,7 @@ const entries = {
   userPersona: 'UserPersonaApp.vue',
   resourceBundle: 'ResourceBundleApp.vue',
   tavernBridge: 'TavernBridgeCenter.vue',
+  assistant: 'ProductAssistant.vue',
 }
 const virtualId = 'virtual:srl-official-app-entries'
 const runtimeId = 'virtual:srl-official-app-runtime'
@@ -149,7 +150,11 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           throw new Error('Released official APP catalog buildId mismatch')
         const appEntries = new Map([...refs].map(([id, ref]) => [id, this.getFileName(ref)]))
         const appRoots = new Set(appEntries.values())
-        const closure = (roots: string[], skipApps: boolean): Set<string> => {
+        const closure = (
+          roots: string[],
+          skipApps: boolean,
+          hostOwned?: ReadonlySet<string>,
+        ): Set<string> => {
           const seen = new Set<string>()
           const visit = (name: string) => {
             if (seen.has(name) || (appRoots.has(name) && (skipApps || !roots.includes(name))))
@@ -163,7 +168,9 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
             }
             for (const dep of [
               ...file.imports,
-              ...file.dynamicImports,
+              // Lazy capabilities of shared services belong to the shell. Following these
+              // edges copied host-only editors/compilers into unrelated APP packages.
+              ...(hostOwned?.has(name) ? [] : file.dynamicImports),
               ...(meta.viteMetadata?.importedCss ?? []),
               ...(meta.viteMetadata?.importedAssets ?? []),
             ])
@@ -226,7 +233,24 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
               ? [entry, gate, this.getFileName(runtimeRef)]
               : [entry, this.getFileName(runtimeRef)],
             false,
+            core,
           )
+          // Source import/preview is an actual frontend APP capability. Its lazy compiler
+          // must work offline even though the shared container also reaches this service.
+          if (id === 'frontendWorkshop') {
+            const compilerRoots = Object.values(bundle)
+              .filter(
+                (file) =>
+                  file.type === 'chunk' &&
+                  Object.keys(file.modules).some((name) =>
+                    name
+                      .replaceAll('\\', '/')
+                      .endsWith('/services/FrontendWorkshopBrowserSourceCompilerService.ts'),
+                  ),
+              )
+              .map((file) => file.fileName)
+            for (const dependency of closure(compilerRoots, false)) graph.add(dependency)
+          }
           const archive: Record<string, Uint8Array> = {}
           const files = [...graph].sort().map((name) => {
             if (!core.has(name)) optional.add(name)
@@ -242,12 +266,13 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           })
           if (!files.some((file) => file.path === '/' + entry))
             throw new Error(`Official APP ${id} is still eagerly reachable from the shell`)
-          if (files.length >= 128)
+          // Keep the archive bounded while allowing the expanded Android-native database graph.
+          if (files.length > 128)
             throw new Error(`Official APP ${id} exceeds package file limit: ${files.length}`)
           const assetMode = 'self-contained' as const
-          const hostFiles = files.filter(
-            (file) => vueRuntime.has(file.path.slice(1)) || file.path === runtimeEntry,
-          )
+          // Product service/database modules must resolve to the shell's module URLs too.
+          // Sharing Vue alone allows an older APP to open its own inactive IndexedDB owner.
+          const hostFiles = files.filter((file) => core.has(file.path.slice(1)))
           if (
             !hostFiles.some((file) => file.path === runtimeEntry) ||
             [...vueRuntime].some((path) => !hostFiles.some((file) => file.path === '/' + path))
@@ -322,10 +347,11 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           Object.keys(entries).map((id) => [id, []]),
         )
         for (const [id, current] of Object.entries(catalog)) compatibleApps[id]!.push(current)
+        const compatibleCatalogs = new Map([[OFFICIAL_APP_HOST_API_VERSION, compatibleApps]])
         const retainedRoot = resolve(publicRoot, 'official-apps')
         if (existsSync(retainedRoot)) {
           for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
-            if (!build.isDirectory() || !/^srl(?:-public)?-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
+            if (!build.isDirectory() || !/^srl-(?:public-)?\d+\.\d+\.\d+-v\d+$/u.test(build.name))
               continue
             const catalogPath = resolve(retainedRoot, build.name, 'catalog.json')
             if (!existsSync(catalogPath)) continue
@@ -351,7 +377,19 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
                 files: Array<{ path: string; size: number; sha256: string; bundled?: boolean }>
               }
               const hostApiVersion = manifest.hostApiVersion ?? 1
-              if (manifest.id !== id || hostApiVersion !== OFFICIAL_APP_HOST_API_VERSION) continue
+              if (
+                manifest.id !== id ||
+                !Number.isSafeInteger(hostApiVersion) ||
+                hostApiVersion < 1 ||
+                hostApiVersion > OFFICIAL_APP_HOST_API_VERSION
+              )
+                continue
+              // Still-issued APKs use their original API catalog until users upgrade the shell.
+              let apps = compatibleCatalogs.get(hostApiVersion)
+              if (!apps) {
+                apps = Object.fromEntries(Object.keys(entries).map((appId) => [appId, []]))
+                compatibleCatalogs.set(hostApiVersion, apps)
+              }
               // 已发布包仍引用旧 public URL；仅在保留目录实际需要时生成兼容地址。
               if (id === 'frontendWorkshop')
                 needsLegacyWorkbenchCover ||= Object.entries(archive).some(
@@ -361,7 +399,7 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
                       .toString('utf8')
                       .includes('/images/frontend-workbench-cover-v1.jpg'),
                 )
-              compatibleApps[id]!.push({
+              apps[id]!.push({
                 ...download,
                 shellVersion: manifest.shellVersion,
                 hostApiVersion,
@@ -393,37 +431,41 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           this.emitFile({
             type: 'asset',
             fileName: 'images/frontend-workbench-cover-v1.jpg',
+            // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=retained-public-workbench-cover
             source:
               cover?.type === 'asset'
                 ? cover.source
                 : readFileSync(resolve('src/assets/frontend-workbench-cover-v1.jpg')),
+            // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=retained-public-workbench-cover
           })
         }
-        for (const candidates of Object.values(compatibleApps)) {
-          const unique = new Map(
-            candidates.map((candidate) => [(candidate as { url: string }).url, candidate]),
-          )
-          candidates.splice(
-            0,
-            candidates.length,
-            ...[...unique.values()].sort((left, right) =>
-              (right as { shellVersion: string }).shellVersion.localeCompare(
-                (left as { shellVersion: string }).shellVersion,
-                undefined,
-                { numeric: true },
+        for (const [hostApiVersion, apps] of compatibleCatalogs) {
+          for (const candidates of Object.values(apps)) {
+            const unique = new Map(
+              candidates.map((candidate) => [(candidate as { url: string }).url, candidate]),
+            )
+            candidates.splice(
+              0,
+              candidates.length,
+              ...[...unique.values()].sort((left, right) =>
+                (right as { shellVersion: string }).shellVersion.localeCompare(
+                  (left as { shellVersion: string }).shellVersion,
+                  undefined,
+                  { numeric: true },
+                ),
               ),
-            ),
-          )
+            )
+          }
+          this.emitFile({
+            type: 'asset',
+            fileName: `official-apps/api-${hostApiVersion}/catalog.json`,
+            source: JSON.stringify({
+              schemaVersion: 1,
+              hostApiVersion,
+              apps,
+            }),
+          })
         }
-        this.emitFile({
-          type: 'asset',
-          fileName: `official-apps/api-${OFFICIAL_APP_HOST_API_VERSION}/catalog.json`,
-          source: JSON.stringify({
-            schemaVersion: 1,
-            hostApiVersion: OFFICIAL_APP_HOST_API_VERSION,
-            apps: compatibleApps,
-          }),
-        })
         // Capacitor packaging excludes these files and package downloads. The Web host retains them.
         this.emitFile({
           type: 'asset',
@@ -431,6 +473,9 @@ export function officialAppPackagesPlugin(shellVersion: string, requireLoadingGa
           source: JSON.stringify({
             shellVersion,
             hostApiVersion: OFFICIAL_APP_HOST_API_VERSION,
+            compatibleHostApiVersions: [...compatibleCatalogs.keys()].sort(
+              (left, right) => left - right,
+            ),
             files: [...optional].sort(),
             shellFiles: [...core].sort().map((name) => {
               const file = bundle[name]!

@@ -6,7 +6,7 @@ import ResourceSourceLinks from './ResourceSourceLinks.vue'
 import FeatureBackButton from './FeatureBackButton.vue'
 import ResourcePicker from './ResourcePicker.vue'
 import UserPersonaOverviewBindings from './UserPersonaOverviewBindings.vue'
-import { ref, useTemplateRef, watch } from 'vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
 import ResourceCoverEditor from './ResourceCoverEditor.vue'
 import ResourceVersionCarriers from './ResourceVersionCarriers.vue'
 import { resourceCoverId } from '../types/ResourceGallery'
@@ -40,6 +40,7 @@ const coverContent = useTemplateRef<{
   restoreDefault: () => Promise<void>
 }>('coverContent')
 const galleryVisited = ref(props.initialTab === 'gallery')
+const contentVisited = ref(props.initialTab === 'content')
 watch(
   () => props.resource.id,
   () => {
@@ -50,6 +51,7 @@ watch(
   () => controller.activeTab.value,
   (tab) => {
     if (tab === 'gallery') galleryVisited.value = true
+    if (tab === 'content') contentVisited.value = true
   },
 )
 const personalContent = useTemplateRef<{ editing: boolean; requestBack: () => void }>(
@@ -75,7 +77,6 @@ const {
   formattedFileSize,
   visibleTags,
   hiddenTagCount,
-  hasCharacterModifications,
   artworkPickerStatus,
   handleSubmit,
   visibleDetailTabs,
@@ -96,6 +97,8 @@ const {
   characterContentEdits,
   characterEditorDirty,
   characterWorkbenchOpen,
+  structuredEditorDirty,
+  structuredWorkbenchOpen,
   StructuredResourceDetails,
   relatedDownloadCount,
   relatedDownloadIds,
@@ -128,6 +131,11 @@ const {
   isDirty,
   VersionDiffDialog,
 } = controller
+const isContentEditing = computed(
+  () =>
+    activeTab.value === 'content' &&
+    (characterWorkbenchOpen.value || structuredWorkbenchOpen.value),
+)
 const editingCarrierNoteId = ref<string>()
 const carrierImageDiff = ref<{ current: Resource; other: Resource }>()
 
@@ -147,6 +155,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
     <div
       v-show="!settingsOpen"
       class="editor-overlay resource-detail-overlay"
+      :class="{ 'resource-detail-overlay--content-editor': isContentEditing }"
       role="presentation"
       @click.self="requestClose"
     >
@@ -155,8 +164,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
         :class="{
           'resource-detail-sheet--character': isCharacter,
           'resource-detail-sheet--gallery': activeTab === 'gallery',
-          'resource-detail-sheet--content-editor':
-            activeTab === 'content' && characterWorkbenchOpen,
+          'resource-detail-sheet--content-editor': isContentEditing,
         }"
         role="dialog"
         aria-modal="true"
@@ -164,6 +172,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
       >
         <header class="editor-sheet__header resource-detail__header">
           <FeatureBackButton
+            v-if="!isContentEditing"
             class="resource-detail__back"
             label="返回资源库"
             @click="requestClose"
@@ -171,8 +180,8 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
           <div>
             <h2 id="resource-detail-title">
               {{
-                activeTab === 'content' && characterWorkbenchOpen
-                  ? `${name || resource.name} · 卡内编辑`
+                isContentEditing
+                  ? `${name || resource.name} · ${characterWorkbenchOpen ? '卡内编辑' : '内容编辑'}`
                   : activeTab === 'gallery'
                     ? name || resource.name
                     : '资源详情'
@@ -180,6 +189,17 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
             </h2>
           </div>
           <button
+            v-if="isContentEditing && !characterWorkbenchOpen"
+            class="button button--primary resource-detail__editor-save"
+            type="submit"
+            form="resource-organize-section"
+            aria-label="保存修改"
+            :disabled="busy || !name.trim() || !isDirty"
+          >
+            {{ busy ? '保存中' : '保存' }}
+          </button>
+          <button
+            v-else-if="!isContentEditing"
             class="editor-sheet__close resource-detail__close-desktop"
             type="button"
             aria-label="关闭"
@@ -191,7 +211,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
 
         <div ref="detailSheet" class="resource-detail__layout">
           <aside
-            v-show="activeTab !== 'gallery' && (activeTab !== 'content' || !characterWorkbenchOpen)"
+            v-show="activeTab !== 'gallery' && !isContentEditing"
             class="resource-detail__folio"
           >
             <ResourceCoverEditor
@@ -213,8 +233,8 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
             </div>
 
             <div class="resource-detail__summary-actions">
-              <button class="button" type="button" @click="emit('download', resource, 'original')">
-                下载原版
+              <button class="button" type="button" @click="emit('download', resource)">
+                下载资源
               </button>
               <button
                 class="button button--quiet"
@@ -223,14 +243,6 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                 @click="coverContent?.restoreDefault()"
               >
                 恢复默认封面
-              </button>
-              <button
-                v-if="isCharacter && hasCharacterModifications"
-                class="button button--primary"
-                type="button"
-                @click="emit('download', resource, 'modified')"
-              >
-                下载修改版
               </button>
             </div>
             <p v-if="artworkPickerStatus" class="resource-detail__preview-status" role="status">
@@ -245,6 +257,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
               @submit.prevent="handleSubmit"
             >
               <nav
+                v-show="!isContentEditing"
                 ref="detailTabs"
                 class="resource-detail__tabs"
                 role="tablist"
@@ -390,6 +403,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
               </section>
 
               <section
+                v-if="contentVisited"
                 v-show="activeTab === 'content'"
                 id="resource-panel-content"
                 class="resource-detail__tab-panel resource-detail__tab-panel--content"
@@ -400,7 +414,8 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                   v-if="
                     !isPersonalResourceType(resource.type) &&
                     resource.type !== RESOURCE_TYPE.GREETING &&
-                    !characterWorkbenchOpen
+                    !characterWorkbenchOpen &&
+                    !structuredWorkbenchOpen
                   "
                   class="resource-detail__tab-heading"
                 >
@@ -411,7 +426,9 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                         : `${RESOURCE_TYPE_LABELS[resource.type]}内容`
                     }}
                   </h3>
-                  <p>完整解析内容集中在这里，长条目可逐项展开查看。</p>
+                  <p v-if="resource.type !== RESOURCE_TYPE.WORLD_BOOK">
+                    完整解析内容集中在这里，长条目可逐项展开查看。
+                  </p>
                 </header>
                 <CharacterCardDetails
                   v-if="isCharacter"
@@ -426,7 +443,20 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                   @update:content-edits="characterContentEdits = $event"
                   @draft-change="characterEditorDirty = $event"
                   @workbench-open="characterWorkbenchOpen = $event"
-                />
+                >
+                  <template #content-save>
+                    <button
+                      v-if="characterWorkbenchOpen"
+                      class="is-primary resource-detail__editor-save"
+                      type="submit"
+                      form="resource-organize-section"
+                      aria-label="保存修改"
+                      :disabled="busy || !name.trim() || !isDirty"
+                    >
+                      {{ busy ? '保存中' : '保存' }}
+                    </button>
+                  </template>
+                </CharacterCardDetails>
                 <PersonalResourceEditor
                   v-else-if="isPersonalResourceType(resource.type)"
                   :key="`${resource.id}:${resource.contentHash}`"
@@ -441,9 +471,14 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                 />
                 <StructuredResourceDetails
                   v-else
+                  ref="structuredContent"
                   :resource="resource"
+                  :disabled="busy"
                   :related-resources="availableBoundResources"
                   @saved="handlePersonalSaved"
+                  @draft-change="structuredEditorDirty = $event"
+                  @workbench-open="structuredWorkbenchOpen = $event"
+                  @busy="emit('personalBusy', $event)"
                 />
               </section>
 
@@ -858,7 +893,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
               </section>
 
               <section
-                v-show="activeTab === 'file'"
+                v-if="activeTab === 'file'"
                 id="resource-panel-file"
                 class="resource-detail__tab-panel"
                 role="tabpanel"
@@ -899,7 +934,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
                   type="button"
                   @click="emit('download', resource)"
                 >
-                  下载原始文件
+                  下载资源
                 </button>
                 <details class="resource-detail__metadata">
                   <summary>查看解析元数据</summary>
@@ -910,7 +945,7 @@ function cancelCarrierNote(carrier: { id: string; versionNote?: string }): void 
           </div>
         </div>
         <div
-          v-if="activeTab !== 'gallery' || isDirty"
+          v-if="!isContentEditing && (activeTab !== 'gallery' || isDirty)"
           class="editor-form__actions resource-detail__actions"
         >
           <span :class="{ 'resource-detail__save-state--dirty': isDirty }">

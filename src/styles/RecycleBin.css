@@ -18,6 +18,8 @@
 }
 
 .recycle-bin-sheet {
+  display: flex;
+  flex-direction: column;
   width: min(100%, 52rem);
   max-height: min(48rem, calc(var(--app-viewport-height) - 1.5rem));
   overflow: hidden;
@@ -29,6 +31,10 @@
       transparent 28%
     ),
     var(--color-surface-raised);
+}
+
+.recycle-bin-sheet__header {
+  flex-shrink: 0;
 }
 
 .recycle-bin-sheet__header p,
@@ -51,9 +57,10 @@
 }
 
 .recycle-bin-sheet__content {
-  display: grid;
+  flex: 1;
   min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .recycle-bin-summary {
@@ -132,7 +139,6 @@
 
 .recycle-bin-list {
   min-height: 0;
-  overflow: auto;
 }
 
 .recycle-bin-item {

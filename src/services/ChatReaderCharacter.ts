@@ -1,4 +1,4 @@
-import { RESOURCE_TYPE, getRelatedResourceIds, type Resource } from '../types/Resource'
+import { RESOURCE_TYPE, getRelatedResourceIds, type ResourceSummary } from '../types/Resource'
 import { isRecord } from '../utils/UnknownValue'
 import type { ResourceService } from './ResourceService'
 
@@ -16,12 +16,12 @@ export function chatCharacterSummary(metadata: Record<string, unknown>) {
 }
 
 export async function resolveChatCharacter(
-  chat: Resource,
-  resources: Pick<ResourceService, 'get'>,
+  chat: ResourceSummary,
+  resources: Pick<ResourceService, 'get'> & Partial<Pick<ResourceService, 'getSummary'>>,
 ) {
-  const cards: Resource[] = []
+  const cards: ResourceSummary[] = []
   for (const id of getRelatedResourceIds(chat)) {
-    const resource = await resources.get(id)
+    const resource = resources.getSummary ? await resources.getSummary(id) : await resources.get(id)
     if (resource?.type === RESOURCE_TYPE.CHARACTER_CARD) cards.push(resource)
   }
   if (cards.length > 1) throw new Error('请先为此聊天明确绑定一张角色卡')

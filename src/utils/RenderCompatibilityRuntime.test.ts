@@ -15,6 +15,151 @@ import {
 } from './RenderCompatibilityRuntime'
 
 describe('SRL Render Compatibility Runtime contract', () => {
+  it.each([4, 7])(
+    'provides saved MVU data at floor %i without replaying initialization or permitting writes',
+    async (floor) => {
+      const data = { stat_data: { place: '基地', hp: floor }, schema: { type: 'object' } }
+      window.eval(
+        buildRenderCompatibilityHostRuntime(
+          createRenderCompatibilityContext({
+            greetings: [],
+            formattedGreetings: [],
+            greetingIndex: 0,
+          }),
+          0,
+          {
+            message_id: floor,
+            last_message_id: 8,
+            name: '角色',
+            role: 'assistant',
+            is_hidden: false,
+            message: '保存的回复',
+            data,
+            extra: {},
+            swipe_id: 1,
+          },
+        )
+          .replace(/^<script>/u, '')
+          .replace(/<\/script>$/u, ''),
+      )
+      const host = (
+        window as unknown as {
+          __SRL_RENDER_COMPAT_HOST__: {
+            invoke: (name: string, args?: unknown[]) => unknown
+            getInitializedGlobal: (name: string) => unknown
+            teardown: () => void
+          }
+        }
+      ).__SRL_RENDER_COMPAT_HOST__
+      try {
+        await expect(host.invoke('waitGlobalInitialized', ['Mvu'])).resolves.toBeUndefined()
+        const mvu = host.getInitializedGlobal('Mvu') as {
+          getCurrentMvuData: () => typeof data
+          getMvuData: (options: Record<string, unknown>) => typeof data
+          replaceCurrentMvuData: (value: typeof data) => Promise<unknown>
+        }
+        const snapshot = mvu.getCurrentMvuData()
+        snapshot.stat_data.hp = 999
+        expect(mvu.getCurrentMvuData()).toEqual(data)
+        expect(mvu.getMvuData({ type: 'message', message_id: floor })).toEqual(data)
+        expect(() => mvu.getMvuData({ type: 'message', message_id: floor - 1 })).toThrow(
+          'Only this archived floor',
+        )
+        await expect(mvu.replaceCurrentMvuData(snapshot)).rejects.toThrow('read-only')
+        expect(host.invoke('getVariables', [{ type: 'message' }])).toEqual(data)
+      } finally {
+        host.teardown()
+      }
+    },
+  )
+
+  it.each([{}, { stat_data: {} }, { stat_data: {}, schema: [] }])(
+    'does not invent archived MVU data from %j',
+    (data) => {
+      window.eval(
+        buildRenderCompatibilityHostRuntime(
+          createRenderCompatibilityContext({
+            greetings: [],
+            formattedGreetings: [],
+            greetingIndex: 0,
+          }),
+          0,
+          {
+            message_id: 0,
+            last_message_id: 0,
+            name: '角色',
+            role: 'assistant',
+            is_hidden: false,
+            message: '正文',
+            data,
+            extra: {},
+            swipe_id: 0,
+          },
+        )
+          .replace(/^<script>/u, '')
+          .replace(/<\/script>$/u, ''),
+      )
+      const host = (
+        window as unknown as {
+          __SRL_RENDER_COMPAT_HOST__: {
+            getInitializedGlobal: (name: string) => unknown
+            teardown: () => void
+          }
+        }
+      ).__SRL_RENDER_COMPAT_HOST__
+      expect(host.getInitializedGlobal('Mvu')).toBeUndefined()
+      host.teardown()
+    },
+  )
+
+  it('keeps archived script configuration and floor variables detached and read-only', () => {
+    const source = buildRenderCompatibilityHostRuntime(
+      createRenderCompatibilityContext({ greetings: [], formattedGreetings: [], greetingIndex: 0 }),
+      0,
+      {
+        message_id: 4,
+        last_message_id: 8,
+        name: '角色',
+        role: 'assistant',
+        is_hidden: false,
+        message: '正文',
+        data: { floor: 4 },
+        extra: {},
+        swipe_id: 1,
+      },
+    )
+      .replace(/^<script>/u, '')
+      .replace(/<\/script>$/u, '')
+    window.eval(source)
+    const host = (
+      window as unknown as {
+        __SRL_RENDER_COMPAT_HOST__: {
+          invoke: (name: string, args?: unknown[], meta?: Record<string, unknown>) => unknown
+          teardown: () => void
+        }
+      }
+    ).__SRL_RENDER_COMPAT_HOST__
+    const meta = { scriptId: 'phone', scriptData: { setting: true } }
+    const config = host.invoke('getVariables', [{ type: 'script' }], meta) as Record<
+      string,
+      unknown
+    >
+    config.setting = false
+    expect(host.invoke('getVariables', [{ type: 'script' }], meta)).toEqual({ setting: true })
+    expect(host.invoke('getVariables', [{ type: 'message', message_id: 4 }], meta)).toEqual({
+      floor: 4,
+    })
+    expect(() =>
+      host.invoke('getVariables', [{ type: 'script', script_id: 'other' }], meta),
+    ).toThrow('Only this archived floor')
+    expect(() => host.invoke('getVariables', [{ type: 'chat' }], meta)).toThrow(
+      'Only this archived floor',
+    )
+    expect(() =>
+      host.invoke('replaceVariables', [{ setting: false }, { type: 'script' }], meta),
+    ).toThrow('read-only')
+    host.teardown()
+  })
   it('stores the unique formatter output instead of installing another formatter', () => {
     const source = '**正文**'
     const formatted = formatSillyTavernMessage(source).html

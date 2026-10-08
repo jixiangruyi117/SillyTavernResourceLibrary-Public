@@ -20,6 +20,10 @@ public final class NativeAppDatabasePlugin extends Plugin {
         database = new NativeAppDatabase(getContext());
     }
 
+    @PluginMethod public void compact(PluginCall call) {
+        runIo(call, () -> call.resolve(JSObject.fromJSONObject(database.compact())));
+    }
+
     @PluginMethod public void getStatus(PluginCall call) {
         runIo(call, () -> {
             JSObject counts = new JSObject();
@@ -41,6 +45,10 @@ public final class NativeAppDatabasePlugin extends Plugin {
         });
     }
 
+    @PluginMethod public void verifyStore(PluginCall call) {
+        runIo(call, () -> call.resolve(JSObject.fromJSONObject(database.verifyStore(required(call, "store")))));
+    }
+
     @PluginMethod public void getRecord(PluginCall call) {
         runIo(call, () -> {
             JSONObject value = database.getRecord(required(call, "store"), required(call, "key"));
@@ -59,8 +67,28 @@ public final class NativeAppDatabasePlugin extends Plugin {
             JSONArray rows = database.getRecords(store, afterKey, limit);
             JSObject result = new JSObject();
             result.put("rows", rows);
-            result.put("count", database.countRecords(store));
             result.put("nextKey", rows.length() == limit ? rows.getJSONObject(rows.length() - 1).getString("key") : JSONObject.NULL);
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod public void getRecordKeys(PluginCall call) {
+        runIo(call, () -> {
+            String store = required(call, "store");
+            String afterKey = call.getString("afterKey", "");
+            int limit = call.getInt("limit", 500);
+            JSONArray keys = database.getRecordKeys(store, afterKey, limit);
+            JSObject result = new JSObject();
+            result.put("keys", keys);
+            result.put("nextKey", keys.length() == limit ? keys.getString(keys.length() - 1) : JSONObject.NULL);
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod public void countRecords(PluginCall call) {
+        runIo(call, () -> {
+            JSObject result = new JSObject();
+            result.put("count", database.countRecords(required(call, "store")));
             call.resolve(result);
         });
     }
@@ -75,12 +103,35 @@ public final class NativeAppDatabasePlugin extends Plugin {
         });
     }
 
+    @PluginMethod public void haveSameRecordKeys(PluginCall call) {
+        runIo(call, () -> {
+            JSObject result = new JSObject();
+            result.put("equal", database.haveSameRecordKeys(required(call, "leftStore"), required(call, "rightStore")));
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod public void countIndexEntries(PluginCall call) {
+        runIo(call, () -> {
+            JSObject result = new JSObject();
+            result.put("count", database.countIndexEntries(required(call, "store"), required(call, "indexName"), call.getString("indexKey")));
+            call.resolve(result);
+        });
+    }
+
     @PluginMethod public void getIndexEntries(PluginCall call) {
         runIo(call, () -> {
             String indexKey = call.getString("indexKey");
             JSONArray rows = database.getIndexEntries(
                 required(call, "store"), required(call, "indexName"), indexKey);
             JSObject result = new JSObject(); result.put("rows", rows); call.resolve(result);
+        });
+    }
+
+    @PluginMethod public void queryKeyPage(PluginCall call) {
+        runIo(call, () -> {
+            JSONObject result = database.queryKeyPage(required(call, "store"), call.getObject("query"));
+            call.resolve(new JSObject(result.toString()));
         });
     }
 
@@ -109,7 +160,7 @@ public final class NativeAppDatabasePlugin extends Plugin {
         runIo(call, () -> {
             JSArray operations = call.getArray("operations");
             if (operations == null) throw new IllegalArgumentException("原生数据库操作批次缺失");
-            database.applyBatch(new JSONArray(operations.toString()), call.getBoolean("requireActiveLibrary", false));
+            database.applyBatch(new JSONArray(operations.toString()), call.getBoolean("requireActiveLibrary", false), call.getObject("expectedRevisions"));
             JSObject result = new JSObject(); result.put("applied", operations.length()); call.resolve(result);
         });
     }
@@ -160,7 +211,7 @@ public final class NativeAppDatabasePlugin extends Plugin {
             long size = call.getData().optLong("size", -1L);
             NativeAppDatabase.BlobTransfer transfer = database.beginBlob(
                 required(call, "store"), required(call, "key"), required(call, "fieldPath"), size,
-                call.getString("mimeType", "")
+                call.getString("mimeType", ""), call.getString("sourceSha256", "")
             );
             JSObject result = new JSObject(); result.put("token", transfer.token); result.put("offset", transfer.offset);
             result.put("alreadyStored", transfer.alreadyStored); call.resolve(result);
@@ -181,6 +232,16 @@ public final class NativeAppDatabasePlugin extends Plugin {
 
     @PluginMethod public void completeBlob(PluginCall call) {
         runIo(call, () -> call.resolve(new JSObject(database.completeBlob(required(call, "token")).toString())));
+    }
+
+    @PluginMethod public void getBlobPath(PluginCall call) {
+        runIo(call, () -> {
+            JSONObject result = database.getBlobPath(required(call, "store"), required(call, "key"), required(call, "fieldPath"));
+            JSObject response = new JSObject();
+            response.put("found", result != null);
+            if (result != null) response.put("blob", new JSObject(result.toString()));
+            call.resolve(response);
+        });
     }
 
     @PluginMethod public void readBlobChunk(PluginCall call) {

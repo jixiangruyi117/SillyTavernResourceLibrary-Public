@@ -2,6 +2,7 @@ import { App } from '@capacitor/app'
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 import { normalizeDiscordHandoffRequest } from '../services/DiscordHandoffService'
+import { noticeCenter } from './NoticeCenter'
 import {
   checkNativeDiscordInboxTarget,
   publishNativeDiscordInboxState,
@@ -17,6 +18,17 @@ interface NativeShortcutApi {
 }
 
 interface NativeShareReceiverApi {
+  addListener(
+    eventName: 'autoBindingsCommitted',
+    listener: (event: {
+      bindings: Array<{
+        sourceId?: string
+        resourceId?: string
+        sourceTitle?: string
+        resourceName?: string
+      }>
+    }) => void,
+  ): Promise<PluginListenerHandle>
   resumeDeferredDiscordImports(): Promise<{ resumed: number }>
   addListener(
     eventName: 'cloudInboxReady',
@@ -141,6 +153,19 @@ async function installNativeShortcutListener(): Promise<void> {
 }
 
 async function installNativeShareListener(): Promise<void> {
+  await NativeShareReceiver.addListener('autoBindingsCommitted', ({ bindings }) => {
+    if (!Array.isArray(bindings)) return
+    for (const binding of bindings) {
+      if (!binding.sourceId || !binding.resourceId) continue
+      noticeCenter.push({
+        id: `discord-auto-binding:${binding.sourceId}:${binding.resourceId}`,
+        type: 'success',
+        persistent: true,
+        message: `帖子“${binding.sourceTitle || '未命名帖子'}”已绑定角色卡“${binding.resourceName || '未命名角色卡'}”`,
+      })
+    }
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  })
   window.addEventListener('srl:discord-inbox-target-changed', (event) => {
     const detail = (event as CustomEvent<{ workerUrl: string; libraryId: string }>).detail
     checkNativeDiscordInboxTarget(detail.workerUrl, detail.libraryId)
@@ -161,6 +186,8 @@ async function installNativeShareListener(): Promise<void> {
   })
   await NativeShareReceiver.addListener('discordDownloadCompleted', (detail) => {
     window.dispatchEvent(new CustomEvent('srl:native-share-download-completed', { detail }))
+    // The worker emits this after persisting a migration-gated result but before WorkManager
+    // leaves RUNNING. Native resume appends one follow-up behind that job when necessary.
     resumeDeferredDiscordImports()
   })
   resumeDeferredDiscordImports()

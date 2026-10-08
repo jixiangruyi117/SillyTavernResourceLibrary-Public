@@ -36,6 +36,27 @@ async function drain(): Promise<void> {
 }
 
 describe('ConfirmDialog + confirmAction', () => {
+  it('renders the extra choice through the existing dialog and returns its distinct response', async () => {
+    await drain()
+    const wrapper = mount(ConfirmDialog, { attachTo: document.body })
+    const pending = chooseAction({
+      title: '下载资源',
+      message: '选择格式',
+      confirmLabel: '修改版单文件',
+      alternativeLabel: '下载原版',
+      additionalLabel: '完整修改包',
+    })
+    await flushPromises()
+    expect(dialogButtons()).toHaveLength(4)
+    expect(document.querySelector('.confirm-dialog__choices')).not.toBeNull()
+    dialogButtons()
+      .find((button) => button.textContent?.trim() === '完整修改包')!
+      .click()
+    await expect(pending).resolves.toBe('additional')
+    await flushPromises()
+    expect(document.querySelector('.confirm-dialog')).toBeNull()
+    wrapper.unmount()
+  })
   it('keeps keyboard focus inside confirmation and restores the opener after cancelling', async () => {
     await drain()
     const opener = document.createElement('button')
@@ -122,6 +143,11 @@ describe('ConfirmDialog + confirmAction', () => {
     expect(document.querySelector('dialog.confirm-dialog__overlay')?.hasAttribute('open')).toBe(
       true,
     )
+    expect(
+      document
+        .querySelector('dialog.confirm-dialog__overlay')
+        ?.classList.contains('confirm-dialog__overlay--safety-layer'),
+    ).toBe(true)
     expect(document.activeElement).toBe(cancelButton())
     const detail = { handled: false }
     window.dispatchEvent(new CustomEvent('srl:back-request', { detail }))
@@ -142,6 +168,47 @@ describe('ConfirmDialog + confirmAction', () => {
     cancelButton()?.click()
     expect(await pending).toBe(false)
     wrapper.unmount()
+  })
+  it('keeps confirmations visible when an embedded WebView cannot open a modal dialog', async () => {
+    await drain()
+    const showModal = HTMLDialogElement.prototype.showModal
+    HTMLDialogElement.prototype.showModal = vi.fn(() => {
+      throw new Error('top layer unavailable')
+    })
+    const wrapper = mount(ConfirmDialog, { attachTo: document.body })
+    try {
+      const pending = confirmAction({ title: '归档并开始新对话', message: '确认归档' })
+      await flushPromises()
+      const dialog = document.querySelector<HTMLDialogElement>('.confirm-dialog__overlay')
+      expect(dialog?.hasAttribute('open')).toBe(true)
+      expect(dialog?.classList.contains('confirm-dialog__overlay--fallback')).toBe(true)
+      expect(document.body.textContent).toContain('确认归档')
+      cancelButton()?.click()
+      await expect(pending).resolves.toBe(false)
+    } finally {
+      HTMLDialogElement.prototype.showModal = showModal
+      wrapper.unmount()
+    }
+  })
+  it('falls back when an embedded WebView silently declines to open a modal dialog', async () => {
+    await drain()
+    const showModal = HTMLDialogElement.prototype.showModal
+    HTMLDialogElement.prototype.showModal = vi.fn()
+    const wrapper = mount(ConfirmDialog, { attachTo: document.body })
+    try {
+      const pending = confirmAction({ title: '归档并开始新对话', message: '确认归档' })
+      await flushPromises()
+      const dialog = document.querySelector<HTMLDialogElement>('.confirm-dialog__overlay')
+      expect(dialog?.hasAttribute('open')).toBe(true)
+      expect(dialog?.classList.contains('confirm-dialog__overlay--safety-layer')).toBe(true)
+      expect(dialog?.classList.contains('confirm-dialog__overlay--fallback')).toBe(true)
+      expect(document.body.textContent).toContain('确认归档')
+      confirmButton()?.click()
+      await expect(pending).resolves.toBe(true)
+    } finally {
+      HTMLDialogElement.prototype.showModal = showModal
+      wrapper.unmount()
+    }
   })
   it('默认文案为「请确认 / 确认 / 取消」', async () => {
     await drain()

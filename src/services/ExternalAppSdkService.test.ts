@@ -25,6 +25,7 @@ const resource = {
 function createSdk(permissions: string[]) {
   const externalApps = {
     get: vi.fn(async () => ({ id: 'app', enabled: true, manifest: { permissions } })),
+    getSummary: vi.fn(async () => ({ id: 'app', enabled: true, manifest: { permissions } })),
     hasPermission: vi.fn(async (_id: string, permission: string) =>
       permissions.includes(permission),
     ),
@@ -45,10 +46,98 @@ function createSdk(permissions: string[]) {
   return {
     sdk: new ExternalAppSdkService(externalApps as never, resources as never),
     resources,
+    externalApps,
   }
 }
 
 describe('ExternalAppSdkService', () => {
+  it.each([1000, 5000, 10000])(
+    'reads one scoped directory for %i chats across all pages, then releases it',
+    async (size) => {
+      const { sdk, resources } = createSdk(['resources.library.read'])
+      const records = Array.from({ length: size }, (_, index) => ({
+        ...resource,
+        id: `chat-${index}`,
+        type: 'chat' as const,
+      }))
+      resources.listResourceListSummaries.mockResolvedValue(records as never)
+      let offset = 0
+      let cursor: string | undefined
+      let count = 0
+      do {
+        const result = await sdk.list(
+          'app',
+          { types: ['chat'], snapshot: true, offset, limit: 50, ...(cursor ? { cursor } : {}) },
+          'session',
+        )
+        count += result.items.length
+        offset = result.nextOffset ?? size
+        cursor = result.cursor
+      } while (offset < size)
+      expect(count).toBe(size)
+      expect(resources.listResourceListSummaries).toHaveBeenCalledExactlyOnceWith({
+        types: ['chat'],
+        ids: undefined,
+      })
+      expect(resources.get).not.toHaveBeenCalled()
+      expect(resources.listSummaries).not.toHaveBeenCalled()
+      const fresh = await sdk.list('app', { types: ['chat'], snapshot: true, limit: 50 }, 'session')
+      sdk.releaseListSession('session')
+      await expect(
+        sdk.list('app', { types: ['chat'], offset: 50, cursor: fresh.cursor }, 'session'),
+      ).rejects.toThrow('分页已结束')
+    },
+  )
+
+  it('rechecks permissions and binds a directory cursor to its session, APP and range', async () => {
+    const { sdk, resources, externalApps } = createSdk(['resources.library.read'])
+    resources.listResourceListSummaries.mockResolvedValue(
+      Array.from({ length: 51 }, (_, index) => ({ ...resource, id: `item-${index}` })) as never,
+    )
+    const first = await sdk.list('app', { snapshot: true, limit: 50 }, 'a')
+    await expect(sdk.list('app', { cursor: first.cursor, offset: 50 }, 'b')).rejects.toThrow(
+      '分页已结束',
+    )
+    await expect(
+      sdk.list('app', { cursor: first.cursor, offset: 50, types: ['chat'] }, 'a'),
+    ).rejects.toThrow('范围已变化')
+    externalApps.hasPermission.mockResolvedValue(false)
+    await expect(sdk.list('app', { cursor: first.cursor, offset: 50 }, 'a')).rejects.toThrow()
+    expect(resources.listResourceListSummaries).toHaveBeenCalledOnce()
+  })
+  it('passes type and ID filters to the storage owner and validates targeted ID batches', async () => {
+    const { sdk, resources } = createSdk(['resources.library.read'])
+    await expect(
+      sdk.list('app', { types: ['characterCard'], ids: ['resource-1'] }),
+    ).resolves.toMatchObject({ total: 1 })
+    expect(resources.listResourceListSummaries).toHaveBeenCalledWith({
+      types: ['characterCard'],
+      ids: ['resource-1'],
+    })
+    await expect(sdk.list('app', { ids: [] })).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(sdk.list('app', { ids: ['missing'] })).resolves.toMatchObject({
+      items: [],
+      total: 0,
+    })
+    resources.listResourceListSummaries.mockClear()
+    await expect(sdk.list('app', { ids: Array(51).fill('resource-1') })).rejects.toThrow('50')
+    await expect(sdk.list('app', { ids: [''] })).rejects.toThrow('ID 无效')
+    expect(resources.listResourceListSummaries).not.toHaveBeenCalled()
+    expect(resources.get).not.toHaveBeenCalled()
+  })
+  it('checks current permissions without reading the installed runtime or package', async () => {
+    const { sdk, externalApps } = createSdk(['resources.library.read'])
+    await sdk.capabilities('app')
+    await sdk.list('app', {})
+    expect(externalApps.get).not.toHaveBeenCalled()
+    expect(externalApps.getSummary).toHaveBeenCalledWith('app')
+    externalApps.getSummary.mockResolvedValue({
+      id: 'app',
+      enabled: false,
+      manifest: { permissions: [] },
+    })
+    await expect(sdk.capabilities('app')).rejects.toThrow('已被禁用')
+  })
   it('does not inherit the APP content grant when a selected-resource tool has narrower permissions', async () => {
     const { sdk } = createSdk(['resources.selected.read', 'resources.content.read'])
     expect(await sdk.getPicked('app', resource.id)).toHaveProperty('data')

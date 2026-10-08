@@ -69,6 +69,25 @@ function byteLength(value: unknown): number {
 }
 
 export class ExternalAppService {
+  private builtinReaderPreview?: ExternalAppPreview
+
+  /** Called only by the build-shipped reader entry after normal package inspection. */
+  registerBuiltinReader(preview: ExternalAppPreview): void {
+    if (preview.manifest.id !== CHAT_READER_APP_ID) throw new Error('内置读了么身份无效')
+    this.builtinReaderPreview = preview
+  }
+
+  isBuiltinReader(app: InstalledExternalApp): boolean {
+    const preview = this.builtinReaderPreview
+    return Boolean(
+      preview &&
+      app.id === CHAT_READER_APP_ID &&
+      app.enabled &&
+      app.runtimeMode === EXTERNAL_APP_RUNTIME_MODE.TRUSTED_COMPATIBLE &&
+      app.packageFingerprint === preview.packageFingerprint &&
+      app.runtimeHtml === preview.compatibleRuntimeHtml,
+    )
+  }
   private readonly storage: ExternalAppStorageAdapter
 
   constructor(storage: ExternalAppStorageAdapter) {
@@ -185,6 +204,10 @@ export class ExternalAppService {
         updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
       })
     }
+  }
+
+  getSummary(id: string): Promise<InstalledExternalAppSummary | undefined> {
+    return this.storage.getSummary(id)
   }
 
   async get(id: string): Promise<InstalledExternalApp | undefined> {

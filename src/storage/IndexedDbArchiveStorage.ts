@@ -10,6 +10,8 @@ import {
   type Category,
   type Resource,
   type ResourceSummary,
+  type BackupRecord,
+  type BackupRecordSummary,
 } from '../types/Resource'
 import {
   isEncryptedResource,
@@ -22,6 +24,55 @@ import type { ArchiveRestoreProgress, ArchiveStorageAdapter } from './ArchiveSto
 import type { StagedArchiveRecord } from '../types/RestoreStaging'
 import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 import { linkNativeResourceObjects } from './NativeResourceFileMirror'
+import { isAndroidNativeAppDatabaseActive } from './AndroidNativeDexieCore'
+import { isEncodedBlobValue } from './AndroidAppDatabaseMigration'
+
+function toBackupRecordSummary(record: BackupRecord): BackupRecordSummary {
+  const { blob, ...summary } = record
+  return {
+    ...summary,
+    size: summary.size ?? (blob instanceof Blob || isEncodedBlobValue(blob) ? blob.size : 0),
+  }
+}
+
+export async function getBackupRecordSummary(
+  database: AppDatabase,
+  id: string,
+): Promise<BackupRecordSummary | undefined> {
+  const table = database.backupRecords
+  return database.transaction('r', table, async (transaction) => {
+    const request = { trans: transaction.idbtrans, key: id, loadBinary: false }
+    const record = isAndroidNativeAppDatabaseActive()
+      ? ((await table.core.get(request)) as BackupRecord | undefined)
+      : await table.get(id)
+    return record ? toBackupRecordSummary(record) : undefined
+  })
+}
+
+/** Archive lists retain metadata only; normal get()/restore still hydrate the selected Blob. */
+export async function listBackupRecordSummaries(
+  database: AppDatabase,
+  adapters: string[],
+): Promise<BackupRecordSummary[]> {
+  const table = database.backupRecords
+  return database.transaction('r', table, async (transaction) => {
+    const collection = table.where('adapter').anyOf(adapters)
+    if (!isAndroidNativeAppDatabaseActive())
+      return (await collection.toArray()).map(toBackupRecordSummary)
+    const keys = await collection.primaryKeys()
+    const summaries: BackupRecordSummary[] = []
+    for (let offset = 0; offset < keys.length; offset += 100) {
+      const request = {
+        trans: transaction.idbtrans,
+        keys: keys.slice(offset, offset + 100),
+        loadBinary: false,
+      }
+      const records = (await table.core.getMany(request)) as Array<BackupRecord | undefined>
+      for (const record of records) if (record) summaries.push(toBackupRecordSummary(record))
+    }
+    return summaries
+  })
+}
 
 async function detachStoredBlob(
   blob: Blob,

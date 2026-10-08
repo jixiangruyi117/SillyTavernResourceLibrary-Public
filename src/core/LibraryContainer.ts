@@ -80,12 +80,13 @@ export const resourceGalleryService = new ResourceGalleryService(
   new IndexedDbResourceGalleryCategoryStorage(database),
 )
 export const greetingResourceService = new GreetingResourceService(resourceService)
+export const discordInboxAutomationSettingsService = new DiscordInboxAutomationSettingsService(
+  database,
+)
 export const communitySourceService = new CommunitySourceService(
   communitySourceStorageOwner,
   assetStore,
-)
-export const discordInboxAutomationSettingsService = new DiscordInboxAutomationSettingsService(
-  database,
+  async () => (await discordInboxAutomationSettingsService.load()).downloadPostMedia === true,
 )
 export const userPersonaService = new UserPersonaService(resourceService)
 export const categoryService = new CategoryService(categoryStorage)
@@ -125,10 +126,12 @@ export function syncNativeResourceFiles(): Promise<void> {
 async function syncNativeResourceFilesOnce(): Promise<void> {
   const { getNativeResourceStorageInfo, mirrorNativeResourceFile } =
     await import('../storage/NativeResourceFileMirror')
-  const nativeStorage = await getNativeResourceStorageInfo()
+  const nativeStorage = await getNativeResourceStorageInfo(false)
   if (!nativeStorage || vaultService.isEnabled()) return
-  const current = await indexedDbStorage.listSummaries()
-  const versions = await indexedDbStorage.listVersionSummaries()
+  const [current, versions] = await Promise.all([
+    indexedDbStorage.listResourceListSummaries(),
+    indexedDbStorage.listVersionListSummaries(),
+  ])
   const manifestHash = (items: Array<{ id: string; contentHash: string }>) =>
     hashBytes(
       new TextEncoder().encode(
@@ -163,7 +166,7 @@ async function syncNativeResourceFilesOnce(): Promise<void> {
     const version = await indexedDbStorage.getVersion(summary.id)
     if (version) await mirrorNativeResourceFile(version, 'versions')
   }
-  const repaired = await getNativeResourceStorageInfo()
+  const repaired = await getNativeResourceStorageInfo(false)
   if (repaired) {
     const missingExpectedEntries =
       repaired.currentCount < current.length || repaired.versionCount < versions.length

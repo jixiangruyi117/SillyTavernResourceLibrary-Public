@@ -8,6 +8,7 @@ export interface DiscordInboxAutomationSettings {
   bindNextPng: boolean
   bindForeground: boolean
   preferPngContainer: boolean
+  downloadPostMedia?: boolean
 }
 
 export const DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS: DiscordInboxAutomationSettings = {
@@ -16,6 +17,7 @@ export const DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS: DiscordInboxAutomationSe
   bindNextPng: false,
   bindForeground: false,
   preferPngContainer: false,
+  downloadPostMedia: false,
 }
 
 export class DiscordInboxAutomationSettingsService {
@@ -44,6 +46,7 @@ export class DiscordInboxAutomationSettingsService {
       bindNextPng: settings.bindNextPng === true,
       bindForeground: settings.bindForeground === true,
       preferPngContainer: settings.preferPngContainer === true,
+      downloadPostMedia: settings.downloadPostMedia === true,
     }
     await this.database.settings.put({
       id: DISCORD_INBOX_AUTOMATION_SETTING_ID,
@@ -65,6 +68,7 @@ export class DiscordInboxAutomationSettingsService {
       bindNextPng: record?.bindNextPng === true,
       bindForeground: record?.bindForeground === true,
       preferPngContainer: record?.preferPngContainer === true,
+      downloadPostMedia: record?.downloadPostMedia === true,
     }
     return this.cached
   }

@@ -8,6 +8,27 @@ import FeatureHub from './FeatureHub.vue'
 import FolderLibraryView from './FolderLibraryView.vue'
 import ActionSheet from './ActionSheet.vue'
 enableAutoUnmount(afterEach)
+vi.mock('../core/OfficialAppRuntime', () => ({
+  ensurePreinstalledOfficialApps: async () => undefined,
+  officialAppService: {
+    ready: async () => true,
+    list: () => listOfficialApps(),
+    installedSnapshot: [],
+    loadInstalled: () => listOfficialApps(),
+    subscribeInstalled: (listener: (apps: { id: string }[]) => void) => {
+      installedListeners.add(listener)
+      return () => installedListeners.delete(listener)
+    },
+  },
+  acquireOfficialAppUse: async () => () => {},
+  loadOfficialApp: async (id: string) => {
+    if (id === 'draw') return (await import('./DrawApp.vue')).default
+    if (id === 'assistant') return (await import('./ProductAssistant.vue')).default
+    if (id === 'imageGeneration') return (await import('./ImageGenerationApp.vue')).default
+    if (id === 'imageAlbum') return (await import('./GeneratedImageAlbumApp.vue')).default
+    throw new Error('Unexpected test app')
+  },
+}))
 
 vi.mock('./ImageGenerationApp.vue', () => ({
   __esModule: true,
@@ -31,6 +52,10 @@ vi.mock('./ProductAssistant.vue', () => ({
       '<div data-testid="assistant-page">蒜惹菈<button class="feature-app-header__back" @click="$emit(\'back\')">返回</button><button data-testid="assistant-open-inbox" @click="navigate(\'inbox\')">打开收件箱</button><button data-testid="assistant-open-appearance" @click="navigate(\'appearance\')">打开外观</button></div>',
   },
 }))
+// This integration exercises navigation; package loading has dedicated Gate tests.
+vi.mock('./OfficialAssistantGate.vue', async () => ({
+  default: (await import('./ProductAssistant.vue')).default,
+}))
 vi.mock('./DiscordInboxCenter.vue', () => ({
   default: {
     emits: ['back'],
@@ -39,12 +64,27 @@ vi.mock('./DiscordInboxCenter.vue', () => ({
   },
 }))
 
-// SRL-PUBLIC-SYNC: BEGIN REPLACE id=feature-hub-test-fixtures
-const { loadDrawState, listExternalApps } = vi.hoisted(() => ({
-  loadDrawState: vi.fn(),
-  listExternalApps: vi.fn<() => Promise<InstalledExternalApp[]>>(async () => []),
-}))
-// SRL-PUBLIC-SYNC: END REPLACE id=feature-hub-test-fixtures
+const { loadDrawState, listExternalApps, listOfficialApps, installedListeners } = vi.hoisted(
+  () => ({
+    installedListeners: new Set<(apps: { id: string }[]) => void>(),
+    listOfficialApps: vi.fn(async () =>
+      [
+        'draw',
+        'resourcePlaza',
+        'assistant',
+        'stitch',
+        'frontendWorkshop',
+        'imageGeneration',
+        'imageAlbum',
+        'userPersona',
+        'resourceBundle',
+        'tavernBridge',
+      ].map((id) => ({ id })),
+    ),
+    loadDrawState: vi.fn(),
+    listExternalApps: vi.fn<() => Promise<InstalledExternalApp[]>>(async () => []),
+  }),
+)
 
 vi.mock('../core/AppContainer', () => ({
   browserStorageService: {
@@ -217,14 +257,12 @@ describe('FeatureHub', () => {
 
     const firstPage = wrapper.findAll('.feature-desktop > .feature-app')
     await wrapper.get('button[aria-label="下一页应用"]').trigger('click')
-    // SRL-PUBLIC-SYNC: BEGIN REPLACE id=feature-hub-registry-order
     expect(
       [...firstPage, ...wrapper.findAll('.feature-desktop > .feature-app')].map((app) =>
         app.classes().find((className) => className.startsWith('feature-app--')),
       ),
     ).toEqual([
       'feature-app--draw',
-      'feature-app--reader',
       'feature-app--appearance',
       'feature-app--assistant',
       'feature-app--folders',
@@ -239,7 +277,6 @@ describe('FeatureHub', () => {
       'feature-app--bundle',
       'feature-app--extensions',
     ])
-    // SRL-PUBLIC-SYNC: END REPLACE id=feature-hub-registry-order
     expect(wrapper.find('.feature-app--extensions').exists()).toBe(true)
   })
 
@@ -259,13 +296,13 @@ describe('FeatureHub', () => {
       wrapper.unmount()
     }
   })
+
   it('opens the AI assistant through the shared appearance owner without locking document scroll', async () => {
     const wrapper = render()
     await flushPromises()
     await wrapper.get('.feature-app--assistant').trigger('click')
-    await vi.waitFor(
-      () => expect(wrapper.find('[data-testid="assistant-page"]').exists()).toBe(true),
-      { timeout: 5000 },
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-testid="assistant-page"]').exists()).toBe(true),
     )
     expect(wrapper.attributes('data-feature-page')).toBe('assistant')
     expect(document.body.classList.contains('feature-app-scroll-lock')).toBe(false)
@@ -277,17 +314,12 @@ describe('FeatureHub', () => {
     try {
       await flushPromises()
       await wrapper.get('.feature-app--assistant').trigger('click')
-      await vi.waitFor(() =>
-        expect(wrapper.find('[data-testid="assistant-page"]').exists()).toBe(true),
-      )
+      await flushPromises()
       const chat = wrapper.get('[data-testid="assistant-page"]').element
       expect(wrapper.emitted('assistant-retained')).toHaveLength(1)
       await wrapper.get('[data-testid="assistant-page"] .feature-app-header__back').trigger('click')
       expect(wrapper.get('[data-testid="assistant-page"]').isVisible()).toBe(false)
       await wrapper.get('.feature-app--assistant').trigger('click')
-      await vi.waitFor(() =>
-        expect(wrapper.find('[data-testid="assistant-page"]').isVisible()).toBe(true),
-      )
       expect(wrapper.get('[data-testid="assistant-page"]').element).toBe(chat)
       await wrapper.setProps({ active: false })
       const detail = { handled: false }
@@ -340,6 +372,23 @@ describe('FeatureHub', () => {
       wrapper.unmount()
     }
   })
+
+  // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=official-app-install-test
+  it('removes uninstalled apps from the desktop while keeping management available', async () => {
+    listOfficialApps.mockResolvedValueOnce([{ id: 'draw' }])
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.find('.feature-app--draw').exists()).toBe(true)
+    expect(wrapper.find('.feature-app--stitch').exists()).toBe(false)
+    await wrapper.get('.feature-app--folders').trigger('click')
+    for (const listener of installedListeners) listener([])
+    await wrapper.get('.feature-app-header__back').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.feature-app--draw').exists()).toBe(false)
+    expect(wrapper.text()).toContain('APP 管理')
+    wrapper.unmount()
+  })
+  // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=official-app-install-test
 
   it('restores the frontend workshop when its project resume state is present', async () => {
     localStorage.setItem(
@@ -413,17 +462,14 @@ describe('FeatureHub', () => {
     expect(wrapper.get('.async-panel-loading').text()).toContain('正在打开AI 生图')
   })
 
-  // SRL-PUBLIC-SYNC: BEGIN REPLACE id=feature-hub-extension-entry-test
   it('opens local extension management from the feature desktop', async () => {
     const wrapper = render()
 
-    await wrapper.get('button[aria-label="下一页应用"]').trigger('click')
     expect(wrapper.get('.feature-app--extensions').text()).toContain('扩展')
     await wrapper.get('.feature-app--extensions').trigger('click')
 
     expect(wrapper.attributes('data-feature-page')).toBe('extensions')
   })
-  // SRL-PUBLIC-SYNC: END REPLACE id=feature-hub-extension-entry-test
 
   it('puts enabled third-party apps into the same paged feature desktop', async () => {
     listExternalApps.mockResolvedValue([

@@ -37,7 +37,6 @@ describe('DiscordSourceSettingsService', () => {
     expect(next.getDiscordClientId()).toBe(id)
   })
   // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=discord-local-installation-identity-test
-
   it('migrates a legacy plaintext Bot Token into protected local storage', async () => {
     localStorage.setItem(
       'srl.discord-source.connection.v1',

@@ -25,6 +25,7 @@ import type { GitHubResourceInspection, GitHubResourceInspector } from './GitHub
 import { UserPersonaService } from './UserPersonaService'
 import * as nativeFiles from '../core/NativeFileSource'
 import { hashBlob } from './HashService'
+import { createStructuredContentDraft } from '../utils/StructuredResourceContent'
 
 const nativeCardMatcher = vi.hoisted(() => vi.fn())
 const nativeCardParser = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
@@ -145,6 +146,110 @@ function createServiceWithStorage(linkInspector: GitHubResourceInspector = noLin
 }
 
 describe('ResourceService', () => {
+  it('delegates full-metadata summaries and retains the existing adapter fallback', async () => {
+    const { service, storage } = createServiceWithStorage()
+    await service.importFiles([new File(['{}'], 'settings.json', { type: 'application/json' })])
+    const original = (await service.list())[0]!
+    await storage.update(original.id, { metadata: { card: { description: 'complete card' } } })
+    const get = vi.spyOn(storage, 'get')
+    const fallback = await service.getSummary(original.id)
+    expect(fallback?.metadata.card).toEqual({ description: 'complete card' })
+    expect(fallback).not.toHaveProperty('originalBlob')
+    expect(fallback).not.toHaveProperty('thumbnailBlob')
+    expect(get).toHaveBeenCalledOnce()
+    const summary = vi.fn(async (id: string) => (id === original.id ? fallback : undefined))
+    Object.assign(storage, { getSummary: summary })
+    get.mockClear()
+    expect(await service.getSummary(original.id)).toBe(fallback)
+    expect(await service.getSummary('missing')).toBeUndefined()
+    expect(summary).toHaveBeenCalledTimes(2)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it.each([RESOURCE_TYPE.WORLD_BOOK, RESOURCE_TYPE.REGEX])(
+    'saves %s content as a version, preserves organization and rejects stale drafts',
+    async (type) => {
+      const { service, storage } = createServiceWithStorage()
+      const source =
+        type === RESOURCE_TYPE.WORLD_BOOK
+          ? {
+              name: '夜港',
+              entries: {
+                '7': { uid: 7, key: ['夜港'], content: '原正文', position: 1, order: 100 },
+              },
+            }
+          : {
+              id: 'regex',
+              scriptName: '夜港',
+              findRegex: '/夜港/g',
+              replaceString: '夜港',
+              placement: [2],
+              disabled: false,
+            }
+      const original = new File([JSON.stringify(source)], 'demo.json', { type: 'application/json' })
+      const [result] = await service.importFiles([original])
+      if (result?.status !== 'imported') throw new Error('fixture import failed')
+      const current = result.resource
+      await storage.update(current.id, {
+        name: '用户名称',
+        tags: ['标签'],
+        favorite: true,
+        categoryIds: ['folder'],
+        metadata: { ...current.metadata, authorNote: '备注', custom: '保留' },
+      })
+      const draft = createStructuredContentDraft(source, type)
+      const data = draft.card.data as Record<string, unknown>
+      const before = (
+        type === RESOURCE_TYPE.WORLD_BOOK
+          ? (data.character_book as Record<string, unknown>).entries
+          : (data.extensions as Record<string, unknown>).regex_scripts
+      ) as Record<string, unknown>[]
+      const item = before[0]!
+      const edits: CharacterCardContentEdit[] = [
+        {
+          id: 'edit',
+          section: draft.section,
+          operation: 'update',
+          targetKey: String(type === RESOURCE_TYPE.WORLD_BOOK ? item.uid : item.id),
+          label: '编辑',
+          before: item,
+          after: {
+            ...item,
+            ...(type === RESOURCE_TYPE.WORLD_BOOK
+              ? { content: '新正文' }
+              : { replaceString: '新替换', disabled: true }),
+          },
+          migrateToVersions: false,
+          updatedAt: 1,
+        },
+      ]
+      const saved = await service.saveStructuredContent(current.id, current.contentHash, edits)
+      expect(saved).toMatchObject({
+        id: current.id,
+        type,
+        name: '用户名称',
+        favorite: true,
+        tags: ['标签'],
+        categoryIds: ['folder'],
+        metadata: { authorNote: '备注', custom: '保留' },
+      })
+      expect(await saved.originalBlob.text()).toContain(
+        type === RESOURCE_TYPE.WORLD_BOOK ? '新正文' : '新替换',
+      )
+      expect(await (await storage.listVersions(current.id))[0]!.originalBlob.text()).toBe(
+        await original.text(),
+      )
+      expect((await service.get(current.id))?.contentHash).toBe(saved.contentHash)
+      await expect(
+        service.saveStructuredContent(current.id, current.contentHash, edits),
+      ).rejects.toThrow('版本已变化')
+      expect(await storage.listVersions(current.id)).toHaveLength(1)
+      expect(
+        (await service.saveStructuredContent(current.id, saved.contentHash, [])).contentHash,
+      ).toBe(saved.contentHash)
+      expect(await storage.listVersions(current.id)).toHaveLength(1)
+    },
+  )
   it('uses native parsing and judges versions natively against the live catalog', async () => {
     const storage = new MemoryResourceStorage()
     const parser = new JsonResourceParser()
@@ -1301,7 +1406,7 @@ describe('ResourceService', () => {
       ),
     ).toBe(true)
 
-    await service.deleteMany(ids)
+    expect(await service.deleteMany(ids)).toEqual([])
     expect(await service.list()).toHaveLength(0)
   })
 
@@ -2523,6 +2628,19 @@ describe('角色卡内容指纹', () => {
     expect(typeof updated?.metadata.cardContentHash).toBe('string')
     expect(typeof updatedHistory?.metadata.cardContentHash).toBe('string')
     expect(await service.backfillCardFingerprints()).toBe(0)
+    readCurrent.mockClear()
+    readVersions.mockClear()
+    const readOriginal = vi.spyOn(storage, 'get')
+    const readVersion = vi.spyOn(storage, 'getVersion')
+    const snapshot = await service.loadVersionRecognitionSnapshot()
+    expect(readCurrent).toHaveBeenCalledOnce()
+    expect(readVersions).toHaveBeenCalledOnce()
+    expect(readOriginal).not.toHaveBeenCalled()
+    expect(readVersion).not.toHaveBeenCalled()
+    expect(snapshot.backfilled).toBe(0)
+    expect(snapshot.resources[0]!.metadata.cardContentHash).toBe(
+      snapshot.versions[0]!.metadata.cardContentHash,
+    )
   })
 
   it('清理拆分副本后：溯源卡内嵌数据完好，关联中的失效 id 已移除', async () => {
@@ -2554,7 +2672,11 @@ describe('角色卡内容指纹', () => {
     expect(copies).toHaveLength(2)
     const cardSnapshot = JSON.stringify(character.metadata.card)
 
-    await service.deleteMany(copies.map((resource) => resource.id))
+    const remaining = await service.deleteMany(copies.map((resource) => resource.id))
+    expect(remaining).toHaveLength(1)
+    expect(remaining?.[0]?.id).toBe(character.id)
+    expect(remaining?.[0]?.relatedResourceIds).toEqual([])
+    expect(remaining?.[0]).not.toHaveProperty('originalBlob')
 
     const after = await service.list()
     expect(after).toHaveLength(1)

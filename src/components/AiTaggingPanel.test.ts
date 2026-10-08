@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RESOURCE_TYPE, type Category, type ResourceSummary } from '../types/Resource'
 import AiTaggingPanel from './AiTaggingPanel.vue'
 import { getAiTaggingSystemPrompt } from '../services/AiTaggingService'
+import type { AiTaggingRunOptions, AiTaggingRunResult } from '../services/AiTaggingService'
 
 const mocks = vi.hoisted(() => ({
   recognize: vi.fn(),
@@ -135,6 +136,94 @@ afterEach(() => {
 })
 
 describe('AiTaggingPanel', () => {
+  it('停止立即进入审核、保留逐批草稿；迟到任务不能覆盖新一轮识别', async () => {
+    const runs: { options: AiTaggingRunOptions; resolve: (result: AiTaggingRunResult) => void }[] =
+      []
+    mocks.recognize.mockImplementation(
+      (options: AiTaggingRunOptions) =>
+        new Promise<AiTaggingRunResult>((resolve) => runs.push({ options, resolve })),
+    )
+    const wrapper = mount(AiTaggingPanel, {
+      props: { resources, categories, initialSelectedIds: ['r1'] },
+    })
+    await flushPromises()
+    await wrapper.get('.ai-tagging__footer .is-primary').trigger('click')
+    const usage = {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      source: 'provider' as const,
+    }
+    const suggestions = [
+      { resourceId: 'r1', tags: [{ name: '古风', evidence: '文本', level: 'explicit' as const }] },
+    ]
+    runs[0]!.options.onBatchResult!({ suggestions, failures: [], usage })
+    await flushPromises()
+    expect(mocks.saveDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stage: 'review',
+        reviewItems: expect.arrayContaining([expect.objectContaining({ resourceId: 'r1' })]),
+      }),
+    )
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '停止识别')!
+      .trigger('click')
+    expect(runs[0]!.options.signal!.aborted).toBe(true)
+    expect(wrapper.find('.ai-tagging__running').exists()).toBe(false)
+    expect(wrapper.get('.ai-tagging__review').text()).toContain('古风')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '返回调整')!
+      .trigger('click')
+    await wrapper.get('.ai-tagging__footer .is-primary').trigger('click')
+    runs[0]!.options.onBatchResult!({
+      suggestions: [
+        { ...suggestions[0]!, tags: [{ ...suggestions[0]!.tags[0]!, name: '迟到结果' }] },
+      ],
+      failures: [],
+      usage,
+    })
+    runs[0]!.resolve({ suggestions, failures: [], errors: [], stopped: false, usage })
+    await flushPromises()
+    expect(wrapper.find('.ai-tagging__running').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('迟到结果')
+    wrapper.unmount()
+    expect(runs[1]!.options.signal!.aborted).toBe(true)
+  })
+
+  it('大量建议按页展示，跨页审核不缩减应用范围', async () => {
+    const many = Array.from({ length: 105 }, (_, index) => ({
+      ...resources[0]!,
+      id: `review-${index}`,
+      name: `资源${index}`,
+    }))
+    mocks.recognize.mockResolvedValue({
+      suggestions: many.map((resource) => ({
+        resourceId: resource.id,
+        tags: [{ name: '校园', evidence: '文本', level: 'explicit' }],
+      })),
+      failures: [],
+      stopped: false,
+      usage: { totalTokens: 120, source: 'provider' },
+    })
+    const wrapper = mount(AiTaggingPanel, {
+      props: {
+        resources: many,
+        categories,
+        initialSelectedIds: many.map((resource) => resource.id),
+      },
+    })
+    await flushPromises()
+    await wrapper.get('.ai-tagging__footer .is-primary').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.ai-tagging__review-card')).toHaveLength(20)
+    await wrapper.get('.ai-tagging__review-card input[type="checkbox"]').setValue(false)
+    await wrapper.get('nav[aria-label="标签建议分页"]').findAll('button')[1]!.trigger('click')
+    await wrapper.get('.ai-tagging__review-card input[type="checkbox"]').setValue(false)
+    expect(wrapper.get('.ai-tagging__footer').text()).toContain('注入 103 项')
+    wrapper.unmount()
+  })
   it('大库只渲染一页，跨页选择和筛选全选仍保留完整范围', async () => {
     const many = Array.from({ length: 1000 }, (_, i) => ({
       ...resources[0]!,

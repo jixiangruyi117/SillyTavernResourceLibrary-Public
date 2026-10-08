@@ -1,10 +1,175 @@
 /** @vitest-environment jsdom */
-import { flushPromises, shallowMount } from '@vue/test-utils'
-import { expect, it } from 'vitest'
+import { DOMWrapper, flushPromises, mount, shallowMount } from '@vue/test-utils'
+import { defineComponent, h, ref } from 'vue'
+import { expect, it, vi } from 'vitest'
 import { RESOURCE_TYPE, type Resource, type ResourceSummary } from '../types/Resource'
 // Resolve this lazily mounted panel before the jsdom test environment tears down.
 import './StructuredResourceDetails.vue'
+import './CharacterCardDetails.vue'
 import ResourceOrganizer from './ResourceOrganizer.vue'
+
+it.each([undefined, 'content'] as const)(
+  'defers hidden metadata and preserves a visited content draft (initial tab: %s)',
+  async (initialTab) => {
+    const serialize = vi.fn(() => ({ card: { data: { name: '角色' } } }))
+    const contentMounted = vi.fn()
+    const Content = defineComponent({
+      name: 'CharacterCardDetails',
+      setup() {
+        contentMounted()
+        const draft = ref('')
+        return () =>
+          h('input', {
+            'aria-label': '内容草稿',
+            value: draft.value,
+            onInput: (event: Event) => {
+              draft.value = (event.target as HTMLInputElement).value
+            },
+          })
+      },
+    })
+    const resource: Resource = {
+      id: 'lazy-detail',
+      name: '角色',
+      description: '',
+      type: RESOURCE_TYPE.CHARACTER_CARD,
+      fileName: 'card.json',
+      mimeType: 'application/json',
+      fileSize: 2,
+      contentHash: 'hash',
+      favorite: false,
+      categoryId: null,
+      categoryIds: [],
+      tags: [],
+      metadata: { card: { data: { name: '角色' } }, toJSON: serialize },
+      originalBlob: new Blob(['{}']),
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const wrapper = mount(ResourceOrganizer, {
+      props: {
+        initialTab,
+        resource,
+        resources: [resource],
+        boundResources: [],
+        versions: [],
+        categories: [],
+        busy: false,
+      },
+      global: {
+        stubs: {
+          Teleport: false,
+          CharacterCardDetails: Content,
+          ResourceCoverEditor: true,
+          ResourcePicker: true,
+          ResourceSourceLinks: true,
+          ResourceVersionCarriers: true,
+        },
+      },
+    })
+    const dom = new DOMWrapper(document.body)
+    await flushPromises()
+    ;(dom.get('.resource-detail__layout').element as HTMLElement).scrollTo = vi.fn()
+    expect(contentMounted).toHaveBeenCalledTimes(initialTab === 'content' ? 1 : 0)
+    expect(serialize).not.toHaveBeenCalled()
+    expect(dom.find('#resource-panel-content').exists()).toBe(initialTab === 'content')
+    expect(dom.find('#resource-panel-file').exists()).toBe(false)
+
+    await dom.get('#resource-tab-content').trigger('click')
+    await flushPromises()
+    expect(contentMounted).toHaveBeenCalledTimes(1)
+    await dom.get('input[aria-label="内容草稿"]').setValue('未保存的编辑')
+    await dom.get('#resource-tab-overview').trigger('click')
+    expect(dom.get('#resource-panel-content').isVisible()).toBe(false)
+    await dom.get('#resource-tab-content').trigger('click')
+    expect(contentMounted).toHaveBeenCalledTimes(1)
+    expect((dom.get('input[aria-label="内容草稿"]').element as HTMLInputElement).value).toBe(
+      '未保存的编辑',
+    )
+
+    await dom.get('#resource-tab-file').trigger('click')
+    expect(dom.get('#resource-panel-file pre').text()).toContain('角色')
+    expect(serialize).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  },
+)
+
+it.each([RESOURCE_TYPE.CHARACTER_CARD, RESOURCE_TYPE.WORLD_BOOK, RESOURCE_TYPE.REGEX])(
+  'uses the full-page content editor for %s and restores detail controls without losing changes',
+  async (type) => {
+    const prepareSave = vi.fn().mockResolvedValue(false)
+    const resource: Resource = {
+      id: 'editing',
+      name: '编辑资源',
+      type,
+      description: '',
+      fileName: 'content.json',
+      mimeType: 'application/json',
+      fileSize: 2,
+      contentHash: 'hash',
+      favorite: false,
+      categoryId: null,
+      categoryIds: [],
+      tags: [],
+      metadata: {},
+      originalBlob: new Blob(['{}']),
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const editor = { template: '<div><slot name="content-save" /></div>', methods: { prepareSave } }
+    const wrapper = shallowMount(ResourceOrganizer, {
+      props: {
+        initialTab: 'content',
+        resource,
+        resources: [resource],
+        boundResources: [],
+        versions: [],
+        categories: [],
+        busy: false,
+      },
+      global: {
+        stubs: { Teleport: true, CharacterCardDetails: editor, StructuredResourceDetails: editor },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.get('.resource-detail__tabs').isVisible()).toBe(true)
+    expect(wrapper.find('.resource-detail__actions').exists()).toBe(true)
+    const content = () =>
+      wrapper.findComponent({
+        ref: type === RESOURCE_TYPE.CHARACTER_CARD ? 'characterContent' : 'structuredContent',
+      })
+    content().vm.$emit('workbench-open', true)
+    await flushPromises()
+    expect(wrapper.get('.resource-detail-overlay').classes()).toContain(
+      'resource-detail-overlay--content-editor',
+    )
+    expect(wrapper.get('.resource-detail-sheet').classes()).toContain(
+      'resource-detail-sheet--content-editor',
+    )
+    expect(wrapper.get('.resource-detail__tabs').isVisible()).toBe(false)
+    expect(wrapper.find('.resource-detail__actions').exists()).toBe(false)
+    const save = wrapper.get('.resource-detail__editor-save')
+    expect(save.attributes('form')).toBe('resource-organize-section')
+    expect(save.attributes('disabled')).toBeDefined()
+    content().vm.$emit('draft-change', true)
+    await flushPromises()
+    expect(wrapper.get('.resource-detail__editor-save').attributes('disabled')).toBeUndefined()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(prepareSave).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('save')).toBeUndefined()
+    prepareSave.mockResolvedValue(true)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({ name: '编辑资源' })
+    content().vm.$emit('workbench-open', false)
+    await flushPromises()
+    expect(wrapper.get('.resource-detail__tabs').isVisible()).toBe(true)
+    expect(wrapper.find('.resource-detail__editor-save').exists()).toBe(false)
+    expect(wrapper.get('.resource-detail__actions').text()).toContain('有未保存修改')
+    wrapper.unmount()
+  },
+)
 it('pages thousands of relations and preserves chosen IDs through folder and search filters', async () => {
   const resources: ResourceSummary[] = Array.from({ length: 5000 }, (_, index) => ({
     id: `card-${index}`,
@@ -42,7 +207,15 @@ it('pages thousands of relations and preserves chosen IDs through folder and sea
       ],
       busy: false,
     },
-    global: { stubs: { Teleport: true } },
+    global: {
+      stubs: {
+        Teleport: true,
+        StructuredResourceDetails: {
+          template: '<div />',
+          methods: { prepareSave: async () => true },
+        },
+      },
+    },
   })
   await flushPromises()
   expect(wrapper.findAll('.resource-relation')).toHaveLength(30)
@@ -67,6 +240,7 @@ it('pages thousands of relations and preserves chosen IDs through folder and sea
   expect(wrapper.get('.resource-relation--selected').text()).toContain('file-4999.json')
   await wrapper.get('.resource-relations__search input').setValue('无匹配')
   await wrapper.get('form').trigger('submit')
+  await flushPromises()
   expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({ relatedResourceIds: ['card-4999'] })
   wrapper.unmount()
 })

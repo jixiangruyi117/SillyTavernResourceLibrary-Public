@@ -2,7 +2,10 @@ import type { EmitFn } from 'vue'
 import { computed, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { usePreviewBudget } from '../composables/UsePreviewBudget'
 import { usePreviewPolicy } from '../composables/UsePreviewPolicy'
-import { isNativePreviewAssetAvailable } from '../services/NativePreviewAsset'
+import {
+  isNativePreviewAssetAvailable,
+  prepareNativePreviewAssets,
+} from '../services/NativePreviewAsset'
 import type {
   CanonicalPreviewSeed,
   PreviewPerformanceEvent,
@@ -11,7 +14,10 @@ import type {
   RichContentPreviewProps,
 } from '../types/RichContentPreviewView'
 import { prepareTavernPreviewSource } from '../utils/OpeningPreviewContent'
-import { preloadPreviewDocumentResources } from '../utils/PreviewResourcePreloader'
+import {
+  collectPreviewRemoteResourceUrls,
+  preloadPreviewDocumentResources,
+} from '../utils/PreviewResourcePreloader'
 import {
   loadedPreviewVendorNames,
   loadPreviewVendorLibs,
@@ -424,7 +430,22 @@ export function useRichContentPreview(
 
     let transitionResult: boolean | Promise<boolean>
     try {
-      transitionResult = host.transitionSwipe(target, false, rendered)
+      if (usesNativePreviewAssets()) {
+        preloadAbortController?.abort()
+        const controller = new AbortController()
+        preloadAbortController = controller
+        transitionResult = prepareNativePreviewAssets(
+          collectPreviewRemoteResourceUrls(rendered, true),
+          controller.signal,
+        )
+          .catch(() => undefined)
+          .then(() => {
+            if (controller.signal.aborted || requestId !== greetingTransitionRequestId) return false
+            return host.transitionSwipe(target, false, rendered)
+          })
+      } else {
+        transitionResult = host.transitionSwipe(target, false, rendered)
+      }
     } catch {
       sessionSupportsGreetingTransition = false
       pendingGreetingIndex = undefined
@@ -479,6 +500,21 @@ export function useRichContentPreview(
         void rebuildPreview()
       })
     return true
+  }
+
+  function usesNativePreviewAssets(): boolean {
+    return (
+      props.preloadResources &&
+      !props.preloadTrustedResources &&
+      previewPolicy.value.allowRemoteResources &&
+      isNativePreviewAssetAvailable()
+    )
+  }
+
+  function activatePreviewSeed(): boolean {
+    // Resuming a suspended native preview needs a new registration before mounting.
+    // Rebuild reuses the existing formatter/MVU/vendor caches.
+    return !usesNativePreviewAssets() && activateCanonicalPreviewSeed()
   }
 
   function invalidatePreviewFrameSession(): void {
@@ -647,7 +683,19 @@ export function useRichContentPreview(
       greetingIndex: targetGreetingIndex,
     })
     stageCanonicalPreviewSeed(sourceAtBuild, targetGreetingIndex, nextPreview)
-    if (shouldWarmNativeResources) {
+    if (shouldWarmNativeResources && !props.preloadTrustedResources) {
+      const controller = new AbortController()
+      preloadAbortController = controller
+      // Registration does not wait for network/IO queues. Actual image/CSS selection stays
+      // with the browser, including nested srcdoc, srcset and unused CSS backgrounds.
+      await prepareNativePreviewAssets(
+        collectPreviewRemoteResourceUrls(nextPreview.document, true),
+        controller.signal,
+      ).catch(() => undefined)
+      if (generation !== rebuildGeneration || controller.signal.aborted) return
+      preview.value = nextPreview
+      replacePreloadedResources()
+    } else if (shouldWarmNativeResources) {
       // 真机先按网页语义挂载原始外链；原生缓存只是后台加速，不能决定当前图片是否可见。
       preview.value = nextPreview
       replacePreloadedResources()
@@ -841,7 +889,7 @@ export function useRichContentPreview(
         invalidatePreviewFrameSession()
         return
       }
-      if (previewEnabled.value && !activateCanonicalPreviewSeed()) schedulePreviewBuild()
+      if (previewEnabled.value && !activatePreviewSeed()) schedulePreviewBuild()
     },
     { flush: 'sync' },
   )
@@ -855,7 +903,7 @@ export function useRichContentPreview(
       }
       if (!wasEnabled && enabled) {
         reportPreviewPerformance({ stage: 'preview-budget-active' })
-        if (!activateCanonicalPreviewSeed()) schedulePreviewBuild()
+        if (!activatePreviewSeed()) schedulePreviewBuild()
       }
     },
     { flush: 'sync' },

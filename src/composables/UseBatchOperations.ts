@@ -193,7 +193,6 @@ export function useBatchOperations(context: BatchOperationsContext) {
     isBatchBusy.value = true
     try {
       await context.moveToRecycleBin(ids)
-      await context.loadResources()
       finishBatch(`已将 ${ids.length} 项资源移入回收站`)
     } catch {
       context.showNotice('批量删除失败')

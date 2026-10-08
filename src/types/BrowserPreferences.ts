@@ -94,7 +94,12 @@ export interface PortableAppearanceSettings {
   activePresetId: string
 }
 
+export type TavernSendContent = 'original' | 'modified'
+
 export interface PortableGeneralPreferences {
+  tavernChatCarryScripts?: boolean
+  tavernSendContent?: TavernSendContent
+  modifiedResourceSyncTags?: boolean
   previewPolicy: PreviewPolicy
   extractCharacterAssets: boolean
   hideCharacterAssets: boolean

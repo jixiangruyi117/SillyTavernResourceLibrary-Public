@@ -368,7 +368,29 @@ export async function inboxRequest(
       throw new Error('云端收件配对已失效，请重新绑定资源库。')
     }
     if (response.status === 404) {
-      throw new Error('云端任务已过期，或当前 Worker 尚未更新云端收件功能。')
+      const payload = (await response
+        .clone()
+        .json()
+        .catch(() => null)) as { error?: unknown } | null
+      if (
+        payload?.error === 'delivery_not_found_or_expired' ||
+        payload?.error === 'resource_task_not_found_or_expired'
+      ) {
+        throw new Error('云端任务已过期或已不存在。')
+      }
+      if (path === '/cleanup-scoped') {
+        throw new Error(
+          'Worker 未提供分类清理接口（DELETE /inbox/cleanup-scoped，HTTP 404），本次没有删除记录。请同步并部署包含此路由的 Discord Bridge；若要使用旧版兼容接口，可选择“帖子和资源都清理”。',
+        )
+      }
+      if (path === '/jobs') {
+        throw new Error(
+          '当前 Worker 未提供收件箱任务列表接口（GET /inbox/jobs，HTTP 404）。收件箱状态接口可用，但需要将包含该路由的 Discord Bridge Worker 部署到此连接地址。',
+        )
+      }
+      throw new Error(
+        `云端收件接口未找到（HTTP 404${typeof payload?.error === 'string' ? `：${payload.error}` : ''}）`,
+      )
     }
     if (
       response.status === 409 &&
@@ -381,6 +403,31 @@ export async function inboxRequest(
         if (/^\/resources\/[a-f\d-]{36}\/ack$/u.test(path)) return response
         throw new Error('该云端任务已确认导入，无需重复领取；请在资源列表查看。')
       }
+    }
+    if (response.status === 405) {
+      const route = `/inbox${path.split('?')[0]}`.replace(/[a-f\d-]{36}(?=\/|$)/giu, ':id')
+      const allowedMethods = [
+        ...new Set(
+          (response.headers.get('Allow') ?? '')
+            .split(',')
+            .map((value) => value.trim().toUpperCase())
+            .filter((value) =>
+              /^(GET|HEAD|POST|PUT|DELETE|CONNECT|OPTIONS|TRACE|PATCH)$/u.test(value),
+            ),
+        ),
+      ]
+      const details = [
+        '云端收件失败（HTTP 405）：服务器拒绝了本次请求方法。',
+        `请求：${method.toUpperCase()} ${route}。`,
+        allowedMethods.length
+          ? `服务端声明允许：${allowedMethods.join('、')}。`
+          : '未获取到服务端允许的方法。',
+      ]
+      if (response.redirected) details.push('请求发生过地址跳转，请核对连接地址和跳转规则。')
+      if (response.headers.get('Content-Type')?.toLowerCase().includes('text/html'))
+        details.push('服务端返回了网页，请核对该地址是否指向收件接口。')
+      details.push('请在 Worker 实时日志中核对上述方法、路径和状态码，并检查接口路由及代理配置。')
+      throw new Error(details.join(' '))
     }
     throw new Error(`云端收件请求失败（HTTP ${response.status}）`)
   }
@@ -545,10 +592,12 @@ export async function clearDiscordInboxCloudHistory(
   posts: number
   resources: number
 }> {
-  const payload = (await (await inboxRequest('/cleanup-scoped', 'DELETE', { scope })).json()) as Record<
-    string,
-    unknown
-  >
+  // Older deployed Workers already implement the unscoped route; keep the default
+  // “clear both” action compatible while requiring the scoped route for narrower cleanup.
+  const path = scope === 'both' ? '/cleanup' : '/cleanup-scoped'
+  const payload = (await (
+    await inboxRequest(path, 'DELETE', scope === 'both' ? undefined : { scope })
+  ).json()) as Record<string, unknown>
   if (
     !Number.isSafeInteger(payload.posts) ||
     !Number.isSafeInteger(payload.resources) ||

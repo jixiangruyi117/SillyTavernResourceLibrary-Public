@@ -8,16 +8,20 @@ import {
   isOfficialAppId,
   type InstalledOfficialApp,
   type OfficialAppId,
+  type OfficialAppInstallProgress,
   type OfficialAppUpdateInfo,
 } from '../types/OfficialApp'
 import { OFFICIAL_APP_DATA_DESCRIPTION } from '../types/OfficialApp'
 defineEmits<{ back: [] }>()
 const apps = FEATURE_APP_REGISTRY.filter((app) => isOfficialAppId(app.id))
-const installed = ref<InstalledOfficialApp[]>([])
+const installed = ref<InstalledOfficialApp[]>([...officialAppService.installedSnapshot])
 const availableUpdates = ref<Partial<Record<OfficialAppId, OfficialAppUpdateInfo>>>({})
 const busy = ref(false)
+const selectedUpdates = ref<OfficialAppId[]>([])
+const installProgress = ref<Partial<Record<OfficialAppId, OfficialAppInstallProgress>>>({})
 const message = ref('')
 const updateCheckError = ref('')
+const repairIds = ref(new Set<string>())
 const updateNoticeItems = ref<AppUpdateNotice[]>([])
 const selected = ref<OfficialAppId>()
 const selectedAction = ref<'uninstall' | 'clearData'>()
@@ -64,6 +68,70 @@ const appUpdates = computed(() =>
   }),
 )
 const updateFor = (id: string) => appUpdates.value.find((update) => update.id === id)
+const updatable = appUpdates
+const batchIds = computed(() => {
+  const chosen = updatable.value.filter((update) => selectedUpdates.value.includes(update.id))
+  return (chosen.length ? chosen : updatable.value).map((update) => update.id)
+})
+function progressText(id: string): string {
+  if (!isOfficialAppId(id)) return ''
+  const progress = installProgress.value[id]
+  if (!progress) return ''
+  switch (progress.stage) {
+    case 'queued':
+      return '等待下载'
+    case 'downloading':
+      return `正在下载 ${sizes(progress.downloadedBytes ?? 0)} / ${sizes(progress.totalBytes ?? 0)}`
+    case 'checking':
+      return '正在校验安装包'
+    case 'waiting':
+      return '下载完成，等待安装'
+    case 'installing':
+      return `正在安装 ${progress.completedFiles ?? 0} / ${progress.totalFiles ?? 0} 个文件`
+    case 'done':
+      return '更新成功'
+    case 'failed':
+      return `更新失败：${progress.message}`
+  }
+}
+async function installUpdates(ids: OfficialAppId[] = batchIds.value) {
+  if (busy.value || !ids.length) return
+  const targets = [...ids]
+  updatesDialog.value?.close()
+  busy.value = true
+  message.value = `正在更新 ${targets.length} 个 APP，最多同时下载两个包…`
+  installProgress.value = Object.fromEntries(targets.map((id) => [id, { id, stage: 'queued' }]))
+  try {
+    const results = await officialAppService.installMany(targets, (progress) => {
+      installProgress.value[progress.id] = progress
+    })
+    const succeeded = results.filter((result) => !result.error).map((result) => result.id)
+    for (const result of results) {
+      installProgress.value[result.id] = result.error
+        ? { id: result.id, stage: 'failed', message: result.error.message }
+        : { id: result.id, stage: 'done' }
+    }
+    selectedUpdates.value = selectedUpdates.value.filter((id) => !succeeded.includes(id))
+    updateNoticeItems.value = updateNoticeItems.value.filter(
+      (notice) => !succeeded.includes(notice.id),
+    )
+    message.value = '安装已完成，正在检查更新状态…'
+    // Refresh once for the batch after every installation has committed or failed.
+    try {
+      await refresh()
+      await checkForUpdates(false)
+    } catch (error) {
+      updateCheckError.value = error instanceof Error ? error.message : '更新检查失败'
+    }
+    message.value = `更新结束：完成 ${succeeded.length} 个${results.length > succeeded.length ? `，失败 ${results.length - succeeded.length} 个` : ''}`
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '更新失败'
+    for (const id of targets)
+      installProgress.value[id] = { id, stage: 'failed', message: message.value }
+  } finally {
+    busy.value = false
+  }
+}
 const dismissedUpdates = (): Partial<Record<OfficialAppId, string>> => {
   try {
     const value: unknown = JSON.parse(
@@ -76,11 +144,30 @@ const dismissedUpdates = (): Partial<Record<OfficialAppId, string>> => {
   }
 }
 async function refresh() {
-  installed.value = await officialAppService.list()
+  installed.value = await officialAppService.loadInstalled()
+}
+async function checkStatus() {
+  if (busy.value) return
+  busy.value = true
+  message.value = '正在检查已安装 APP 的文件与完整性…'
+  try {
+    const results = await officialAppService.checkInstalledStatus()
+    await refresh()
+    const damaged = results.filter((item) => !item.ready)
+    repairIds.value = new Set(damaged.map((item) => item.id))
+    message.value = damaged.length
+      ? `需要修复：${damaged.map((item) => apps.find((app) => app.id === item.id)?.name ?? item.id).join('、')}。请重新下载对应 APP，已有数据会保留。`
+      : `已检查 ${results.length} 个 APP，程序文件完整。`
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : '检查 APP 状态失败'
+  } finally {
+    busy.value = false
+  }
 }
 async function checkForUpdates(showNotice: boolean) {
   updateCheckError.value = ''
   availableUpdates.value = await officialAppService.availableUpdates()
+  await refresh()
   if (!showNotice) return
   const dismissed = dismissedUpdates()
   updateNoticeItems.value = appUpdates.value.filter((update) => {
@@ -116,11 +203,14 @@ function skipCurrentVersion(id: OfficialAppId) {
 }
 async function install(id: string) {
   if (busy.value || !isOfficialAppId(id)) return
+  delete installProgress.value[id]
   const updating = Boolean(find(id))
   busy.value = true
   message.value = updating ? '正在更新并校验 APP…' : '正在下载并校验 APP…'
   try {
     await officialAppService.install(id)
+    repairIds.value.delete(id)
+    selectedUpdates.value = selectedUpdates.value.filter((selectedId) => selectedId !== id)
     await refresh()
     await checkForUpdates(false)
     updateNoticeItems.value = updateNoticeItems.value.filter((item) => item.id !== id)
@@ -202,6 +292,16 @@ onMounted(async () => {
   <FeatureAppHeader title="APP 管理" @back="$emit('back')">
     <template #actions>
       <button
+        v-if="batchIds.length"
+        class="feature-header-action official-app-manager__batch-update"
+        type="button"
+        :disabled="busy"
+        :aria-label="`${selectedUpdates.some((id) => batchIds.includes(id)) ? '更新所选' : '更新全部'}（${batchIds.length}）`"
+        @click="installUpdates()"
+      >
+        {{ selectedUpdates.some((id) => batchIds.includes(id)) ? '更新所选' : '更新全部' }}
+      </button>
+      <button
         type="button"
         class="feature-header-action feature-header-action--icon official-app-manager__help-trigger"
         aria-label="查看 APP 管理说明"
@@ -217,6 +317,9 @@ onMounted(async () => {
       </button>
     </template>
   </FeatureAppHeader>
+  <button type="button" class="button button--quiet" :disabled="busy" @click="checkStatus">
+    检查 APP 状态
+  </button>
   <section class="official-app-manager" :aria-busy="busy">
     <p v-if="message" role="status">{{ message }}</p>
     <p v-if="updateCheckError" role="status">暂时无法检查 APP 更新：{{ updateCheckError }}</p>
@@ -224,6 +327,14 @@ onMounted(async () => {
       <li v-for="app in apps" :key="app.id">
         <div class="official-app-manager__app-info">
           <strong class="official-app-manager__app-name"
+            ><label v-if="updateFor(app.id)" class="official-app-manager__select-update">
+              <input
+                v-model="selectedUpdates"
+                type="checkbox"
+                :value="app.id"
+                :disabled="busy"
+                :aria-label="`选择更新${app.name}`"
+              /> </label
             >{{ app.name
             }}<span
               v-if="updateFor(app.id)"
@@ -243,16 +354,25 @@ onMounted(async () => {
               最新版本 {{ formatVersion(updateFor(app.id)!.latestVersion) }}
             </small>
           </div>
+          <small
+            v-if="progressText(app.id)"
+            class="official-app-manager__progress"
+            :class="{
+              'official-app-manager__progress--failed':
+                isOfficialAppId(app.id) && installProgress[app.id]?.stage === 'failed',
+            }"
+            >{{ progressText(app.id) }}</small
+          >
         </div>
         <div class="official-app-manager__app-actions">
           <button
-            v-if="!find(app.id) || updateFor(app.id) || updateCheckError"
+            v-if="!find(app.id) || updateFor(app.id) || updateCheckError || repairIds.has(app.id)"
             type="button"
             :class="{ 'confirm-dialog__confirm': Boolean(find(app.id) && updateFor(app.id)) }"
             :disabled="busy"
             @click="install(app.id)"
           >
-            {{ find(app.id) ? '更新' : '下载' }}
+            {{ repairIds.has(app.id) ? '修复' : find(app.id) ? '更新' : '下载' }}
           </button>
           <span v-else class="official-app-manager__latest">已是最新</span>
           <button
@@ -295,7 +415,7 @@ onMounted(async () => {
     >
       <header class="official-app-manager__updates-header">
         <h3 id="official-app-updates-title">发现 APP 更新</h3>
-        <p>以下已安装 APP 有新版本，可逐个更新或跳过当前版本。</p>
+        <p>可一键更新，或返回列表勾选多个 APP 更新；也可跳过当前版本。</p>
       </header>
       <ul class="official-app-manager__updates-list">
         <li v-for="update in updateNoticeItems" :key="update.id">
@@ -328,6 +448,15 @@ onMounted(async () => {
       </ul>
       <footer class="official-app-manager__updates-footer">
         <button type="button" :disabled="busy" @click="closeUpdatesNotice">稍后处理</button>
+        <button
+          v-if="updatable.length"
+          type="button"
+          class="confirm-dialog__confirm"
+          :disabled="busy"
+          @click="installUpdates(updatable.map((update) => update.id))"
+        >
+          更新全部（{{ updatable.length }}）
+        </button>
       </footer>
     </dialog>
     <dialog
@@ -439,6 +568,27 @@ li {
   align-items: center;
   gap: 0.35rem;
   font-size: 1rem;
+}
+.official-app-manager__select-update {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.official-app-manager__select-update input {
+  width: 1.125rem;
+  height: 1.125rem;
+  accent-color: var(--color-accent);
+}
+.official-app-manager__progress {
+  margin-top: 0.3rem;
+  overflow-wrap: anywhere;
+  opacity: 1;
+}
+.official-app-manager__progress--failed {
+  color: var(--color-danger);
 }
 small {
   display: block;

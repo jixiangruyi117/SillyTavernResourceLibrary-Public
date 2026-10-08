@@ -1,8 +1,14 @@
 import { createImageThumbnail } from '../utils/createImageThumbnail'
 import type { ResourceParserRegistry } from '../parser/ResourceParser'
 import type { ImportOptions } from '../types/ResourceOperations'
-import type { ImportResult } from '../types/Import'
-import { RESOURCE_TYPE, getRelatedResourceIds, type Resource } from '../types/Resource'
+import type { ImportResult, ParsedResource } from '../types/Import'
+import {
+  RESOURCE_TYPE,
+  getRelatedResourceIds,
+  toResourceListSummary,
+  type Resource,
+  type ResourceListSummary,
+} from '../types/Resource'
 import type { ResourceService } from './ResourceService'
 import { readChatArchive } from './TavernChatArchiveCodec.mjs'
 import { ChatReaderService } from './ChatReaderService'
@@ -10,11 +16,18 @@ import { hashBlob } from './HashService'
 import { isRecord } from '../utils/UnknownValue'
 import { chatCharacterThumbnailData, chatCharacterSummary } from './ChatReaderCharacter'
 import { materializeNativeFile } from '../core/NativeFileSource'
+import { extractTavernHelperScripts } from '../utils/TavernHelperScriptParser'
 
 function resourceOf(result: ImportResult): Resource {
   if (result.status === 'failed') throw new Error(result.message)
   if (result.status === 'versionCandidate') throw new Error('配套角色卡需要确认版本')
   return result.resource
+}
+
+/** Owned by one serial import batch; only the current card and lightweight summaries survive. */
+export interface TavernChatImportBatch {
+  summaries?: ResourceListSummary[]
+  character?: { hash: string; parsed: ParsedResource; thumbnail?: Blob }
 }
 
 /** Archive framing only; parsing, persistence and relationships use their existing owners. */
@@ -23,19 +36,32 @@ export async function importTavernChat(
   resources: ResourceService,
   parser: ResourceParserRegistry,
   options: ImportOptions = {},
+  batch: TavernChatImportBatch = {},
 ): Promise<ImportResult> {
   file = await materializeNativeFile(file, { detachFromNativeSource: true, signal: options.signal })
   options.signal?.throwIfAborted()
-  const { card, chat, avatar, displayRules, presetRules, regexContext, hasRegexSnapshot } =
-    await readChatArchive(file)
+  const {
+    card,
+    chat,
+    avatar,
+    displayRules,
+    presetRules,
+    regexContext,
+    hasRegexSnapshot,
+    readingScripts,
+    hasReadingScriptSnapshot,
+    carryReadingScripts,
+  } = await readChatArchive(file)
   // Validate both before the first write. A filename or chat speaker never proves card identity.
-  const cardParsed = await parser.parse(card)
+  const cardHash = await hashBlob(card)
+  const cachedCard = batch.character?.hash === cardHash ? batch.character : undefined
+  const cardParsed = cachedCard?.parsed ?? (await parser.parse(card))
   const chatParsed = await parser.parse(chat)
   if (cardParsed.type !== RESOURCE_TYPE.CHARACTER_CARD || chatParsed.type !== RESOURCE_TYPE.CHAT)
     throw new Error('聊天传输包必须包含可识别的 PNG 角色卡和 JSONL 聊天原件')
-  const cardHash = await hashBlob(card)
   const chatHash = await hashBlob(chat)
-  const summaries = await resources.listResourceListSummaries()
+  const summaries = (batch.summaries ??= await resources.listResourceListSummaries())
+  batch.character = cachedCard ?? { hash: cardHash, parsed: cardParsed }
   const saveCharacter =
     options.saveChatCharacter === true ||
     options.saveChatCharacterHashes?.includes(cardHash) === true
@@ -44,9 +70,34 @@ export async function importTavernChat(
     (r) =>
       r.type === RESOURCE_TYPE.CHARACTER_CARD &&
       r.contentHash === cardHash &&
-      (chosenId ? r.id === chosenId : saveCharacter && chosenId !== null),
+      (chosenId ? r.id === chosenId : saveCharacter),
   )
   if (chosenId && !exact) throw new Error('待关联角色卡已变更，请重新确认后导入')
+  const parsedCard = isRecord(cardParsed.metadata.card) ? cardParsed.metadata.card : {}
+  const body = isRecord(parsedCard.data) ? parsedCard.data : parsedCard
+  const extensions = isRecord(body.extensions) ? body.extensions : {}
+  const companionScripts = (
+    carryReadingScripts
+      ? [
+          ...extractTavernHelperScripts(body, { source: 'character' }),
+          ...readingScripts.flatMap((source) => {
+            const scripts = extractTavernHelperScripts(source.scripts, {
+              source: 'bound',
+              fallbackName: source.sourceName,
+            })
+            if (!scripts.length) throw new Error('聊天随附脚本来源无法识别，请重新导出')
+            return scripts.map((script) => ({
+              ...script,
+              folder: [source.sourceName, script.folder].filter(Boolean).join(' / '),
+            }))
+          }),
+        ]
+      : []
+  ).map((script) => ({ ...script, type: 'script', enabled: false }))
+  if (companionScripts.length > 64) throw new Error('聊天随附脚本超过 64 个，请减少所选来源')
+  const scriptText = JSON.stringify({ scripts: companionScripts, sourceName: '聊天随附脚本' })
+  if (new TextEncoder().encode(scriptText).length > 2 * 1024 * 1024)
+    throw new Error('聊天随附脚本超过 2 MiB，请减少所选来源')
   let character = exact ? await resources.get(exact.id) : undefined
   const extractedResources: Resource[] = []
   if (!character && saveCharacter) {
@@ -58,9 +109,6 @@ export async function importTavernChat(
   }
   if (character && (await hashBlob(character.originalBlob)) !== cardHash)
     throw new Error('配套角色卡保存校验失败，聊天尚未绑定')
-  const parsedCard = isRecord(cardParsed.metadata.card) ? cardParsed.metadata.card : {}
-  const body = isRecord(parsedCard.data) ? parsedCard.data : parsedCard
-  const extensions = isRecord(body.extensions) ? body.extensions : {}
   const companion = {
     hash: cardHash,
     name: cardParsed.name,
@@ -73,7 +121,10 @@ export async function importTavernChat(
     },
     thumbnail: await chatCharacterThumbnailData(
       character?.thumbnailBlob ??
-        (await createImageThumbnail(card, { maxEdge: 480, quality: 0.75 })),
+        (batch.character.thumbnail ??= await createImageThumbnail(card, {
+          maxEdge: 480,
+          quality: 0.75,
+        })),
     ),
   }
   const characterIds = new Set(
@@ -118,11 +169,30 @@ export async function importTavernChat(
         { allowContentDuplicate: true },
       )
   const imported = resourceOf(result)
-  await resources.updateMetadata(imported.id, {
+  const metadata: Resource['metadata'] = {
     chatCharacter: companion,
     tavernChatSource: { avatar, chatName: chat.name, cardHash },
-  })
+  }
   if (!bound && character) await new ChatReaderService(resources).bind(imported.id, character.id)
+  if (companionScripts.length) {
+    const scriptFile = new File([scriptText], '聊天随附脚本.json', { type: 'application/json' })
+    const scriptResult = await resources.importPreparedFile(
+      scriptFile,
+      await parser.parse(scriptFile),
+    )
+    const script = resourceOf(scriptResult)
+    const savedScript = await resources.get(script.id)
+    if (
+      !savedScript ||
+      savedScript.type !== RESOURCE_TYPE.SCRIPT ||
+      (await hashBlob(savedScript.originalBlob)) !== (await hashBlob(scriptFile))
+    )
+      throw new Error('聊天随附脚本保存校验失败，请保留酒馆原件后重试')
+    if (scriptResult.status === 'imported') extractedResources.push(script)
+    metadata.chatReadingScriptId = script.id
+  } else if (hasReadingScriptSnapshot) {
+    metadata.chatReadingScriptId = null
+  }
   if (displayRules.length || presetRules.length) {
     const regexFile = new File(
       [
@@ -148,12 +218,12 @@ export async function importTavernChat(
     if (!savedRegex || (await hashBlob(savedRegex.originalBlob)) !== (await hashBlob(regexFile)))
       throw new Error('聊天显示正则保存校验失败，请保留酒馆原件后重试')
     if (regexResult.status === 'imported') extractedResources.push(regex)
-    await resources.updateMetadata(imported.id, { chatDisplayRegexId: regex.id })
+    metadata.chatDisplayRegexId = regex.id
   } else if (hasRegexSnapshot) {
-    await resources.updateMetadata(imported.id, { chatDisplayRegexId: null })
+    metadata.chatDisplayRegexId = null
   }
-  if (hasRegexSnapshot)
-    await resources.updateMetadata(imported.id, { chatRegexContext: regexContext })
+  if (hasRegexSnapshot) metadata.chatRegexContext = regexContext
+  await resources.updateMetadata(imported.id, metadata)
   const saved = await resources.get(imported.id)
   if (
     !saved ||
@@ -164,6 +234,13 @@ export async function importTavernChat(
   )
     throw new Error('聊天入库或角色关联校验失败，请保留酒馆原件并重试')
   if (result.status !== 'imported' && result.status !== 'duplicate') return result
+  // Keep duplicate detection current without rescanning the library for every chat.
+  for (const resource of [...extractedResources, ...(character ? [character] : []), saved]) {
+    const summary = toResourceListSummary(resource)
+    const index = summaries.findIndex((existing) => existing.id === resource.id)
+    if (index < 0) summaries.push(summary)
+    else summaries[index] = summary
+  }
   return {
     ...result,
     fileName: file.name,

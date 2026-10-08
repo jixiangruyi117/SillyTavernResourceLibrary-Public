@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createAsyncPanel } from '../core/AsyncPanel'
 import {
   SRL_BACK_REQUEST_EVENT,
@@ -15,9 +15,22 @@ import DiscordPendingSources from './DiscordPendingSources.vue'
 import DiscordNativeInboxMode from './DiscordNativeInboxMode.vue'
 import type { ResourceSummary } from '../types/Resource'
 
+type InboxSubpage = 'auto-binding-review' | 'pending-sources'
+
 defineEmits<{ back: []; 'open-resource': [resource: ResourceSummary] }>()
 const settingsOpen = ref(false)
 const inboxPanel = ref<InstanceType<typeof DiscordInboxPanel> | null>(null)
+const subpage = ref<InboxSubpage | null>(null)
+const autoBindingReviewCount = ref<number | null>(null)
+const autoBindingReviewHasMore = ref(false)
+const pendingSourceCount = ref<number | null>(null)
+const inboxTitle = computed(() =>
+  subpage.value === 'auto-binding-review'
+    ? '自动绑定审核'
+    : subpage.value === 'pending-sources'
+      ? '待整理来源'
+      : '收件箱',
+)
 watch(
   assistantGuidance,
   (guide) => {
@@ -36,6 +49,13 @@ watch(
 )
 const { activeDialog } = useConfirmDialogState()
 const backStack = useBackStack([
+  {
+    id: 'inbox-secondary-page',
+    isActive: () => Boolean(subpage.value),
+    back: () => {
+      subpage.value = null
+    },
+  },
   {
     id: 'inbox-connection',
     isActive: () => settingsOpen.value,
@@ -58,11 +78,25 @@ function closeSettingsOnBack(event: Event): void {
 onMounted(() => {
   window.addEventListener('keydown', closeSettingsOnEscape, true)
   window.addEventListener(SRL_BACK_REQUEST_EVENT, closeSettingsOnBack, true)
+  window.addEventListener('srl:community-sources-changed', refreshOrganizationCounts)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', closeSettingsOnEscape, true)
   window.removeEventListener(SRL_BACK_REQUEST_EVENT, closeSettingsOnBack, true)
+  window.removeEventListener('srl:community-sources-changed', refreshOrganizationCounts)
 })
+function refreshOrganizationCounts(): void {
+  void inboxPanel.value?.refreshAutoBindings()
+}
+function updateOrganizationCounts(counts: {
+  review: number
+  reviewHasMore: boolean
+  pending: number
+}): void {
+  autoBindingReviewCount.value = counts.review
+  autoBindingReviewHasMore.value = counts.reviewHasMore
+  pendingSourceCount.value = counts.pending
+}
 const ConnectionSettings = createAsyncPanel(
   'Discord 连接设置',
   () => import('./ResourceLinkAdvancedSettings.vue'),
@@ -70,9 +104,10 @@ const ConnectionSettings = createAsyncPanel(
 </script>
 
 <template>
-  <FeatureShell title="收件箱" @back="$emit('back')">
+  <FeatureShell :title="inboxTitle" @back="subpage ? (subpage = null) : $emit('back')">
     <template #actions>
       <button
+        v-if="!subpage"
         class="feature-header-action feature-header-action--ghost"
         type="button"
         data-assistant-focus="inbox-connection-settings"
@@ -81,6 +116,7 @@ const ConnectionSettings = createAsyncPanel(
         连接设置
       </button>
       <button
+        v-if="!subpage"
         class="feature-header-action feature-header-action--icon"
         type="button"
         aria-label="清理云端"
@@ -99,6 +135,7 @@ const ConnectionSettings = createAsyncPanel(
         </svg>
       </button>
       <button
+        v-if="!subpage"
         class="feature-header-action feature-header-action--icon"
         type="button"
         aria-label="收件箱设置"
@@ -119,11 +156,55 @@ const ConnectionSettings = createAsyncPanel(
         </svg>
       </button>
     </template>
-    <div class="discord-inbox-center__content">
-      <DiscordNativeInboxMode />
-      <DiscordInboxPanel ref="inboxPanel" @open-resource="$emit('open-resource', $event)" />
-      <DiscordResourceDownloadPanel />
-      <DiscordPendingSources hide-when-empty />
+    <div
+      class="discord-inbox-center__content"
+      :class="{ 'discord-inbox-center__content--subpage': subpage }"
+    >
+      <template v-if="!subpage">
+        <section class="discord-inbox-center__group">
+          <DiscordNativeInboxMode />
+        </section>
+        <section class="discord-inbox-center__group">
+          <DiscordInboxPanel
+            ref="inboxPanel"
+            @organization-counts="updateOrganizationCounts"
+            @open-resource="$emit('open-resource', $event)"
+          />
+        </section>
+        <nav class="discord-inbox-center__secondary" aria-label="帖子整理">
+          <button type="button" @click="subpage = 'auto-binding-review'">
+            <span class="discord-inbox-center__label">自动绑定审核</span>
+            <span
+              v-if="autoBindingReviewCount !== null"
+              class="discord-inbox-center__count"
+              :aria-label="`${autoBindingReviewCount}${autoBindingReviewHasMore ? '+' : ''} 条`"
+            >
+              {{ autoBindingReviewCount }}{{ autoBindingReviewHasMore ? '+' : '' }}
+            </span>
+            <span aria-hidden="true">›</span>
+          </button>
+          <button type="button" @click="subpage = 'pending-sources'">
+            <span class="discord-inbox-center__label">待整理来源</span>
+            <span
+              v-if="pendingSourceCount !== null"
+              class="discord-inbox-center__count"
+              :aria-label="`${pendingSourceCount} 条`"
+            >
+              {{ pendingSourceCount }}
+            </span>
+            <span aria-hidden="true">›</span>
+          </button>
+        </nav>
+        <section class="discord-inbox-center__group">
+          <DiscordResourceDownloadPanel />
+        </section>
+      </template>
+      <DiscordInboxPanel
+        v-else-if="subpage === 'auto-binding-review'"
+        view="review"
+        @open-resource="$emit('open-resource', $event)"
+      />
+      <DiscordPendingSources v-else page-view />
     </div>
   </FeatureShell>
   <ConnectionSettings
@@ -144,5 +225,59 @@ const ConnectionSettings = createAsyncPanel(
   border: 1px solid var(--color-line);
   border-radius: 12px;
   background: var(--color-surface-raised);
+}
+
+.discord-inbox-center__content--subpage {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.discord-inbox-center__secondary {
+  display: grid;
+  gap: 8px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-inbox-center__group {
+  padding: 16px 0;
+}
+
+.discord-inbox-center__group + .discord-inbox-center__group {
+  border-top: 1px solid var(--color-line);
+}
+
+.discord-inbox-center__secondary button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 9px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.discord-inbox-center__secondary button span:first-child {
+  flex: 1;
+  font-weight: 650;
+}
+
+.discord-inbox-center__secondary .discord-inbox-center__count {
+  min-width: 1.75em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 0.82em;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 </style>

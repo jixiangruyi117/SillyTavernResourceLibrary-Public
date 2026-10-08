@@ -26,15 +26,17 @@ export interface ConfirmDialogOptions {
 export interface ChoiceDialogOptions extends ConfirmDialogOptions {
   /** 第三个操作按钮；适合不应被归为“取消”的明确选择。 */
   alternativeLabel: string
+  additionalLabel?: string
 }
 
 export interface ActiveConfirmDialog extends Required<Omit<ConfirmDialogOptions, 'tokenReview'>> {
   id: number
   tokenReview?: AssistantTokenReview
   alternativeLabel?: string
+  additionalLabel?: string
 }
 
-export type ConfirmDialogResponse = 'confirm' | 'cancel' | 'alternative'
+export type ConfirmDialogResponse = 'confirm' | 'cancel' | 'alternative' | 'additional'
 
 interface PendingConfirm {
   dialog: ActiveConfirmDialog
@@ -104,6 +106,7 @@ export function chooseAction(options: ChoiceDialogOptions): Promise<ConfirmDialo
     danger: options.danger ?? false,
     centered: options.centered ?? false,
     alternativeLabel: options.alternativeLabel,
+    additionalLabel: options.additionalLabel,
     tokenReview: options.tokenReview,
   }
   return new Promise<ConfirmDialogResponse>((resolve) => {

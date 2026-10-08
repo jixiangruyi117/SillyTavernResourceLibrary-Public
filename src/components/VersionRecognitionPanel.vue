@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import '../FeatureStyles.css'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 
 import { confirmAction } from '../composables/UseConfirmDialog'
 import { resourceService } from '../core/AppContainer'
 import {
-  buildStoredVersionRecognitionReport,
-  findHistoricalDuplicateGroups,
-  findStoredVersionGroups,
   type StoredVersionRecognitionReport,
   type StoredVersionRecognitionGroup,
 } from '../services/ResourceVersionMatcher'
+import { recognizeStoredVersions } from '../services/ResourceVersionRecognitionService'
 import { RESOURCE_TYPE_LABELS, type Category, type ResourceSummary } from '../types/Resource'
 import ResourcePicker from './ResourcePicker.vue'
 
@@ -20,21 +18,20 @@ const props = defineProps<{
   categories?: Category[]
 }>()
 const emit = defineEmits<{ close: []; 'library-changed': [] }>()
-const currentResources = ref<ResourceSummary[]>(props.resources)
-const historicalVersions = ref<ResourceSummary[]>([])
+const currentResources = shallowRef<ResourceSummary[]>([])
+const historicalVersions = shallowRef<ResourceSummary[]>([])
 const loadingHistory = ref(true)
-const groups = computed(() =>
-  findStoredVersionGroups(currentResources.value, historicalVersions.value, {
-    sameNameVersionCandidates: props.sameNameVersionCandidates,
-  }),
-)
+const groups = shallowRef<StoredVersionRecognitionGroup[]>([])
+let scanController: AbortController | undefined
 const historicalCleanupGroups = computed(() => {
   const currentById = new Map(currentResources.value.map((resource) => [resource.id, resource]))
   const versionsByOwner = new Map<string, ResourceSummary[]>()
   for (const version of historicalVersions.value) {
     const ownerId = version.versionGroupId
     if (!ownerId || !currentById.has(ownerId)) continue
-    versionsByOwner.set(ownerId, [...(versionsByOwner.get(ownerId) ?? []), version])
+    const bucket = versionsByOwner.get(ownerId)
+    if (bucket) bucket.push(version)
+    else versionsByOwner.set(ownerId, [version])
   }
   return Array.from(versionsByOwner, ([ownerId, versions]) => ({
     owner: currentById.get(ownerId)!,
@@ -47,6 +44,31 @@ const historicalCleanupGroups = computed(() => {
 const historyCleanupCandidateCount = computed(() =>
   historicalCleanupGroups.value.reduce((total, group) => total + group.versions.length, 0),
 )
+const historyPage = ref(1)
+const historyPageSize = 40
+const historyPageCount = computed(() =>
+  Math.max(1, Math.ceil(historyCleanupCandidateCount.value / historyPageSize)),
+)
+const visibleHistoryCleanupGroups = computed(() => {
+  let skip = (historyPage.value - 1) * historyPageSize
+  let remaining = historyPageSize
+  const visible: { owner: ResourceSummary; versions: ResourceSummary[]; total: number }[] = []
+  for (const group of historicalCleanupGroups.value) {
+    if (skip >= group.versions.length) {
+      skip -= group.versions.length
+      continue
+    }
+    const versions = group.versions.slice(skip, skip + remaining)
+    visible.push({ owner: group.owner, versions, total: group.versions.length })
+    remaining -= versions.length
+    skip = 0
+    if (!remaining) break
+  }
+  return visible
+})
+watch(historyCleanupCandidateCount, () => {
+  historyPage.value = Math.min(historyPage.value, historyPageCount.value)
+})
 const report = ref<StoredVersionRecognitionReport>()
 const lastScanAt = ref(0)
 const scanDuration = ref(0)
@@ -87,25 +109,60 @@ const selectedHistoryVersionCount = computed(() => selectedHistoryVersionIds.val
 onMounted(async () => {
   await reloadAndScan()
 })
+onBeforeUnmount(() => {
+  scanController?.abort()
+  scanController = undefined
+})
 
 watch(
   () => props.resources,
-  (resources) => {
-    currentResources.value = resources
+  () => {
+    void reloadAndScan()
+  },
+)
+watch(
+  () => props.sameNameVersionCandidates,
+  () => {
+    void reloadAndScan()
   },
 )
 
 async function reloadAndScan(): Promise<void> {
   if (busy.value) return
+  scanController?.abort()
+  const controller = new AbortController()
+  scanController = controller
+  const startedAt = performance.now()
   loadingHistory.value = true
   try {
-    await resourceService.backfillCardFingerprints()
-    await reloadHistory()
-    runScan()
+    const snapshot = await resourceService.loadVersionRecognitionSnapshot(async () => {
+      controller.signal.throwIfAborted()
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      controller.signal.throwIfAborted()
+    })
+    controller.signal.throwIfAborted()
+    const result = await recognizeStoredVersions(
+      snapshot.resources,
+      snapshot.versions,
+      {
+        sameNameVersionCandidates: props.sameNameVersionCandidates,
+      },
+      controller.signal,
+    )
+    if (scanController !== controller) return
+    currentResources.value = snapshot.resources
+    historicalVersions.value = snapshot.versions
+    groups.value = result.groups
+    report.value = result.report
+    finishScan(startedAt)
   } catch (error) {
+    if (controller.signal.aborted || scanController !== controller) return
     message.value = error instanceof Error ? error.message : '历史版本摘要读取失败'
   } finally {
-    loadingHistory.value = false
+    if (scanController === controller) {
+      loadingHistory.value = false
+      scanController = undefined
+    }
   }
 }
 
@@ -118,18 +175,34 @@ async function reloadHistory(): Promise<void> {
   historicalVersions.value = versions
 }
 
-function runScan(): void {
+async function runScan(): Promise<void> {
+  scanController?.abort()
+  const controller = new AbortController()
+  scanController = controller
   const startedAt = performance.now()
-  const scannedHistoricalDuplicateGroups = findHistoricalDuplicateGroups(
-    currentResources.value,
-    historicalVersions.value,
-  )
-  report.value = buildStoredVersionRecognitionReport(
-    currentResources.value,
-    historicalVersions.value,
-    groups.value,
-    scannedHistoricalDuplicateGroups,
-  )
+  loadingHistory.value = true
+  try {
+    const result = await recognizeStoredVersions(
+      currentResources.value,
+      historicalVersions.value,
+      {
+        sameNameVersionCandidates: props.sameNameVersionCandidates,
+      },
+      controller.signal,
+    )
+    if (scanController !== controller) return
+    groups.value = result.groups
+    report.value = result.report
+    finishScan(startedAt)
+  } finally {
+    if (scanController === controller) {
+      loadingHistory.value = false
+      scanController = undefined
+    }
+  }
+}
+
+function finishScan(startedAt: number): void {
   scanDuration.value = Math.max(1, Math.round(performance.now() - startedAt))
   lastScanAt.value = Date.now()
   selectedIds.value = new Set(
@@ -212,6 +285,8 @@ async function mergeSelected(): Promise<void> {
     }
     message.value = `已完成：${plan.length} 组、${merged} 个资源并入历史版本。`
     selectedIds.value = new Set()
+    await reloadHistory()
+    await runScan()
     emit('library-changed')
   } catch (error) {
     message.value = `${error instanceof Error ? error.message : '版本重识别失败'}${
@@ -254,7 +329,7 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
     }
     await reloadHistory()
     selectedHistoryVersionIds.value = new Set()
-    runScan()
+    await runScan()
     message.value = `清理完成：已从 ${selectedByOwner.length} 条时间线删除 ${deleted} 个历史版本；当前版本保留。`
     emit('library-changed')
   } catch (error) {
@@ -265,7 +340,7 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
     }`
     if (deletionStarted) {
       await reloadHistory()
-      runScan()
+      await runScan()
       emit('library-changed')
     }
   } finally {
@@ -402,14 +477,14 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
       </div>
       <div v-else-if="historicalCleanupGroups.length" class="version-recognition__history-list">
         <article
-          v-for="group in historicalCleanupGroups"
+          v-for="group in visibleHistoryCleanupGroups"
           :key="`history:${group.owner.id}`"
           class="version-recognition__history-group"
         >
           <header>
             <strong>{{ group.owner.name }}</strong>
             <span>当前版本 · 不会删除</span>
-            <small>{{ group.versions.length }} 个已存历史版本</small>
+            <small>{{ group.total }} 个已存历史版本</small>
           </header>
           <div class="version-recognition__history-items">
             <label
@@ -440,6 +515,23 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
         <strong>目前没有已存档的历史版本</strong>
         <p>如果要把资源库里尚未归入时间线的不同版本整理起来，请切换到“并入历史版本”。</p>
       </div>
+      <nav
+        v-if="!loadingHistory && historyPageCount > 1"
+        aria-label="历史版本分页"
+        class="version-recognition__toolbar"
+      >
+        <button type="button" :disabled="busy || historyPage <= 1" @click="historyPage--">
+          上一页
+        </button>
+        <span>第 {{ historyPage }} / {{ historyPageCount }} 页</span>
+        <button
+          type="button"
+          :disabled="busy || historyPage >= historyPageCount"
+          @click="historyPage++"
+        >
+          下一页
+        </button>
+      </nav>
       <footer v-if="historyCleanupCandidateCount">
         <span
           >已选 {{ selectedHistoryVersionCount }} /
@@ -447,7 +539,7 @@ async function cleanSelectedHistoryVersions(): Promise<void> {
         >
         <button
           type="button"
-          :disabled="busy || !selectedHistoryVersionCount"
+          :disabled="busy || loadingHistory || !selectedHistoryVersionCount"
           @click="cleanSelectedHistoryVersions"
         >
           {{ busy ? '处理中…' : '删除选中的历史版本' }}

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskCenter } from '../core/TaskCenter'
 const api = vi.hoisted(() => ({
   available: true,
   list: vi.fn(),
@@ -44,6 +45,29 @@ beforeEach(() => {
   api.remove.mockResolvedValue(undefined)
 })
 describe('resource download panel', () => {
+  it('shows the committed local processing phase instead of a stale cloud queued label', async () => {
+    api.list.mockResolvedValue({ jobs: [{ ...job, state: 'queued' }], recent: [], hasMore: false })
+    const operationId = `discord-resource-${job.id}`
+    taskCenter.start({
+      operationId,
+      name: job.name,
+      phase: '已下载，等待解析导入',
+      cancelable: false,
+    })
+    const wrapper = mount(DiscordResourceDownloadPanel)
+    try {
+      await flushPromises()
+      expect(wrapper.get('small[data-state="queued"]').text()).toBe('已下载，等待解析导入')
+      expect(wrapper.find(`button[aria-label="取消 ${job.name}"]`).exists()).toBe(false)
+      taskCenter.update(operationId, { phase: '已导入，正在确认云端' })
+      await flushPromises()
+      expect(wrapper.text()).toContain('已导入，正在确认云端')
+    } finally {
+      wrapper.unmount()
+      taskCenter.complete(operationId)
+      taskCenter.dismiss(operationId)
+    }
+  })
   it('folds imported receipts while keeping failed download actions visible', async () => {
     api.list.mockResolvedValue({
       jobs: [],

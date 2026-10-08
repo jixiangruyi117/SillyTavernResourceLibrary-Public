@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { confirmAction } from '../composables/UseConfirmDialog'
 import {
@@ -21,12 +21,22 @@ import {
   DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
   type DiscordInboxAutomationSettings,
 } from '../services/DiscordInboxAutomationSettings'
-import type { ResourceCommunitySourceView } from '../types/CommunitySource'
+import { autoBindPendingPostsToRecentCards } from '../services/DiscordInboxAutoBinding'
+import type {
+  CommunitySourceAutoBindCandidate,
+  ResourceCommunitySourceView,
+} from '../types/CommunitySource'
 import type { ResourceListSummary, ResourceSummary } from '../types/Resource'
 import ResourcePicker from './ResourcePicker.vue'
 
-const props = withDefaults(defineProps<{ mode?: 'inbox' | 'pairing' }>(), { mode: 'inbox' })
-const emit = defineEmits<{ 'open-resource': [resource: ResourceSummary] }>()
+const props = withDefaults(
+  defineProps<{ mode?: 'inbox' | 'pairing'; view?: 'inbox' | 'review' }>(),
+  { mode: 'inbox', view: 'inbox' },
+)
+const emit = defineEmits<{
+  'open-resource': [resource: ResourceSummary]
+  'organization-counts': [counts: { review: number; reviewHasMore: boolean; pending: number }]
+}>()
 const isPairing = computed(() => props.mode === 'pairing')
 type InboxStatus = Awaited<ReturnType<typeof readDiscordInboxStatus>>
 type InboxJob = Awaited<ReturnType<typeof listDiscordInboxJobs>>['recent'][number]
@@ -61,6 +71,9 @@ const recentAutoBindings = ref<
     sourceId: string
     rule?: string
   }>
+>([])
+const ambiguousAutoBindings = ref<
+  Array<{ sourceId: string; sourceTitle: string; candidates: CommunitySourceAutoBindCandidate[] }>
 >([])
 const autoBindingDetails = ref<
   Record<string, { view: ResourceCommunitySourceView; resource?: ResourceListSummary }>
@@ -149,7 +162,11 @@ async function refreshAutoBindings(): Promise<void> {
     ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
     ...(await discordInboxAutomationSettingsService.load()),
   }
-  const bindings = await communitySourceService.listRecentAutoBindings(50)
+  const [bindings, reviews, pendingCount] = await Promise.all([
+    communitySourceService.listRecentAutoBindings(50),
+    communitySourceService.listAutoBindReviews(50),
+    communitySourceService.countPendingSources(),
+  ])
   recentAutoBindings.value = bindings.map(({ source, binding }) => ({
     sourceTitle: source.title || 'Discord 帖子',
     resourceLabel:
@@ -158,6 +175,51 @@ async function refreshAutoBindings(): Promise<void> {
     sourceId: binding.sourceId,
     rule: binding.autoBindingRule,
   }))
+  ambiguousAutoBindings.value = reviews.map(({ source, candidates }) => ({
+    sourceId: source.id,
+    sourceTitle: source.title || 'Discord 帖子',
+    candidates,
+  }))
+  emit('organization-counts', {
+    review: recentAutoBindings.value.length + ambiguousAutoBindings.value.length,
+    reviewHasMore:
+      recentAutoBindings.value.length === 50 || ambiguousAutoBindings.value.length === 50,
+    pending: pendingCount,
+  })
+}
+
+async function chooseAmbiguousAutoBinding(
+  item: (typeof ambiguousAutoBindings.value)[number],
+  candidate: CommunitySourceAutoBindCandidate,
+): Promise<void> {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await communitySourceService.chooseAutoBindCandidate(item.sourceId, candidate.resourceId)
+    progress.value = `已将“${item.sourceTitle}”关联到“${candidate.resourceName}”。`
+    await refreshAutoBindings()
+    window.dispatchEvent(new Event('srl:community-sources-changed'))
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '绑定候选资源失败。'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function returnAmbiguousAutoBindingToPending(
+  item: (typeof ambiguousAutoBindings.value)[number],
+): Promise<void> {
+  if (actionBusy.value) return
+  actionBusy.value = true
+  try {
+    await communitySourceService.dismissAutoBindReview(item.sourceId)
+    progress.value = `已将“${item.sourceTitle}”退回待整理。`
+    await refreshAutoBindings()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '退回待整理失败。'
+  } finally {
+    actionBusy.value = false
+  }
 }
 
 async function toggleAutoBindingReview(
@@ -169,7 +231,11 @@ async function toggleAutoBindingReview(
     return
   }
   reviewExpandedId.value = key
-  if (autoBindingDetails.value[key]) return
+  if (autoBindingDetails.value[key]) {
+    await nextTick()
+    scrollToAutoBindingMatch(item, autoBindingDetails.value[key]!)
+    return
+  }
   actionBusy.value = true
   try {
     const [view, resources] = await Promise.all([
@@ -181,12 +247,76 @@ async function toggleAutoBindingReview(
       ...autoBindingDetails.value,
       [key]: { view, resource: resources.find((resource) => resource.id === item.resourceId) },
     }
+    await nextTick()
+    scrollToAutoBindingMatch(item, autoBindingDetails.value[key]!)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '无法读取自动关联内容。'
     reviewExpandedId.value = ''
   } finally {
     actionBusy.value = false
   }
+}
+
+type ReviewDetail = { view: ResourceCommunitySourceView; resource?: ResourceListSummary }
+type ReviewMatch = { target: string; text: string }
+
+function reviewMatch(
+  item: (typeof recentAutoBindings.value)[number],
+  detail: ReviewDetail,
+): ReviewMatch | undefined {
+  const resource = detail.resource
+  if (!resource) return undefined
+  if (item.rule === 'same-name') {
+    const title = detail.view.source.title ?? ''
+    if (title.toLocaleLowerCase().includes(resource.name.toLocaleLowerCase()))
+      return { target: 'title', text: resource.name }
+    for (const message of detail.view.messages) {
+      if (message.content.toLocaleLowerCase().includes(resource.name.toLocaleLowerCase()))
+        return { target: `message:${message.id}`, text: resource.name }
+    }
+  }
+  if (item.rule === 'same-author') {
+    const creator =
+      typeof resource.metadata.creator === 'string' ? resource.metadata.creator.trim() : ''
+    if (!creator) return undefined
+    const normalizeAuthor = (value: string) =>
+      value
+        .normalize('NFKC')
+        .trim()
+        .replace(/^dc\s*/iu, '')
+        .trim()
+        .toLocaleLowerCase()
+    for (const message of detail.view.messages) {
+      const match = message.content.match(/(?:^|\n)\s*(?:作者|author)\s*[:：]\s*([^\r\n]+)/iu)
+      if (match?.[1] && normalizeAuthor(match[1]) === normalizeAuthor(creator))
+        return { target: `message:${message.id}`, text: match[1].trim() }
+    }
+  }
+  return undefined
+}
+
+function highlightParts(content: string, matchText: string | undefined): string[] {
+  if (!matchText) return [content]
+  const index = content.toLocaleLowerCase().indexOf(matchText.toLocaleLowerCase())
+  return index < 0
+    ? [content]
+    : [
+        content.slice(0, index),
+        content.slice(index, index + matchText.length),
+        content.slice(index + matchText.length),
+      ]
+}
+
+function scrollToAutoBindingMatch(
+  item: (typeof recentAutoBindings.value)[number],
+  detail: ReviewDetail,
+): void {
+  const match = reviewMatch(item, detail)
+  if (!match) return
+  const element = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-auto-binding-target]'),
+  ).find((candidate) => candidate.dataset.autoBindingTarget === match.target)
+  element?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 async function confirmAutoBinding(item: (typeof recentAutoBindings.value)[number]): Promise<void> {
@@ -274,17 +404,40 @@ async function updateAutomationSetting(
   key: keyof DiscordInboxAutomationSettings,
   enabled: boolean,
 ): Promise<void> {
+  const wasEnabled = automationSettings.value[key]
   const next = { ...automationSettings.value, [key]: enabled }
   await discordInboxAutomationSettingsService.save(next)
   automationSettings.value = next
+  if (
+    enabled &&
+    !wasEnabled &&
+    (key === 'bindSameName' || key === 'bindSameAuthor' || key === 'bindForeground') &&
+    (next.bindSameName || next.bindSameAuthor)
+  ) {
+    try {
+      const bindings = await autoBindPendingPostsToRecentCards(
+        communitySourceService,
+        resourceService,
+        next,
+      )
+      await refreshAutoBindings()
+      if (bindings.length || next.bindSameName || next.bindSameAuthor)
+        window.dispatchEvent(new Event('srl:community-sources-changed'))
+    } catch (cause) {
+      error.value = `开关已开启，但回看最近角色卡失败：${cause instanceof Error ? cause.message : '请稍后重试。'}`
+    }
+  }
 }
 
 async function clearAutoBindings(): Promise<void> {
-  if (!recentAutoBindings.value.length || actionBusy.value) return
+  if ((!recentAutoBindings.value.length && !ambiguousAutoBindings.value.length) || actionBusy.value)
+    return
   actionBusy.value = true
   try {
     const count = await communitySourceService.clearRecentAutoBindings(50)
-    progress.value = `已取消 ${count} 条自动关联；帖子已回到待整理。`
+    const reviews = [...ambiguousAutoBindings.value]
+    for (const item of reviews) await communitySourceService.dismissAutoBindReview(item.sourceId)
+    progress.value = `已取消 ${count} 条自动关联，并将 ${reviews.length} 条候选退回待整理。`
     await refreshAutoBindings()
     window.dispatchEvent(new Event('srl:community-sources-changed'))
   } catch (cause) {
@@ -335,7 +488,7 @@ function openCloudCleanup(): void {
   cloudCleanupOpen.value = true
 }
 
-defineExpose({ openAutomationSettings, openCloudCleanup })
+defineExpose({ openAutomationSettings, openCloudCleanup, refreshAutoBindings })
 
 async function cancelPendingPost(job: InboxJob): Promise<void> {
   if (actionBusy.value) return
@@ -467,9 +620,13 @@ function jobState(job: InboxJob): string {
 
 onMounted(() => {
   window.addEventListener('srl:discord-inbox-updated', onProgress)
-  if (!isPairing.value) window.addEventListener('srl:receive-discord-inbox', onConnectionChanged)
-  void refresh()
-  if (!isPairing.value) void refreshAutoBindings()
+  if (!isPairing.value) {
+    window.addEventListener('srl:receive-discord-inbox', onConnectionChanged)
+    if (props.view === 'inbox') void refresh()
+    void refreshAutoBindings()
+  } else {
+    void refresh()
+  }
 })
 onBeforeUnmount(() => {
   disposed = true
@@ -480,11 +637,21 @@ onBeforeUnmount(() => {
 
 <template>
   <section
-    :class="isPairing ? 'discord-inbox-pairing' : 'discord-inbox'"
-    :aria-labelledby="isPairing ? 'discord-inbox-pairing-title' : 'discord-inbox-title'"
+    :class="[
+      isPairing ? 'discord-inbox-pairing' : 'discord-inbox',
+      view === 'review' && 'discord-inbox--review',
+    ]"
+    :aria-labelledby="
+      isPairing
+        ? 'discord-inbox-pairing-title'
+        : view === 'inbox'
+          ? 'discord-inbox-title'
+          : undefined
+    "
+    :aria-label="view === 'review' ? '自动绑定审核' : undefined"
     :aria-busy="loading || receiving"
   >
-    <header class="discord-inbox__header">
+    <header v-if="view === 'inbox' || isPairing" class="discord-inbox__header">
       <div class="discord-inbox__heading">
         <div class="discord-inbox__title">
           <strong :id="isPairing ? 'discord-inbox-pairing-title' : 'discord-inbox-title'">{{
@@ -520,64 +687,109 @@ onBeforeUnmount(() => {
         {{ receiving ? '正在领取…' : '领取' }}
       </button>
     </header>
-    <template v-if="configured && !isPairing">
-      <p v-if="pendingCount" class="discord-inbox__pending" role="status">
-        待领取 {{ pendingCount }}{{ hasMore ? '+' : '' }} 条
-      </p>
-      <details v-if="pendingJobs.length" class="discord-inbox__pending-jobs">
-        <summary>待领取帖子（{{ pendingJobs.length }}）</summary>
-        <ul aria-label="待领取的云端帖子">
-          <li v-for="job in pendingJobs" :key="job.id">
-            <span class="discord-inbox__job-title" :title="job.title || 'Discord 帖子'">{{
-              job.title || 'Discord 帖子'
-            }}</span>
-            <button type="button" :disabled="actionBusy" @click="cancelPendingPost(job)">
-              取消
-            </button>
-          </li>
-        </ul>
-        <p>取消会删除尚未领取的云端正文；已保存在本机的内容不受影响。</p>
-      </details>
-      <p v-if="progress" class="discord-inbox__progress" role="status">{{ progress }}</p>
-      <p v-if="status?.paired && status.isDefault === false" class="discord-inbox__note">
-        新帖子发往最近配对的目标；这里仍可领取之前的任务。
-      </p>
-      <details
-        v-if="recent.length"
-        class="discord-inbox__history"
-        :open="recent.some((job) => job.state === 'waiting_binding')"
-      >
-        <summary>最近收件记录（{{ recent.length }}）</summary>
-        <ul aria-label="最近收件进度">
-          <li v-for="job in recent" :key="job.id">
-            <span class="discord-inbox__post-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none">
-                <path d="M5 4h14v12H9l-4 4V4Z M8 8h8M8 12h5" />
-              </svg>
-            </span>
-            <span class="discord-inbox__job-title" :title="job.title || 'Discord 帖子'">{{
-              job.title || 'Discord 帖子'
-            }}</span>
-            <small :class="{ 'discord-inbox__waiting': job.state === 'waiting_binding' }">{{
-              jobState(job)
-            }}</small>
-          </li>
-        </ul>
-        <p>云端回执最长保留 7 天；已保存的本机帖子不会自动删除。</p>
-      </details>
-      <p v-else-if="status?.paired && !pendingCount && !loading && !error && !progress">
-        暂无新帖子。
-      </p>
-      <section v-if="recentAutoBindings.length" class="discord-inbox__auto-bindings">
+    <template v-if="!isPairing">
+      <template v-if="configured && view === 'inbox'">
+        <p v-if="view === 'inbox' && pendingCount" class="discord-inbox__pending" role="status">
+          待领取 {{ pendingCount }}{{ hasMore ? '+' : '' }} 条
+        </p>
+        <details v-if="view === 'inbox' && pendingJobs.length" class="discord-inbox__pending-jobs">
+          <summary>待领取帖子（{{ pendingJobs.length }}）</summary>
+          <ul aria-label="待领取的云端帖子">
+            <li v-for="job in pendingJobs" :key="job.id">
+              <span class="discord-inbox__job-title" :title="job.title || 'Discord 帖子'">{{
+                job.title || 'Discord 帖子'
+              }}</span>
+              <button type="button" :disabled="actionBusy" @click="cancelPendingPost(job)">
+                取消
+              </button>
+            </li>
+          </ul>
+          <p>取消会删除尚未领取的云端正文；已保存在本机的内容不受影响。</p>
+        </details>
+        <p v-if="view === 'inbox' && progress" class="discord-inbox__progress" role="status">
+          {{ progress }}
+        </p>
+        <p
+          v-if="view === 'inbox' && status?.paired && status.isDefault === false"
+          class="discord-inbox__note"
+        >
+          新帖子发往最近配对的目标；这里仍可领取之前的任务。
+        </p>
+        <details
+          v-if="view === 'inbox' && recent.length"
+          class="discord-inbox__history"
+          :open="recent.some((job) => job.state === 'waiting_binding')"
+        >
+          <summary>最近收件记录（{{ recent.length }}）</summary>
+          <ul aria-label="最近收件进度">
+            <li v-for="job in recent" :key="job.id">
+              <span class="discord-inbox__post-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M5 4h14v12H9l-4 4V4Z M8 8h8M8 12h5" />
+                </svg>
+              </span>
+              <span class="discord-inbox__job-title" :title="job.title || 'Discord 帖子'">{{
+                job.title || 'Discord 帖子'
+              }}</span>
+              <small :class="{ 'discord-inbox__waiting': job.state === 'waiting_binding' }">{{
+                jobState(job)
+              }}</small>
+            </li>
+          </ul>
+          <p>云端回执最长保留 7 天；已保存的本机帖子不会自动删除。</p>
+        </details>
+        <p
+          v-else-if="
+            view === 'inbox' && status?.paired && !pendingCount && !loading && !error && !progress
+          "
+        >
+          暂无新帖子。
+        </p>
+      </template>
+      <section v-if="view === 'review'" class="discord-inbox__auto-bindings">
         <header>
-          <div>
-            <strong>待确认的自动关联（{{ recentAutoBindings.length }}）</strong>
-            <small>查看正文和角色卡后确认；有误可替换或退回待整理。</small>
-          </div>
-          <button type="button" :disabled="actionBusy" @click="clearAutoBindings">
+          <span class="discord-inbox__review-count" role="status">
+            {{ recentAutoBindings.length + ambiguousAutoBindings.length }} 条待核对
+          </span>
+          <button
+            v-if="recentAutoBindings.length || ambiguousAutoBindings.length"
+            type="button"
+            :disabled="actionBusy"
+            @click="clearAutoBindings"
+          >
             全部退回待整理
           </button>
         </header>
+        <p v-if="!recentAutoBindings.length && !ambiguousAutoBindings.length">
+          暂无需要核对的帖子。
+        </p>
+        <article
+          v-for="item in ambiguousAutoBindings"
+          :key="`ambiguous:${item.sourceId}`"
+          class="discord-inbox__auto-binding-review"
+        >
+          <strong>{{ item.sourceTitle }}</strong>
+          <p>有多个匹配角色卡，请选择要关联的资源，或退回待整理。</p>
+          <ul>
+            <li v-for="candidate in item.candidates" :key="candidate.resourceId">
+              <span>{{ candidate.resourceName }} · {{ candidate.reason }}</span>
+              <button
+                type="button"
+                :disabled="actionBusy"
+                @click="chooseAmbiguousAutoBinding(item, candidate)"
+              >
+                关联此卡
+              </button>
+            </li>
+          </ul>
+          <button
+            type="button"
+            :disabled="actionBusy"
+            @click="returnAmbiguousAutoBindingToPending(item)"
+          >
+            退回待整理
+          </button>
+        </article>
         <ul>
           <li v-for="item in recentAutoBindings" :key="`${item.resourceId}:${item.sourceId}`">
             <div class="discord-inbox__auto-binding-summary">
@@ -638,13 +850,66 @@ onBeforeUnmount(() => {
                 <article>
                   <h4>帖子正文</h4>
                   <p
+                    v-if="
+                      autoBindingDetails[`${item.resourceId}:${item.sourceId}`].view.source.title
+                    "
+                    class="discord-inbox__review-title"
+                    :data-auto-binding-target="
+                      reviewMatch(item, autoBindingDetails[`${item.resourceId}:${item.sourceId}`])
+                        ?.target === 'title'
+                        ? 'title'
+                        : undefined
+                    "
+                  >
+                    <template
+                      v-for="(part, partIndex) in highlightParts(
+                        autoBindingDetails[`${item.resourceId}:${item.sourceId}`].view.source
+                          .title ?? '',
+                        reviewMatch(item, autoBindingDetails[`${item.resourceId}:${item.sourceId}`])
+                          ?.target === 'title'
+                          ? reviewMatch(
+                              item,
+                              autoBindingDetails[`${item.resourceId}:${item.sourceId}`],
+                            )?.text
+                          : undefined,
+                      )"
+                      :key="partIndex"
+                      ><mark v-if="partIndex === 1">{{ part }}</mark
+                      ><span v-else>{{ part }}</span></template
+                    >
+                  </p>
+                  <p
                     v-for="message in autoBindingDetails[`${item.resourceId}:${item.sourceId}`].view
                       .messages"
                     :key="message.id"
                     class="discord-inbox__review-message"
+                    :data-auto-binding-target="
+                      reviewMatch(item, autoBindingDetails[`${item.resourceId}:${item.sourceId}`])
+                        ?.target === `message:${message.id}`
+                        ? `message:${message.id}`
+                        : undefined
+                    "
                   >
                     <strong>{{ message.authorName }}</strong>
-                    <span>{{ message.content || '（没有文字正文）' }}</span>
+                    <span>
+                      <template
+                        v-for="(part, partIndex) in highlightParts(
+                          message.content || '（没有文字正文）',
+                          reviewMatch(
+                            item,
+                            autoBindingDetails[`${item.resourceId}:${item.sourceId}`],
+                          )?.target === `message:${message.id}`
+                            ? reviewMatch(
+                                item,
+                                autoBindingDetails[`${item.resourceId}:${item.sourceId}`],
+                              )?.text
+                            : undefined,
+                        )"
+                        :key="partIndex"
+                        ><mark v-if="partIndex === 1">{{ part }}</mark
+                        ><span v-else>{{ part }}</span></template
+                      >
+                    </span>
                   </p>
                 </article>
                 <article>
@@ -750,6 +1015,9 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="progress" class="discord-inbox__progress" role="status">{{ progress }}</p>
     </details>
+    <p v-if="progress && view === 'review'" class="discord-inbox__progress" role="status">
+      {{ progress }}
+    </p>
     <p v-if="error" class="discord-inbox__error" role="alert">{{ error }}</p>
   </section>
   <Teleport to="body">

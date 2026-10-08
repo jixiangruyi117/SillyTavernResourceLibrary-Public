@@ -1,6 +1,7 @@
 package buzz.jixiangruyi1207.srl;
 
 import android.net.Uri;
+import android.content.res.AssetManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
@@ -20,15 +21,15 @@ import java.net.URL;
 
 /** Installed official modules share the packaged shell's origin and Vue runtime. */
 final class OfficialAppWebViewClient extends BridgeWebViewClient {
-    private final Bridge capacitorBridge;
     private final File root;
     private final Uri origin;
+    private final AssetManager assets;
 
     OfficialAppWebViewClient(Bridge bridge) {
         super(bridge);
-        capacitorBridge = bridge;
         root = new File(bridge.getContext().getFilesDir(), "official-apps/assets");
         origin = Uri.parse(bridge.getLocalUrl());
+        assets = bridge.getContext().getAssets();
     }
 
     @Override
@@ -37,23 +38,26 @@ final class OfficialAppWebViewClient extends BridgeWebViewClient {
         if ("GET".equals(request.getMethod()) && origin.getScheme().equals(url.getScheme())
                 && origin.getAuthority().equals(url.getAuthority())) {
             String path = url.getPath();
-            // Packaged APKs can include APP catalogs and archives for offline installation.
-            // Missing .srlapp archives are downloaded from this same configured Public origin.
+            // Test APKs can carry official APP catalogs and archives for offline install.
+            // Release APKs omit optional archives, so fetch those from the hosted origin.
             if (path != null && path.startsWith("/official-apps/") && !path.contains("..")) {
                 try {
-                    InputStream stream = capacitorBridge.getContext().getAssets().open("public" + path);
-                    String mime = path.endsWith(".json") ? "application/json" : "application/zip";
+                    InputStream stream = assets.open("public" + path);
+                    String mime = path.endsWith(".json") ? "application/json"
+                        : path.endsWith(".srlapp") ? "application/zip" : "application/octet-stream";
                     return new WebResourceResponse(mime, null, 200, "OK",
                         Collections.singletonMap("Cache-Control", "no-store"), stream);
                 } catch (IOException ignored) {
                     if (path.matches("/official-apps/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\\.srlapp")) {
+                        // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=public-hosted-package-request
                         try {
                             return fetchHostedPackage(buildHostedPackageUrl(new URL(url.toString()), BuildConfig.SRL_PUBLIC_ASSET_ORIGIN));
                         } catch (IOException invalidRequest) {
                             return packageErrorResponse(503, "APP package download origin is not configured");
                         }
+                        // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=public-hosted-package-request
                     }
-                    // Catalogs are expected to be bundled in the APK.
+                    // Catalogs and shell assets are expected to be bundled in the APK.
                 }
             }
             if (path != null && path.matches("/assets/[A-Za-z0-9_.-]+") && !path.contains("..")) {
@@ -72,9 +76,14 @@ final class OfficialAppWebViewClient extends BridgeWebViewClient {
                 }
             }
         }
+        if (!origin.getScheme().equals(url.getScheme()) || !origin.getAuthority().equals(url.getAuthority())) {
+            WebResourceResponse preview = NativePreviewAssetPlugin.intercept(request);
+            if (preview != null) return preview;
+        }
         return super.shouldInterceptRequest(view, request);
     }
 
+    // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=public-hosted-package-url-validation
     static URL buildHostedPackageUrl(URL localUrl, String assetOrigin) throws IOException {
         if (assetOrigin == null || assetOrigin.isEmpty()) throw new IOException("APP package origin is not configured");
         String path = localUrl.getPath();
@@ -89,6 +98,8 @@ final class OfficialAppWebViewClient extends BridgeWebViewClient {
         }
         return new URL(origin.toString().replaceAll("/+$", "") + path);
     }
+
+    // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=public-hosted-package-url-validation
 
     private WebResourceResponse fetchHostedPackage(URL hostedUrl) {
         HttpURLConnection connection = null;
@@ -128,13 +139,16 @@ final class OfficialAppWebViewClient extends BridgeWebViewClient {
             return new WebResourceResponse(mimeType, null, status, reason, headers, managedStream);
         } catch (IOException error) {
             if (connection != null) connection.disconnect();
-            return packageErrorResponse(502, "Unable to download APP package");
+            byte[] message = "Unable to download official APP package".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return new WebResourceResponse("text/plain", "UTF-8", 502, "Bad Gateway",
+                Collections.emptyMap(), new ByteArrayInputStream(message));
         }
     }
-
+    // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=public-hosted-package-error
     private WebResourceResponse packageErrorResponse(int status, String message) {
         byte[] body = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         return new WebResourceResponse("text/plain", "UTF-8", status,
             status == 503 ? "Service Unavailable" : "Bad Gateway", Collections.emptyMap(), new ByteArrayInputStream(body));
     }
+    // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=public-hosted-package-error
 }

@@ -553,6 +553,39 @@ it('角色卡稳定来源 ID 不覆盖更高的卡内容相似度', () => {
 })
 
 describe('已导入资源批量版本重识别', () => {
+  it('旧哈希与完整指纹交叉重叠时，仍能通过不同哈希的第四项连全强版本组', () => {
+    const resources = ['a', 'b', 'c', 'd'].map((id, index) =>
+      summary({
+        id,
+        fileName: `${id}.json`,
+        mimeType: 'application/json',
+        contentHash: index < 3 ? 'old-shared-hash' : 'different-file',
+        metadata: { cardContentHash: `full-${id}`, cardCoreHash: 'same-core' },
+        updatedAt: index + 1,
+      }),
+    )
+    for (const sameNameVersionCandidates of [false, true]) {
+      const groups = findStoredVersionGroups(resources, [], { sameNameVersionCandidates })
+      expect(groups).toHaveLength(1)
+      expect(groups[0]).toMatchObject({ matchKind: 'version', recommendedKeeperId: 'd' })
+      expect(groups[0]!.resources.map((entry) => entry.id)).toEqual(['d', 'c'])
+    }
+  })
+
+  it('万项共享核心指纹保持一个候选组与最新保留项', () => {
+    const resources = Array.from({ length: 10000 }, (_, index) =>
+      summary({
+        id: `scale-${index}`,
+        contentHash: `file-${index}`,
+        metadata: { cardContentHash: `full-${index}`, cardCoreHash: 'shared-core' },
+        updatedAt: index,
+      }),
+    )
+    const groups = findStoredVersionGroups(resources)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.resources).toHaveLength(10000)
+    expect(groups[0]!.recommendedKeeperId).toBe('scale-9999')
+  })
   it('扫描报告会说明覆盖量、候选以及被分流到重复清理的内容', () => {
     const resources = [
       summary({

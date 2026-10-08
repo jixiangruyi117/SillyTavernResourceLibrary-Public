@@ -5,14 +5,19 @@ import { AppDatabase } from '../database/AppDatabase'
 import { clearOfficialAppData } from './OfficialAppDataStorage'
 import { createFrontendWorkshopProject } from '../types/FrontendWorkshopProject'
 const clearCredential = vi.hoisted(() => vi.fn(async () => {}))
+const clearPetAssets = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock('../services/LocalCredentialStore', () => ({
   localCredentialStore: { clear: clearCredential },
+}))
+vi.mock('../services/ProductAssistantPetAssets', () => ({
+  clearAssistantPetAssets: clearPetAssets,
 }))
 let database: AppDatabase
 beforeEach(() => {
   database = new AppDatabase(`official-data-test-${crypto.randomUUID()}`)
   localStorage.clear()
   clearCredential.mockClear()
+  clearPetAssets.mockClear()
 })
 afterEach(async () => {
   await database.delete()
@@ -50,4 +55,19 @@ it('clears provider credentials without clearing the shared main API or image ho
     ['image-generation:custom'],
   ])
   expect(localStorage.getItem('srl.frontendWorkshop.imageGeneration.config.v1')).toBeNull()
+})
+it('clears assistant-only local records and pet cache without touching shared settings', async () => {
+  await database.settings.bulkPut([
+    { id: 'assistant.active', value: 'chat-id', updatedAt: 1 },
+    { id: 'assistant.preferences', value: { name: '蒜惹菈' }, updatedAt: 1 },
+    { id: 'assistant.chat:chat-id', value: { history: [] }, updatedAt: 1 },
+    { id: 'shared-setting', value: 'keep', updatedAt: 1 },
+  ])
+
+  await clearOfficialAppData(database, 'assistant')
+
+  expect(await database.settings.where('id').startsWith('assistant.').count()).toBe(0)
+  expect((await database.settings.get('shared-setting'))?.value).toBe('keep')
+  expect(localStorage.getItem('srl.officialApps.dataRevision.assistant')).toBeTruthy()
+  expect(clearPetAssets).toHaveBeenCalledOnce()
 })

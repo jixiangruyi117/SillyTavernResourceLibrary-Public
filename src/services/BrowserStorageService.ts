@@ -8,6 +8,12 @@ import {
   appendBridgeTransferLog,
   getBridgeTransferDraft,
   setBridgeTransferDraft,
+  getTavernChatCarryScripts,
+  setTavernChatCarryScripts,
+  getTavernSendContent,
+  setTavernSendContent,
+  getModifiedResourceSyncTags,
+  setModifiedResourceSyncTags,
   getPresetStitchDraft,
   setPresetStitchDraft,
   clearPresetStitchDraft,
@@ -62,6 +68,7 @@ import {
   type CustomCssPreset,
   type PortableAppearanceSettings,
   type PortableGeneralPreferences,
+  type TavernSendContent,
   type CabinetLayoutEntry,
   type PresetStitchDraft,
 } from '../types/BrowserPreferences'
@@ -164,13 +171,13 @@ const SEARCH_HISTORY_LIMIT = 10
 export class BrowserStorageService {
   private readonly maintenance?: Pick<
     IndexedDbResourceHealthStorage,
-    'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory'
+    'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory' | 'optimizeDerivedSummaries'
   >
 
   constructor(
     maintenance?: Pick<
       IndexedDbResourceHealthStorage,
-      'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory'
+      'legacyLibraryHistoryCleanup' | 'clearLegacyLibraryHistory' | 'optimizeDerivedSummaries'
     >,
   ) {
     this.maintenance = maintenance
@@ -183,6 +190,11 @@ export class BrowserStorageService {
   async clearLegacyLibraryHistory(plan: LegacyLibraryHistoryCleanup): Promise<number> {
     if (!this.maintenance) throw new Error('本机存储维护未初始化')
     return this.maintenance.clearLegacyLibraryHistory(plan)
+  }
+
+  async optimizeDerivedSummaries() {
+    if (!this.maintenance) throw new Error('本机存储维护未初始化')
+    return this.maintenance.optimizeDerivedSummaries()
   }
 
   exportStitchWork(): {
@@ -238,6 +250,9 @@ export class BrowserStorageService {
 
   exportGeneralPreferences(): PortableGeneralPreferences {
     return {
+      tavernChatCarryScripts: this.getTavernChatCarryScripts(),
+      tavernSendContent: this.getTavernSendContent(),
+      modifiedResourceSyncTags: this.getModifiedResourceSyncTags(),
       previewPolicy: this.getPreviewPolicy(),
       extractCharacterAssets: this.getExtractCharacterAssets(),
       hideCharacterAssets: this.getHideCharacterAssets(),
@@ -267,6 +282,11 @@ export class BrowserStorageService {
   }
 
   importGeneralPreferences(value: PortableGeneralPreferences): void {
+    if (value?.tavernChatCarryScripts !== undefined)
+      this.setTavernChatCarryScripts(value.tavernChatCarryScripts)
+    if (value?.tavernSendContent !== undefined) this.setTavernSendContent(value.tavernSendContent)
+    if (value?.modifiedResourceSyncTags !== undefined)
+      this.setModifiedResourceSyncTags(value.modifiedResourceSyncTags)
     this.setPreviewPolicy({
       allowRemoteResources: value?.previewPolicy?.allowRemoteResources === true,
       allowScripts: value?.previewPolicy?.allowScripts === true,
@@ -810,6 +830,29 @@ export class BrowserStorageService {
     return getBridgeTransferLog()
   }
 
+  getTavernChatCarryScripts(): boolean {
+    return getTavernChatCarryScripts()
+  }
+  setTavernChatCarryScripts(enabled: boolean): void {
+    setTavernChatCarryScripts(enabled)
+  }
+
+  getTavernSendContent(): TavernSendContent {
+    return getTavernSendContent()
+  }
+
+  getModifiedResourceSyncTags(): boolean {
+    return getModifiedResourceSyncTags()
+  }
+
+  setModifiedResourceSyncTags(enabled: boolean): void {
+    setModifiedResourceSyncTags(enabled)
+  }
+
+  setTavernSendContent(content: TavernSendContent): void {
+    setTavernSendContent(content)
+  }
+
   appendBridgeTransferLog(entries: string[]): string[] {
     return appendBridgeTransferLog(entries)
   }
@@ -922,22 +965,6 @@ export class BrowserStorageService {
 
   hasAcknowledgedProjectNotice(): boolean {
     return hasAcknowledgedProjectNotice()
-  }
-
-  hasAcknowledgedResourcePlazaNotice(version: string): boolean {
-    try {
-      return localStorage.getItem('srl.resourcePlaza.acknowledgedNotice') === version
-    } catch {
-      return false
-    }
-  }
-
-  acknowledgeResourcePlazaNotice(version: string): void {
-    try {
-      localStorage.setItem('srl.resourcePlaza.acknowledgedNotice', version)
-    } catch {
-      // Continue this visit; unavailable storage requires acknowledgement next time.
-    }
   }
 
   async hasAcknowledgedProjectNoticePersisted(): Promise<boolean> {

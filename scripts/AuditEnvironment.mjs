@@ -1,7 +1,7 @@
 /* global document, localStorage, window */
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import process from 'node:process'
 import { URL } from 'node:url'
 import { chromium, webkit } from 'playwright-core'
@@ -51,6 +51,25 @@ export async function launchAuditBrowser(environment = auditEnvironment(), optio
   process.once('SIGTERM', stop)
   browser.on('disconnected', () => process.removeListener('SIGTERM', stop))
   return browser
+}
+
+export async function createAuditStorageContext(browser, environment, options = {}) {
+  // Windows WebKit's ephemeral contexts reject even a single Blob in an empty IDB.
+  // Keep the profile in this run's directory: its default non-ASCII temp path also fails IDB.
+  if (
+    process.platform === 'win32' &&
+    environment.engine === 'webkit' &&
+    environment.mode === 'fixture'
+  ) {
+    const { storageState: _storageState, ...contextOptions } = options
+    await mkdir(environment.outputDir, { recursive: true })
+    const profile = await mkdtemp(resolve(environment.outputDir, 'webkit-storage-'))
+    return webkit.launchPersistentContext(profile, {
+      ...auditBrowserOptions(process.env, 'webkit'),
+      ...contextOptions,
+    })
+  }
+  return browser.newContext(options)
 }
 
 let networkRequestId = 0

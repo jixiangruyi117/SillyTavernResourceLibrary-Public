@@ -12,8 +12,21 @@ describe('lazy panel style ownership', () => {
     ['../components/ExtractedAssetCleaner.vue', '../styles/DuplicateCleaner.css'],
     ['../components/ParsedCharacterTagCleaner.vue', '../styles/DuplicateCleaner.css'],
     ['../components/VersionImportDialog.vue', '../styles/VersionArchive.css'],
+    ['../components/FolderLibraryView.vue', '../styles/FolderLibrary.css'],
   ])('%s loads its required styles directly', (componentPath, stylesheet) => {
-    expect(source(componentPath)).toContain(stylesheet)
+    const component = source(componentPath)
+    if (componentPath.endsWith('FolderLibraryView.vue'))
+      expect(component).toContain('<style src="../styles/FolderLibrary.css"></style>')
+    else expect(component).toContain(stylesheet)
+  })
+
+  it('keeps Draw results and action controls with the feature desktop owner', () => {
+    const featureDesktop = source('./FeatureDesktop.css')
+    const appearanceStudio = source('./AppearanceStudio.css')
+    expect(featureDesktop).toContain('.draw-actions {')
+    expect(featureDesktop).toContain('.draw-result-card {')
+    expect(appearanceStudio).not.toContain('.draw-actions {')
+    expect(appearanceStudio).not.toContain('.draw-result-card {')
   })
 
   it('keeps cleaner layout rules with their owner and loads overlay rules at the app entry', () => {

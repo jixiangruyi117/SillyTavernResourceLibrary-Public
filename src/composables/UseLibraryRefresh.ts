@@ -19,18 +19,38 @@ interface LibraryRefreshContext {
 
 export function useLibraryRefresh(getContext: () => LibraryRefreshContext) {
   let generation = 0
+  function publishResources(storedResources: ResourceSummary[], current: number): void {
+    if (current !== generation) return
+    getContext().resources.value = storedResources
+    window.dispatchEvent(
+      new CustomEvent('srl:library-resources-changed', { detail: storedResources }),
+    )
+  }
+
+  /** Reuse a committed catalogue only if no newer refresh or local list edit intervened. */
+  function prepareResourceRefresh(): (resources?: ResourceSummary[]) => Promise<void> {
+    const current = generation
+    const resources = getContext().resources.value
+    return async (storedResources) => {
+      if (
+        !storedResources ||
+        current !== generation ||
+        resources !== getContext().resources.value
+      ) {
+        await loadResources()
+        return
+      }
+      publishResources(storedResources, ++generation)
+    }
+  }
+
   async function loadResources(): Promise<void> {
     const context = getContext()
 
     const current = ++generation
     try {
       const storedResources = await resourceService.listResourceListSummaries()
-      if (current === generation) {
-        context.resources.value = storedResources
-        window.dispatchEvent(
-          new CustomEvent('srl:library-resources-changed', { detail: storedResources }),
-        )
-      }
+      publishResources(storedResources, current)
     } catch (error) {
       context.showNotice('资源列表读取失败，已保留上次显示的资源')
       throw error
@@ -47,10 +67,7 @@ export function useLibraryRefresh(getContext: () => LibraryRefreshContext) {
       categoryService.list(),
     ])
     if (current !== generation) return
-    context.resources.value = storedResources
-    window.dispatchEvent(
-      new CustomEvent('srl:library-resources-changed', { detail: storedResources }),
-    )
+    publishResources(storedResources, current)
     rebuildResourceReferenceIndex(
       storedResources,
       browserStorageService.getChatLoadouts(),
@@ -97,6 +114,7 @@ export function useLibraryRefresh(getContext: () => LibraryRefreshContext) {
     )
   }
   return {
+    prepareResourceRefresh,
     loadResources,
     loadLibrary,
     handleLibraryChanged,

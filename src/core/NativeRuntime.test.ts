@@ -5,8 +5,10 @@ const nativeMocks = vi.hoisted(() => ({
   backHandler: undefined as (() => void) | undefined,
   urlOpenHandler: undefined as ((event: { url: string }) => void) | undefined,
   shortcutHandler: undefined as ((event: { action?: string }) => void) | undefined,
+  shareHandlers: {} as Record<string, (event: unknown) => void>,
   minimizeApp: vi.fn(),
   takePending: vi.fn().mockResolvedValue({}),
+  resumeDeferredDiscordImports: vi.fn().mockResolvedValue({ resumed: 0 }),
   shortcutListenerReady: Promise.resolve(),
 }))
 
@@ -30,15 +32,57 @@ vi.mock('@capacitor/core', () => ({
     addListener: vi.fn(async (event: string, handler: (value: { action?: string }) => void) => {
       await nativeMocks.shortcutListenerReady
       if (event === 'shortcut') nativeMocks.shortcutHandler = handler
+      else nativeMocks.shareHandlers[event] = handler as (value: unknown) => void
       return { remove: vi.fn() }
     }),
     takePending: nativeMocks.takePending,
+    resumeDeferredDiscordImports: nativeMocks.resumeDeferredDiscordImports,
   }),
 }))
 
 import { createNativeResourceDeepLink, installNativeRuntime } from './NativeRuntime'
+import { noticeCenter } from './NoticeCenter'
 
 describe('NativeRuntime back handling', () => {
+  it('shows committed native binding results in the existing notice center and updates pending sources', async () => {
+    const changed = vi.fn()
+    window.addEventListener('srl:community-sources-changed', changed)
+    installNativeRuntime()
+    await vi.waitFor(() =>
+      expect(nativeMocks.shareHandlers.autoBindingsCommitted).toBeTypeOf('function'),
+    )
+    vi.useFakeTimers()
+    try {
+      nativeMocks.shareHandlers.autoBindingsCommitted?.({
+        bindings: [
+          {
+            sourceId: 'native-post',
+            resourceId: 'native-card',
+            sourceTitle: '帖子 A',
+            resourceName: '卡 A',
+          },
+        ],
+      })
+      expect(noticeCenter.list()).toContainEqual(
+        expect.objectContaining({
+          id: 'discord-auto-binding:native-post:native-card',
+          message: '帖子“帖子 A”已绑定角色卡“卡 A”',
+          persistent: true,
+        }),
+      )
+      expect(changed).toHaveBeenCalledOnce()
+      vi.advanceTimersByTime(5000)
+      expect(
+        noticeCenter
+          .list()
+          .some((notice) => notice.id === 'discord-auto-binding:native-post:native-card'),
+      ).toBe(true)
+    } finally {
+      vi.useRealTimers()
+      window.removeEventListener('srl:community-sources-changed', changed)
+      noticeCenter.dismiss('discord-auto-binding:native-post:native-card')
+    }
+  })
   it('opens the inbox from the native receive notification without exposing credentials', async () => {
     const opened = vi.fn()
     window.addEventListener('srl:native-deep-link', opened)
@@ -54,8 +98,10 @@ describe('NativeRuntime back handling', () => {
     nativeMocks.backHandler = undefined
     nativeMocks.urlOpenHandler = undefined
     nativeMocks.shortcutHandler = undefined
+    nativeMocks.shareHandlers = {}
     nativeMocks.minimizeApp.mockClear()
     nativeMocks.takePending.mockClear()
+    nativeMocks.resumeDeferredDiscordImports.mockClear()
     nativeMocks.shortcutListenerReady = Promise.resolve()
   })
 
@@ -82,6 +128,24 @@ describe('NativeRuntime back handling', () => {
 
     releaseListener()
     await vi.waitFor(() => expect(nativeMocks.takePending).toHaveBeenCalledTimes(1))
+  })
+
+  it('收到下载完成回调后重新检查仍待导入的原生资源', async () => {
+    installNativeRuntime()
+    await vi.waitFor(() =>
+      expect(nativeMocks.shareHandlers.discordDownloadCompleted).toBeTypeOf('function'),
+    )
+    await vi.waitFor(() =>
+      expect(nativeMocks.resumeDeferredDiscordImports).toHaveBeenCalledTimes(1),
+    )
+    await Promise.resolve()
+    nativeMocks.resumeDeferredDiscordImports.mockClear()
+
+    nativeMocks.shareHandlers.discordDownloadCompleted?.({
+      token: 'discord-url-11111111-1111-1111-1111-111111111111',
+    })
+
+    expect(nativeMocks.resumeDeferredDiscordImports).toHaveBeenCalledTimes(1)
   })
 })
 

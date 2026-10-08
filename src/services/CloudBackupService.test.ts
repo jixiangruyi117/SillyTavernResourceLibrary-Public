@@ -161,6 +161,64 @@ describe('CloudBackupService V3', () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
   })
 
+  it.each(['github', 'webdav'] as const)(
+    'releases the backup lock after %s inventory failure so the same instance can retry',
+    async (provider) => {
+      const service = createService(
+        {
+          listSummaries: vi.fn(async () => []),
+          listVersions: vi.fn(async () => []),
+          listVersionSummaries: vi.fn(async () => []),
+        } as unknown as ResourceService,
+        { list: vi.fn(async () => []) } as unknown as CategoryService,
+      ) as unknown as {
+        createBackup: CloudBackupService['createBackup']
+        getSnapshot: CloudBackupService['getSnapshot']
+        getGitHubRelease: ReturnType<typeof vi.fn>
+        listGitHubObjectContainers: ReturnType<typeof vi.fn>
+        listGitHubAssets: ReturnType<typeof vi.fn>
+        uploadGitHubAsset: ReturnType<typeof vi.fn>
+        ensureWebDavFolder: ReturnType<typeof vi.fn>
+        listWebDavObjects: ReturnType<typeof vi.fn>
+        uploadWebDavObject: ReturnType<typeof vi.fn>
+        prune: ReturnType<typeof vi.fn>
+      }
+      service.getGitHubRelease = vi.fn(async (_config, _secret, _create, tag) => ({
+        id: tag === 'srl-cloud-snapshots' ? 10 : 20,
+        tag_name: tag,
+      }))
+      service.listGitHubAssets = vi.fn(async () => [])
+      service.uploadGitHubAsset = vi.fn(async (_config, _secret, _id, name, blob: Blob) => ({
+        id: 30,
+        name,
+        size: blob.size,
+        state: 'uploaded',
+        created_at: new Date().toISOString(),
+      }))
+      service.ensureWebDavFolder = vi.fn(async () => undefined)
+      service.uploadWebDavObject = vi.fn(async () => undefined)
+      const inventory = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('fixture inventory interrupted'))
+        .mockResolvedValue([])
+      service.listGitHubObjectContainers = inventory
+      service.listWebDavObjects = inventory
+      service.prune = vi.fn(async () => 0)
+      const config = provider === 'github' ? githubConfig : webDavConfig
+      await expect(service.createBackup(config, 'fixture')).rejects.toThrow(
+        'fixture inventory interrupted',
+      )
+      expect(service.getSnapshot().status.lastError).toContain('fixture inventory interrupted')
+      expect(service.uploadGitHubAsset).not.toHaveBeenCalled()
+      expect(service.uploadWebDavObject).not.toHaveBeenCalled()
+      await expect(service.createBackup(config, 'fixture')).resolves.toMatchObject({
+        kind: provider === 'github' ? 'githubSnapshot' : 'webdavSnapshot',
+      })
+      expect(inventory).toHaveBeenCalledTimes(2)
+      expect(service.getSnapshot().status.lastError).toBeUndefined()
+    },
+  )
+
   it('persists a Web credential in encrypted IndexedDB without localStorage/sessionStorage plaintext', async () => {
     vi.stubGlobal(
       'fetch',
@@ -524,6 +582,7 @@ describe('CloudBackupService V3', () => {
   it('rotates GitHub immutable object containers at the 900-object threshold', async () => {
     const service = createService() as unknown as {
       getGitHubRelease: ReturnType<typeof vi.fn>
+      listGitHubObjectContainers: ReturnType<typeof vi.fn>
       listGitHubAssets: ReturnType<typeof vi.fn>
       uploadGitHubAsset: ReturnType<typeof vi.fn>
       confirmGitHubAssetSize: ReturnType<typeof vi.fn>
@@ -533,6 +592,9 @@ describe('CloudBackupService V3', () => {
         snapshot: CreatedStructuredSnapshot,
       ) => Promise<unknown>
     }
+    service.listGitHubObjectContainers = vi.fn(async () => [
+      { id: 20, tag_name: 'srl-cloud-objects-0001' },
+    ])
     let secondContainerCreated = false
     let nextAssetId = 0
     service.getGitHubRelease = vi.fn(async (_config, _secret, create, tag) => {
@@ -580,6 +642,7 @@ describe('CloudBackupService V3', () => {
   it('never commits the GitHub manifest when the current object still fails', async () => {
     const service = createService() as unknown as {
       getGitHubRelease: ReturnType<typeof vi.fn>
+      listGitHubObjectContainers: ReturnType<typeof vi.fn>
       listGitHubAssets: ReturnType<typeof vi.fn>
       uploadGitHubAsset: ReturnType<typeof vi.fn>
       uploadGitHubStructuredBackup: (
@@ -594,6 +657,7 @@ describe('CloudBackupService V3', () => {
       return undefined
     })
     service.listGitHubAssets = vi.fn(async () => [])
+    service.listGitHubObjectContainers = vi.fn(async () => [])
     service.uploadGitHubAsset = vi.fn(async () => {
       throw new Error('network down')
     })
@@ -662,6 +726,8 @@ describe('CloudBackupService V3', () => {
       expect.objectContaining(githubConfig),
       'token',
       'snapshot.srlmanifest.v3.json.gz',
+      false,
+      expect.objectContaining({ version: 3 }),
     )
     service.reuseUnchangedStructuredBackup = vi.fn(async () => ({
       id: 'manifest-1',
@@ -672,6 +738,9 @@ describe('CloudBackupService V3', () => {
     }))
     const second = await service.createBackup()
     expect(second.unchanged).toBe(true)
+    expect(resourceService.listSummaries).toHaveBeenCalledTimes(2)
+    expect(resourceService.listVersionSummaries).toHaveBeenCalledTimes(2)
+    expect(categoryService.list).toHaveBeenCalledTimes(2)
     expect(service.uploadGitHubStructuredBackup).toHaveBeenCalledOnce()
     expect(resourceService.get).toHaveBeenCalledOnce()
   })
@@ -835,5 +904,83 @@ describe('CloudBackupService V3', () => {
       [],
       expect.any(String),
     )
+  })
+})
+
+describe('cloud retention no-op', () => {
+  it('reuses the committed manifest while checking expired snapshots', async () => {
+    const service = createService() as unknown as {
+      prune: (
+        config: GitHubBackupConfig,
+        secret: string,
+        protectedObjectKey: string,
+        deep: boolean,
+        snapshot: StructuredSnapshot,
+      ) => Promise<number>
+      listRetentionBackups: ReturnType<typeof vi.fn>
+      readGitHubStructuredSnapshot: ReturnType<typeof vi.fn>
+      githubFetch: ReturnType<typeof vi.fn>
+    }
+    const current = {
+      id: 'recent',
+      objectKey: 'recent.srlmanifest.v3.json.gz',
+      kind: 'githubSnapshot' as const,
+      createdAt: 2,
+      size: 10,
+    }
+    const expired = { ...current, id: 'expired', objectKey: 'expired.json.gz', createdAt: 1 }
+    const snapshot: StructuredSnapshot = {
+      format: 'srl-structured-cloud-snapshot',
+      version: 3,
+      createdAt: '2026-10-08T00:00:00.000Z',
+      categories: [],
+      resources: [],
+      versions: [],
+      portableData: { version: 1 },
+    }
+    service.listRetentionBackups = vi.fn(async () => [current, expired])
+    service.readGitHubStructuredSnapshot = vi.fn(async (_config, _secret, item) => {
+      if (item.id === current.id) throw new Error('unnecessary committed-manifest download')
+      return snapshot
+    })
+    service.githubFetch = vi.fn(async () => new Response(null, { status: 204 }))
+    expect(
+      await service.prune(
+        { ...githubConfig, retention: 1 },
+        'token',
+        current.objectKey,
+        false,
+        snapshot,
+      ),
+    ).toBe(1)
+    expect(service.readGitHubStructuredSnapshot).toHaveBeenCalledOnce()
+    expect(service.readGitHubStructuredSnapshot.mock.calls[0]?.[2]).toEqual(expired)
+    expect(service.githubFetch).toHaveBeenCalledWith(
+      { ...githubConfig, retention: 1 },
+      'token',
+      '/releases/assets/expired',
+      { method: 'DELETE' },
+    )
+  })
+  it('does not download retained manifests when no snapshot expired and no orphan is pending', async () => {
+    const service = createService() as unknown as {
+      prune: (config: GitHubBackupConfig, secret: string) => Promise<number>
+      listRetentionBackups: ReturnType<typeof vi.fn>
+      readGitHubStructuredSnapshot: ReturnType<typeof vi.fn>
+    }
+    service.listRetentionBackups = vi.fn(async () => [
+      {
+        id: 'recent',
+        objectKey: 'recent.srlmanifest.v3.json.gz',
+        kind: 'githubSnapshot',
+        createdAt: 1,
+        size: 10,
+      },
+    ])
+    service.readGitHubStructuredSnapshot = vi.fn(async () => {
+      throw new Error('unnecessary download')
+    })
+    expect(await service.prune(githubConfig, 'token')).toBe(0)
+    expect(service.readGitHubStructuredSnapshot).not.toHaveBeenCalled()
   })
 })

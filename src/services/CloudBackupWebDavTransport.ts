@@ -40,11 +40,7 @@ export async function ensureWebDavFolder(
   config: WebDavBackupConfig,
   secret: string,
 ): Promise<void> {
-  for (const folder of [
-    normalizeFolder(config.folder),
-    `${normalizeFolder(config.folder)}/objects`,
-    `${normalizeFolder(config.folder)}/snapshots`,
-  ]) {
+  const ensure = async (folder: string): Promise<void> => {
     const response = await context.cloudFetch(
       joinUrl(config.baseUrl, folder),
       {
@@ -57,6 +53,9 @@ export async function ensureWebDavFolder(
       throw cloudHttpError(`WebDAV 无法创建备份文件夹（${response.status}）`, response.status)
     }
   }
+  const root = normalizeFolder(config.folder)
+  await ensure(root)
+  await Promise.all([ensure(`${root}/objects`), ensure(`${root}/snapshots`)])
 }
 
 export async function uploadWebDavStructuredBackup(
@@ -146,15 +145,12 @@ export async function uploadWebDavStructuredBackup(
     ]),
   )
   const objectKeys = snapshot.objectPlans.map((plan) => `objects/${plan.name}`)
-  const planByName = new Map(snapshot.objectPlans.map((plan) => [plan.name, plan]))
-  const webJob = await context.jobStore.begin('webdav', planHash, objectKeys)
-  for (const objectKey of objectKeys) {
-    const present = existing.get(objectKey)
-    const name = objectKey.slice('objects/'.length)
-    if (present?.size === planByName.get(name)?.size) {
-      await context.jobStore.markObject(webJob, objectKey, 'verified')
-    }
-  }
+  const webJob = await context.jobStore.begin(
+    'webdav',
+    planHash,
+    objectKeys,
+    objectKeys.filter((key) => existing.has(key)),
+  )
   let completedJobs = 0
   try {
     await mapWithConcurrency(jobs, 2, async (plan) => {
@@ -364,8 +360,9 @@ export async function listWebDavObjects(
   if (context.activeWebDavInventory?.key === inventoryKey) {
     return [...context.activeWebDavInventory.objects.values()]
   }
-  const objects: WebDavObject[] = []
-  for (const directory of directories) {
+  const byDirectory = new Map<string, WebDavObject[]>()
+  await mapWithConcurrency([...directories], 3, async (directory) => {
+    const objects: WebDavObject[] = []
     const response = await context.cloudFetch(
       joinUrl(config.baseUrl, normalizeFolder(config.folder), directory),
       {
@@ -374,7 +371,7 @@ export async function listWebDavObjects(
       },
       'webdav',
     )
-    if (response.status === 404 && directory) continue
+    if (response.status === 404 && directory) return
     if (!response.ok && response.status !== 207) {
       throw cloudHttpError(`WebDAV 列表读取失败（${response.status}）`, response.status)
     }
@@ -397,7 +394,9 @@ export async function listWebDavObjects(
         createdAt: Date.parse(modified) || 0,
       })
     }
-  }
+    byDirectory.set(directory, objects)
+  })
+  const objects = directories.flatMap((directory) => byDirectory.get(directory) ?? [])
   if (context.activeMetrics && directories.length === 3) {
     context.activeWebDavInventory = {
       key: inventoryKey,

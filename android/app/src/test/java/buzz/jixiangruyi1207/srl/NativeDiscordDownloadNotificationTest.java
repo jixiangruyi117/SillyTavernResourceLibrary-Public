@@ -9,12 +9,65 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import androidx.work.ExistingWorkPolicy;
 import org.json.JSONObject;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 public class NativeDiscordDownloadNotificationTest {
+    @Test public void finishedFailuresCannotBlockLaterCyclesButRunningRetriesStillWait() throws Exception {
+        for (String state : new String[]{"deferred", "native_database_unavailable"}) {
+            JSONObject metadata = new JSONObject().put("nativeImportOutcome", new JSONObject().put("state", state).put("message", "原始失败原因"))
+                .put("nativeCharacterCardResult", new JSONObject().put("state", "parsed"));
+            assertFalse(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(metadata, false));
+            assertTrue(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(metadata, true));
+            assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(metadata));
+            assertEquals("原始失败原因", metadata.getJSONObject("nativeImportOutcome").getString("message"));
+        }
+        JSONObject interrupted = new JSONObject();
+        assertFalse(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(interrupted, false));
+        assertTrue(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(interrupted, true));
+        assertEquals("failed", interrupted.getJSONObject("nativeImportOutcome").getString("state"));
+        assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(interrupted));
+        JSONObject legacy = new JSONObject().put("nativeImportOutcome", new JSONObject().put("state", "deferred"))
+            .put("nativeCompletionNotificationPosted", true);
+        assertTrue(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(legacy, false));
+        assertEquals("foreground_required", legacy.getJSONObject("nativeImportOutcome").getString("state"));
+        for (String state : new String[]{"failed", "parse_failed", "cancelled", "waiting_version", "foreground_required", "imported"})
+            assertTrue(NativeBackgroundResourceImporter.settleAutoReceiveMetadata(new JSONObject().put("nativeImportOutcome", new JSONObject().put("state", state)), false));
+    }
+    @Test public void versionArrivalUsesTheCurrentImportTimeAndNeverAMetadataEdit() throws Exception {
+        JSONObject resource = new JSONObject().put("createdAt", 10L).put("updatedAt", 300L);
+        assertEquals(10L, NativeBackgroundResourceImporter.currentVersionImportedAt(resource));
+        resource.put("versionImportedAt", 200L);
+        assertEquals(200L, NativeBackgroundResourceImporter.currentVersionImportedAt(resource));
+    }
+    @Test public void standaloneWorldBooksUseForegroundCompatibleSummariesAndAccurateCompletionNotices() throws Exception {
+        for (Object entries : new Object[]{new JSONObject().put("0", new JSONObject().put("content", "设定")),
+            new org.json.JSONArray().put(new JSONObject().put("content", "设定")), new JSONObject()}) {
+            JSONObject book = NativeTavernResourceParser.parseJson(new JSONObject().put("entries", entries), "测试.JSON");
+            assertEquals("worldBook", book.getString("type"));
+            assertEquals("测试", book.getString("name"));
+            int count = entries instanceof JSONObject ? ((JSONObject) entries).length() : ((org.json.JSONArray) entries).length();
+            assertEquals(count, book.getJSONObject("metadata").getInt("itemCount"));
+            assertEquals("worldBook", book.getJSONObject("metadata").getString("detectedVariant"));
+            assertFalse(book.getJSONObject("metadata").has("entries"));
+        }
+        JSONObject named = NativeTavernResourceParser.parseJson(new JSONObject().put("entries", new JSONObject())
+            .put("name", "  书名  ").put("description", "  简介  "), "fallback.json");
+        assertEquals("书名", named.getString("name"));
+        assertEquals("简介", named.getString("description"));
+        assertEquals("other", NativeTavernResourceParser.parseJson(new JSONObject().put("entries", "invalid"), "a.json").getString("type"));
+        assertNull(NativeTavernResourceParser.parseJson(new JSONObject().put("entries", new JSONObject())
+            .put("format", "srl-personal-resource"), "a.json"));
+        JSONObject parsed = new JSONObject().put("state", "parsed").put("resourceType", "worldBook");
+        assertTrue(NativeDiscordDownloadWorker.shouldAttemptBackgroundImport(parsed));
+        assertEquals("世界书已在后台解析并导入资源库。", NativeDiscordDownloadWorker.completionText(parsed,
+            new JSONObject().put("state", "imported").put("resourceType", "worldBook")));
+        assertEquals("世界书已存在于资源库，没有重复添加。", NativeDiscordDownloadWorker.completionText(parsed,
+            new JSONObject().put("state", "duplicate_file").put("resourceType", "worldBook")));
+    }
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
     private static final String TOKEN = "discord-url-c579c927-54cc-40e0-a3d2-b5f74a60b4ef";
     private static final String OTHER_TOKEN = "discord-url-864ec8d6-e079-4589-9cd1-2508c73e4d12";
@@ -43,6 +96,56 @@ public class NativeDiscordDownloadNotificationTest {
             new JSONObject().put("state", "parse_failed")));
     }
 
+    @Test public void completedNonCardDoesNotHoldLaterBindingCyclesButUnfinishedWorkStillDoes() throws Exception {
+        JSONObject legacy = new JSONObject()
+            .put("name", "Npcs.docx").put("cloudAutoBindingPending", true)
+            .put("nativeCharacterCardResult", new JSONObject().put("state", "not_character_card"))
+            .put("nativeImportOutcome", new JSONObject().put("state", "deferred"));
+        assertTrue(NativeBackgroundResourceImporter.requiresForegroundImport(legacy));
+        assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(legacy));
+        assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "foreground_required"))));
+        assertTrue(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject()));
+        assertTrue(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject()
+            .put("nativeCharacterCardResult", new JSONObject().put("state", "parsed"))
+            .put("nativeImportOutcome", new JSONObject().put("state", "deferred"))));
+        assertTrue(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "native_database_unavailable"))));
+        for (String state : new String[]{"imported", "waiting_version", "parse_failed", "cancelled"})
+            assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject()
+                .put("nativeImportOutcome", new JSONObject().put("state", state))));
+        assertFalse(NativeBackgroundResourceImporter.blocksAutoReceiveCycle(new JSONObject().put("error", "download failed")));
+    }
+
+    @Test public void nonCardNoticeDistinguishesRequiredForegroundProcessingFromFailedImport() throws Exception {
+        JSONObject parsed = new JSONObject().put("state", "not_character_card");
+        for (String state : new String[]{"deferred", "foreground_required"}) {
+            String text = NativeDiscordDownloadWorker.completionText(parsed, new JSONObject().put("state", state));
+            assertTrue(text.contains("需要在前台解析导入"));
+            assertTrue(text.contains("文件已下载并保留"));
+            assertFalse(text.contains("后台入库未完成"));
+        }
+    }
+
+    @Test public void manualReceiveOptOutCannotBePromotedByTheAutomaticReceiver() throws Exception {
+        JSONObject metadata = new JSONObject();
+        ShareReceiverPlugin.setCloudAutoBindingIntent(metadata, false, "");
+        assertTrue(metadata.getBoolean("cloudAutoBindingOptOut"));
+        assertFalse(metadata.getBoolean("cloudAutoBindingPending"));
+        ShareReceiverPlugin.setCloudAutoBindingIntent(metadata, true, "1234567890");
+        assertTrue(metadata.getBoolean("cloudAutoBindingOptOut"));
+        assertFalse(metadata.getBoolean("cloudAutoBindingPending"));
+        assertFalse(metadata.has("cloudAutoReceiveWindow"));
+    }
+
+    @Test public void automaticReceiveKeepsItsFirstThirtySecondCycleAssignment() throws Exception {
+        JSONObject metadata = new JSONObject();
+        ShareReceiverPlugin.setCloudAutoBindingIntent(metadata, true, "1234567890");
+        ShareReceiverPlugin.setCloudAutoBindingIntent(metadata, true, "1234567920");
+        assertTrue(metadata.getBoolean("cloudAutoBindingPending"));
+        assertEquals("1234567890", metadata.getString("cloudAutoReceiveWindow"));
+    }
+
     @Test public void migrationUnavailableImportGetsBoundedRetriesWithoutStartingAnotherDownload() {
         assertTrue(NativeDiscordDownloadWorker.shouldRetryAfterMigration("native_database_unavailable", 0));
         assertTrue(NativeDiscordDownloadWorker.shouldRetryAfterMigration("native_database_unavailable", 4));
@@ -60,10 +163,24 @@ public class NativeDiscordDownloadNotificationTest {
         assertFalse(NativeDiscordDownloadWorker.shouldRetryStagedImport(new JSONObject()));
     }
 
+    @Test public void restoresCompletionNoticeOnlyForCommittedOutcomesMissingTheirNotice() throws Exception {
+        assertTrue(NativeDiscordDownloadWorker.shouldRestoreCompletionNotification(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "imported"))));
+        assertTrue(NativeDiscordDownloadWorker.shouldRestoreCompletionNotification(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "duplicate_file"))));
+        assertFalse(NativeDiscordDownloadWorker.shouldRestoreCompletionNotification(new JSONObject()
+            .put("nativeImportOutcome", new JSONObject().put("state", "native_database_unavailable"))));
+        assertFalse(NativeDiscordDownloadWorker.shouldRestoreCompletionNotification(new JSONObject()
+            .put("nativeCompletionNotificationPosted", true)
+            .put("nativeImportOutcome", new JSONObject().put("state", "imported"))));
+    }
+
     @Test public void queuesOneFollowupWhenStartupFindsADeferredImportStillRunning() {
         assertTrue(NativeDiscordDownloadWorker.shouldAppendDeferredImport(true, false));
         assertFalse(NativeDiscordDownloadWorker.shouldAppendDeferredImport(true, true));
         assertFalse(NativeDiscordDownloadWorker.shouldAppendDeferredImport(false, false));
+        assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE,
+            NativeDiscordDownloadWorker.deferredImportFollowupPolicy());
     }
 
     @Test public void completionNoticeReportsActualImportFallbackInsteadOfHidingItsCause() throws Exception {
@@ -80,11 +197,20 @@ public class NativeDiscordDownloadNotificationTest {
         assertEquals("角色卡已在后台解析并导入资源库。", NativeDiscordDownloadWorker.completionText(parsed,
             new JSONObject().put("state", "imported")));
         assertTrue(NativeDiscordDownloadWorker.completionText(parsed,
+            new JSONObject().put("state", "imported").put("autoBoundSourceId", "post-1")
+                .put("autoBoundSourceTitle", "帖子 A").put("autoBoundResourceName", "角色卡 B"))
+            .contains("帖子“帖子 A”已绑定角色卡“角色卡 B”"));
+        assertTrue(NativeDiscordDownloadWorker.completionText(parsed,
             new JSONObject().put("state", "waiting_version")).contains("选择如何处理"));
         assertTrue(NativeDiscordDownloadWorker.completionText(
             new JSONObject().put("state", "parse_failed").put("message", "角色卡字段无效"),
             new JSONObject().put("state", "parse_failed").put("message", "角色卡字段无效"))
             .contains("后台解析未完成：角色卡字段无效；附件已保留"));
+        assertTrue(NativeDiscordDownloadWorker.deferredImportWaitText(
+            new JSONObject().put("message", "原生资源库索引尚未就绪"))
+            .contains("原生资源库索引尚未就绪；下载文件已保留"));
+        assertTrue(NativeDiscordDownloadWorker.deferredImportWaitText(new JSONObject())
+            .contains("SRL 就绪后会自动继续导入"));
     }
 
     @Test public void cancellationSurvivesRestartAndKeepsTheSignedLinkAndResumeCheckpoint() throws Exception {

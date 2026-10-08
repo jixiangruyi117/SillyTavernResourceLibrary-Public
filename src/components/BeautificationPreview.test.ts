@@ -3,6 +3,15 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 
+const nativePreviewMocks = vi.hoisted(() => ({
+  available: vi.fn(() => false),
+  prepare: vi.fn(async (_urls: string[], _signal: AbortSignal): Promise<void> => undefined),
+}))
+vi.mock('../services/NativePreviewAsset', () => ({
+  isNativePreviewAssetAvailable: nativePreviewMocks.available,
+  prepareNativePreviewAssets: nativePreviewMocks.prepare,
+}))
+
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
 import BeautificationPreview from './BeautificationPreview.vue'
 
@@ -34,6 +43,28 @@ describe('BeautificationPreview', () => {
   afterEach(() => {
     localStorage.clear()
     vi.unstubAllGlobals()
+    nativePreviewMocks.available.mockReturnValue(false)
+    nativePreviewMocks.prepare.mockClear()
+  })
+
+  it('APK 美化预览沿同一按需素材会话，切换场景释放旧请求', async () => {
+    nativePreviewMocks.available.mockReturnValue(true)
+    localStorage.setItem('srl.preview.allowRemoteResources', 'true')
+    localStorage.setItem('srl.preview.preloadBeautificationResources', 'true')
+    const source = JSON.stringify({
+      custom_css: 'body{background:url("https://cdn.example/bg.png")}',
+    })
+    const wrapper = mount(BeautificationPreview, { props: { resource: makeThemeResource(source) } })
+    await flushPromises()
+    expect(nativePreviewMocks.prepare.mock.calls.at(-1)![0]).toContain('https://cdn.example/bg.png')
+    const oldSignal = nativePreviewMocks.prepare.mock.calls.at(-1)![1]
+    await wrapper.find('select[aria-label="预览场景"]').setValue('startup')
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect(frameDocument(wrapper)).toContain('https://cdn.example/bg.png')
+    const currentSignal = nativePreviewMocks.prepare.mock.calls.at(-1)![1]
+    wrapper.unmount()
+    expect(currentSignal.aborted).toBe(true)
   })
 
   it('exposes startup compatibility hooks and leaves authored animation visibility intact', async () => {

@@ -10,10 +10,14 @@ import type { ResourceListSummary } from '../types/Resource'
 import { isResourceGalleryImage } from '../types/ResourceGallery'
 import ResourcePicker from './ResourcePicker.vue'
 
-const props = withDefaults(defineProps<{ contextResourceId?: string; hideWhenEmpty?: boolean }>(), {
-  contextResourceId: undefined,
-  hideWhenEmpty: false,
-})
+const props = withDefaults(
+  defineProps<{ contextResourceId?: string; hideWhenEmpty?: boolean; pageView?: boolean }>(),
+  {
+    contextResourceId: undefined,
+    hideWhenEmpty: false,
+    pageView: false,
+  },
+)
 
 type PendingView = { source: CommunitySource; messages: CommunitySourceMessage[] }
 
@@ -26,6 +30,8 @@ const { statusMessage, showTransientStatus } = useTransientStatus()
 const expandedSourceId = ref('')
 const bindingSourceId = ref('')
 const selectedResourceId = ref('')
+const bindingResources = ref<ResourceListSummary[]>([])
+const resourceMatchBadges = ref<Record<string, Array<'作' | '名'>>>({})
 const hasMore = ref(false)
 const busySourceId = ref('')
 let resourceRevision = 0
@@ -42,6 +48,10 @@ function updateResources(summaries: ResourceListSummary[]): void {
   resources.value = summaries.filter((resource) => !isResourceGalleryImage(resource))
   if (!resources.value.some((resource) => resource.id === selectedResourceId.value))
     selectedResourceId.value = ''
+  if (bindingSourceId.value) {
+    const view = pending.value.find((item) => item.source.id === bindingSourceId.value)
+    if (view) void prepareBindingResources(view)
+  }
 }
 
 function handleResourcesChanged(event: Event): void {
@@ -70,6 +80,15 @@ async function load(): Promise<void> {
     if (repaired) showTransientStatus(`已解除 ${repaired} 条无效关联，可在待整理中重新选择资源。`)
     hasMore.value = views.length > DISPLAY_LIMIT
     pending.value = views.slice(0, DISPLAY_LIMIT)
+    if (
+      bindingSourceId.value &&
+      !pending.value.some((view) => view.source.id === bindingSourceId.value)
+    ) {
+      bindingSourceId.value = ''
+      bindingResources.value = []
+      resourceMatchBadges.value = {}
+      selectedResourceId.value = ''
+    }
     if (revision === resourceRevision) updateResources(summaries)
   } catch (error) {
     if (!disposed) loadError.value = error instanceof Error ? error.message : '无法读取待整理来源'
@@ -121,8 +140,64 @@ function formatDate(value: string | number): string {
 }
 
 function startBinding(sourceId: string): void {
-  bindingSourceId.value = bindingSourceId.value === sourceId ? '' : sourceId
+  if (bindingSourceId.value === sourceId) {
+    bindingSourceId.value = ''
+    bindingResources.value = []
+    resourceMatchBadges.value = {}
+    return
+  }
+  bindingSourceId.value = sourceId
   selectedResourceId.value = ''
+  bindingResources.value = []
+  resourceMatchBadges.value = {}
+  const view = pending.value.find((item) => item.source.id === sourceId)
+  if (view) void prepareBindingResources(view)
+}
+
+function normalizeMatch(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
+}
+
+function authorMatchValue(value: string): string {
+  return normalizeMatch(value)
+    .replace(/^dc\s*/iu, '')
+    .trim()
+}
+
+async function prepareBindingResources(view: PendingView): Promise<void> {
+  try {
+    const unboundResources = await communitySourceService.listUnboundResources(resources.value)
+    const body = `${view.source.title ?? ''}\n${view.messages
+      .map((message) => message.content)
+      .join('\n')}`
+    const postText = normalizeMatch(body)
+    const postAuthors = new Set(
+      Array.from(body.matchAll(/(?:^|\n)\s*(?:作者|author)\s*[:：]\s*([^\r\n]+)/giu))
+        .map((match) => authorMatchValue(match[1] ?? ''))
+        .filter(Boolean),
+    )
+    const badges: Record<string, Array<'作' | '名'>> = {}
+    const ranked = unboundResources.map((resource, index) => {
+      const found: Array<'作' | '名'> = []
+      if (resource.type === 'characterCard') {
+        const resourceName = normalizeMatch(resource.name)
+        const creator =
+          typeof resource.metadata.creator === 'string'
+            ? authorMatchValue(resource.metadata.creator)
+            : ''
+        if (creator && postAuthors.has(creator)) found.push('作')
+        if (resourceName && postText.includes(resourceName)) found.push('名')
+      }
+      if (found.length) badges[resource.id] = found
+      return { resource, index, rank: found.includes('名') ? 2 : found.includes('作') ? 1 : 0 }
+    })
+    bindingResources.value = ranked
+      .sort((left, right) => right.rank - left.rank || left.index - right.index)
+      .map(({ resource }) => resource)
+    resourceMatchBadges.value = badges
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '无法读取未关联资源。'
+  }
 }
 
 async function bind(sourceId: string, resourceId: string): Promise<void> {
@@ -134,6 +209,8 @@ async function bind(sourceId: string, resourceId: string): Promise<void> {
     await communitySourceService.bindSource(resourceId, sourceId)
     showTransientStatus(`已关联到“${resource.name}”`)
     bindingSourceId.value = ''
+    bindingResources.value = []
+    resourceMatchBadges.value = {}
     selectedResourceId.value = ''
     window.dispatchEvent(new Event('srl:community-sources-changed'))
     await load()
@@ -157,7 +234,11 @@ async function deletePending(view: PendingView): Promise<void> {
   try {
     await communitySourceService.deleteSource(view.source.id)
     if (expandedSourceId.value === view.source.id) expandedSourceId.value = ''
-    if (bindingSourceId.value === view.source.id) bindingSourceId.value = ''
+    if (bindingSourceId.value === view.source.id) {
+      bindingSourceId.value = ''
+      bindingResources.value = []
+      resourceMatchBadges.value = {}
+    }
     showTransientStatus('已删除本机保存副本')
     window.dispatchEvent(new Event('srl:community-sources-changed'))
     await load()
@@ -173,11 +254,15 @@ async function deletePending(view: PendingView): Promise<void> {
   <section
     v-if="!props.hideWhenEmpty || pending.length || loading || loadError || statusMessage"
     class="discord-pending"
-    :class="{ 'discord-pending--inbox': props.hideWhenEmpty }"
-    aria-labelledby="discord-pending-title"
+    :class="{
+      'discord-pending--inbox': props.hideWhenEmpty,
+      'discord-pending--page': props.pageView,
+    }"
+    :aria-labelledby="props.pageView ? undefined : 'discord-pending-title'"
+    :aria-label="props.pageView ? '待整理来源' : undefined"
   >
     <header class="discord-pending__header">
-      <div>
+      <div v-if="!props.pageView">
         <strong id="discord-pending-title">待整理来源</strong>
         <small>从 Discord 领取、但还没有关联到资源的内容。</small>
       </div>
@@ -185,7 +270,9 @@ async function deletePending(view: PendingView): Promise<void> {
     </header>
 
     <p v-if="loading && !pending.length" class="discord-pending__state">正在读取…</p>
-    <p v-else-if="!pending.length" class="discord-pending__state">目前没有待整理来源。</p>
+    <p v-else-if="!pending.length" class="discord-pending__state">
+      {{ props.pageView ? '暂无待整理来源' : '目前没有待整理来源。' }}
+    </p>
 
     <div v-else class="discord-pending__list">
       <article v-for="view in pending" :key="view.source.id" class="discord-pending__item">
@@ -255,8 +342,9 @@ async function deletePending(view: PendingView): Promise<void> {
         <div v-if="bindingSourceId === view.source.id" class="discord-pending__bind">
           <ResourcePicker
             title="选择关联资源"
-            :resources="resources"
+            :resources="bindingResources"
             :model-value="selectedResourceId ? [selectedResourceId] : []"
+            :match-badges="resourceMatchBadges"
             :multiple="false"
             :show-actions="false"
             :disabled="Boolean(busySourceId)"

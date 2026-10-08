@@ -3,6 +3,8 @@ package buzz.jixiangruyi1207.srl;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
+import android.database.Cursor;
+import android.provider.DocumentsContract;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
 import androidx.documentfile.provider.DocumentFile;
@@ -43,8 +45,31 @@ public class NativeTavernDirectoryPlugin extends Plugin {
         DocumentFile file = root();
         if (path == null || path.isEmpty()) return file;
         allowed(path);
-        for (String part : parts(path)) { file = file.findFile(part); if (file == null) return null; }
+        String[] segments = parts(path);
+        for (int index = 0; index < segments.length; index++) {
+            // Folder handles must retain TreeDocumentFile's create/list support.
+            // Only the final file lookup uses one cursor instead of listFiles +
+            // one metadata query per sibling through DocumentFile.findFile.
+            int resourceStart = segments[0].equals(".srl-backups") ? 2 : 0;
+            boolean leafFile = index == segments.length - 1 && (segments.length - resourceStart == 2 || segments[index].equals("settings.json"));
+            file = leafFile ? findNamedFile(file, segments[index]) : file.findFile(segments[index]);
+            if (file == null) return null;
+        }
         return file;
+    }
+    private Uri childrenUri(DocumentFile directory) {
+        return DocumentsContract.buildChildDocumentsUriUsingTree(directory.getUri(), DocumentsContract.getDocumentId(directory.getUri()));
+    }
+    private DocumentFile findNamedFile(DocumentFile directory, String name) throws IOException {
+        String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME};
+        try (Cursor cursor = getContext().getContentResolver().query(childrenUri(directory), columns, null, null, null)) {
+            if (cursor == null) throw new IOException("无法读取酒馆目录");
+            while (cursor.moveToNext()) if (name.equals(cursor.getString(1))) {
+                Uri uri = DocumentsContract.buildDocumentUriUsingTree(directory.getUri(), cursor.getString(0));
+                return DocumentFile.fromSingleUri(getContext(), uri);
+            }
+        }
+        return null;
     }
     private void allowed(String path) {
         String[] parts = parts(path); int start = 0;
@@ -119,7 +144,16 @@ public class NativeTavernDirectoryPlugin extends Plugin {
     @PluginMethod public void status(PluginCall call) { execute(call, () -> { JSObject value = new JSObject(); value.put("name", root().getName()); return value; }); }
     @PluginMethod public void list(PluginCall call) { execute(call, () -> {
         DocumentFile dir = find(call.getString("path", "")); JSArray entries = new JSArray();
-        if (dir != null && dir.isDirectory()) for (DocumentFile file : dir.listFiles()) { JSObject entry = new JSObject(); entry.put("name", file.getName()); entry.put("directory", file.isDirectory()); entries.put(entry); }
+        if (dir != null && dir.isDirectory()) {
+            String[] columns = {DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE};
+            try (Cursor cursor = getContext().getContentResolver().query(childrenUri(dir), columns, null, null, null)) {
+                if (cursor == null) throw new IOException("无法读取酒馆目录");
+                while (cursor.moveToNext()) {
+                    JSObject entry = new JSObject(); entry.put("name", cursor.getString(0));
+                    entry.put("directory", DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))); entries.put(entry);
+                }
+            }
+        }
         JSObject value = new JSObject(); value.put("entries", entries); return value;
     }); }
     @PluginMethod public void beginRead(PluginCall call) { execute(call, () -> {

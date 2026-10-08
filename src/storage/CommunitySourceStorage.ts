@@ -7,6 +7,8 @@ import type {
 } from '../types/CommunitySource'
 
 export interface CommunitySourceStorage {
+  downloadedMediaUsage?(): Promise<{ count: number; bytes: number }>
+  clearDownloadedMedia?(): Promise<{ count: number; bytes: number; retainedCount: number }>
   getSource(id: string): Promise<CommunitySource | undefined>
   /** 生产 Owner 可只解密目录摘要；测试替身不实现时 Service 会退回 getSource。 */
   getSourceSummary?(id: string): Promise<CommunitySourceSummary | undefined>
@@ -30,6 +32,8 @@ export interface CommunitySourceStorage {
   deleteSource(id: string): Promise<void>
   /** 仅返回最近的未绑定来源，禁止为了“待整理”把整张消息表读进内存。 */
   listUnboundSources(limit?: number): Promise<CommunitySource[]>
+  /** 精确计数未绑定来源；生产存储只读轻量主键和关联索引。 */
+  countUnboundSources?(): Promise<number>
 
   listMessages(sourceId: string): Promise<CommunitySourceMessage[]>
   /** Read only the post's first-floor message for bounded auto-matching. */
@@ -39,9 +43,13 @@ export interface CommunitySourceStorage {
   deleteMessage(id: string): Promise<void>
 
   listBindingsForResource(resourceId: string): Promise<ResourceSourceBinding[]>
+  /** Read distinct bound resource IDs through the plaintext index; never decrypt binding rows. */
+  listBoundResourceIds?(): Promise<string[]>
   listBindingsForSource(sourceId: string): Promise<ResourceSourceBinding[]>
   listRecentAutoBindings?(limit?: number): Promise<ResourceSourceBinding[]>
   putBinding(binding: ResourceSourceBinding): Promise<void>
+  /** Commit an automatic binding together with its completed scan state. */
+  putSourceWithBinding?(source: CommunitySource, binding: ResourceSourceBinding): Promise<void>
   deleteBinding(id: string): Promise<void>
   /** Repair only binding rows; current resources are rechecked atomically before removal. */
   repairInvalidResourceBindings?(

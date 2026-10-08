@@ -2,9 +2,11 @@ import { ref, type Ref, type ShallowRef } from 'vue'
 import type { LegacyLibraryHistoryCleanup } from '../storage/IndexedDbResourceHealthStorage'
 import { confirmAction } from '../composables/UseConfirmDialog'
 import {
+  database,
   browserStorageService,
   communitySourceStorage,
   resourceService,
+  recycleBinService,
   vaultService,
 } from '../core/LibraryContainer'
 import { mutationGuard } from '../core/MutationGuard'
@@ -12,6 +14,15 @@ import { domainEvents } from '../core/DomainEvents'
 import { taskCenter } from '../core/TaskCenter'
 import type { StorageHealth } from '../services/BrowserStorageService'
 import type { NativeResourceStorageInfo } from '../storage/NativeResourceFileMirror'
+import {
+  canRetryAndroidNativeAppDatabaseMigration,
+  getRetainedIndexedDbCopy,
+  clearRetainedIndexedDbCopy,
+  type RetainedIndexedDbCopy,
+  requestAndroidNativeAppDatabaseMigrationRetry,
+} from '../storage/AndroidNativeAppDatabaseRuntime'
+import { isAndroidNativeAppDatabaseActive } from '../storage/AndroidNativeDexieCore'
+import type { MissingPngThumbnailRepairStatus } from '../storage/ResourceThumbnailMaintenance'
 import type { BackupRecord } from '../types/Resource'
 import { type Category, type ResourceSummary } from '../types/Resource'
 import type { VaultStatus } from '../types/Vault'
@@ -43,6 +54,140 @@ interface LibraryProtectionContext {
 export function useLibraryProtection(getContext: () => LibraryProtectionContext) {
   const legacyLibraryHistory = ref<LegacyLibraryHistoryCleanup>({ records: [], bytes: 0 })
   const isClearingLegacyLibraryHistory = ref(false)
+  const oldPngThumbnailRepairStatus = ref<MissingPngThumbnailRepairStatus>({
+    status: 'not-started',
+    repaired: 0,
+  })
+  const isRepairingOldPngThumbnails = ref(false)
+  const isRetryingNativeMigration = ref(false)
+
+  const canClearRetainedNativeCopy = isAndroidNativeAppDatabaseActive()
+  const retainedNativeCopy = ref<RetainedIndexedDbCopy | null>(null)
+  const isClearingRetainedNativeCopy = ref(false)
+  const retainedNativeCopyProgress = ref('')
+
+  async function refreshRetainedNativeCopy(): Promise<void> {
+    if (!getContext().isNativeApk || !canClearRetainedNativeCopy) return
+    try {
+      retainedNativeCopy.value = await getRetainedIndexedDbCopy(database.name)
+    } catch (error) {
+      getContext().showNotice(error instanceof Error ? error.message : '无法读取旧迁移副本')
+    }
+  }
+
+  async function clearRetainedNativeCopy(): Promise<void> {
+    const context = getContext()
+    if (
+      !context.isNativeApk ||
+      !canClearRetainedNativeCopy ||
+      isClearingRetainedNativeCopy.value ||
+      context.isVaultBusy.value
+    )
+      return
+    isClearingRetainedNativeCopy.value = true
+    try {
+      await refreshRetainedNativeCopy()
+      const plan = retainedNativeCopy.value
+      if (!plan?.records) return
+      const confirmed = await confirmAction({
+        title: '清理迁移前的旧副本',
+        message: `清理迁移前的 ${plan.records} 条旧记录及附件。先校验当前原生主库；无法确认已迁移的旧记录和完整附件会保存到回收站的“迁移前旧副本恢复档”，读回验证后才清理。旧设置、APP、聊天等内容有差异也能保存后清理，不覆盖当前库或权限。恢复档可手动恢复为文件并导出。请保持应用打开；大附件保存可能需要时间。`,
+        confirmLabel: '校验并清理旧副本',
+        danger: true,
+      })
+      if (!confirmed) return
+      let checkedGroups = 0
+      let preservedRecords = 0
+      await clearRetainedIndexedDbCopy(
+        database.name,
+        plan,
+        () => {
+          checkedGroups += 1
+          retainedNativeCopyProgress.value = `正在校验原生数据与附件（第 ${checkedGroups}/${Object.keys(plan.counts).length} 组）…`
+        },
+        undefined,
+        async (source) => {
+          retainedNativeCopyProgress.value = '正在保存旧副本恢复档并校验…'
+          await recycleBinService.preserveLegacyDatabaseCopy(source)
+          preservedRecords = source.stores.reduce((sum, store) => sum + store.count, 0)
+        },
+      )
+      if (preservedRecords) await context.loadRecycleBin()
+      context.showNotice(
+        preservedRecords
+          ? `旧副本已清理；${preservedRecords} 条旧记录和附件已保存到回收站的“迁移前旧副本恢复档”，当前数据和权限保持不变`
+          : '迁移前的旧副本已清理；系统回收磁盘空间可能稍有延迟',
+      )
+      await refreshRetainedNativeCopy()
+      await refreshStorageHealth()
+    } catch (error) {
+      context.showNotice(
+        error instanceof Error ? error.message : '旧副本清理失败，原生主库不受影响',
+      )
+    } finally {
+      isClearingRetainedNativeCopy.value = false
+      retainedNativeCopyProgress.value = ''
+    }
+  }
+
+  async function retryNativeMigration(): Promise<void> {
+    const context = getContext()
+    if (!context.isNativeApk || isRetryingNativeMigration.value) return
+    const confirmed = await confirmAction({
+      title: '重试原生资源库迁移',
+      message:
+        '应用将重启，并从保留的 IndexedDB 副本重新复制资源与附件。重试会清除未启用的原生迁移副本；原 IndexedDB 数据不会删除。请保持应用打开，并确保设备有足够的额外空间。',
+      confirmLabel: '重启并重试',
+    })
+    if (!confirmed) return
+    isRetryingNativeMigration.value = true
+    try {
+      await requestAndroidNativeAppDatabaseMigrationRetry()
+      window.location.reload()
+    } catch (error) {
+      isRetryingNativeMigration.value = false
+      context.showNotice(error instanceof Error ? error.message : '无法安排迁移重试')
+    }
+  }
+
+  async function refreshOldPngThumbnailRepairStatus(): Promise<void> {
+    try {
+      oldPngThumbnailRepairStatus.value = await resourceService.getMissingPngThumbnailRepairStatus()
+    } catch {
+      getContext().showNotice('无法读取旧资源缩略图补回状态')
+    }
+  }
+
+  async function repairOldPngThumbnails(): Promise<void> {
+    const context = getContext()
+    if (
+      isRepairingOldPngThumbnails.value ||
+      context.isVaultBusy.value ||
+      context.vaultStatus.value.locked
+    )
+      return
+
+    isRepairingOldPngThumbnails.value = true
+    try {
+      const repaired = await resourceService.repairMissingPngCharacterCardThumbnails({
+        // This is an explicit scan request. Storage resumes a running checkpoint
+        // and only resets a completed scan, even if the displayed status is stale.
+        restart: true,
+      })
+      await refreshOldPngThumbnailRepairStatus()
+      if (repaired > 0) await context.loadResources()
+      context.showNotice(
+        repaired > 0 ? `已补回 ${repaired} 张旧资源缩略图` : '扫描完成，没有需要补回的缩略图',
+      )
+    } catch (error) {
+      await refreshOldPngThumbnailRepairStatus()
+      context.showNotice(
+        error instanceof Error ? error.message : '旧资源缩略图补回失败，可继续重试',
+      )
+    } finally {
+      isRepairingOldPngThumbnails.value = false
+    }
+  }
 
   async function refreshLegacyLibraryHistory(): Promise<void> {
     try {
@@ -157,7 +302,12 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   async function handleVaultUnlock(password: string): Promise<void> {
     const context = getContext()
 
-    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    if (
+      context.isVaultBusy.value ||
+      isClearingLegacyLibraryHistory.value ||
+      isClearingRetainedNativeCopy.value
+    )
+      return
     context.isVaultBusy.value = true
     try {
       await vaultService.unlock(password)
@@ -177,7 +327,12 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
 
   async function handleVaultEnable(password: string): Promise<void> {
     const context = getContext()
-    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    if (
+      context.isVaultBusy.value ||
+      isClearingLegacyLibraryHistory.value ||
+      isClearingRetainedNativeCopy.value
+    )
+      return
     context.isVaultBusy.value = true
     try {
       const confirmed = await confirmAction({
@@ -220,7 +375,12 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
 
   async function handleVaultDisable(): Promise<void> {
     const context = getContext()
-    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    if (
+      context.isVaultBusy.value ||
+      isClearingLegacyLibraryHistory.value ||
+      isClearingRetainedNativeCopy.value
+    )
+      return
     context.isVaultBusy.value = true
     try {
       const confirmed = await confirmAction({
@@ -262,7 +422,12 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   function handleVaultLock(): void {
     const context = getContext()
 
-    if (context.isVaultBusy.value || isClearingLegacyLibraryHistory.value) return
+    if (
+      context.isVaultBusy.value ||
+      isClearingLegacyLibraryHistory.value ||
+      isClearingRetainedNativeCopy.value
+    )
+      return
     vaultService.lock()
     context.vaultStatus.value = vaultService.getStatus()
     context.resetSearchState()
@@ -274,8 +439,21 @@ export function useLibraryProtection(getContext: () => LibraryProtectionContext)
   }
 
   return {
+    canClearRetainedNativeCopy,
+    retainedNativeCopy,
+    isClearingRetainedNativeCopy,
+    retainedNativeCopyProgress,
+    refreshRetainedNativeCopy,
+    clearRetainedNativeCopy,
     legacyLibraryHistory,
     isClearingLegacyLibraryHistory,
+    oldPngThumbnailRepairStatus,
+    isRepairingOldPngThumbnails,
+    isRetryingNativeMigration,
+    canRetryNativeMigration: canRetryAndroidNativeAppDatabaseMigration(),
+    retryNativeMigration,
+    refreshOldPngThumbnailRepairStatus,
+    repairOldPngThumbnails,
     refreshLegacyLibraryHistory,
     clearLegacyLibraryHistory,
     refreshStorageHealth,

@@ -257,7 +257,7 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
     } as unknown as ResourceService
     const service = new CloudBackupService(
       resources,
-      {} as CategoryService,
+      { list: vi.fn(async () => []) } as unknown as CategoryService,
       {} as ExportService,
       {} as RestoreService,
       undefined,
@@ -427,6 +427,7 @@ describe('CloudBackupService Native Cloud fail-closed handoff', () => {
         autoBackup: false,
       },
       setup(service: Record<string, unknown>) {
+        service.listGitHubObjectContainers = vi.fn().mockResolvedValue([])
         service.getGitHubRelease = vi.fn().mockResolvedValue({ id: 7 })
         service.listGitHubAssets = vi.fn().mockResolvedValue([])
         service.uploadGitHubAsset = vi.fn()

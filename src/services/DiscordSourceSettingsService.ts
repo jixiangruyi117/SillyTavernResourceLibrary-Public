@@ -57,7 +57,6 @@ export function getDiscordClientId(): string {
   }
 }
 // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=discord-local-installation-identity
-
 let currentSettings: DiscordSourceConnectionSettings | undefined
 let settingsWrites: Promise<unknown> = Promise.resolve()
 

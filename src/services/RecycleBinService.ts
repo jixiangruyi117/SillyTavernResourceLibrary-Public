@@ -1,6 +1,20 @@
+import Dexie from 'dexie'
 import type { AppDatabase } from '../database/AppDatabase'
 import { includeResourceGalleryIds } from '../types/ResourceGallery'
-import type { BackupRecord } from '../types/Resource'
+import {
+  RESOURCE_TYPE,
+  type BackupRecord,
+  type BackupRecordSummary,
+  type Resource,
+  type ResourceListSummary,
+} from '../types/Resource'
+import {
+  getBackupRecordSummary,
+  listBackupRecordSummaries,
+} from '../storage/IndexedDbArchiveStorage'
+import type { RetainedIndexedDbRecoverySource } from '../storage/AndroidNativeAppDatabaseRuntime'
+import { encodeAppDatabaseValue } from '../storage/AndroidAppDatabaseMigration'
+import { hashBlob } from './HashService'
 import type { CategoryService } from './CategoryService'
 import { createResourceArchiveSource, type ExportService } from './ExportService'
 import type { ResourceService } from './ResourceService'
@@ -43,6 +57,12 @@ export interface RecycleBinMoveProgress {
   total?: number
 }
 
+export interface RecycleBinMoveResult {
+  record: BackupRecord
+  /** The complete post-delete catalogue already read by relation/gallery cleanup. */
+  resources?: ResourceListSummary[]
+}
+
 function recycleArchiveFileName(createdAt: Date): string {
   const timestamp = createdAt.toISOString().replace(/[:.]/g, '-').slice(0, 19)
   return `回收站-${timestamp}.zip`
@@ -75,14 +95,137 @@ export class RecycleBinService {
     this.userPersonaService = userPersonaService
   }
 
-  async list(): Promise<BackupRecord[]> {
-    const records = await this.database.backupRecords
-      .where('adapter')
-      .anyOf([RECYCLE_BIN_ADAPTER, RECYCLE_BIN_PERSONA_VERSION_ADAPTER])
-      .toArray()
+  async list(): Promise<BackupRecordSummary[]> {
+    const records = await listBackupRecordSummaries(this.database, [
+      RECYCLE_BIN_ADAPTER,
+      RECYCLE_BIN_PERSONA_VERSION_ADAPTER,
+    ])
     return records.sort((left, right) => right.createdAt - left.createdAt)
   }
 
+  async preserveLegacyDatabaseCopy(source: RetainedIndexedDbRecoverySource): Promise<void> {
+    const createdAt = Date.now()
+    const resources: Resource[] = []
+    const records: Array<{ store: string; key: string; resourceId: string }> = []
+    const binaries: Array<{ store: string; key: string; fieldPath: string; resourceId: string }> =
+      []
+    const add = async (originalBlob: Blob, fileName: string): Promise<Resource> => {
+      const resource: Resource = {
+        id: crypto.randomUUID(),
+        type: RESOURCE_TYPE.OTHER,
+        name: fileName,
+        description: '迁移前旧副本恢复文件；不会自动覆盖当前库。',
+        fileName,
+        mimeType: originalBlob.type,
+        fileSize: originalBlob.size,
+        contentHash: await hashBlob(originalBlob),
+        originalBlob,
+        favorite: false,
+        categoryId: null,
+        categoryIds: [],
+        tags: [],
+        metadata: {},
+        createdAt,
+        updatedAt: createdAt,
+      }
+      resources.push(resource)
+      return resource
+    }
+    // Reuse the migration codec for every persisted type. Binary bodies remain Blob references;
+    // they are streamed by the existing ZIP writer, never expanded to base64 or number arrays.
+    const binaryWriter = {
+      async writeBlob(store: string, key: string, fieldPath: string, blob: Blob) {
+        const resource = await add(blob, `legacy-binary-${binaries.length}.bin`)
+        binaries.push({ store, key, fieldPath, resourceId: resource.id })
+        return { sha256: resource.contentHash, size: blob.size, mimeType: blob.type }
+      },
+    }
+    const copiedCounts = new Map<string, number>()
+    await source.readRecords(async (row) => {
+      // JSON escapes lone UTF-16 surrogates losslessly; UTF-8 Blob conversion would replace
+      // them. Keep text in the per-record JSON, while genuine binary bodies remain streamed.
+      const value = await encodeAppDatabaseValue(
+        row.value,
+        row.store,
+        row.key,
+        binaryWriter,
+        row.key,
+        Infinity,
+      )
+      const resource = await add(
+        new Blob([JSON.stringify({ store: row.store, key: row.key, value })], {
+          type: 'application/json',
+        }),
+        `legacy-record-${records.length}.json`,
+      )
+      records.push({ store: row.store, key: row.key, resourceId: resource.id })
+      copiedCounts.set(row.store, (copiedCounts.get(row.store) ?? 0) + 1)
+    })
+    // ZIP creation and live-database persistence must not inherit the locked old source.
+    // waitFor resumes cleanup in an active source event after readback has completed.
+    await Dexie.waitFor(
+      Dexie.ignoreTransaction(async () => {
+        if (
+          source.stores.some((store) => (copiedCounts.get(store.name) ?? 0) !== store.count) ||
+          [...copiedCounts.keys()].some(
+            (name) => !source.stores.some((store) => store.name === name),
+          )
+        )
+          throw new Error('旧副本恢复档未包含完整记录；旧副本已保留')
+        await add(
+          new Blob(
+            [
+              JSON.stringify({
+                format: 'srl-legacy-indexeddb-recovery',
+                version: 1,
+                databaseName: source.databaseName,
+                stores: source.stores,
+                records,
+                binaries,
+              }),
+            ],
+            { type: 'application/json' },
+          ),
+          'legacy-indexeddb-recovery.json',
+        )
+        const archives = await this.exportService.createArchives(resources, [], { mode: 'partial' })
+        if (archives.length !== 1 || archives[0]!.manifest.resourceCount !== resources.length)
+          throw new Error('无法保存完整旧副本恢复档；旧副本已保留')
+        let blob = archives[0]!.blob
+        let encryptionIv: string | undefined
+        const encrypted = this.vaultService.isEnabled()
+        if (encrypted) {
+          const protectedBlob = await this.vaultService.protectBlob(blob)
+          blob = protectedBlob.data
+          encryptionIv = protectedBlob.iv
+        }
+        const expectedHash = await hashBlob(blob)
+        const record: BackupRecord = {
+          id: `legacy-indexeddb-${expectedHash}`,
+          adapter: RECYCLE_BIN_ADAPTER,
+          objectKey: recycleArchiveFileName(new Date(createdAt)),
+          resourceCount: resources.length,
+          createdAt,
+          reason: '迁移前旧副本恢复档',
+          size: blob.size,
+          blob,
+          encrypted,
+          encryptionIv,
+        }
+        await this.database.backupRecords.put(record)
+        const saved = await this.database.backupRecords.get(record.id)
+        if (
+          !saved?.blob ||
+          saved.blob.size !== blob.size ||
+          saved.encrypted !== encrypted ||
+          saved.encryptionIv !== encryptionIv ||
+          (await hashBlob(saved.blob)) !== expectedHash
+        )
+          throw new Error('旧副本恢复档未通过保存校验；旧副本已保留')
+      }),
+      Infinity,
+    )
+  }
   async movePersonaVersionToRecycleBin(input: {
     resourceId: string
     avatarId: string
@@ -261,11 +404,11 @@ export class RecycleBinService {
   async moveToRecycleBin(
     ids: string[],
     onProgress?: (progress: RecycleBinMoveProgress) => void,
-  ): Promise<BackupRecord> {
+  ): Promise<RecycleBinMoveResult> {
     const selectedIds = Array.from(new Set(ids.filter(Boolean)))
     if (!selectedIds.length) throw new Error('请选择要移入回收站的资源')
 
-    const source = await createResourceArchiveSource(this.resourceService)
+    const source = await createResourceArchiveSource(this.resourceService, selectedIds)
     const selected = new Set(selectedIds)
     includeResourceGalleryIds(source.resources, selected, true)
     const resources = source.resources.filter((resource) => selected.has(resource.id))
@@ -315,11 +458,11 @@ export class RecycleBinService {
     onProgress?.({ phase: 'save' })
     await this.database.backupRecords.put(record)
     onProgress?.({ phase: 'delete', completed: 0, total: resources.length + versions.length })
-    await this.resourceService.deleteMany(
+    const remainingResources = await this.resourceService.deleteMany(
       resources.map((resource) => resource.id),
       ({ completed, total }) => onProgress?.({ phase: 'delete', completed, total }),
     )
-    return record
+    return { record, resources: remainingResources }
   }
 
   async restore(id: string): Promise<void> {
@@ -365,7 +508,12 @@ export class RecycleBinService {
     id: string,
     onProgress?: (progress: { completed: number; total: number }) => void,
   ): Promise<void> {
-    await this.getRecord(id)
+    const record = await getBackupRecordSummary(this.database, id)
+    if (
+      !record ||
+      ![RECYCLE_BIN_ADAPTER, RECYCLE_BIN_PERSONA_VERSION_ADAPTER].includes(record.adapter)
+    )
+      throw new Error('回收站记录已经不存在')
     onProgress?.({ completed: 0, total: 1 })
     await this.database.backupRecords.delete(id)
     onProgress?.({ completed: 1, total: 1 })

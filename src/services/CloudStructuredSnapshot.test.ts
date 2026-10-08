@@ -235,3 +235,29 @@ describe('CloudStructuredSnapshot', () => {
     expect(restored[0]?.metadata.customFlag).toBe('keep-me')
   })
 })
+
+describe('metadata-only descriptor reuse', () => {
+  it('preserves full custom metadata without loading an unchanged original until a missing object is needed', async () => {
+    const original = resource('unchanged-native', '{"stable":true}')
+    original.contentHash = await hashCloudBlob(original.originalBlob)
+    original.backupDescriptor = (
+      await createStructuredSnapshot([original], [], [], { version: 1 })
+    ).descriptorUpdates[0]!.descriptor
+    original.metadata = { nested: { value: 'preserve' }, longText: 'x'.repeat(10_000) }
+    const metadata = toResourceSummary(original)
+    const load = vi.fn(async () => original)
+    const loadSummary = vi.fn(async () => metadata)
+    const planned = await createStructuredSnapshot(
+      [{ summary: toResourceListSummary(original), summaryIsPartial: true, loadSummary, load }],
+      [],
+      [],
+      { version: 1 },
+    )
+    expect(planned.snapshot.resources[0]!.metadata).toEqual(original.metadata)
+    expect(loadSummary).toHaveBeenCalledOnce()
+    expect(load).not.toHaveBeenCalled()
+    expect(planned.localReadBytes).toBe(0)
+    expect(await planned.objectPlans[0]!.loadBlob!()).toBeInstanceOf(Blob)
+    expect(load).toHaveBeenCalledOnce()
+  })
+})

@@ -186,7 +186,7 @@ export function findHistoricalDuplicateGroups(
   for (const current of resources) entriesByOwner.set(current.id, [current])
   for (const version of linkedVersions) {
     const ownerId = version.versionGroupId!
-    entriesByOwner.set(ownerId, [...(entriesByOwner.get(ownerId) ?? []), version])
+    entriesByOwner.get(ownerId)!.push(version)
   }
 
   const groups: HistoricalDuplicateGroup[] = []
@@ -235,7 +235,9 @@ export function findHistoricalDuplicateGroups(
       // 存量 JSON 可能在解析器升级前被标成 other，升级后当前版变成 characterCard；
       // 若继续把 type 放进桶键，相同文件会因历史分类不同而永远漏过清理。
       const key = entry.contentHash
-      exactBuckets.set(key, [...(exactBuckets.get(key) ?? []), entry])
+      const bucket = exactBuckets.get(key)
+      if (bucket) bucket.push(entry)
+      else exactBuckets.set(key, [entry])
     }
     addSafeBuckets(exactBuckets, 'exactFile', '文件 SHA-256 完全相同，删除历史副本不损失内容')
 
@@ -245,7 +247,9 @@ export function findHistoricalDuplicateGroups(
       const full = readStoredFingerprints(entry.metadata).full
       if (!full) continue
       const key = full
-      jsonBuckets.set(key, [...(jsonBuckets.get(key) ?? []), entry])
+      const bucket = jsonBuckets.get(key)
+      if (bucket) bucket.push(entry)
+      else jsonBuckets.set(key, [entry])
     }
     addSafeBuckets(
       jsonBuckets,
@@ -259,7 +263,9 @@ export function findHistoricalDuplicateGroups(
       const full = readStoredFingerprints(entry.metadata).full
       if (!full) continue
       const key = full
-      variantBuckets.set(key, [...(variantBuckets.get(key) ?? []), entry])
+      const bucket = variantBuckets.get(key)
+      if (bucket) bucket.push(entry)
+      else variantBuckets.set(key, [entry])
     }
     for (const bucket of variantBuckets.values()) {
       if (bucket.length < 2) continue
@@ -535,6 +541,7 @@ export function findStoredVersionGroups(
     resource: ResourceSummary
     ownerIndex: number
     historical: boolean
+    full?: string
   }
   const parent = resources.map((_resource, index) => index)
   const find = (index: number): number => {
@@ -580,25 +587,35 @@ export function findStoredVersionGroups(
   const coreBuckets = new Map<string, StoredEvidence[]>()
   const identityBuckets = new Map<string, StoredEvidence[]>()
   const contentBuckets = new Map<string, StoredEvidence[]>()
+  const append = (
+    buckets: Map<string, StoredEvidence[]>,
+    key: string,
+    evidence: StoredEvidence,
+  ) => {
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(evidence)
+    else buckets.set(key, [evidence])
+  }
 
   const addEvidence = (evidence: StoredEvidence): void => {
     const { resource } = evidence
     if (resource.contentHash) {
       const key = `${resource.type}:${resource.contentHash}`
-      contentBuckets.set(key, [...(contentBuckets.get(key) ?? []), evidence])
+      append(contentBuckets, key, evidence)
     }
     const fingerprints = readStoredFingerprints(resource.metadata)
+    evidence.full = fingerprints.full
     if (fingerprints.full) {
       const key = `${resource.type}:${fingerprints.full}`
-      fullBuckets.set(key, [...(fullBuckets.get(key) ?? []), evidence])
+      append(fullBuckets, key, evidence)
     }
     if (fingerprints.core) {
       const key = `${resource.type}:${fingerprints.core}`
-      coreBuckets.set(key, [...(coreBuckets.get(key) ?? []), evidence])
+      append(coreBuckets, key, evidence)
     }
     for (const identity of stableIdentity(resource.metadata)) {
       const key = `${resource.type}:${identity}`
-      identityBuckets.set(key, [...(identityBuckets.get(key) ?? []), evidence])
+      append(identityBuckets, key, evidence)
     }
   }
   resources.forEach((resource, ownerIndex) => {
@@ -612,71 +629,80 @@ export function findStoredVersionGroups(
     addEvidence({ resource: version, ownerIndex, historical: true })
   }
 
+  // A representative must cover every exclusion, even when old hashes and
+  // owner IDs overlap. For each rejected coordinate of the first entry, recurse
+  // outside that value. At most 16 witnesses cover three coordinates (linear work).
+  const witnesses = (
+    entries: StoredEvidence[],
+    coordinates: ((entry: StoredEvidence) => unknown)[],
+  ): StoredEvidence[] => {
+    const first = entries[0]
+    if (!first) return []
+    if (!coordinates.length) return [first]
+    const selected = new Set<StoredEvidence>([first])
+    coordinates.forEach((coordinate, index) => {
+      const others = entries.filter((entry) => coordinate(entry) !== coordinate(first))
+      for (const witness of witnesses(
+        others,
+        coordinates.filter((_item, i) => i !== index),
+      ))
+        selected.add(witness)
+    })
+    return [...selected]
+  }
+  const owner = (entry: StoredEvidence) => entry.ownerIndex
+  const hash = (entry: StoredEvidence) => entry.resource.contentHash
+  const full = (entry: StoredEvidence) => entry.full
+  const representatives = (entries: StoredEvidence[], compareFull = false): StoredEvidence[] => [
+    ...witnesses(
+      entries.filter((entry) => entry.historical),
+      compareFull ? [owner, full] : [owner],
+    ),
+    ...witnesses(
+      entries.filter((entry) => !entry.historical),
+      compareFull ? [owner, hash, full] : [owner, hash],
+    ),
+  ]
+  const historicalAnchors = (entries: StoredEvidence[]) => {
+    const owners = new Map<number, StoredEvidence>()
+    for (const entry of entries)
+      if (entry.historical && owners.size < 2) owners.set(entry.ownerIndex, entry)
+    return [...owners.values()]
+  }
   for (const evidence of contentBuckets.values()) {
-    for (let left = 0; left < evidence.length; left += 1) {
-      for (let right = left + 1; right < evidence.length; right += 1) {
-        const leftEvidence = evidence[left]!
-        const rightEvidence = evidence[right]!
-        if (!leftEvidence.historical && !rightEvidence.historical) continue
-        connect(leftEvidence, rightEvidence, 'version', '同一文件出现在不同资源组的历史时间线中')
-      }
-    }
+    if (evidence.length < 2) continue
+    for (const anchor of historicalAnchors(evidence))
+      for (const entry of evidence)
+        connect(anchor, entry, 'version', '同一文件出现在不同资源组的历史时间线中')
   }
-
   for (const evidence of fullBuckets.values()) {
-    for (let left = 0; left < evidence.length; left += 1) {
-      for (let right = left + 1; right < evidence.length; right += 1) {
-        const leftEvidence = evidence[left]!
-        const rightEvidence = evidence[right]!
-        const leftResource = leftEvidence.resource
-        const rightResource = rightEvidence.resource
-        const bothJson =
-          isJsonCarrier(leftResource.fileName, leftResource.mimeType) &&
-          isJsonCarrier(rightResource.fileName, rightResource.mimeType)
-        if (bothJson) {
-          if (!leftEvidence.historical && !rightEvidence.historical) continue
-          connect(
-            leftEvidence,
-            rightEvidence,
-            'version',
-            '等价 JSON 卡数据出现在不同资源组的历史时间线中',
-          )
-          continue
-        }
-        connect(
-          leftEvidence,
-          rightEvidence,
-          'containerVariant',
-          '卡内数据完全一致，仅立绘或文件封装不同',
-        )
-      }
-    }
+    if (evidence.length < 2) continue
+    const json: StoredEvidence[] = []
+    const containers: StoredEvidence[] = []
+    for (const entry of evidence)
+      (isJsonCarrier(entry.resource.fileName, entry.resource.mimeType) ? json : containers).push(
+        entry,
+      )
+    for (const anchor of historicalAnchors(json))
+      for (const entry of json)
+        connect(anchor, entry, 'version', '等价 JSON 卡数据出现在不同资源组的历史时间线中')
+    for (const anchor of representatives(containers))
+      for (const entry of evidence)
+        connect(anchor, entry, 'containerVariant', '卡内数据完全一致，仅立绘或文件封装不同')
   }
-
   for (const evidence of coreBuckets.values()) {
-    for (let left = 0; left < evidence.length; left += 1) {
-      for (let right = left + 1; right < evidence.length; right += 1) {
-        const leftEvidence = evidence[left]!
-        const rightEvidence = evidence[right]!
-        const leftFingerprints = readStoredFingerprints(leftEvidence.resource.metadata)
-        const rightFingerprints = readStoredFingerprints(rightEvidence.resource.metadata)
-        if (
-          !leftFingerprints.full ||
-          !rightFingerprints.full ||
-          leftFingerprints.full === rightFingerprints.full
-        )
-          continue
-        connect(leftEvidence, rightEvidence, 'version', '核心设定一致，开场白或附加内容不同')
+    if (evidence.length < 2) continue
+    const fingerprinted = evidence.filter((entry) => entry.full)
+    for (const anchor of representatives(fingerprinted, true))
+      for (const entry of fingerprinted) {
+        if (entry.full !== anchor.full)
+          connect(anchor, entry, 'version', '核心设定一致，开场白或附加内容不同')
       }
-    }
   }
-
   for (const evidence of identityBuckets.values()) {
-    for (let left = 0; left < evidence.length; left += 1) {
-      for (let right = left + 1; right < evidence.length; right += 1) {
-        connect(evidence[left]!, evidence[right]!, 'version', '稳定来源 ID 相同')
-      }
-    }
+    if (evidence.length < 2) continue
+    for (const anchor of representatives(evidence))
+      for (const entry of evidence) connect(anchor, entry, 'version', '稳定来源 ID 相同')
   }
 
   const components = new Map<number, number[]>()
@@ -702,7 +728,9 @@ export function findStoredVersionGroups(
   }
   resources.forEach((_resource, index) => {
     const root = find(index)
-    components.set(root, [...(components.get(root) ?? []), index])
+    const component = components.get(root)
+    if (component) component.push(index)
+    else components.set(root, [index])
   })
 
   const evidenceByComponent = new Map<
@@ -801,7 +829,9 @@ export function buildStoredVersionRecognitionReport(
     const full = readStoredFingerprints(resource.metadata).full
     if (!full) continue
     const key = `${resource.type}:${full}`
-    jsonFingerprintBuckets.set(key, [...(jsonFingerprintBuckets.get(key) ?? []), resource])
+    const bucket = jsonFingerprintBuckets.get(key)
+    if (bucket) bucket.push(resource)
+    else jsonFingerprintBuckets.set(key, [resource])
   }
   const sameGroupHistoricalFingerprints = new Map<string, number>()
   for (const version of linkedVersions) {

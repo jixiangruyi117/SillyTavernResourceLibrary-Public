@@ -1,15 +1,25 @@
 /** @vitest-environment jsdom */
-import { flushPromises, mount as vueMount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount as vueMount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TavernBridgeCenter from './TavernBridgeCenter.vue'
 import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
-import { resourceService } from '../core/AppContainer'
+import { browserStorageService, resourceService } from '../core/AppContainer'
 import { assistantGuidance, startAssistantGuidance } from '../core/ProductAssistantGuidance'
 import { tavernConnectionStore } from '../core/TavernConnectionStore'
 import { hashBlob } from '../services/HashService'
+import { PngResourceParser } from '../parser/PngResourceParser'
 import type { TavernResourceItem } from '../services/TavernBridgeProtocol'
 import { RESOURCE_TYPE, type ResourceSummary } from '../types/Resource'
+
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute('open', '')
+  }
+  HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute('open')
+  }
+})
 
 const writeText = vi.fn(async (_value: string) => undefined)
 const mountedWrappers: Array<{ unmount(): void }> = []
@@ -31,6 +41,7 @@ const bridgeMocks = vi.hoisted(() => ({
   ),
   isLocalTavernDirectAvailable: vi.fn(() => false),
   disconnect: vi.fn(),
+  finishPullBatch: vi.fn(async () => undefined),
   sendFiles: vi.fn(async () => [{ status: 'created', name: '已接收' }]),
   checkUserAvatarIds: vi.fn(async () => new Set<string>()),
   pullResources: vi.fn(async (_items: Array<{ fileName: string }>) => [
@@ -42,8 +53,15 @@ vi.mock('../composables/UseConfirmDialog', () => ({
   confirmAction: vi.fn(),
   chooseAction: vi.fn(),
 }))
-vi.mock('../core/AppContainer', () => ({
+vi.mock('../core/AppContainer', async () => ({
+  exportService: new (await import('../services/ExportService')).ExportService(),
   browserStorageService: {
+    getTavernChatCarryScripts: vi.fn(() => true),
+    setTavernChatCarryScripts: vi.fn(),
+    getTavernSendContent: vi.fn(() => 'modified' as const),
+    setTavernSendContent: vi.fn(),
+    getModifiedResourceSyncTags: vi.fn(() => false),
+    setModifiedResourceSyncTags: vi.fn(),
     getBridgeTransferLog: vi.fn(() => []),
     appendBridgeTransferLog: vi.fn((items: string[]) => items),
     getBridgeTransferDraft: vi.fn(() => undefined),
@@ -59,6 +77,7 @@ vi.mock('../services/TavernBridgeService', () => ({
 
 function mountBridge(options: { attachTo?: HTMLElement; props: Record<string, unknown> }) {
   return vueMount(TavernBridgeCenter, {
+    attachTo: document.body,
     ...options,
     props: {
       ...options.props,
@@ -69,6 +88,11 @@ function mountBridge(options: { attachTo?: HTMLElement; props: Record<string, un
   })
 }
 
+function transferSettings() {
+  return new DOMWrapper(
+    document.body.querySelector<HTMLDialogElement>('.tavern-transfer-settings')!,
+  )
+}
 function render() {
   const wrapper = mountBridge({
     attachTo: document.body,
@@ -90,7 +114,13 @@ function resource(overrides: Partial<ResourceSummary>): ResourceSummary {
     type: RESOURCE_TYPE.CHARACTER_CARD,
     name: '本地角色',
     fileName: '本地角色.png',
-    metadata: {},
+    metadata: {
+      card: {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data: { name: overrides.name ?? '本地角色', first_mes: '原开场白' },
+      },
+    },
     tags: [],
     ...overrides,
   } as ResourceSummary
@@ -139,6 +169,7 @@ describe('聊天回传确认与默认范围', () => {
     await flushPromises()
     const cancel = wrapper.find('.tavern-bridge-cancel')
     expect(cancel.exists()).toBe(true)
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined())
     expect(receivedSignal?.aborted).toBe(false)
     await cancel.trigger('click')
     await flushPromises()
@@ -369,7 +400,9 @@ describe('聊天回传确认与默认范围', () => {
         fileName: '雨夜.jsonl',
         relatedResourceIds: ['card'],
       }),
-      originalBlob: new Blob(['{"user_name":"User"}\n{"mes":"原文"}']),
+      originalBlob: new Blob([
+        '{"user_name":"User"}\n{"name":"角色","is_user":false,"mes":"原文"}',
+      ]),
     }
     vi.mocked(resourceService.get).mockImplementation(async (id) => (id === 'card' ? card : chat))
     const w = mountBridge({
@@ -962,6 +995,24 @@ describe('用户人设共用互传通道', () => {
       { 'traveler.png': { avatar: 'traveler.png', name: '旅行者', hash } },
     )
     const card = roleCard('role-card', '旅行者', 'traveler.png', hash)
+    card.full.originalBlob = new Blob([JSON.stringify(card.full.metadata.card)], {
+      type: 'application/json',
+    })
+    card.full.fileName = 'traveler.json'
+    card.full.mimeType = 'application/json'
+    card.full.metadata.characterContentEdits = [
+      {
+        id: 'saved',
+        section: 'greeting',
+        targetKey: 'primary',
+        before: '原开场白',
+        after: '补传的修改内容',
+        operation: 'update',
+        label: '开场白',
+        migrateToVersions: false,
+        updatedAt: 1,
+      },
+    ]
     bridgeMocks.listResources.mockResolvedValue([])
     vi.mocked(chooseAction).mockResolvedValue('confirm')
     vi.mocked(resourceService.get).mockImplementation(async (id) =>
@@ -984,11 +1035,15 @@ describe('用户人设共用互传通道', () => {
       .trigger('click')
     await flushPromises()
 
-    expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2))
     const calls = bridgeMocks.sendFiles.mock.calls as unknown as Array<
       [Array<{ kind: string; file: File }>, string]
     >
     expect(calls[0]![0][0]!.kind).toBe('character')
+    expect(calls[0]![0][0]!.file.name).toBe('traveler.png')
+    expect(
+      (await new PngResourceParser().parse(calls[0]![0][0]!.file)).metadata.card,
+    ).toMatchObject({ data: { first_mes: '补传的修改内容' } })
     expect(calls[0]![1]).toBe('skip')
     expect(calls[1]![0][0]!.kind).toBe('userPersona')
     const descriptor = JSON.parse(await calls[1]![0][0]!.file.text()).persona_descriptions[
@@ -1232,7 +1287,7 @@ describe('用户人设共用互传通道', () => {
       personas: Record<string, string>
       default_persona?: string
     }
-    expect(copied.personas[avatar.targetName!]).toBe('新名')
+    expect(copied.personas[avatar.targetName!]).toBe(local.name)
     expect(copied.default_persona).toBeUndefined()
   })
 
@@ -1279,4 +1334,280 @@ describe('用户人设共用互传通道', () => {
     ])
     w.unmount()
   })
+})
+
+describe('bridge send content preference', () => {
+  it('opens two settings rows before connection and persists choices without loading scripts', async () => {
+    bridgeMocks.getState.mockReturnValue({
+      status: 'idle',
+      detail: '未连接',
+      pairCode: '',
+      tavernOrigin: '',
+      bridgeVersion: '',
+    })
+    tavernConnectionStore.clearInventory()
+    vi.clearAllMocks()
+    const wrapper = render()
+    const button = wrapper.get('button[aria-label="酒馆互传设置"]')
+    await button.trigger('click')
+    const dialog = transferSettings()
+    expect((dialog.element as HTMLDialogElement).open).toBe(true)
+    const toggle = dialog.get('input[role="switch"]')
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    await toggle.setValue(false)
+    expect(browserStorageService.setTavernChatCarryScripts).toHaveBeenLastCalledWith(false)
+    expect(bridgeMocks.listResources).not.toHaveBeenCalled()
+    await dialog
+      .findAll('button')
+      .find((b) => b.text() === '原版')!
+      .trigger('click')
+    expect(browserStorageService.setTavernSendContent).toHaveBeenLastCalledWith('original')
+    expect(button.attributes('title')).toBe('发送原版')
+    await dialog
+      .findAll('button')
+      .find((b) => b.text() === '修改版')!
+      .trigger('click')
+    expect(browserStorageService.setTavernSendContent).toHaveBeenLastCalledWith('modified')
+    await dialog.get('[aria-label="关闭互传设置"]').trigger('click')
+    expect((dialog.element as HTMLDialogElement).open).toBe(false)
+    await button.trigger('click')
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+  })
+  it.each([
+    ['modified', 'relay'],
+    ['original', 'relay'],
+    ['modified', 'directory'],
+    ['original', 'directory'],
+  ] as const)('sends %s bytes through %s using the existing bridge', async (content, transport) => {
+    vi.clearAllMocks()
+    vi.mocked(confirmAction).mockResolvedValue(true)
+    tavernConnectionStore.clearInventory()
+    bridgeMocks.listResources.mockResolvedValue([])
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'https://tavern.test',
+      bridgeVersion: '0.3.39',
+      capabilities: [],
+      transport,
+    } as ReturnType<typeof bridgeMocks.getState>)
+    const local = resource({ fileName: 'card.json' })
+    const raw = JSON.stringify(local.metadata.card)
+    vi.mocked(resourceService.get).mockResolvedValue({
+      ...local,
+      mimeType: 'application/json',
+      originalBlob: new Blob([raw]),
+    } as Awaited<ReturnType<typeof resourceService.get>>)
+    const wrapper = mountBridge({ props: { resources: [local], initialLocalIds: [local.id] } })
+    mountedWrappers.push(wrapper)
+    if (content === 'original') {
+      await flushPromises()
+      await wrapper.find('button[aria-label="酒馆互传设置"]').trigger('click')
+      await transferSettings()
+        .findAll('button')
+        .find((b) => b.text() === '原版')!
+        .trigger('click')
+      await transferSettings().get('[aria-label="关闭互传设置"]').trigger('click')
+      await flushPromises()
+    }
+    await wrapper
+      .findAll('.tavern-bridge-tabs button')
+      .find((button) => button.text().includes('发送到酒馆'))!
+      .trigger('click')
+    await wrapper.find('.tavern-bridge__sticky-action').trigger('click')
+    await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(1))
+    const [files] = bridgeMocks.sendFiles.mock.calls[0] as unknown as [Array<{ file: File }>]
+    expect(files[0]!.file.name).toBe(content === 'original' ? 'card.json' : 'card.png')
+    if (content === 'original') expect(await files[0]!.file.text()).toBe(raw)
+    else expect(files[0]!.file.type).toBe('image/png')
+    await flushPromises()
+  })
+})
+it.each(['version', 'tags'])(
+  'changes operation identity when a failed send is retried with another %s choice',
+  async (choice) => {
+    vi.mocked(browserStorageService.getModifiedResourceSyncTags).mockReturnValue(false)
+    vi.clearAllMocks()
+    tavernConnectionStore.clearInventory()
+    bridgeMocks.listResources.mockResolvedValue([])
+    bridgeMocks.getState.mockReturnValue({
+      status: 'connected',
+      detail: '已连接',
+      pairCode: '',
+      tavernOrigin: 'https://tavern.test',
+      bridgeVersion: '0.3.39',
+      capabilities: [],
+      transport: 'relay',
+    } as ReturnType<typeof bridgeMocks.getState>)
+    const local = resource({ fileName: 'card.json' })
+    vi.mocked(resourceService.get).mockResolvedValue({
+      ...local,
+      mimeType: 'application/json',
+      originalBlob: new Blob([JSON.stringify(local.metadata.card)]),
+    } as Awaited<ReturnType<typeof resourceService.get>>)
+    bridgeMocks.sendFiles.mockRejectedValueOnce(new Error('fixture failure'))
+    const wrapper = mountBridge({ props: { resources: [local], initialLocalIds: [local.id] } })
+    mountedWrappers.push(wrapper)
+    await wrapper
+      .findAll('.tavern-bridge-tabs button')
+      .find((button) => button.text().includes('发送到酒馆'))!
+      .trigger('click')
+    await wrapper.find('.tavern-bridge__sticky-action').trigger('click')
+    await vi.waitFor(() =>
+      expect(wrapper.findAll('button').some((b) => b.text().includes('重试 1'))).toBe(true),
+    )
+    const first = (
+      bridgeMocks.sendFiles.mock.calls[0] as unknown as [Array<{ file: File; operationId: string }>]
+    )[0][0]!
+    expect(first.file.name).toBe('card.png')
+    if (choice === 'version') {
+      await wrapper.find('button[aria-label="酒馆互传设置"]').trigger('click')
+      await transferSettings()
+        .findAll('button')
+        .find((b) => b.text() === '原版')!
+        .trigger('click')
+      await transferSettings().get('[aria-label="关闭互传设置"]').trigger('click')
+    } else vi.mocked(browserStorageService.getModifiedResourceSyncTags).mockReturnValue(true)
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('重试 1'))!
+      .trigger('click')
+    await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalledTimes(2))
+    const second = (
+      bridgeMocks.sendFiles.mock.calls[1] as unknown as [Array<{ file: File; operationId: string }>]
+    )[0][0]!
+    expect(second.file.name).toBe(choice === 'version' ? 'card.json' : 'card.png')
+    expect(second.operationId).not.toBe(first.operationId)
+    await flushPromises()
+    vi.mocked(browserStorageService.getModifiedResourceSyncTags).mockReturnValue(false)
+  },
+)
+it('keeps an original legacy draft operation identity when retrying original content', async () => {
+  vi.clearAllMocks()
+  tavernConnectionStore.clearInventory()
+  bridgeMocks.listResources.mockResolvedValue([])
+  bridgeMocks.getState.mockReturnValue({
+    status: 'connected',
+    detail: '已连接',
+    pairCode: '',
+    tavernOrigin: 'https://tavern.test',
+    bridgeVersion: '0.3.39',
+    capabilities: [],
+    transport: 'relay',
+  } as ReturnType<typeof bridgeMocks.getState>)
+  const local = resource({ fileName: 'card.json' })
+  const operationId = crypto.randomUUID()
+  vi.mocked(browserStorageService.getTavernSendContent).mockReturnValueOnce('original')
+  vi.mocked(browserStorageService.getBridgeTransferDraft).mockReturnValueOnce({
+    direction: 'send',
+    origin: 'https://tavern.test',
+    policy: 'copy',
+    at: Date.now(),
+    items: [
+      {
+        key: local.id,
+        name: local.name,
+        label: '发送',
+        status: 'failed',
+        detail: 'legacy',
+        operationId,
+      },
+    ],
+  })
+  vi.mocked(resourceService.get).mockResolvedValue({
+    ...local,
+    mimeType: 'application/json',
+    originalBlob: new Blob([JSON.stringify(local.metadata.card)]),
+  } as Awaited<ReturnType<typeof resourceService.get>>)
+  const wrapper = mountBridge({ props: { resources: [local] } })
+  mountedWrappers.push(wrapper)
+  await flushPromises()
+  await wrapper
+    .findAll('button')
+    .find((b) => b.text().includes('重试 1'))!
+    .trigger('click')
+  await vi.waitFor(() => expect(bridgeMocks.sendFiles).toHaveBeenCalledOnce())
+  const sent = (
+    bridgeMocks.sendFiles.mock.calls[0] as unknown as [Array<{ file: File; operationId: string }>]
+  )[0][0]!
+  expect(sent.file.name).toBe('card.json')
+  expect(sent.operationId).toBe(operationId)
+  await flushPromises()
+})
+
+it('keeps chat script selection folded/lazy, searchable after no matches, and snapshots it for transfer', async () => {
+  vi.clearAllMocks()
+  tavernConnectionStore.clearInventory()
+  bridgeMocks.getState.mockReturnValue({
+    status: 'connected',
+    detail: '已连接',
+    pairCode: '',
+    tavernOrigin: 'https://chat-scripts.test',
+    bridgeVersion: '0.3.57',
+    capabilities: [
+      'chat-archive-v1',
+      'chat-reading-scripts-v1',
+      'pull-cancel-v1',
+      'pull-progress-v1',
+    ],
+  } as ReturnType<typeof bridgeMocks.getState>)
+  const chat: TavernResourceItem = {
+    id: 'chat:one',
+    kind: 'chat',
+    name: '雨夜',
+    fileName: '雨夜.srlchat',
+    detail: '',
+  }
+  bridgeMocks.listResources.mockImplementation(async (kind) => (kind === 'chat' ? [chat] : []))
+  bridgeMocks.pullResources.mockResolvedValue([new File(['chat'], '雨夜.srlchat')])
+  const wrapper = render()
+  await flushPromises()
+  await wrapper
+    .findAll('.tavern-bridge-type-filter button')
+    .find((b) => b.text().includes('聊天记录'))!
+    .trigger('click')
+  await flushPromises()
+  await wrapper.get('[aria-label="酒馆互传设置"]').trigger('click')
+  const group = transferSettings().get('.tavern-bridge-chat-scripts')
+  expect((group.element as HTMLDetailsElement).open).toBe(false)
+  const calls = bridgeMocks.listResources.mock.calls.length
+  await group.get('summary').trigger('click')
+  expect(bridgeMocks.listResources).toHaveBeenCalledTimes(calls)
+  bridgeMocks.listResources.mockResolvedValue(
+    Array.from({ length: 9 }, (_, i) => ({
+      id: `scriptGlobal:${i}`,
+      kind: 'scriptGlobal',
+      name: `手机${i}`,
+      fileName: `${i}.json`,
+      detail: '全局',
+    })),
+  )
+  await group
+    .findAll('button')
+    .find((b) => b.attributes('aria-label') === '读取可附带脚本')!
+    .trigger('click')
+  await flushPromises()
+  await group.get('input[type="search"]').setValue('无匹配')
+  expect(group.find('input[type="search"]').exists()).toBe(true)
+  await group.get('input[type="search"]').setValue('')
+  for (const box of group.findAll('input[type="checkbox"]').slice(0, 8)) await box.setValue(true)
+  expect(group.findAll('input[type="checkbox"]')[8]!.attributes('disabled')).toBeDefined()
+  await wrapper.get('.tavern-bridge-resource-card').trigger('click')
+  await wrapper
+    .findAll('.tavern-bridge__sticky-action')
+    .find((b) => b.text().includes('取回'))!
+    .trigger('click')
+  await flushPromises()
+  expect(bridgeMocks.pullResources).toHaveBeenCalledWith(
+    [
+      expect.objectContaining({
+        id: chat.id,
+        carryReadingScripts: true,
+        readingScriptIds: Array.from({ length: 8 }, (_, i) => `scriptGlobal:${i}`),
+      }),
+    ],
+    { signal: expect.any(AbortSignal) },
+  )
 })

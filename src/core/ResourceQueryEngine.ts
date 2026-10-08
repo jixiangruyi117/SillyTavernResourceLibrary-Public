@@ -20,8 +20,60 @@ export interface ResourceQueryResult {
   total: number
 }
 
+type ResourceMatchOptions = Omit<ResourceQueryOptions, 'sort' | 'nameCollator' | 'offset' | 'limit'>
+type ResourcePageOptions = Pick<ResourceQueryOptions, 'sort' | 'nameCollator' | 'offset' | 'limit'>
+
+/** Keep only the requested ordered prefix; original positions settle equal-key ties. */
+function orderedPage(
+  resources: ResourceSummary[],
+  compare: (left: ResourceSummary, right: ResourceSummary) => number,
+  offset: number,
+  limit: number,
+): ResourceSummary[] {
+  const capacity = offset + limit
+  if (capacity * 2 >= resources.length)
+    return resources.slice().sort(compare).slice(offset, capacity)
+  type Entry = { resource: ResourceSummary; position: number }
+  const heap: Entry[] = []
+  const order = (left: Entry, right: Entry) =>
+    compare(left.resource, right.resource) || left.position - right.position
+  const siftDown = () => {
+    let parent = 0
+    while (parent * 2 + 1 < heap.length) {
+      let child = parent * 2 + 1
+      if (child + 1 < heap.length && order(heap[child + 1]!, heap[child]!) > 0) child++
+      if (order(heap[parent]!, heap[child]!) >= 0) break
+      ;[heap[parent], heap[child]] = [heap[child]!, heap[parent]!]
+      parent = child
+    }
+  }
+  resources.forEach((resource, position) => {
+    if (heap.length < capacity) {
+      heap.push({ resource, position })
+      let child = heap.length - 1
+      while (child > 0) {
+        const parent = (child - 1) >> 1
+        if (order(heap[parent]!, heap[child]!) >= 0) break
+        ;[heap[parent], heap[child]] = [heap[child]!, heap[parent]!]
+        child = parent
+      }
+    } else if ((compare(resource, heap[0]!.resource) || position - heap[0]!.position) < 0) {
+      heap[0] = { resource, position }
+      siftDown()
+    }
+  })
+  return heap
+    .sort(order)
+    .slice(offset)
+    .map((entry) => entry.resource)
+}
+
 export class ResourceQueryEngine {
   query(resources: ResourceSummary[], options: ResourceQueryOptions): ResourceQueryResult {
+    return this.page(this.match(resources, options), options)
+  }
+
+  match(resources: ResourceSummary[], options: ResourceMatchOptions): ResourceSummary[] {
     const keyword = options.keyword?.trim().toLocaleLowerCase() ?? ''
     const matchesCategory = (resource: ResourceSummary) => {
       if (options.categoryId === undefined) return true
@@ -30,7 +82,7 @@ export class ResourceQueryEngine {
         ? categoryIds.length === 0
         : categoryIds.includes(options.categoryId)
     }
-    const items = resources.filter((resource) => {
+    return resources.filter((resource) => {
       if (
         options.filter !== 'all' &&
         !(options.filter === 'favorites' ? resource.favorite : resource.type === options.filter)
@@ -41,24 +93,36 @@ export class ResourceQueryEngine {
       if (options.tag && !resource.tags.includes(options.tag)) return false
       return !keyword || !options.matchesSearch || options.matchesSearch(resource, keyword)
     })
+  }
 
-    if (options.sort === 'name') {
-      const collator = options.nameCollator ?? new Intl.Collator('zh-CN')
-      items.sort((left, right) => collator.compare(left.name, right.name))
-    } else if (options.sort === 'size') {
-      items.sort((left, right) => right.fileSize - left.fileSize)
-    } else if (
-      !items.every(
-        (resource, index) => index === 0 || items[index - 1]!.updatedAt >= resource.updatedAt,
-      )
-    ) {
-      items.sort((left, right) => right.updatedAt - left.updatedAt)
-    }
-
+  page(items: ResourceSummary[], options: ResourcePageOptions): ResourceQueryResult {
     const total = items.length
     const offset = Math.max(0, Math.round(options.offset ?? 0))
     const limit = options.limit === undefined ? total : Math.max(0, Math.round(options.limit))
-    return { items: offset || limit < total ? items.slice(offset, offset + limit) : items, total }
+    if (offset >= total || limit === 0) return { items: [], total }
+    let compare: (left: ResourceSummary, right: ResourceSummary) => number
+    let alreadyOrdered = false
+    if (options.sort === 'name') {
+      const collator = options.nameCollator ?? new Intl.Collator('zh-CN')
+      compare = (left, right) => collator.compare(left.name, right.name)
+    } else if (options.sort === 'size') {
+      compare = (left, right) => right.fileSize - left.fileSize
+    } else {
+      alreadyOrdered = items.every(
+        (resource, index) => index === 0 || items[index - 1]!.updatedAt >= resource.updatedAt,
+      )
+      compare = (left, right) => right.updatedAt - left.updatedAt
+    }
+    // Preserve the original public query's slicing semantics for non-finite persisted inputs.
+    if (!Number.isFinite(offset) || !Number.isFinite(limit)) {
+      const sorted = alreadyOrdered ? items.slice() : items.slice().sort(compare)
+      return {
+        items: offset || limit < total ? sorted.slice(offset, offset + limit) : sorted,
+        total,
+      }
+    }
+    if (alreadyOrdered) return { items: items.slice(offset, offset + limit), total }
+    return { items: orderedPage(items, compare, offset, limit), total }
   }
 }
 

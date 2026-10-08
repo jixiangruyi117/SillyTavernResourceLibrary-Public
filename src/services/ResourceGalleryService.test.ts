@@ -398,7 +398,9 @@ describe('resource gallery lifecycle and backup', () => {
       await gallery.addFile('a', file())
       await remove(ids, progress)
     })
-    await deleteMany(storage, ['a'])
+    const remaining = await deleteMany(storage, ['a'])
+    expect(remaining?.some((resource) => galleryOwnerId(resource) === 'a')).toBe(false)
+    expect(remaining?.some((resource) => resource.id === 'a')).toBe(false)
     expect(await storage.get('a')).toBeUndefined()
     expect((await gallery.list('a')).galleryCount).toBe(0)
   })
@@ -651,7 +653,14 @@ describe('resource gallery lifecycle and backup', () => {
     await activateVersion(storage, 'a', 'historical')
     expect((await storage.get('a'))?.metadata.resourceCoverId).toBe(cover.id)
     const other = await gallery.addUrl('b', 'https://example.com/other.png', false)
-    await mergeExistingResourceAsVersion(storage, (id) => deleteMany(storage, [id]), 'a', 'b')
+    await mergeExistingResourceAsVersion(
+      storage,
+      async (id) => {
+        await deleteMany(storage, [id])
+      },
+      'a',
+      'b',
+    )
     expect(galleryOwnerId((await storage.get(other.id))!)).toBe('a')
     expect((await gallery.list('a')).total).toBe(2)
     await deleteMany(storage, ['a'])

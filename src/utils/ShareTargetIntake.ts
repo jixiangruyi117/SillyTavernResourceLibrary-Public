@@ -63,12 +63,19 @@ interface ShareReceiverPlugin {
     libraryId: string
     workerUrl: string
     url: string
+    automaticAutoBinding?: boolean
   }): Promise<{ token: string }>
   readCloudResource(options: { id: string; libraryId: string; workerUrl: string }): Promise<{
     active?: boolean
     cancelled?: boolean
     error?: string
-    nativeImportOutcome?: { state?: string; message?: string; resourceId?: string; name?: string }
+    nativeImportOutcome?: {
+      state?: string
+      message?: string
+      resourceId?: string
+      name?: string
+      automaticBindingPending?: boolean
+    }
     transferredBytes: number
     totalBytes?: number
     file?: NativeSharedFile
@@ -84,10 +91,14 @@ type NativeShareSnapshot = Awaited<ReturnType<ShareReceiverPlugin['getPendingSha
 const deliveredNativeTokens = new Set<string>()
 
 export interface SharedFileBatch {
+  /** The receiver's task continues through parsing/import; do not create a second task. */
+  taskOperationId?: string
   /** True only for resources received from the paired Discord cloud inbox. */
   automaticCloud?: boolean
+  /** The cloud intake settles one logical batch after every attachment/decision completes. */
+  deferAutomaticBinding?: boolean
   onItemComplete?(result: ImportResult): Promise<void>
-  onVersionResolved?(committedHash?: string): Promise<void>
+  onVersionResolved?(committedHash?: string, resourceId?: string): Promise<void>
   onFailure?(message: string): Promise<void>
   /** Cancel the remote owner when an interrupted cloud import is explicitly discarded. */
   onCancel?(): Promise<void>
@@ -532,6 +543,7 @@ export async function stageCloudDiscordResource(options: {
   libraryId: string
   workerUrl: string
   url: string
+  automaticAutoBinding?: boolean
 }): Promise<void> {
   try {
     await shareReceiver.stageCloudResource(options)
@@ -572,12 +584,16 @@ export async function cancelNativeCloudDiscordResource(options: {
 }
 
 /** Web cloud files can be re-downloaded; retain only the existing hash/alias checkpoints. */
-export function cloudWebResourceBatch(file: File, recoveryId: string): SharedFileBatch {
+export function cloudWebResourceBatch(
+  file: File,
+  recoveryId: string,
+  automaticCloud = true,
+): SharedFileBatch {
   const completedContentHashes = readStoredCompletedImportHashes(recoveryId)
   const completedImportAliases = readStoredImportAliases(recoveryId)
   return {
     files: [file],
-    automaticCloud: true,
+    automaticCloud,
     recoveryId,
     completedContentHashes,
     completedImportAliases,
@@ -600,7 +616,13 @@ export async function readCloudDiscordResource(options: {
   active?: boolean
   cancelled?: boolean
   error?: string
-  nativeImportOutcome?: { state?: string; message?: string; resourceId?: string; name?: string }
+  nativeImportOutcome?: {
+    state?: string
+    message?: string
+    resourceId?: string
+    name?: string
+    automaticBindingPending?: boolean
+  }
   transferredBytes: number
   totalBytes?: number
 }> {

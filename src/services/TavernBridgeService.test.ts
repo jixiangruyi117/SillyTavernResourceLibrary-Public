@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 
 import { BRIDGE_EXTENSION_VERSION } from '../utils/BridgeInstall'
 import { TavernBridgeService, TavernHttpRelayPort } from './TavernBridgeService'
@@ -16,6 +17,66 @@ interface BridgeServiceTestAccess {
 }
 
 describe('TavernBridgeService', () => {
+  it('uses the verified direct download hash once and still rejects changed metadata', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      addEventListener() {},
+      removeEventListener() {},
+      location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+    })
+    const sha256 = await hashBlob(new Blob(['data']))
+    const digest = vi.spyOn(crypto.subtle, 'digest')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url, init) =>
+        init?.method === 'DELETE'
+          ? new Response(null, { status: 204 })
+          : new Response('data', { headers: { 'x-srl-direct-sha256': sha256 } }),
+      ),
+    )
+    const service = new TavernBridgeService()
+    const port = { postMessage: vi.fn(), close: vi.fn() }
+    const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+    access.port = port
+    await access.handlePortMessage(
+      tavernEnvelope('st-ready', {
+        bridgeVersion: BRIDGE_EXTENSION_VERSION,
+        capabilities: ['pull-cancel-v1', 'pull-progress-v1'],
+      }),
+    )
+    const pending = service.pullResources([
+      { id: 'theme:one', kind: 'theme', name: 'test', fileName: 'test.json', detail: '' },
+    ])
+    const requestId = port.postMessage.mock.calls.at(-1)![0].requestId
+    const meta = {
+      requestId,
+      transferId: 'direct-file',
+      direction: 'to-srl',
+      name: 'test.json',
+      size: 4,
+      sha256,
+      localDirectSession: {
+        sessionId: 'session_123456',
+        token: 'a'.repeat(32),
+        origin: 'http://127.0.0.1:8000',
+        maxFileSize: 1024,
+      },
+    }
+    try {
+      await access.handlePortMessage(tavernEnvelope('file-start', meta))
+      await access.handlePortMessage(tavernEnvelope('file-end', meta))
+      await access.handlePortMessage(tavernEnvelope('pull-complete', { requestId, completed: 1 }))
+      expect(await (await pending)[0]!.text()).toBe('data')
+      expect(digest).not.toHaveBeenCalled()
+      await expect(
+        access.handlePortMessage(tavernEnvelope('file-start', { ...meta, sha256: 'f'.repeat(64) })),
+      ).rejects.toThrow('完整性')
+    } finally {
+      service.destroy()
+      digest.mockRestore()
+    }
+  })
   it('requests chats only from a capable peer and receives their archive over the existing checked chunks', async () => {
     vi.stubGlobal('window', {
       setTimeout,
@@ -625,6 +686,50 @@ describe('TavernBridgeService', () => {
 })
 
 describe('TavernHttpRelayPort', () => {
+  it('validates the whole poll batch before sending ACKs with bounded concurrency', async () => {
+    const port = new TavernHttpRelayPort('https://relay.example.test/', {
+      code: 'AB23CD45',
+      token: 'token',
+    })
+    const handled: number[] = []
+    let polls = 0,
+      active = 0,
+      maximum = 0
+    const access = port as unknown as {
+      request: (
+        path: string,
+        body: { message?: { type: string; index: number }; acknowledgements?: string[] },
+      ) => Promise<unknown>
+      poll: () => Promise<void>
+    }
+    access.request = async (path, body) => {
+      if (path === 'poll')
+        return polls++
+          ? { closed: true }
+          : {
+              messages: Array.from({ length: 12 }, (_, index) => ({ type: 'file-chunk', index })),
+              deliveryIds: Array.from({ length: 12 }, (_, index) => `delivery-${index}`),
+            }
+      expect(body.message?.type).toBe('file-chunk-ack')
+      expect(handled).toHaveLength(12)
+      expect(body.acknowledgements).toEqual(
+        Array.from({ length: 12 }, (_, index) => `delivery-${index}`),
+      )
+      active++
+      maximum = Math.max(maximum, active)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      active--
+    }
+    port.onmessage = async ({ data }) => {
+      const message = data as { index: number }
+      handled.push(message.index)
+      await port.postMessage({ type: 'file-chunk-ack', index: message.index })
+    }
+    await access.poll()
+    expect(maximum).toBe(6)
+    expect(handled).toEqual(Array.from({ length: 12 }, (_, index) => index))
+  })
+
   it('sends the local Tavern CSRF token on native relay requests', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -674,4 +779,53 @@ describe('TavernHttpRelayPort', () => {
     await Promise.all([firstControl, secondControl, firstChunk, secondChunk])
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
+})
+
+it('gates optional chat scripts by peer capability and forwards selected sources on the existing request', async () => {
+  vi.stubGlobal('window', {
+    setTimeout,
+    clearTimeout,
+    removeEventListener: vi.fn(),
+    addEventListener: vi.fn(),
+    location: { href: 'https://srl.test/', origin: 'https://srl.test' },
+  })
+  const service = new TavernBridgeService()
+  const port = {
+    postMessage: vi.fn((message) => {
+      structuredClone(message)
+    }),
+    close: vi.fn(),
+  }
+  const access = service as unknown as BridgeServiceTestAccess & { port: typeof port }
+  access.port = port
+  const capabilities = ['catalog-pages-v1', 'pull-cancel-v1', 'pull-progress-v1']
+  await access.handlePortMessage(
+    tavernEnvelope('st-ready', { bridgeVersion: BRIDGE_EXTENSION_VERSION, capabilities }),
+  )
+  const item = {
+    id: 'chat:one',
+    kind: 'chat' as const,
+    name: '聊天',
+    fileName: 'chat.srlchat',
+    detail: '',
+    readingScriptIds: reactive(['scriptGlobal:phone']),
+  }
+  await expect(service.pullResources([item])).rejects.toThrow('新版')
+  await access.handlePortMessage(
+    tavernEnvelope('st-ready', {
+      bridgeVersion: BRIDGE_EXTENSION_VERSION,
+      capabilities: [...capabilities, 'chat-reading-scripts-v1'],
+    }),
+  )
+  await expect(
+    service.pullResources([{ ...item, readingScriptIds: ['character:secret'] }]),
+  ).rejects.toThrow('最多 8')
+  const pending = service.pullResources([item])
+  const request = port.postMessage.mock.calls.at(-1)![0]
+  expect(request.items).toEqual([{ id: item.id, readingScriptIds: item.readingScriptIds }])
+  await access.handlePortMessage(
+    tavernEnvelope('pull-complete', { requestId: request.requestId, completed: 0 }),
+  )
+  expect(await pending).toEqual([])
+  service.destroy()
 })

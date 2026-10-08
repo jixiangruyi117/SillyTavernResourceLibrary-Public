@@ -3,6 +3,7 @@ import { ref, useTemplateRef, watch } from 'vue'
 import GreetingPreviewDialog from './GreetingPreviewDialog.vue'
 import FeatureBackButton from './FeatureBackButton.vue'
 import CharacterCardContentWorkbench from './CharacterCardContentWorkbench.vue'
+import WorldBookBrowser from './WorldBookBrowser.vue'
 import {
   useCharacterCardDetails,
   type CharacterCardDetailsProps,
@@ -15,6 +16,10 @@ const props = withDefaults(defineProps<CharacterCardDetailsProps>(), {
 })
 const emit = defineEmits<CharacterCardDetailsEvents>()
 const controller = useCharacterCardDetails(props, emit)
+const worldBrowser = useTemplateRef<{ closeDetail: () => boolean }>('worldBrowser')
+function handleClosePage() {
+  if (!worldBrowser.value?.closeDetail()) controller.closePage()
+}
 const showContentWorkbench = ref(false)
 watch(showContentWorkbench, (open) => emit('workbench-open', open), { immediate: true })
 const contentWorkbench = useTemplateRef<{ prepareSave: () => Promise<boolean> }>('contentWorkbench')
@@ -48,7 +53,6 @@ const {
   embeddedHelperScripts,
   embeddedHelperBadge,
   sections,
-  closePage,
   pageTitle,
   pageCount,
   activeGreetingIndex,
@@ -65,14 +69,7 @@ const {
   hasRichPreviewContent,
   greetingExcerpt,
   scrollToGreeting,
-  selectedWorldEntry,
-  selectedWorldEntryId,
-  embeddedWorldQuery,
-  pagedEmbeddedBookEntries,
-  embeddedWorldPage,
   PAGE_SIZE,
-  filteredEmbeddedBookEntries,
-  embeddedWorldPageCount,
   selectedRegexScript,
   selectedRegexScriptId,
   setRegexEnabled,
@@ -139,7 +136,9 @@ const {
       @use-original="
         updateReplacement($event === 'worldBook' ? 'worldBookResourceId' : 'greetingResourceId', '')
       "
-    />
+    >
+      <template #save><slot name="content-save" /></template>
+    </CharacterCardContentWorkbench>
     <Transition name="character-page" mode="out-in">
       <div
         v-if="activePage === 'overview'"
@@ -223,7 +222,7 @@ const {
             class="character-content-index__item"
             @click="openPage('worldBook')"
           >
-            <small>WORLD BOOK</small>
+            <small>世界书条目</small>
             <strong>{{ embeddedBookName }}</strong>
             <span>{{ embeddedBookBadge }}</span>
             <i aria-hidden="true">→</i>
@@ -267,7 +266,7 @@ const {
 
       <section v-else :key="activePage" class="character-subpage">
         <header class="character-subpage__header">
-          <FeatureBackButton label="返回角色档案" @click="closePage" />
+          <FeatureBackButton label="返回角色档案" @click="handleClosePage" />
           <div>
             <h3>{{ pageTitle }}</h3>
           </div>
@@ -386,67 +385,11 @@ const {
           </p>
         </div>
 
-        <div v-else-if="activePage === 'worldBook'" class="character-asset-page">
-          <article v-if="selectedWorldEntry" class="character-asset-detail">
-            <button
-              type="button"
-              class="character-asset-detail__back"
-              @click="selectedWorldEntryId = ''"
-            >
-              <span aria-hidden="true">←</span>
-              返回条目目录
-            </button>
-            <header>
-              <small>WORLD ENTRY · {{ selectedWorldEntry.id }}</small>
-              <h4>{{ selectedWorldEntry.title }}</h4>
-              <span>{{ selectedWorldEntry.enabled ? '已启用' : '已停用' }}</span>
-            </header>
-            <div v-if="selectedWorldEntry.keys.length" class="embedded-world-list__keys">
-              <span v-for="key in selectedWorldEntry.keys" :key="key">{{ key }}</span>
-            </div>
-            <pre>{{ selectedWorldEntry.content || '此条目没有正文内容。' }}</pre>
-          </article>
-          <template v-else>
-            <label v-if="embeddedBookEntries.length > 6" class="character-asset-page__search">
-              <span>搜索条目</span>
-              <input v-model="embeddedWorldQuery" type="search" placeholder="名称、关键字或正文" />
-            </label>
-            <ol class="character-asset-directory">
-              <li v-for="(entry, index) in pagedEmbeddedBookEntries" :key="entry.id">
-                <button type="button" @click="selectedWorldEntryId = entry.id">
-                  <i>{{
-                    String((embeddedWorldPage - 1) * PAGE_SIZE + index + 1).padStart(2, '0')
-                  }}</i>
-                  <span>
-                    <strong>{{ entry.title }}</strong>
-                    <small>{{ entry.keys.slice(0, 2).join('、') || '无关键字' }}</small>
-                  </span>
-                  <em>{{ entry.enabled ? '启用' : '停用' }}</em>
-                  <b aria-hidden="true">›</b>
-                </button>
-              </li>
-            </ol>
-            <p v-if="!pagedEmbeddedBookEntries.length" class="character-asset-page__empty">
-              没有匹配的世界书条目。
-            </p>
-            <nav
-              v-if="filteredEmbeddedBookEntries.length > PAGE_SIZE"
-              class="character-asset-page__pagination"
-            >
-              <button type="button" :disabled="embeddedWorldPage <= 1" @click="embeddedWorldPage--">
-                上一页
-              </button>
-              <span>第 {{ embeddedWorldPage }} / {{ embeddedWorldPageCount }} 页</span>
-              <button
-                type="button"
-                :disabled="embeddedWorldPage >= embeddedWorldPageCount"
-                @click="embeddedWorldPage++"
-              >
-                下一页
-              </button>
-            </nav>
-          </template>
-        </div>
+        <WorldBookBrowser
+          v-else-if="activePage === 'worldBook'"
+          ref="worldBrowser"
+          :entries="embeddedBookEntries"
+        />
 
         <div v-else-if="activePage === 'regex'" class="character-asset-page">
           <article

@@ -142,6 +142,7 @@ function collectPreviewRemoteResourceUrlsInto(
   dataUrlResources: Set<string>,
   fallbackBase: string | undefined,
   depth: number,
+  browserDemand = false,
 ): void {
   if (typeof DOMParser === 'undefined') return
   const document = new DOMParser().parseFromString(documentSource, 'text/html')
@@ -153,9 +154,13 @@ function collectPreviewRemoteResourceUrlsInto(
     if (depth > 0) dataUrlResources.add(url)
   }
 
-  forEachPreviewResourceAttribute(document, (element, attribute) =>
-    add(element.getAttribute(attribute)),
-  )
+  forEachPreviewResourceAttribute(document, (element, attribute) => {
+    // Media must retain browser streaming/Range behavior, rather than waiting for a
+    // whole native cache file. A video's poster is still a normal display image.
+    if (browserDemand && attribute === 'src' && element.matches('audio, video, source, track'))
+      return
+    add(element.getAttribute(attribute))
+  })
   for (const element of Array.from(document.querySelectorAll('[srcset]'))) {
     for (const url of readSrcsetUrls(element.getAttribute('srcset') ?? '', documentBase)) add(url)
   }
@@ -174,12 +179,16 @@ function collectPreviewRemoteResourceUrlsInto(
         dataUrlResources,
         documentBase,
         depth + 1,
+        browserDemand,
       )
     }
   }
 }
 
-export function collectPreviewRemoteResourceUrls(documentSource: string): string[] {
+export function collectPreviewRemoteResourceUrls(
+  documentSource: string,
+  browserDemand = false,
+): string[] {
   const urls = new Set<string>()
   collectPreviewRemoteResourceUrlsInto(
     documentSource,
@@ -187,8 +196,18 @@ export function collectPreviewRemoteResourceUrls(documentSource: string): string
     new Set<string>(),
     readDefaultDocumentBase(),
     0,
+    browserDemand,
   )
-  return [...urls]
+  if (!browserDemand) return [...urls]
+  return [
+    ...new Set(
+      [...urls].map((value) => {
+        const url = new URL(value)
+        url.hash = ''
+        return url.href
+      }),
+    ),
+  ]
 }
 
 function collectPreviewRemoteResources(documentSource: string): {
@@ -271,7 +290,7 @@ async function downloadPreviewResource(
   // Capacitor 会把应用域名映射到 APK 内的 public 资源。同源素材必须经 WebView
   // 读取；若交给 OkHttp，会绕过这层映射并错误地请求线上站点。
   if (isNativePreviewAssetAvailable() && !isDocumentOriginResource) {
-    const downloaded = await downloadNativePreviewAsset(url, MAX_PREVIEW_RESOURCE_BYTES)
+    const downloaded = await downloadNativePreviewAsset(url, MAX_PREVIEW_RESOURCE_BYTES, signal)
     throwIfAborted(signal)
     if (downloaded.size > budget.remainingBytes) throw new Error('资源超过预下载总大小限制')
     budget.reserve(downloaded.size)
@@ -427,7 +446,10 @@ export async function preloadPreviewDocumentResources(
   const failures = new Map<string, string>()
   const budget = new PreviewResourceBudget()
   let completed = 0
-  let nextIndex = 0
+  const queue = [...urls]
+  const prioritizeStylesheets = () =>
+    queue.sort((a, b) => Number(/\.css(?:$|[?#])/i.test(b)) - Number(/\.css(?:$|[?#])/i.test(a)))
+  prioritizeStylesheets()
   const report = (activeUrl?: string) =>
     onProgress?.({ total: urls.length, completed, failed: failures.size, activeUrl })
   const enqueue = (url: string, requiresDataUrl = false) => {
@@ -435,41 +457,62 @@ export async function preloadPreviewDocumentResources(
     if (queuedUrls.has(url)) return
     queuedUrls.add(url)
     urls.push(url)
+    if (/\.css(?:$|[?#])/i.test(url)) queue.unshift(url)
+    else queue.push(url)
   }
 
   report()
-  const worker = async () => {
-    while (nextIndex < urls.length) {
-      throwIfAborted(options.signal)
-      const index = nextIndex++
-      const url = urls[index]
-      if (!url) continue
-      let downloaded: DownloadedPreviewResource | undefined
-      try {
-        downloaded = await downloadPreviewResource(url, budget, options.signal)
-        downloadedResources.set(url, downloaded)
-        if (downloaded.isCss) {
-          for (const nestedUrl of readCssUrls(
-            downloaded.cssText ?? (await downloaded.blob?.text()) ?? '',
-            downloaded.resolvedUrl,
-          )) {
-            enqueue(nestedUrl, dataUrlResources.has(url))
-          }
+  const download = async (url: string) => {
+    throwIfAborted(options.signal)
+    let downloaded: DownloadedPreviewResource | undefined
+    try {
+      downloaded = await downloadPreviewResource(url, budget, options.signal)
+      downloadedResources.set(url, downloaded)
+      if (downloaded.isCss) {
+        for (const nestedUrl of readCssUrls(
+          downloaded.cssText ?? (await downloaded.blob?.text()) ?? '',
+          downloaded.resolvedUrl,
+        )) {
+          enqueue(nestedUrl, dataUrlResources.has(url))
         }
-      } catch (error) {
-        if (options.signal?.aborted) throw error
-        if (downloaded) budget.release(downloaded.size)
-        downloadedResources.delete(url)
-        failures.set(url, resourceFailureReason(error))
-      } finally {
-        completed += 1
-        report(url)
       }
+    } catch (error) {
+      if (options.signal?.aborted) throw error
+      if (downloaded) budget.release(downloaded.size)
+      downloadedResources.delete(url)
+      failures.set(url, resourceFailureReason(error))
+    } finally {
+      completed += 1
+      report(url)
     }
   }
-  await Promise.all(
-    Array.from({ length: Math.min(PREVIEW_RESOURCE_CONCURRENCY, urls.length) }, worker),
-  )
+  // Workers must remain available when a late stylesheet discovers more URLs.
+  // A fixed set of while-loop workers otherwise shrinks to one after the queue drains.
+  await new Promise<void>((resolve, reject) => {
+    let active = 0
+    let failure: unknown
+    const concurrency = isNativePreviewAssetAvailable() ? 3 : PREVIEW_RESOURCE_CONCURRENCY
+    const pump = () => {
+      if (options.signal?.aborted) failure ??= createAbortError()
+      while (!failure && active < concurrency && queue.length) {
+        const url = queue.shift()!
+        active += 1
+        void download(url)
+          .catch((error: unknown) => {
+            failure = error
+          })
+          .finally(() => {
+            active -= 1
+            pump()
+          })
+      }
+      if (!active) {
+        if (failure) reject(failure)
+        else if (!queue.length) resolve()
+      }
+    }
+    pump()
+  })
 
   const resourceUrls = new Map<string, string>()
   const objectUrls = new Set<string>()

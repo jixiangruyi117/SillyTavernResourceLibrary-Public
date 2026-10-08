@@ -5,9 +5,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { AppDatabase } from '../database/AppDatabase'
 import { VaultService } from '../services/VaultService'
 import { CommunitySourceService } from '../services/CommunitySourceService'
-import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import { RESOURCE_TYPE, type Resource, type ResourceListSummary } from '../types/Resource'
 import { RESOURCE_GALLERY_ASSET_KIND } from '../types/ResourceGallery'
 import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
+import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 import {
   COMMUNITY_SOURCE_MESSAGE_KIND,
   COMMUNITY_SOURCE_PLATFORM,
@@ -23,6 +24,42 @@ import { IndexedDbCommunitySourceStorage } from './IndexedDbCommunitySourceStora
 const SOURCE_HASH = 'a'.repeat(64)
 const MESSAGE_HASH = 'b'.repeat(64)
 const RAW_MESSAGE_ID = 'message-secret-123'
+
+describe('automatic binding commit', () => {
+  it('commits the binding and completed scan together, rolling back both on a write failure', async () => {
+    const database = new AppDatabase(`auto-binding-atomic-${crypto.randomUUID()}`)
+    const { storage } = createStorage(database)
+    const source = {
+      ...createSource(),
+      autoBindPendingPng: true,
+      autoBindScan: {
+        version: 1 as const,
+        status: 'scanning' as const,
+        scannedResourceIds: [],
+        futureResourceIds: [],
+      },
+    }
+    const service = new CommunitySourceService(storage)
+    try {
+      await storage.putSource(source)
+      const failedWrite = vi
+        .spyOn(database.resourceSourceBindings, 'put')
+        .mockRejectedValueOnce(new Error('binding commit failed'))
+      await expect(
+        service.bindSource('card-a', source.id, '自动关联', 'same-name'),
+      ).rejects.toThrow('binding commit failed')
+      expect((await storage.getSource(source.id))?.autoBindScan?.status).toBe('scanning')
+      expect(await storage.listBindingsForSource(source.id)).toHaveLength(0)
+      failedWrite.mockRestore()
+      await service.bindSource('card-a', source.id, '自动关联', 'same-name')
+      expect((await storage.getSource(source.id))?.autoBindScan).toBeUndefined()
+      expect((await storage.getSource(source.id))?.autoBindPendingPng).toBeUndefined()
+      expect(await storage.listBindingsForSource(source.id)).toHaveLength(1)
+    } finally {
+      await database.delete()
+    }
+  })
+})
 
 function createStorage(database: AppDatabase): {
   storage: IndexedDbCommunitySourceStorage
@@ -71,6 +108,165 @@ function createMessage(source: CommunitySource, content: string): CommunitySourc
 }
 
 describe('IndexedDbCommunitySourceStorage', () => {
+  it.each([false, true])(
+    'removes only exclusive post media, preserving originals and shared covers (vault=%s)',
+    async (encrypted) => {
+      const database = new AppDatabase(`post-media-cleanup-${crypto.randomUUID()}`)
+      try {
+        const { storage, vault } = createStorage(database)
+        await vault.initialize()
+        if (encrypted) await vault.enable('post-media-test-password')
+        const assets = new IndexedDbAssetStore(database)
+        const exclusive = await assets.put(new Blob(['exclusive'], { type: 'image/png' }), {
+          source: 'remote',
+        })
+        const shared = await assets.put(new Blob(['shared'], { type: 'image/png' }), {
+          source: 'remote',
+        })
+        const textFile = await assets.put(new Blob(['text'], { type: 'text/plain' }), {
+          source: 'remote',
+        })
+        const source = createSource()
+        const message = createMessage(source, '完整正文'.repeat(3000))
+        message.attachments = [exclusive, shared, textFile].map((asset) => ({
+          id: asset.assetId,
+          name: asset.mimeType === 'text/plain' ? 'text.txt' : 'image.png',
+          size: asset.size,
+          contentType: asset.mimeType,
+          url: `https://cdn.discordapp.com/attachments/a/${asset.assetId}`,
+          localAssetId: asset.assetId,
+          localState: 'local',
+        }))
+        source.revisions = [
+          {
+            id: 'revision',
+            createdAt: 1,
+            messages: [message],
+            source: { canonicalUrl: source.canonicalUrl, forumTags: [], updatedAt: 1 },
+          },
+        ]
+        await storage.putSourceWithMessages(source, [message])
+        await database.settings.put({
+          id: 'shared-cover',
+          value: { url: `asset://${shared.assetId}` },
+          updatedAt: 1,
+        })
+        const resources = new IndexedDbResourceStorage(database, vault)
+        await resources.save({
+          id: 'shared-cover-resource',
+          name: '保留封面',
+          description: '',
+          type: RESOURCE_TYPE.OTHER,
+          fileName: 'resource.txt',
+          mimeType: 'text/plain',
+          fileSize: 8,
+          originalBlob: new Blob(['original']),
+          contentHash: 'd'.repeat(64),
+          favorite: false,
+          categoryId: null,
+          tags: [],
+          metadata: { coverUrl: `asset://${shared.assetId}` },
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        expect(await storage.downloadedMediaUsage()).toEqual({
+          count: 2,
+          bytes: exclusive.size + shared.size,
+        })
+        expect(await storage.clearDownloadedMedia()).toEqual({
+          count: 1,
+          bytes: exclusive.size,
+          retainedCount: 1,
+        })
+        expect(await assets.getBlob(exclusive.assetId)).toBeUndefined()
+        expect(await assets.getBlob(shared.assetId)).toBeDefined()
+        expect(await assets.getBlob(textFile.assetId)).toBeDefined()
+        expect(await (await resources.get('shared-cover-resource'))?.originalBlob.text()).toBe(
+          'original',
+        )
+        const result = await storage.exportAll()
+        expect(result.messages[0]?.content).toBe(message.content)
+        expect(result.messages[0]?.attachments.map((a) => a.url)).toEqual(
+          message.attachments.map((a) => a.url),
+        )
+        expect(result.messages[0]?.attachments[0]).toMatchObject({ localState: 'remoteOnly' })
+        expect(result.messages[0]?.attachments[0]?.localAssetId).toBeUndefined()
+        expect(
+          result.sources[0]?.revisions?.[0]?.messages[0]?.attachments[0]?.localAssetId,
+        ).toBeUndefined()
+        expect(await storage.clearDownloadedMedia()).toEqual({
+          count: 0,
+          bytes: 0,
+          retainedCount: 0,
+        })
+      } finally {
+        database.close()
+        await database.delete()
+      }
+    },
+  )
+  it('rolls back post references and files if cleanup fails to commit', async () => {
+    const database = new AppDatabase(`post-media-rollback-${crypto.randomUUID()}`)
+    try {
+      const { storage } = createStorage(database)
+      const assets = new IndexedDbAssetStore(database)
+      const asset = await assets.put(new Blob(['image'], { type: 'image/png' }), {
+        source: 'remote',
+      })
+      const source = createSource(),
+        message = createMessage(source, '正文')
+      message.attachments = [
+        {
+          id: 'img',
+          name: 'image.png',
+          size: 5,
+          url: 'https://cdn.discordapp.com/image.png',
+          localAssetId: asset.assetId,
+          localState: 'local',
+        },
+      ]
+      await storage.putSourceWithMessages(source, [message])
+      const write = vi
+        .spyOn(database.communitySourceMessages, 'put')
+        .mockRejectedValueOnce(new Error('write failed'))
+      await expect(storage.clearDownloadedMedia()).rejects.toThrow('write failed')
+      write.mockRestore()
+      expect(await assets.getBlob(asset.assetId)).toBeDefined()
+      expect((await storage.listMessages(source.id))[0]?.attachments[0]?.localAssetId).toBe(
+        asset.assetId,
+      )
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('filters bound resources through the indexed binding IDs without decrypting each row', async () => {
+    const database = new AppDatabase(`community-bound-resource-index-${crypto.randomUUID()}`)
+    const { storage } = createStorage(database)
+    await storage.putBinding({
+      id: 'binding-a',
+      resourceId: 'resource-a',
+      sourceId: 'source-a',
+      createdAt: 1,
+    })
+    await storage.putBinding({
+      id: 'binding-b',
+      resourceId: 'resource-b',
+      sourceId: 'source-b',
+      createdAt: 2,
+    })
+
+    await expect(storage.listBoundResourceIds()).resolves.toEqual(['resource-a', 'resource-b'])
+    await expect(
+      new CommunitySourceService(storage).listUnboundResources([
+        { id: 'resource-a' },
+        { id: 'resource-c' },
+      ] as unknown as ResourceListSummary[]),
+    ).resolves.toEqual([{ id: 'resource-c' }])
+    database.close()
+    await database.delete()
+  })
+
   it('reads only the indexed starter message for bounded inbox matching', async () => {
     const database = new AppDatabase(`community-source-starter-index-${crypto.randomUUID()}`)
     const { storage } = createStorage(database)

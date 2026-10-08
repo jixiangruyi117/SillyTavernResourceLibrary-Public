@@ -41,6 +41,115 @@ function result(text: string): MainApiCompletionResult {
 }
 
 describe('AiTaggingService', () => {
+  it('准备阶段取消立即返回；未结束的资源读取不会再发 API 请求', async () => {
+    let loaded!: (value: Resource) => void
+    const get = vi.fn(
+      () =>
+        new Promise<Resource>((resolve) => {
+          loaded = resolve
+        }),
+    )
+    const completeWithUsage = vi.fn()
+    const controller = new AbortController()
+    const pending = new AiTaggingService({ completeWithUsage }, { get }).recognize({
+      resourceIds: ['r1'],
+      signal: controller.signal,
+    })
+    controller.abort()
+    expect(await pending).toMatchObject({ stopped: true, suggestions: [], failures: [] })
+    loaded(resource('r1'))
+    await Promise.resolve()
+    expect(completeWithUsage).not.toHaveBeenCalled()
+  })
+
+  it('大文本只读预算前缀，仍发送与原截断相同的上下文', async () => {
+    const item = resource('r1', {
+      metadata: {},
+      originalBlob: new Blob(['中文🧪\\"\n'.repeat(100_000)]),
+    })
+    const wholeText = vi.spyOn(item.originalBlob, 'text')
+    const slice = vi.spyOn(item.originalBlob, 'slice')
+    const completeWithUsage = vi.fn(async (messages: MainApiMessage[]) => {
+      const raw = JSON.stringify({
+        id: item.id,
+        type: '角色卡',
+        name: item.name,
+        description: item.description,
+        fileName: item.fileName,
+        existingTags: item.tags,
+        content: '中文🧪\\"\n'.repeat(100_000),
+      })
+      const expected = `${raw.slice(0, 8000 - 24)}\n[内容已按上下文预算截断]`
+      expect(messages[1]!.content).toContain(expected)
+      return result('{"resources":[{"resourceId":"r1","tags":[]}]}')
+    })
+    await new AiTaggingService({ completeWithUsage }, { get: async () => item }).recognize({
+      resourceIds: ['r1'],
+    })
+    expect(wholeText).not.toHaveBeenCalled()
+    expect(slice).toHaveBeenCalledWith(0, 32004)
+  })
+
+  it('正文读取取消会关闭读取器，不等待未返回的数据', async () => {
+    const cancel = vi.fn()
+    const stream = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(() => undefined),
+      cancel,
+    })
+    const item = resource('r1', { originalBlob: new Blob(['text']) })
+    vi.spyOn(item.originalBlob, 'slice').mockReturnValue({ stream: () => stream } as Blob)
+    const completeWithUsage = vi.fn()
+    const controller = new AbortController()
+    const pending = new AiTaggingService(
+      { completeWithUsage },
+      { get: async () => item },
+    ).recognize({ resourceIds: ['r1'], signal: controller.signal })
+    await vi.waitFor(() => expect(stream.locked).toBe(true))
+    controller.abort()
+    expect(await pending).toMatchObject({ stopped: true, suggestions: [] })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(completeWithUsage).not.toHaveBeenCalled()
+  })
+
+  it('两批并行乱序返回仍按输入排序，逐批汇报且取消丢弃迟到响应', async () => {
+    const resolvers = new Map<string, (value: MainApiCompletionResult) => void>()
+    const signals: AbortSignal[] = []
+    const completeWithUsage = vi.fn((messages: MainApiMessage[], _override, options) => {
+      const content = messages[1]!.content
+      const id = ['r1', 'r2', 'r3'].find(
+        (id) => typeof content === 'string' && content.includes(`"id":"${id}"`),
+      )!
+      signals.push(options.signal)
+      return new Promise<MainApiCompletionResult>((resolve) => resolvers.set(id, resolve))
+    })
+    const onBatchResult = vi.fn()
+    const controller = new AbortController()
+    const pending = new AiTaggingService(
+      { completeWithUsage },
+      { get: async (id) => resource(id) },
+    ).recognize({
+      resourceIds: ['r1', 'r2', 'r3'],
+      batchSize: 1,
+      concurrency: 2,
+      signal: controller.signal,
+      onBatchResult,
+    })
+    await vi.waitFor(() => expect(completeWithUsage).toHaveBeenCalledTimes(2))
+    resolvers.get('r2')!(result('{"resources":[{"resourceId":"r2","tags":[]}]}'))
+    await vi.waitFor(() => expect(completeWithUsage).toHaveBeenCalledTimes(3))
+    resolvers.get('r1')!(result('{"resources":[{"resourceId":"r1","tags":[]}]}'))
+    await vi.waitFor(() => expect(onBatchResult).toHaveBeenCalledTimes(2))
+    controller.abort()
+    const output = await pending
+    expect(output.suggestions.map((item) => item.resourceId)).toEqual(['r1', 'r2'])
+    expect(output).toMatchObject({ stopped: true, failures: [], usage: { totalTokens: 240 } })
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    resolvers.get('r3')!(result('{"resources":[{"resourceId":"r3","tags":["迟到"]}]}'))
+    await Promise.resolve()
+    expect(onBatchResult).toHaveBeenCalledTimes(2)
+    expect(output.suggestions).toHaveLength(2)
+  })
+
   it('超过旧数量和上下文阈值的大批次仍完整发送一次，不缩减每项摘录', async () => {
     const items = Array.from({ length: 205 }, (_, index) =>
       resource(`large-${index}`, {

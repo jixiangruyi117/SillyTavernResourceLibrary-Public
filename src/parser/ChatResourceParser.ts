@@ -2,6 +2,7 @@ import type { ParsedResource } from '../types/Import'
 import { RESOURCE_TYPE } from '../types/Resource'
 import { isRecord } from '../utils/UnknownValue'
 import type { ResourceParser } from './ResourceParser'
+import type { ResourceByteSource } from '../types/ResourceReadSource'
 
 export interface ChatMessage extends Record<string, unknown> {
   name: string
@@ -45,42 +46,78 @@ export function jsonChatRecords(value: unknown): ChatMessage[] | undefined {
   return messages.length && messages.every(isChatMessage) ? messages : undefined
 }
 
+export async function readJsonChatDocument(blob: ResourceByteSource): Promise<{
+  header?: Record<string, unknown>
+  messages: ChatMessage[]
+}> {
+  if (blob.size > 20 * 1024 * 1024)
+    throw new Error('JSON 数组聊天超过 20 MiB，请使用酒馆 JSONL 导出')
+  const value: unknown = JSON.parse(await blob.text())
+  const messages = jsonChatRecords(value)
+  if (!messages) throw new Error('未识别到 SillyTavern 聊天消息')
+  const records = Array.isArray(value) ? value : isRecord(value) ? value.chat : undefined
+  const first = Array.isArray(records) ? records[0] : undefined
+  const header =
+    isRecord(first) && isHeader(first)
+      ? first
+      : isRecord(value) && isHeader(value)
+        ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'chat'))
+        : undefined
+  return { header, messages }
+}
+
 const CHUNK_BYTES = 256 * 1024
 const MAX_LINE_CHARS = 4 * 1024 * 1024
 
+export interface ChatLinePosition {
+  byteOffset: number
+  line: number
+}
+
 /** Read UTF-8 incrementally, preserving code points across byte chunk boundaries. No body cache. */
-export async function* chatLines(blob: Blob): AsyncGenerator<{ text: string; line: number }> {
-  const decoder = new TextDecoder('utf-8', { fatal: true })
+export async function* chatLines(
+  blob: ResourceByteSource,
+  start: ChatLinePosition = { byteOffset: 0, line: 1 },
+): AsyncGenerator<ChatLinePosition & { text: string }> {
+  // Keep BOM bytes visible to the parser so offsets always address the original file.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
   let pending = '',
-    line = 0
-  for (let offset = 0; offset < blob.size; offset += CHUNK_BYTES) {
-    pending += decoder.decode(await blob.slice(offset, offset + CHUNK_BYTES).arrayBuffer(), {
-      stream: true,
-    })
+    line = start.line - 1,
+    byteOffset = start.byteOffset
+  for (let offset = start.byteOffset; offset < blob.size; offset += CHUNK_BYTES) {
+    const chunk = new Uint8Array(await blob.slice(offset, offset + CHUNK_BYTES).arrayBuffer())
+    pending += decoder.decode(chunk, { stream: true })
+    let byteCursor = 0
     let end: number
     while ((end = pending.indexOf('\n')) !== -1) {
       const text = pending.slice(0, end).replace(/\r$/, '')
       pending = pending.slice(end + 1)
       if (text.length > MAX_LINE_CHARS) throw new Error(`第 ${line + 1} 行超过 4 MiB 字符读取上限`)
-      yield { text, line: ++line }
+      const nextOffset = offset + chunk.indexOf(10, byteCursor) + 1
+      byteCursor = nextOffset - offset
+      const position = { byteOffset, line: ++line }
+      byteOffset = nextOffset
+      yield { text, ...position }
     }
     if (pending.length > MAX_LINE_CHARS) throw new Error(`第 ${line + 1} 行过长`)
   }
   pending += decoder.decode()
-  if (pending) yield { text: pending, line: line + 1 }
+  if (pending) yield { text: pending, line: line + 1, byteOffset }
 }
 
-export async function* readChatMessages(blob: Blob, format = 'jsonl'): AsyncGenerator<ChatMessage> {
+/** The same strict parser can resume at a previously validated JSONL message boundary. */
+export async function* readChatMessageEntries(
+  blob: ResourceByteSource,
+  format = 'jsonl',
+  start: ChatLinePosition = { byteOffset: 0, line: 1 },
+): AsyncGenerator<{ message: ChatMessage; position?: ChatLinePosition; chars: number }> {
   if (format === 'json') {
-    if (blob.size > 20 * 1024 * 1024)
-      throw new Error('JSON 数组聊天超过 20 MiB，请使用酒馆 JSONL 导出')
-    const messages = jsonChatRecords(JSON.parse(await blob.text()))
-    if (!messages) throw new Error('未识别到 SillyTavern 聊天消息')
-    yield* messages
+    const { messages } = await readJsonChatDocument(blob)
+    for (const message of messages) yield { message, chars: 0 }
     return
   }
-  let first = true
-  for await (const { text, line } of chatLines(blob)) {
+  let first = start.byteOffset === 0
+  for await (const { text, line, byteOffset } of chatLines(blob, start)) {
     const source = text.replace(/^\uFEFF/, '').trim()
     if (!source) continue
     let value: unknown
@@ -96,8 +133,15 @@ export async function* readChatMessages(blob: Blob, format = 'jsonl'): AsyncGene
     first = false
     if (!isChatMessage(value))
       throw new Error(`聊天记录第 ${line} 行不是有效消息（需要 name、mes、is_user）`)
-    yield value
+    yield { message: value, position: { line, byteOffset }, chars: text.length }
   }
+}
+
+export async function* readChatMessages(
+  blob: ResourceByteSource,
+  format = 'jsonl',
+): AsyncGenerator<ChatMessage> {
+  for await (const { message } of readChatMessageEntries(blob, format)) yield message
 }
 
 export async function summarizeChat(file: File, format: 'json' | 'jsonl'): Promise<ParsedResource> {

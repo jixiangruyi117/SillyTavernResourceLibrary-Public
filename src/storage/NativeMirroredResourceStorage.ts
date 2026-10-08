@@ -1,5 +1,10 @@
 import type { VaultService } from '../services/VaultService'
-import type { Resource, ResourceListSummary, ResourceSummary } from '../types/Resource'
+import {
+  toResourceListSummary,
+  type Resource,
+  type ResourceListSummary,
+  type ResourceSummary,
+} from '../types/Resource'
 import {
   isAndroidNativeResourceMirrorAvailable,
   removeNativeResourceFile,
@@ -8,6 +13,7 @@ import {
   type NativeMirrorHandle,
 } from './NativeResourceFileMirror'
 import type {
+  ResourceListSummaryFilter,
   ResourceStorageAdapter,
   ResourceMetadataPatch,
   ResourceVersionMatchFingerprintCache,
@@ -23,12 +29,14 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
   private readonly vault: VaultService
   private mutationQueue: Promise<void> = Promise.resolve()
   readonly listGalleryListSummaries?: ResourceStorageAdapter['listGalleryListSummaries']
+  readonly getReadSource?: ResourceStorageAdapter['getReadSource']
 
   constructor(delegate: ResourceStorageAdapter, vault: VaultService) {
     this.delegate = delegate
     this.vault = vault
     // Keep this optional so older delegates retain the service's summary fallback.
     this.listGalleryListSummaries = delegate.listGalleryListSummaries?.bind(delegate)
+    this.getReadSource = delegate.getReadSource?.bind(delegate)
   }
 
   getVersionMatchFingerprintCache(): Promise<ResourceVersionMatchFingerprintCache | undefined> {
@@ -51,9 +59,9 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
     return this.delegate.listSummaries()
   }
 
-  listResourceListSummaries(): Promise<ResourceListSummary[]> {
+  listResourceListSummaries(filter?: ResourceListSummaryFilter): Promise<ResourceListSummary[]> {
     return this.delegate.listResourceListSummaries
-      ? this.delegate.listResourceListSummaries()
+      ? this.delegate.listResourceListSummaries(filter)
       : this.delegate.listSummaries()
   }
 
@@ -73,12 +81,38 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
     )
   }
 
+  getMissingPngThumbnailRepairStatus(): Promise<
+    import('./ResourceThumbnailMaintenance').MissingPngThumbnailRepairStatus
+  > {
+    return (
+      this.delegate.getMissingPngThumbnailRepairStatus?.() ??
+      Promise.resolve({ status: 'not-started', repaired: 0 })
+    )
+  }
+
+  repairMissingPngCharacterCardThumbnails(options?: { restart?: boolean }): Promise<number> {
+    return this.enqueueMutation(() =>
+      this.delegate.repairMissingPngCharacterCardThumbnails
+        ? this.delegate.repairMissingPngCharacterCardThumbnails(options)
+        : Promise.resolve(0),
+    )
+  }
+
   get(id: string): Promise<Resource | undefined> {
     return this.delegate.get(id)
   }
 
-  getSummary(id: string): Promise<ResourceSummary | undefined> {
-    return this.delegate.getSummary?.(id) ?? this.delegate.get(id)
+  getSummary(id: string, historical = false): Promise<ResourceSummary | undefined> {
+    return (
+      this.delegate.getSummary?.(id, historical) ??
+      (historical ? this.getVersion(id) : this.delegate.get(id))
+    )
+  }
+
+  async getResourceListSummary(id: string): Promise<ResourceListSummary | undefined> {
+    if (this.delegate.getResourceListSummary) return this.delegate.getResourceListSummary(id)
+    const summary = await this.getSummary(id)
+    return summary ? toResourceListSummary(summary) : undefined
   }
 
   async findGalleryImage(
@@ -122,6 +156,14 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
       : this.delegate.listVersionSummaries()
   }
 
+  async listVersionListSummariesForResources(ids: string[]): Promise<ResourceListSummary[]> {
+    return this.delegate.listVersionListSummariesForResources
+      ? this.delegate.listVersionListSummariesForResources(ids)
+      : (await this.listVersionListSummaries()).filter((version) =>
+          ids.includes(version.versionGroupId ?? ''),
+        )
+  }
+
   listVersionSummaries(): Promise<ResourceSummary[]> {
     return this.delegate.listVersionSummaries()
   }
@@ -139,7 +181,8 @@ export class NativeMirroredResourceStorage implements ResourceStorageAdapter {
   async updateVersion(versionId: string, changes: Partial<Resource>): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.delegate.updateVersion(versionId, changes)
-      const version = (await this.delegate.listAllVersions()).find((item) => item.id === versionId)
+      if (Object.keys(changes).every((key) => key === 'backupDescriptor')) return
+      const version = await this.getVersion(versionId)
       if (version) await this.mirrorAfterWrite(version, 'versions')
     })
   }

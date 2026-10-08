@@ -223,3 +223,30 @@ describe('NativeMirroredResourceStorage', () => {
     expect(mirror.stage).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('historical backup descriptor updates', () => {
+  it('does not re-read or re-mirror all history for a descriptor-only change', async () => {
+    const storage = {
+      updateVersion: vi.fn(async () => undefined),
+      listAllVersions: vi.fn(async () => {
+        throw new Error('whole history read')
+      }),
+      getVersion: vi.fn(),
+    } as unknown as ResourceStorageAdapter
+    const adapter = new NativeMirroredResourceStorage(storage, {
+      isEnabled: () => false,
+    } as VaultService)
+    const descriptor = {
+      version: 2 as const,
+      resourceId: 'history',
+      contentHash: 'a'.repeat(64),
+      size: 2,
+      updatedAt: 1,
+      parts: [],
+    }
+    await adapter.updateVersion('history', { backupDescriptor: descriptor })
+    expect(storage.updateVersion).toHaveBeenCalledWith('history', { backupDescriptor: descriptor })
+    expect(storage.listAllVersions).not.toHaveBeenCalled()
+    expect(storage.getVersion).not.toHaveBeenCalled()
+  })
+})

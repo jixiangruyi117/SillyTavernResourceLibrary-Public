@@ -24,6 +24,15 @@ function drainReads(): void {
   }
 }
 
+export function enqueueThumbnailRead(read: () => Promise<void>): () => void {
+  readQueue.push(read)
+  drainReads()
+  return () => {
+    const index = readQueue.indexOf(read)
+    if (index >= 0) readQueue.splice(index, 1)
+  }
+}
+
 export function useResourceThumbnail(
   source: () => ResourceReference | undefined,
   host?: Readonly<Ref<Element | null>>,
@@ -114,8 +123,7 @@ export function useResourceThumbnail(
           // A missing cover must not prevent browsing or surface as an unhandled app error.
         }
       }
-      readQueue.push(queued)
-      drainReads()
+      enqueueThumbnailRead(queued)
     },
     { immediate: true },
   )

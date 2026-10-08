@@ -20,6 +20,12 @@ const emit = defineEmits<TavernBridgeCenterEvents>()
 const {
   state,
   busy,
+  sendContent,
+  setSendContent,
+  includeChatScripts,
+  saveChatCarryScripts,
+  transferSettingsDialog,
+  openTransferSettings,
   canCancelTransfer,
   cancelTransfer,
   canBindDirectory,
@@ -54,6 +60,13 @@ const {
   tavernPageCount,
   selectAllTavern,
   selectedTavernIds,
+  selectedChatScriptIds,
+  chatScriptItems,
+  chatScriptSearch,
+  matchingChatScripts,
+  visibleChatScripts,
+  chatScriptLimit,
+  loadChatScriptSources,
   showOnlySelectedTavern,
   toggleSelection,
   tavernResourceLabel,
@@ -116,7 +129,32 @@ watch(
       title-id="tavern-bridge-title"
       :back-label="initialKind === 'userPersona' ? '返回人设列表' : '返回功能桌面'"
       @back="emit('back')"
-    />
+    >
+      <template #actions>
+        <button
+          type="button"
+          class="feature-header-action feature-header-action--icon"
+          aria-label="酒馆互传设置"
+          aria-haspopup="dialog"
+          :title="sendContent === 'original' ? '发送原版' : '发送修改版'"
+          :disabled="busy"
+          @click="openTransferSettings"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          >
+            <path
+              d="m9.5 3-.5 2-2 .8-1.8-1-2.5 4.4 1.7 1.3v2.4l-1.7 1.3 2.5 4.4 1.8-1 2 .8.5 2h5l.5-2 2-.8 1.8 1 2.5-4.4-1.7-1.3v-2.4l1.7-1.3-2.5-4.4-1.8 1-2-.8-.5-2z"
+            />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      </template>
+    </FeatureAppHeader>
 
     <section v-if="state.status !== 'connected'" class="tavern-bridge-pairing">
       <header class="tavern-bridge-pairing__heading">
@@ -777,6 +815,8 @@ watch(
     </template>
     <TavernParcelExchange
       :resources="resources"
+      :send-content="sendContent"
+      :include-chat-scripts="includeChatScripts"
       :initial-ids="initialLocalIds"
       @import-files="(files, onComplete) => emit('import-files', files, onComplete)"
     />
@@ -792,6 +832,121 @@ watch(
     </section>
 
     <Teleport to="body">
+      <dialog
+        ref="transferSettingsDialog"
+        class="tavern-transfer-settings"
+        aria-labelledby="tavern-transfer-settings-title"
+        @click.self="transferSettingsDialog?.close()"
+        @cancel.prevent="transferSettingsDialog?.close()"
+      >
+        <header>
+          <h2 id="tavern-transfer-settings-title">互传设置</h2>
+          <button type="button" aria-label="关闭互传设置" @click="transferSettingsDialog?.close()">
+            ×
+          </button>
+        </header>
+        <div class="tavern-transfer-settings__body">
+          <div class="tavern-transfer-settings__setting">
+            <label class="tavern-transfer-settings__row"
+              ><span>聊天记录互传携带脚本</span
+              ><input
+                v-model="includeChatScripts"
+                type="checkbox"
+                role="switch"
+                aria-label="聊天记录互传携带脚本"
+                :disabled="busy"
+                @change="saveChatCarryScripts"
+            /></label>
+            <p>随聊天接收，读了么默认不运行。</p>
+          </div>
+          <div class="tavern-transfer-settings__setting">
+            <div class="tavern-transfer-settings__row">
+              <span id="tavern-send-version-label">酒馆互传版本</span>
+              <div
+                class="tavern-transfer-settings__versions"
+                role="group"
+                aria-labelledby="tavern-send-version-label"
+              >
+                <button
+                  v-for="option in ['original', 'modified'] as const"
+                  :key="option"
+                  type="button"
+                  :aria-pressed="sendContent === option"
+                  :disabled="busy"
+                  @click="setSendContent(option)"
+                >
+                  {{ option === 'original' ? '原版' : '修改版' }}
+                </button>
+              </div>
+            </div>
+            <p>
+              {{
+                sendContent === 'original' ? '发送未修改的原文件' : '使用已保存的名称、内容与封面'
+              }}
+            </p>
+          </div>
+          <details
+            v-if="includeChatScripts && state.status === 'connected'"
+            class="tavern-bridge-chat-scripts"
+          >
+            <summary>
+              <span>附带其他酒馆脚本</span
+              ><small>{{
+                selectedChatScriptIds.size ? '已选 ' + selectedChatScriptIds.size : '可选'
+              }}</small>
+            </summary>
+            <p>选择酒馆的全局或预设脚本，最多 8 份。卡内脚本会自动携带。</p>
+            <div class="tavern-bridge-chat-script-tools">
+              <input
+                v-if="chatScriptItems.length"
+                v-model="chatScriptSearch"
+                type="search"
+                placeholder="搜索脚本"
+                aria-label="查找可附带脚本"
+              />
+              <button
+                type="button"
+                aria-label="读取可附带脚本"
+                :disabled="busy || !state.capabilities?.includes('chat-reading-scripts-v1')"
+                @click="loadChatScriptSources"
+              >
+                {{ chatScriptItems.length ? '刷新' : '读取脚本' }}
+              </button>
+            </div>
+            <small v-if="!state.capabilities?.includes('chat-reading-scripts-v1')"
+              >需更新酒馆扩展才能选择额外脚本。</small
+            >
+            <template v-if="chatScriptItems.length">
+              <div class="tavern-bridge-chat-script-list">
+                <label v-for="item in visibleChatScripts" :key="item.id">
+                  <input
+                    v-model="selectedChatScriptIds"
+                    :aria-label="item.name + ' ' + tavernResourceLabel(item.kind)"
+                    type="checkbox"
+                    :value="item.id"
+                    :disabled="
+                      busy ||
+                      (selectedChatScriptIds.size >= 8 && !selectedChatScriptIds.has(item.id))
+                    "
+                  />
+                  <span class="tavern-bridge-chat-script-name">{{ item.name }}</span
+                  ><small>{{ item.kind === 'scriptGlobal' ? '全局' : '预设' }}</small>
+                </label>
+              </div>
+              <button
+                v-if="matchingChatScripts.length > chatScriptLimit"
+                type="button"
+                @click="chatScriptLimit += 50"
+              >
+                再显示 50 项
+              </button>
+            </template>
+          </details>
+
+          <p v-if="error" role="alert">{{ error }}</p>
+        </div>
+      </dialog>
+
       <div
         v-if="authorToolsDialog"
         class="author-tools-dialog"

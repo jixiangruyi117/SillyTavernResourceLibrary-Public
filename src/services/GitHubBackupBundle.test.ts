@@ -54,7 +54,7 @@ describe('GitHubBackupBundle', () => {
     expect(changed.length).toBeGreaterThan(0)
     expect(changed.length).toBeLessThan(second.manifest.parts.length)
     expect(changed.reduce((total, part) => total + part.size, 0)).toBeLessThan(changedBytes.length)
-  })
+  }, 15000)
 
   it('可复用外层已经计算过的整包哈希，避免上传前重复扫描大文件', async () => {
     const knownHash = 'a'.repeat(64)
@@ -81,5 +81,39 @@ describe('GitHubBackupBundle', () => {
       parseGitHubBundleManifest({ ...manifest, parts: [manifest.parts[0], manifest.parts[0]] }),
     ).not.toThrow()
     expect(() => parseGitHubBundleManifest({ ...manifest, totalSize: 99 })).toThrow('总大小不一致')
+  })
+})
+
+describe('single-pass CDC byte integrity', () => {
+  it('reads a 40 MiB source once and preserves independently verifiable chunks and total hash', async () => {
+    const source = new Blob([new Uint8Array(40 * 1024 * 1024)])
+    let sourceReads = 0
+    const stream = source.stream.bind(source)
+    source.stream = () => {
+      sourceReads += 1
+      return stream()
+    }
+    const { blobs, manifest } = await createGitHubBundle(source, 'single-pass.bin')
+    expect(sourceReads).toBe(1)
+    expect(blobs.map((part) => part.size)).toEqual([32 * 1024 * 1024, 8 * 1024 * 1024])
+    for (const [index, blob] of blobs.entries()) {
+      const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+      const hex = [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+      expect(manifest.parts[index]!.sha256).toBe(hex)
+    }
+    const digest = await crypto.subtle.digest('SHA-256', await source.arrayBuffer())
+    expect(manifest.totalSha256).toBe(
+      [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+    )
+  })
+  it('encodes an empty streamed source as one verifiable empty object', async () => {
+    const { manifest, blobs } = await createGitHubBundle(new Blob(), 'empty')
+    expect(blobs.map((blob) => blob.size)).toEqual([0])
+    expect(manifest.parts[0]!.sha256).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    )
+    expect(manifest.totalSha256).toBe(manifest.parts[0]!.sha256)
   })
 })

@@ -10,6 +10,7 @@ import type { TavernResourceKind } from '../services/TavernBridgeProtocol'
  */
 
 const COMPRESSIBLE_KINDS = new Set<TavernResourceKind>([
+  'chat',
   'worldBook',
   'preset',
   'regexGlobal',
@@ -39,7 +40,23 @@ export async function gzipBlob(blob: Blob): Promise<Blob> {
   return new Response(stream).blob()
 }
 
-export async function gunzipBlob(blob: Blob): Promise<Blob> {
-  const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'))
-  return new Response(stream).blob()
+export async function gunzipBlob(blob: Blob, maxBytes = 256 * 1024 * 1024): Promise<Blob> {
+  const reader = blob.stream().pipeThrough(new DecompressionStream('gzip')).getReader()
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) {
+        await reader.cancel()
+        throw new Error('解压后超过声明大小')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return new Blob(chunks)
 }

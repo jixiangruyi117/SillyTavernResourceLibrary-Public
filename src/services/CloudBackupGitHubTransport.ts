@@ -43,6 +43,40 @@ import {
   GITHUB_ASSET_CONFIRM_DELAY_MS,
 } from './CloudBackupTransportContext'
 
+function githubInventory(context: CloudBackupTransportContext, config: GitHubBackupConfig) {
+  if (!context.activeMetrics) return undefined
+  const key = `${config.owner}/${config.repository}`
+  if (context.activeGitHubInventory?.key !== key) {
+    context.activeGitHubInventory = { key, assets: new Map(), releases: new Map() }
+  }
+  return context.activeGitHubInventory
+}
+
+export async function listGitHubObjectContainers(
+  context: CloudBackupTransportContext,
+  config: GitHubBackupConfig,
+  secret: string,
+): Promise<GitHubRelease[]> {
+  const releases: GitHubRelease[] = []
+  const inventory = githubInventory(context, config)
+  for (let page = 1; page <= 1_000; page += 1) {
+    const response = await context.githubFetch(config, secret, `/releases?per_page=10&page=${page}`)
+    const batch = (await response.json()) as GitHubRelease[]
+    for (const value of batch) {
+      const release = { ...value, assets: [] }
+      if (release.tag_name) inventory?.releases.set(release.tag_name, release)
+      if (/^srl-cloud-objects-\d{4,}$/u.test(release.tag_name ?? '')) releases.push(release)
+    }
+    if (batch.length < 10)
+      return releases.sort(
+        (a, b) =>
+          Number(a.tag_name!.slice(OBJECT_RELEASE_PREFIX.length)) -
+          Number(b.tag_name!.slice(OBJECT_RELEASE_PREFIX.length)),
+      )
+  }
+  throw new Error('GitHub Release 列表超过扫描范围，未提交新快照')
+}
+
 export async function githubFetch(
   context: CloudBackupTransportContext,
   config: GitHubBackupConfig,
@@ -65,7 +99,10 @@ export async function githubFetch(
   )
   if (response.ok && (init.method ?? 'GET').toUpperCase() === 'DELETE') {
     const assetId = Number(/\/releases\/assets\/(\d+)/u.exec(path)?.[1] ?? Number.NaN)
-    if (Number.isSafeInteger(assetId)) context.activeGitHubInventory?.assets.delete(assetId)
+    if (Number.isSafeInteger(assetId)) {
+      for (const assets of githubInventory(context, config)?.assets.values() ?? [])
+        assets.delete(assetId)
+    }
   }
   if (!response.ok) {
     const detail = (await response.json().catch(() => ({}))) as GitHubErrorDetail
@@ -114,6 +151,15 @@ export async function getGitHubRelease(
   create: boolean,
   tag = LEGACY_RELEASE_TAG,
 ): Promise<GitHubRelease | undefined> {
+  const inventory = githubInventory(context, config)
+  const cached = inventory?.releases.get(tag)
+  if (cached || (!create && inventory?.releases.has(tag))) return cached
+  const readRelease = async (response: Response): Promise<GitHubRelease> => {
+    const value = (await response.json()) as GitHubRelease
+    const release = { ...value, assets: [] }
+    inventory?.releases.set(tag, release)
+    return release
+  }
   const releaseUrl = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repository)}/releases/tags/${encodeURIComponent(tag)}`
   const requestRelease = (): Promise<Response> =>
     context.cloudFetch(
@@ -129,7 +175,7 @@ export async function getGitHubRelease(
     )
   let response = await requestRelease()
   let initialized = false
-  if (response.ok) return (await response.json()) as GitHubRelease
+  if (response.ok) return readRelease(response)
   // GitHub 对部分完全空白的私有仓库会先把 Release 查询返回为 403。
   // 初始化首个提交后，该查询会正常变成 404（尚无 Release），此时应继续创建而不是把 404 抛出。
   if (response.status === 403 && create) {
@@ -137,14 +183,17 @@ export async function getGitHubRelease(
     initialized = await context.ensureGitHubInitialCommit(config, secret)
     if (initialized) {
       response = await requestRelease()
-      if (response.ok) return (await response.json()) as GitHubRelease
+      if (response.ok) return readRelease(response)
     } else {
       const detail = (await original.json().catch(() => ({}))) as GitHubErrorDetail
       throw githubError(original.status, detail, `/releases/tags/${tag}`, 'GET', original.headers)
     }
   }
   if (response.status !== 404 || !create) {
-    if (response.status === 404 && !create) return undefined
+    if (response.status === 404 && !create) {
+      inventory?.releases.set(tag, undefined)
+      return undefined
+    }
     const detail = (await response.json().catch(() => ({}))) as GitHubErrorDetail
     throw githubError(response.status, detail, `/releases/tags/${tag}`, 'GET', response.headers)
   }
@@ -158,7 +207,7 @@ export async function getGitHubRelease(
       prerelease: true,
     }),
   })
-  return (await created.json()) as GitHubRelease
+  return readRelease(created)
 }
 
 export async function uploadGitHubStructuredBackup(
@@ -177,24 +226,28 @@ export async function uploadGitHubStructuredBackup(
     assets: Map<string, GitHubAsset>
     assigned: number
   }> = []
-  for (let index = 1; index <= 10_000; index += 1) {
-    const tag = `${OBJECT_RELEASE_PREFIX}${String(index).padStart(4, '0')}`
-    const release = await context.getGitHubRelease(config, secret, false, tag)
-    if (!release) break
-    containers.push({
-      tag,
-      release,
-      assets: new Map(
+  const releases = await context.listGitHubObjectContainers(config, secret)
+  const loadedContainers = new Map<number, Map<string, GitHubAsset>>()
+  await mapWithConcurrency(releases, 3, async (release) => {
+    loadedContainers.set(
+      release.id,
+      new Map(
         (await context.listGitHubAssets(config, secret, release.id)).map((asset) => [
           asset.name,
           asset,
         ]),
       ),
+    )
+  })
+  for (const release of releases)
+    containers.push({
+      tag: release.tag_name!,
+      release,
+      assets: loadedContainers.get(release.id)!,
       assigned: 0,
     })
-  }
   const createContainer = async () => {
-    const tag = `${OBJECT_RELEASE_PREFIX}${String(containers.length + 1).padStart(4, '0')}`
+    const tag = `${OBJECT_RELEASE_PREFIX}${String(Number(containers.at(-1)?.tag.slice(OBJECT_RELEASE_PREFIX.length) ?? 0) + 1).padStart(4, '0')}`
     const release = await context.getGitHubRelease(config, secret, true, tag)
     if (!release) throw new Error(`无法创建 GitHub 对象容器 ${tag}`)
     const container = { tag, release, assets: new Map<string, GitHubAsset>(), assigned: 0 }
@@ -207,18 +260,25 @@ export async function uploadGitHubStructuredBackup(
     string,
     { tag: string; releaseId: number; asset?: GitHubAsset; plan: CloudObjectPlan }
   >()
+  const byObjectName = new Map<
+    string,
+    { container: (typeof containers)[number]; asset: GitHubAsset }
+  >()
+  for (const container of containers) {
+    for (const asset of container.assets.values()) {
+      if (!byObjectName.has(asset.name)) byObjectName.set(asset.name, { container, asset })
+    }
+  }
   for (const plan of snapshot.objectPlans) {
     const name = plan.name
     let matched:
       { tag: string; releaseId: number; asset?: GitHubAsset; plan: CloudObjectPlan } | undefined
-    for (const container of containers) {
-      const asset = container.assets.get(name)
-      if (!asset) continue
-      if (asset.size !== plan.size) {
+    const existing = byObjectName.get(name)
+    if (existing) {
+      const { container, asset } = existing
+      if (asset.size !== plan.size)
         throw new Error(`GitHub 内容寻址对象 ${name} 的远端大小冲突；拒绝覆盖 immutable 对象`)
-      }
       matched = { tag: container.tag, releaseId: container.release.id, asset, plan }
-      break
     }
     if (!matched) {
       let container = containers.at(-1)!
@@ -301,10 +361,12 @@ export async function uploadGitHubStructuredBackup(
       ),
     ]),
   )
-  const webJob = await context.jobStore.begin('github', planHash, placements.keys())
-  for (const [objectName, placement] of placements) {
-    if (placement.asset) await context.jobStore.markObject(webJob, objectName, 'verified')
-  }
+  const webJob = await context.jobStore.begin(
+    'github',
+    planHash,
+    placements.keys(),
+    [...placements].filter(([, placement]) => placement.asset).map(([name]) => name),
+  )
   let completedJobs = 0
   try {
     await mapWithConcurrency(jobs, 3, async ([name, placement]) => {
@@ -432,11 +494,12 @@ export async function uploadGitHubAsset(
       )
       if (response.ok) {
         const asset = (await response.json()) as GitHubAsset
-        context.activeGitHubInventory?.assets.set(asset.id, asset)
+        githubInventory(context, config)?.assets.get(releaseId)?.set(asset.id, asset)
         return asset
       }
       const detail = (await response.json().catch(() => ({}))) as GitHubErrorDetail
       if (response.status === 422) {
+        githubInventory(context, config)?.assets.delete(releaseId)
         const existing = (await context.listGitHubAssets(config, secret, releaseId)).find(
           (asset) => asset.name === name && asset.size === blob.size,
         )
@@ -460,6 +523,13 @@ export async function confirmGitHubAssetSize(
   uploaded: GitHubAsset,
   expectedSize: number,
 ): Promise<GitHubAsset | undefined> {
+  if (
+    Number.isSafeInteger(uploaded.id) &&
+    uploaded.id > 0 &&
+    uploaded.size === expectedSize &&
+    uploaded.state === 'uploaded'
+  )
+    return uploaded
   const verifyStarted = typeof performance === 'undefined' ? Date.now() : performance.now()
   try {
     for (let attempt = 1; attempt <= GITHUB_ASSET_CONFIRM_ATTEMPTS; attempt += 1) {
@@ -485,9 +555,9 @@ export async function listGitHubAssets(
   secret: string,
   releaseId: number,
 ): Promise<GitHubAsset[]> {
-  if (context.activeGitHubInventory?.releaseId === releaseId) {
-    return [...context.activeGitHubInventory.assets.values()]
-  }
+  const inventory = githubInventory(context, config)
+  const cached = inventory?.assets.get(releaseId)
+  if (cached) return [...cached.values()]
   const assets: GitHubAsset[] = []
   for (let page = 1; page <= 100; page += 1) {
     const response = await context.githubFetch(
@@ -499,12 +569,7 @@ export async function listGitHubAssets(
     assets.push(...batch)
     if (batch.length < 100) break
   }
-  if (context.activeMetrics) {
-    context.activeGitHubInventory = {
-      releaseId,
-      assets: new Map(assets.map((asset) => [asset.id, asset])),
-    }
-  }
+  inventory?.assets.set(releaseId, new Map(assets.map((asset) => [asset.id, asset])))
   return assets
 }
 

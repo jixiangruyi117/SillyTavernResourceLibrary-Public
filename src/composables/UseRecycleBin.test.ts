@@ -20,14 +20,16 @@ import { useRecycleBin } from './UseRecycleBin'
 
 function setup() {
   const loadLibrary = vi.fn(async () => {})
+  const refreshResources = vi.fn(async () => {})
+  const prepareResourceRefresh = vi.fn(() => refreshResources)
   const manager = useRecycleBin({
     isDataProtectionOpen: ref(true),
-    loadResources: vi.fn(async () => {}),
+    prepareResourceRefresh,
     loadLibrary,
     refreshStorageHealth: vi.fn(async () => {}),
     showNotice: vi.fn(),
   })
-  return { manager, loadLibrary }
+  return { manager, loadLibrary, prepareResourceRefresh, refreshResources }
 }
 
 describe('recycle bin state ownership', () => {
@@ -35,6 +37,29 @@ describe('recycle bin state ownership', () => {
     vi.resetAllMocks()
     api.list.mockResolvedValue([])
     api.sync.mockResolvedValue(undefined)
+  })
+
+  it('prepares the refresh before moving and reuses the complete committed catalogue', async () => {
+    const { manager, prepareResourceRefresh, refreshResources } = setup()
+    const record = { id: 'archive', resourceCount: 1 }
+    const resources = [{ id: 'remaining' }]
+    api.moveToRecycleBin.mockImplementation(async () => {
+      expect(prepareResourceRefresh).toHaveBeenCalledOnce()
+      return { record, resources }
+    })
+    await manager.moveResourcesToRecycleBin(['deleted'])
+    expect(refreshResources).toHaveBeenCalledExactlyOnceWith(resources)
+    expect(manager.recycleUndoEntry.value).toEqual(record)
+    expect(api.list).toHaveBeenCalledOnce()
+  })
+
+  it('does not publish a catalogue or replace undo after an archive/delete failure', async () => {
+    const { manager, refreshResources } = setup()
+    api.moveToRecycleBin.mockRejectedValue(new Error('archive failed'))
+    await expect(manager.moveResourcesToRecycleBin(['deleted'])).rejects.toThrow('archive failed')
+    expect(refreshResources).not.toHaveBeenCalled()
+    expect(manager.recycleUndoEntry.value).toBeUndefined()
+    expect(api.list).not.toHaveBeenCalled()
   })
 
   it('does not delete when the existing confirmation is declined', async () => {

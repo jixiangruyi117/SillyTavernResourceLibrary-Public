@@ -1,6 +1,17 @@
-import { readChatMessages, type ChatMessage } from '../parser/ChatResourceParser'
+import {
+  readChatMessages,
+  readChatMessageEntries,
+  type ChatLinePosition,
+  type ChatMessage,
+} from '../parser/ChatResourceParser'
 import { RESOURCE_TYPE, getRelatedResourceIds, type Resource } from '../types/Resource'
 import type { ResourceService } from './ResourceService'
+import type { ResourceReadSource } from '../types/ResourceReadSource'
+
+type ChatReadResource = Resource | ResourceReadSource
+function sourceOf(chat: ChatReadResource) {
+  return 'originalSource' in chat ? chat.originalSource : chat.originalBlob
+}
 
 export interface ChatReadPage {
   messages: Array<{ index: number; depth: number; message: ChatMessage }>
@@ -10,17 +21,213 @@ export interface ChatReadPage {
   contentHash: string
 }
 
+interface ReadCheckpoint extends ChatLinePosition {
+  floor: number
+  visible: number
+  replies: number
+  previousReply: number | null
+}
+
+interface IndexedEntry {
+  entry: ChatReadPage['messages'][number]
+  previousReply: number | null
+  size: number
+}
+
+interface ChatReadIndex {
+  key: string
+  stride: number
+  checkpoints: ReadCheckpoint[]
+}
+
+interface ChatReadCache {
+  indexes: Map<string, ChatReadIndex>
+  floors: Map<string, { value: IndexedEntry; bytes: number }>
+  bytes: number
+}
+
+// SDK calls create readers independently. Scope reuse to their ResourceService, never to an APP grant.
+// Only sparse positions and a small recent floor window survive; every request still reads live metadata.
+const readCaches = new WeakMap<ResourceService, ChatReadCache>()
+const FLOOR_CACHE_BYTES = 8 * 1024 * 1024
+const FLOOR_CACHE_COUNT = 16
+const MAX_INDEXES = 4
+const MAX_CHECKPOINTS = 1024
+const textEncoder = new TextEncoder()
+
+function validateReadRange(offset: number, limit: number) {
+  if (
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 50
+  )
+    throw new Error('聊天分页参数无效')
+}
+
 /** Chat originals live in ResourceService; this service owns only bounded reading and binding. */
 export class ChatReaderService {
   private readonly resources: ResourceService
+  private readonly cache: ChatReadCache
   constructor(resources: ResourceService) {
     this.resources = resources
+    let cache = readCaches.get(resources)
+    if (!cache) {
+      cache = { indexes: new Map(), floors: new Map(), bytes: 0 }
+      readCaches.set(resources, cache)
+    }
+    this.cache = cache
   }
 
   async getChat(id: string): Promise<Resource> {
     const chat = await this.resources.get(id)
-    if (!chat || chat.type !== RESOURCE_TYPE.CHAT) throw new Error('聊天记录不存在')
+    if (!chat || chat.type !== RESOURCE_TYPE.CHAT) {
+      this.evictIndex(id)
+      throw new Error('聊天记录不存在')
+    }
     return chat
+  }
+
+  async getReadChat(id: string): Promise<ChatReadResource> {
+    const chat = this.resources.getReadSource
+      ? await this.resources.getReadSource(id)
+      : await this.resources.get(id)
+    if (!chat || chat.type !== RESOURCE_TYPE.CHAT) {
+      this.evictIndex(id)
+      throw new Error('聊天记录不存在')
+    }
+    return chat
+  }
+
+  private evictIndex(id: string) {
+    const old = this.cache.indexes.get(id)
+    if (!old) return
+    this.cache.indexes.delete(id)
+    for (const [key, floor] of this.cache.floors) {
+      if (!key.startsWith(old.key + '\n')) continue
+      this.cache.bytes -= floor.bytes
+      this.cache.floors.delete(key)
+    }
+  }
+
+  private indexFor(chat: ChatReadResource): ChatReadIndex {
+    const key = JSON.stringify([
+      chat.id,
+      chat.contentHash,
+      sourceOf(chat).size,
+      'originalSource' in chat ? chat.originalSource.contentIdentity : undefined,
+      chat.metadata.format,
+      chat.metadata.messageCount,
+      chat.metadata.visibleMessageCount,
+    ])
+    let index = this.cache.indexes.get(chat.id)
+    if (index?.key !== key) {
+      this.evictIndex(chat.id)
+      index = {
+        key,
+        stride: 128,
+        checkpoints: [
+          { byteOffset: 0, line: 1, floor: 0, visible: 0, replies: 0, previousReply: null },
+        ],
+      }
+    }
+    this.cache.indexes.delete(chat.id)
+    this.cache.indexes.set(chat.id, index)
+    if (this.cache.indexes.size > MAX_INDEXES)
+      this.evictIndex(this.cache.indexes.keys().next().value!)
+    return index
+  }
+
+  private checkpointFor(index: ChatReadIndex, floor: number) {
+    let low = 0,
+      high = index.checkpoints.length
+    while (low + 1 < high) {
+      const middle = (low + high) >>> 1
+      if (index.checkpoints[middle]!.floor <= floor) low = middle
+      else high = middle
+    }
+    return index.checkpoints[low]!
+  }
+
+  private rememberFloor(index: ChatReadIndex, value: IndexedEntry, bytes: number) {
+    // An older concurrent request must not repopulate a replaced/evicted resource version.
+    if (![...this.cache.indexes.values()].includes(index)) return
+    const key = index.key + '\n' + value.entry.index
+    const old = this.cache.floors.get(key)
+    if (old) {
+      this.cache.bytes -= old.bytes
+      this.cache.floors.delete(key)
+    }
+    if (bytes > FLOOR_CACHE_BYTES) return
+    while (
+      this.cache.floors.size &&
+      (this.cache.bytes + bytes > FLOOR_CACHE_BYTES || this.cache.floors.size >= FLOOR_CACHE_COUNT)
+    ) {
+      const oldest = this.cache.floors.keys().next().value!
+      this.cache.bytes -= this.cache.floors.get(oldest)!.bytes
+      this.cache.floors.delete(oldest)
+    }
+    this.cache.floors.set(key, { value: structuredClone(value), bytes })
+    this.cache.bytes += bytes
+  }
+
+  private async *entries(chat: ChatReadResource, offset: number): AsyncGenerator<IndexedEntry> {
+    const index = this.indexFor(chat)
+    let target = offset
+    while (true) {
+      const key = index.key + '\n' + target
+      const cached = this.cache.floors.get(key)
+      if (!cached) break
+      this.cache.floors.delete(key)
+      this.cache.floors.set(key, cached)
+      target++
+      yield structuredClone(cached.value)
+    }
+    if (target >= Number(chat.metadata.messageCount)) return
+    const start = this.checkpointFor(index, target)
+    let floor = start.floor,
+      visible = start.visible,
+      replies = start.replies,
+      previousReply = start.previousReply
+    for await (const { message, position, chars } of readChatMessageEntries(
+      sourceOf(chat),
+      String(chat.metadata.format),
+      start,
+    )) {
+      if (position && floor % index.stride === 0) {
+        const checkpoint = { ...position, floor, visible, replies, previousReply }
+        const at = index.checkpoints.findIndex((item) => item.floor >= floor)
+        if (at < 0) index.checkpoints.push(checkpoint)
+        else if (index.checkpoints[at]!.floor === floor) index.checkpoints[at] = checkpoint
+        else index.checkpoints.splice(at, 0, checkpoint)
+        if (index.checkpoints.length > MAX_CHECKPOINTS) {
+          index.stride *= 2
+          index.checkpoints = index.checkpoints.filter((item) => item.floor % index.stride === 0)
+        }
+      }
+      if (!message.is_system) visible++
+      const previous = previousReply
+      if (!message.is_user) {
+        previousReply = floor
+        replies++
+      }
+      const current = floor++
+      if (current < target) continue
+      const serialized = JSON.stringify(message)
+      const value = {
+        entry: {
+          index: current,
+          depth: message.is_system ? -1 : Number(chat.metadata.visibleMessageCount) - visible,
+          message,
+        },
+        previousReply: previous,
+        size: textEncoder.encode(serialized).length,
+      }
+      // Estimate retained UTF-16 strings with per-entry overhead, without holding a second serialized body.
+      this.rememberFloor(index, value, Math.max(chars, serialized.length) * 2 + 512)
+      yield value
+    }
   }
 
   async read(
@@ -29,38 +236,34 @@ export class ChatReaderService {
     limit = 20,
     options: { hideUser?: boolean; backward?: boolean } = {},
   ): Promise<ChatReadPage> {
-    if (
-      !Number.isSafeInteger(offset) ||
-      offset < 0 ||
-      !Number.isInteger(limit) ||
-      limit < 1 ||
-      limit > 50
-    )
-      throw new Error('聊天分页参数无效')
-    const chat = await this.getChat(id)
+    validateReadRange(offset, limit)
+    return this.readResource(await this.getReadChat(id), offset, limit, options)
+  }
+
+  /** Reuse one live resource snapshot for the SDK's page, card context and speculative next floor. */
+  async readResource(
+    chat: ChatReadResource,
+    offset = 0,
+    limit = 20,
+    options: { hideUser?: boolean; backward?: boolean } = {},
+  ): Promise<ChatReadPage> {
+    validateReadRange(offset, limit)
+    if (chat.type !== RESOURCE_TYPE.CHAT) throw new Error('聊天记录不存在')
     const total = Number(chat.metadata.messageCount)
     if (!Number.isSafeInteger(total) || total < 1)
       throw new Error('聊天解析信息缺失，请重新导入原件')
     if (options.hideUser)
       return this.readCharacterReplies(chat, offset, limit, options.backward === true)
     const messages: ChatReadPage['messages'] = []
-    let index = 0,
-      visible = 0,
+    let index = Math.min(offset, total),
       bytes = 0
-    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
-      if (!message.is_system) visible++
-      if (index >= offset) {
-        const size = new TextEncoder().encode(JSON.stringify(message)).length
-        // Bound each IPC response, while retaining a complete, valid message rather than truncating it.
-        if (size > 4 * 1024 * 1024) throw new Error(`第 ${index + 1} 楼超过单楼读取上限`)
-        if (messages.length && bytes + size > 512 * 1024) break
-        bytes += size
-        messages.push({
-          index,
-          depth: message.is_system ? -1 : Number(chat.metadata.visibleMessageCount) - visible,
-          message,
-        })
-      }
+    for await (const { entry, size } of this.entries(chat, offset)) {
+      index = entry.index
+      // Bound each IPC response, while retaining a complete, valid message rather than truncating it.
+      if (size > 4 * 1024 * 1024) throw new Error(`第 ${index + 1} 楼超过单楼读取上限`)
+      if (messages.length && bytes + size > 512 * 1024) break
+      bytes += size
+      messages.push(entry)
       index++
       if (messages.length >= limit) break
     }
@@ -73,39 +276,36 @@ export class ChatReaderService {
   }
 
   private async readCharacterReplies(
-    chat: Resource,
+    chat: ChatReadResource,
     offset: number,
     limit: number,
     backward: boolean,
   ): Promise<ChatReadPage> {
     const entries: Array<{ entry: ChatReadPage['messages'][number]; size: number }> = []
-    let index = 0,
-      visible = 0,
-      bytes = 0
+    let bytes = 0
     let previousOffset: number | null = null,
       nextOffset: number | null = null
-    let preceding: ChatReadPage['messages'][number] | undefined
-    let precedingPrevious: number | null = null
-    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
-      const floor = index++
-      if (!message.is_system) visible++
-      if (message.is_user) continue
-      const entry = {
-        index: floor,
-        depth: message.is_system ? -1 : Number(chat.metadata.visibleMessageCount) - visible,
-        message,
-      }
-      if (!backward && floor < offset) {
-        precedingPrevious = previousOffset
-        previousOffset = floor
-        preceding = entry
-        continue
-      }
+    const index = this.indexFor(chat)
+    let start = Math.min(offset, Number(chat.metadata.messageCount) - 1)
+    if (backward) {
+      const nearest = this.checkpointFor(index, start)
+      // Start before enough character replies to preserve reverse navigation and response byte trimming.
+      const budget = nearest.replies - limit - 1
+      start = 0
+      for (let at = index.checkpoints.length - 1; at >= 0; at--)
+        if (index.checkpoints[at]!.replies <= budget) {
+          start = index.checkpoints[at]!.floor
+          break
+        }
+    }
+    for await (const { entry, previousReply, size } of this.entries(chat, start)) {
+      const floor = entry.index
+      if (!entries.length) previousOffset = previousReply
+      if (entry.message.is_user) continue
       if ((backward && floor > offset) || (!backward && entries.length >= limit)) {
         nextOffset = floor
         break
       }
-      const size = new TextEncoder().encode(JSON.stringify(message)).length
       if (size > 4 * 1024 * 1024) throw new Error(`第 ${floor + 1} 楼超过单楼读取上限`)
       if (!backward && entries.length && bytes + size > 512 * 1024) {
         nextOffset = floor
@@ -120,11 +320,13 @@ export class ChatReaderService {
       }
     }
     // Hiding the final user chapter returns to the last remaining reply, not an empty page.
-    if (!entries.length && preceding) {
-      const size = new TextEncoder().encode(JSON.stringify(preceding.message)).length
-      if (size > 4 * 1024 * 1024) throw new Error(`第 ${preceding.index + 1} 楼超过单楼读取上限`)
-      entries.push({ entry: preceding, size })
-      previousOffset = precedingPrevious
+    if (!entries.length && previousOffset !== null) {
+      for await (const { entry, previousReply, size } of this.entries(chat, previousOffset)) {
+        if (size > 4 * 1024 * 1024) throw new Error(`第 ${entry.index + 1} 楼超过单楼读取上限`)
+        entries.push({ entry, size })
+        previousOffset = previousReply
+        break
+      }
     }
     return {
       messages: entries.map((item) => item.entry),
@@ -138,10 +340,10 @@ export class ChatReaderService {
   async search(id: string, query: string, offset = 0) {
     if (!query.trim() || query.length > 200 || !Number.isSafeInteger(offset) || offset < 0)
       throw new Error('搜索参数无效')
-    const chat = await this.getChat(id)
+    const chat = await this.getReadChat(id)
     const results: Array<{ floor: number; text: string }> = []
     let index = 0
-    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
+    for await (const message of readChatMessages(sourceOf(chat), String(chat.metadata.format))) {
       const floor = index++
       if (floor < offset) continue
       const at = message.mes.indexOf(query)
@@ -164,10 +366,10 @@ export class ChatReaderService {
       limit > 50
     )
       throw new Error('章节分页参数无效')
-    const chat = await this.getChat(id)
+    const chat = await this.getReadChat(id)
     const items = []
     let index = 0
-    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
+    for await (const message of readChatMessages(sourceOf(chat), String(chat.metadata.format))) {
       const floor = index++
       if (floor < offset) continue
       // Excerpts are a bounded plain-text projection, never executed or treated as chapter titles from AI.
@@ -198,14 +400,14 @@ export class ChatReaderService {
 
   async variableReview(id: string, floor: number, replyOverrides: Record<string, unknown> = {}) {
     if (!Number.isSafeInteger(floor) || floor < 0) throw new Error('变量回顾楼层无效')
-    const chat = await this.getChat(id)
+    const chat = await this.getReadChat(id)
     const total = Number(chat.metadata.messageCount)
     if (floor >= total) throw new Error('指定楼层不存在')
     const { selectChatReply, savedChatVariables } = await import('./ChatReaderRendering')
     const { compareChatVariables } = await import('./ChatVariableReview')
     let previous: { floor: number; replyId: number; data: Record<string, unknown> } | undefined
     let index = 0
-    for await (const message of readChatMessages(chat.originalBlob, String(chat.metadata.format))) {
+    for await (const message of readChatMessages(sourceOf(chat), String(chat.metadata.format))) {
       const entry = selectChatReply({ index, depth: 0, message }, replyOverrides[String(index)])
       const data = savedChatVariables(entry)
       const replyId = Number.isSafeInteger(entry.message.swipe_id)

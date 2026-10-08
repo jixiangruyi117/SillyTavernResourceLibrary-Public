@@ -22,16 +22,18 @@ import icon_wand from '@fortawesome/fontawesome-free/svgs/solid/wand-magic-spark
 import srlPlaceholderSvg from '../assets/sillytavern-logo.svg?raw'
 import { usePreviewPolicy } from '../composables/UsePreviewPolicy'
 import { usePreviewBudget } from '../composables/UsePreviewBudget'
-import { isNativePreviewAssetAvailable } from '../services/NativePreviewAsset'
+import {
+  isNativePreviewAssetAvailable,
+  prepareNativePreviewAssets,
+} from '../services/NativePreviewAsset'
 import type { Resource } from '../types/Resource'
 import { extractPreviewCss } from '../utils/PreviewSafety'
-import { preloadPreviewDocumentResources } from '../utils/PreviewResourcePreloader'
+import { collectPreviewRemoteResourceUrls } from '../utils/PreviewResourcePreloader'
 import { isRecord } from '../utils/UnknownValue'
 import { BEAUTIFICATION_PREVIEW_INTERACTION } from '../utils/BeautificationPreviewInteraction'
 
 const props = defineProps<{ resource: Resource }>()
 const SRL_PLACEHOLDER_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(srlPlaceholderSvg)}`
-const NATIVE_CACHE_SWAP_WINDOW_MS = 450
 const previewHost = ref<HTMLElement>()
 const { previewEnabled } = usePreviewBudget('theme-preview', () => true, previewHost)
 
@@ -98,13 +100,6 @@ let preloadGeneration = 0
 let preloadAbortController: AbortController | undefined
 const preparedPreviewDocument = ref('')
 const previewRevision = ref(0)
-let releasePreloadedResources: (() => void) | undefined
-
-function replacePreloadedResources(release?: () => void): void {
-  const previous = releasePreloadedResources
-  releasePreloadedResources = release
-  if (previous && previous !== release) window.setTimeout(previous, 0)
-}
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -528,33 +523,17 @@ watch(
       preloadResources &&
       previewPolicy.value.allowRemoteResources &&
       isNativePreviewAssetAvailable()
-    // 保留原始外链交给 iframe 直显。网页无法读取跨域响应体不代表图片无法显示，
-    // Android 的原生缓存也只能加速下一次，不得决定当前预览是否可用。
+    if (documentSource && shouldWarmNativeResources) {
+      const controller = new AbortController()
+      preloadAbortController = controller
+      onCleanup(() => controller.abort())
+      await prepareNativePreviewAssets(
+        collectPreviewRemoteResourceUrls(documentSource, true),
+        controller.signal,
+      ).catch(() => undefined)
+      if (generation !== preloadGeneration || controller.signal.aborted) return
+    }
     preparedPreviewDocument.value = documentSource
-    replacePreloadedResources()
-    if (!documentSource || !shouldWarmNativeResources) return
-    const controller = new AbortController()
-    preloadAbortController = controller
-    onCleanup(() => controller.abort())
-    const startedAt = performance.now()
-    void preloadPreviewDocumentResources(documentSource, undefined, { signal: controller.signal })
-      .then((preloaded) => {
-        if (generation !== preloadGeneration || controller.signal.aborted) {
-          preloaded.release()
-          return
-        }
-        if (preloaded.loaded && performance.now() - startedAt <= NATIVE_CACHE_SWAP_WINDOW_MS) {
-          preparedPreviewDocument.value = preloaded.document
-          replacePreloadedResources(preloaded.release)
-          previewRevision.value += 1
-          return
-        }
-        preloaded.release()
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (preloadAbortController === controller) preloadAbortController = undefined
-      })
   },
   { immediate: true },
 )
@@ -563,8 +542,6 @@ onUnmounted(() => {
   loadGeneration += 1
   preloadAbortController?.abort()
   preloadAbortController = undefined
-  releasePreloadedResources?.()
-  releasePreloadedResources = undefined
 })
 
 const affectedScenes = computed(() => {

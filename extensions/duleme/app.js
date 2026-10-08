@@ -109,8 +109,7 @@
   ]
   let defaultPrefs = { ...prefs },
     roleAppearance = null
-  let catalog = [],
-    characters = [],
+  let characters = [],
     charactersById = new Map(),
     chats = [],
     role = null,
@@ -126,6 +125,7 @@
     searchVersion = 0,
     listLimit = 30
   let runtime = {},
+    starting = true,
     chrome = false,
     saveTimer,
     toastTimer,
@@ -218,27 +218,38 @@
     indexState.lastChat = chat.id
     await store('reader-index-v1', indexState)
   }
-  function sheet(title, html) {
+  let sheetReturn = null
+  function sheet(title, html, returnTo = null) {
+    sheetReturn = returnTo
     $('#sheetFeedback').hidden = true
     $('#sheetFeedback').textContent = ''
     $('#sheetTitle').textContent = title
     $('#sheetBody').innerHTML = html
     if (!$('#sheet').open) $('#sheet').showModal()
   }
+  function closeSheet() {
+    if (sheetReturn) run(sheetReturn)
+    else $('#sheet').close()
+  }
   function loading(text) {
     $('#libraryContent').innerHTML = `<p class="loading">${esc(text)}</p>`
   }
-  async function allResources() {
+  async function allResources(types, ids) {
     const results = []
     let offset = 0
+    let cursor
     do {
       const response = await api.resources.list({
-        types: ['chat', 'characterCard'],
+        types,
+        ...(ids ? { ids } : {}),
         offset,
         limit: 50,
+        snapshot: true,
+        ...(cursor ? { cursor } : {}),
       })
       results.push(...response.items)
       offset = response.nextOffset
+      cursor = response.cursor
     } while (offset !== null)
     return results
   }
@@ -269,30 +280,30 @@
     if (image) $('#library').style.setProperty('--character-cover', `url("${image}")`)
     else $('#library').style.removeProperty('--character-cover')
   }
+  async function loadAvatar(id) {
+    if (avatarCache.has(id)) return
+    avatarCache.set(id, null)
+    const blob = await api.resources.thumbnail(
+      characters.find((r) => r.id === id)?.thumbnailId || id,
+    )
+    if (!blob) return
+    const src = await dataUrl(blob)
+    avatarCache.set(id, src)
+    applyCharacterCover()
+    const current = $(`[data-avatar="${window.CSS.escape(id)}"]`)
+    if (current) {
+      const img = document.createElement('img')
+      img.className = 'avatar'
+      img.src = src
+      img.alt = '角色头像'
+      current.replaceWith(img)
+    }
+  }
   const avatarObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue
       avatarObserver.unobserve(entry.target)
-      const id = entry.target.dataset.avatar
-      if (avatarCache.has(id)) continue
-      avatarCache.set(id, null)
-      run(async () => {
-        const blob = await api.resources.thumbnail(
-          characters.find((r) => r.id === id)?.thumbnailId || id,
-        )
-        if (!blob) return
-        const src = await dataUrl(blob)
-        avatarCache.set(id, src)
-        applyCharacterCover()
-        const current = $(`[data-avatar="${window.CSS.escape(id)}"]`)
-        if (current) {
-          const img = document.createElement('img')
-          img.className = 'avatar'
-          img.src = src
-          img.alt = '角色头像'
-          current.replaceWith(img)
-        }
-      })
+      run(() => loadAvatar(entry.target.dataset.avatar))
     }
   })
   function observeAvatars() {
@@ -301,17 +312,26 @@
       .slice(0, 30)
       .forEach((el) => avatarObserver.observe(el))
   }
-  async function refresh() {
+  async function refresh(render = true) {
     loading('正在读取资源库…')
-    catalog = await allResources()
-    characters = catalog.filter((r) => r.type === 'characterCard')
-    chats = catalog.filter((r) => r.type === 'chat')
+    chats = (await allResources(['chat'])).filter((r) => r.type === 'chat')
+    const boundIds = [...new Set(chats.flatMap((c) => c.relatedResourceIds))]
+    const boundCards = []
+    for (let start = 0; start < boundIds.length; start += 50)
+      boundCards.push(...(await allResources(['characterCard'], boundIds.slice(start, start + 50))))
+    characters = [
+      ...new Map(
+        boundCards.filter((r) => r.type === 'characterCard').map((r) => [r.id, r]),
+      ).values(),
+    ]
+    characters.sort((a, b) => b.revision - a.revision || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     for (const c of chats) {
       if (c.chatCharacter && !characters.some((r) => r.id === c.chatCharacter.id))
         characters.push({ ...c.chatCharacter, thumbnailId: c.id, companion: true })
     }
     charactersById = new Map(characters.map((r) => [r.id, r]))
-    await renderLibrary()
+    if (render) await renderLibrary()
+    $('#aboutBtn').hidden = false
   }
   async function renderLibrary() {
     const revision = ++version
@@ -324,20 +344,26 @@
     $('#librarySearch').placeholder = role ? '搜索标题或已加载备注' : '搜索角色名称'
     let html = ''
     if (!role) {
-      const pending = chats.filter((c) => !boundRole(c))
+      const roleCounts = new Map()
+      const pending = []
+      for (const c of chats) {
+        const binding = boundRole(c)
+        if (binding) roleCounts.set(binding.id, (roleCounts.get(binding.id) || 0) + 1)
+        else pending.push(c)
+      }
       const recent = chats.find((c) => c.id === indexState.lastChat)
       if (recent && boundRole(recent)) {
         html += `<button class="continue" data-chat="${esc(recent.id)}">${icon('bookmark')}<span><span class="small-label muted">继续阅读</span><strong>${esc(boundRole(recent).name)} · ${esc(recent.name)}</strong></span>${icon('next')}</button>`
       }
-      html += `<div class="library-heading"><h2>我的角色</h2><span class="count">${characters.filter((r) => chats.some((c) => boundRole(c)?.id === r.id)).length}</span><button class="right" data-action="refresh">刷新资源库</button></div>`
+      html += `<div class="library-heading"><h2>我的角色</h2><span class="count">${characters.filter((r) => roleCounts.has(r.id)).length}</span><button class="right" data-action="refresh">刷新资源库</button></div>`
       const roles = characters.filter(
-        (r) => r.name.toLowerCase().includes(q) && chats.some((c) => boundRole(c)?.id === r.id),
+        (r) => r.name.toLowerCase().includes(q) && roleCounts.has(r.id),
       )
       html += roles
         .slice(0, listLimit)
         .map(
           (r) =>
-            `<button class="role-row" data-role="${esc(r.id)}">${avatar(r)}<span class="role-info"><span class="role-name serif">${esc(r.name)}</span><span class="role-sub">${r.companion ? '聊天随附资料' : '已绑定角色卡'}</span></span><span class="role-count"><span><b>${chats.filter((c) => boundRole(c)?.id === r.id).length}</b>份聊天</span>${icon('next')}</span></button>`,
+            `<button class="role-row" data-role="${esc(r.id)}">${avatar(r)}<span class="role-info"><span class="role-name serif">${esc(r.name)}</span><span class="role-sub">${r.companion ? '聊天随附资料' : '已绑定角色卡'}</span></span><span class="role-count"><span><b>${roleCounts.get(r.id)}</b>份聊天</span>${icon('next')}</span></button>`,
         )
         .join('')
       if (roles.length > listLimit)
@@ -388,7 +414,11 @@
     await renderLibrary()
     window.scrollTo(0, 0)
   }
-  function bindPanel(c) {
+  async function bindPanel(c) {
+    sheet('绑定角色卡', '<p class="hint">正在读取角色卡…</p>')
+    const container = $('#sheetBody').firstElementChild
+    const characters = await allResources(['characterCard'])
+    if (!container.isConnected || !$('#sheet').open) return
     sheet(
       '绑定角色卡',
       `<p>${esc(c.name)}</p><p class="hint">角色名和文件名仅供参考。请选择这份聊天实际对应的角色卡。</p><label class="field-label" for="bindSelect">角色卡</label><select id="bindSelect"><option value="">请选择</option>${characters
@@ -415,7 +445,7 @@
       '备注与整理',
       `<p class="hint">原始名称：${esc(c.name)}</p><label class="field-label" for="displayName">显示名称</label><input class="searchbox" id="displayName" maxlength="160" value="${esc(s.title)}" placeholder="留空使用原名称"><label class="field-label" for="noteInput" style="margin-top:18px">备注</label><textarea id="noteInput" maxlength="500">${esc(s.note)}</textarea><div class="setting-row"><label for="pinned">置顶这份聊天</label><input id="pinned" type="checkbox" ${s.pinned ? 'checked' : ''}></div><div class="button-row"><button class="secondary" id="rebind">更换绑定角色</button><button class="primary" id="saveNote">保存</button></div>`,
     )
-    $('#rebind').onclick = () => bindPanel(c)
+    $('#rebind').onclick = () => run(() => bindPanel(c))
     $('#saveNote').onclick = () =>
       run(async () => {
         const next = {
@@ -461,7 +491,13 @@
     shadow.querySelector('#chat')?.classList.toggle('page-layout', prefs.mode === 'page')
     $('#readingFlow').style.transform = ''
     $('#readingFlow').style.setProperty('--column-width', $('#readingViewport').clientWidth + 'px')
-    if (runtime.builtinReader) run(syncNavigation)
+    if (runtime.builtinReader && !starting) run(syncNavigation)
+    for (const frame of panelFrames)
+      if (frame.dataset.wholeFloor)
+        frame.contentWindow?.postMessage(
+          { type: 'srl:reader-appearance', font: prefs.font, leading: prefs.leading },
+          '*',
+        )
   }
   function masked(text) {
     if (!prefs.mask) return text
@@ -526,8 +562,21 @@
       const result = await floorDocuments.get(item.entry.index)
       if (epoch !== panelEpoch || !panel.isConnected || !item.visible) return
       if (result.contentHash !== pageData.contentHash) throw Error('聊天原件已变化，请重新打开阅读')
-      const doc = result.messages[0]?.interactiveFrontends?.[item.index]
+      let doc = item.whole
+        ? result.messages[0]?.interactiveDocument
+        : result.messages[0]?.interactiveFrontends?.[item.index]
       if (!doc) return
+      if (item.whole) {
+        const parsed = new window.DOMParser().parseFromString(doc, 'text/html')
+        maskNodes(parsed.body)
+        parsed.documentElement.style.setProperty('--reader-font', prefs.font + 'px')
+        parsed.documentElement.style.setProperty('--reader-leading', prefs.leading)
+        parsed.documentElement.style.setProperty(
+          '--SmartThemeBodyColor',
+          window.getComputedStyle(panel.parentElement).color,
+        )
+        doc = '<!doctype html>' + parsed.documentElement.outerHTML
+      }
       const frame = document.createElement('iframe')
       const bounds = panel.getBoundingClientRect()
       const viewport = $('#readingViewport').getBoundingClientRect()
@@ -539,7 +588,10 @@
         bounds.bottom > viewport.top
       )
         frame.dataset.followPage = String(page)
-      frame.title = `第 ${item.entry.index + 1} 楼状态栏 ${item.index + 1}`
+      frame.title = item.whole
+        ? `第 ${item.entry.index + 1} 楼脚本阅读`
+        : `第 ${item.entry.index + 1} 楼状态栏 ${item.index + 1}`
+      if (item.whole) frame.dataset.wholeFloor = 'true'
       frame.className = 'panel-loading'
       frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
       frame.style.cssText = `display:block;width:100%;height:${panel.getBoundingClientRect().height || 1}px;border:0;`
@@ -630,7 +682,7 @@
       root.addEventListener('toggle', mediaLayoutChanged, true)
       root.innerHTML = entry.frontends?.[index] || ''
       maskNodes(root)
-      if (prefs.renderMode === 'full') {
+      if (prefs.renderMode === 'full' && !entry.scriptCount) {
         lazyPanels.set(panel, {
           entry,
           index,
@@ -639,7 +691,7 @@
           loading: false,
         })
         panelObserver.observe(panel)
-      } else
+      } else if (prefs.renderMode !== 'full')
         panel.addEventListener('click', (event) => {
           event.stopPropagation()
           if (event.composedPath().some((node) => node?.matches?.('summary'))) return
@@ -647,12 +699,30 @@
         })
     })
     maskNodes(body)
+    if (prefs.renderMode === 'full' && entry.scriptCount) {
+      body.dataset.chatFrontend = '-1'
+      lazyPanels.set(body, {
+        entry,
+        index: -1,
+        whole: true,
+        visible: false,
+        frame: null,
+        loading: false,
+      })
+      panelObserver.observe(body)
+    }
     block.append(body)
     section.append(block)
     if (entry.errors?.length) {
       const warning = document.createElement('p')
       warning.className = 'error'
       warning.textContent = '部分正则未执行：' + entry.errors.join('；')
+      section.append(warning)
+    }
+    if (entry.scriptErrors?.length) {
+      const warning = document.createElement('p')
+      warning.className = 'error'
+      warning.textContent = '脚本未加载：' + entry.scriptErrors.join('；')
       section.append(warning)
     }
     content.append(section)
@@ -1031,6 +1101,13 @@
       ruleOverrides: roleAppearance?.enabled ? {} : state.ruleOverrides || {},
       profileRuleOverrides: roleAppearance?.enabled ? roleAppearance.rules || {} : {},
       replyOverrides: state.replyOverrides || {},
+      scripts: state.scripts === true && prefs.renderMode === 'full',
+      scriptSources: state.scriptSources || [],
+      scriptOverrides: state.scriptOverrides || {},
+      readerCss:
+        state.scripts === true && prefs.renderMode === 'full'
+          ? readingBaseCss + '\n' + prefs.css
+          : undefined,
       blendPanels: prefs.blendPanels,
       panelAppearance: prefs.panelAppearance,
       theme: prefs.theme,
@@ -1059,26 +1136,30 @@
   }
   async function read(offset = 0, pos = null, backward = false) {
     const version = ++readVersion
-    run(syncReaderFonts)
+    const initialFonts = starting ? syncReaderFonts() : Promise.resolve()
+    if (!starting) run(syncReaderFonts)
     const activeId = chat.id
     $('#readerSubtitle').textContent = '正在读取…'
-    const result = await api.resources.readChat({
-      ...readOptions(),
-      id: activeId,
-      offset,
-      limit:
-        prefs.mode === 'continuous'
-          ? 5
-          : prefs.mode === 'scroll'
-            ? 1
-            : prefs.progressMode === 'chapters'
+    const [result] = await Promise.all([
+      api.resources.readChat({
+        ...readOptions(),
+        id: activeId,
+        offset,
+        limit:
+          prefs.mode === 'continuous'
+            ? 5
+            : prefs.mode === 'scroll'
               ? 1
-              : 3,
-      hideUser: prefs.hideUser,
-      backward,
-      interactive: false,
-      prefetch: true,
-    })
+              : prefs.progressMode === 'chapters'
+                ? 1
+                : 3,
+        hideUser: prefs.hideUser,
+        backward,
+        interactive: false,
+        prefetch: true,
+      }),
+      initialFonts,
+    ])
     if (chat?.id !== activeId || version !== readVersion) return
     // A large preceding floor may fill the bounded SDK page before the requested floor.
     if (pos && offset < pos.floor && result.nextOffset !== null && result.nextOffset <= pos.floor)
@@ -1093,12 +1174,14 @@
       notify('聊天原件已变化，请重新确认阅读位置')
       pos = null
     }
-    await new Promise((resolve) =>
-      requestAnimationFrame(() => {
-        if (chat?.id === activeId && version === readVersion) restore(pos)
-        resolve()
-      }),
-    )
+    if (starting) restore(pos)
+    else
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => {
+          if (chat?.id === activeId && version === readVersion) restore(pos)
+          resolve()
+        }),
+      )
     if (chat?.id !== activeId || version !== readVersion) return
     $('#readerSubtitle').textContent =
       prefs.mask && prefs.renderMode === 'full'
@@ -1118,7 +1201,7 @@
     const c = chats.find((c) => c.id === id)
     if (!c) return
     if (!boundRole(c)) {
-      bindPanel(c)
+      await bindPanel(c)
       return
     }
     chat = c
@@ -1131,6 +1214,8 @@
     state = await getState(id)
     roleAppearance = (await api.storage.get('appearance:' + role)) || null
     resolveAppearance()
+    if (starting && prefs.renderMode !== 'plain')
+      await loadAvatar(role).catch((error) => notify(error.message, true))
     background = ''
     $('#reader').style.backgroundImage = ''
     $('#reader').style.setProperty('--veil', 0)
@@ -1153,8 +1238,8 @@
     } catch (e) {
       shadow.innerHTML = ''
       toggleChrome(true)
-      indexState.resumeReading = false
-      await store('reader-index-v1', indexState)
+      // A failed restore is still an interrupted reading session. Only an explicit
+      // return to the list clears resumeReading; keep the saved floor for recreation.
       throw e
     }
   }
@@ -1194,6 +1279,8 @@
   }
   async function syncNavigation() {
     if (!runtime.builtinReader) return
+    // During restoration only the target reader layout is needed; publish the list once ready.
+    if (starting && $('#reader').hidden) return
     await api.ui.setReaderNavigation({
       page: !$('#reader').hidden ? 'reader' : role ? 'chats' : 'roles',
       cover: prefs.characterCover === true,
@@ -1207,7 +1294,7 @@
   }
   async function navigateBack() {
     if ($('#sheet').open) {
-      $('#sheet').close()
+      closeSheet()
     } else if (!$('#reader').hidden) {
       await leaveReader()
     } else if (role) {
@@ -1563,6 +1650,9 @@
     await read(pageData.messages[0]?.index || 0, pos)
     notify(roleAppearance?.enabled ? '角色专属正则方案已更新' : '此聊天的显示正则已更新')
   }
+  function ruleGroup(name, count, body) {
+    return `<details class="reader-rule-group"><summary><span>${esc(name)}</span><small>${count} 项</small>${icon('next')}</summary><div class="reader-rule-group-body">${body}</div></details>`
+  }
   function regexPanel() {
     const rules = pageData?.regexRules || []
     sheet(
@@ -1572,9 +1662,11 @@
         'preset',
         'character',
       ]
-        .map(
-          (scope) =>
-            `<details open><summary>${{ global: '全局', preset: '预设', character: '角色卡' }[scope]}</summary><p class="hint">来源：${esc(pageData?.regexSources?.[scope]?.name || '聊天随附')}（只替换本组显示规则，不修改原件或角色绑定）</p><div class="button-row"><button class="secondary" data-regex-source="${scope}">从资源库替换</button>${state.regexSources?.[scope] ? `<button class="secondary" data-regex-restore="${scope}">恢复随附来源</button>` : ''}</div>${
+        .map((scope) =>
+          ruleGroup(
+            { global: '全局', preset: '预设', character: '角色卡' }[scope],
+            rules.filter((r) => r.scope === scope).length,
+            `<p class="hint">来源：${esc(pageData?.regexSources?.[scope]?.name || '聊天随附')}（只替换本组显示规则，不修改原件或角色绑定）</p><div class="button-row"><button class="secondary" data-regex-source="${scope}">从资源库替换</button>${state.regexSources?.[scope] ? `<button class="secondary" data-regex-restore="${scope}">恢复随附来源</button>` : ''}</div>${
               rules
                 .filter((r) => r.scope === scope)
                 .map(
@@ -1582,11 +1674,13 @@
                     `<div class="setting-row"><label for="rule-${esc(r.key)}">${esc(r.name)}</label><input id="rule-${esc(r.key)}" type="checkbox" data-rule="${esc(r.key)}" ${r.enabled ? 'checked' : ''}></div>`,
                 )
                 .join('') || '<p class="hint">未随附显示规则</p>'
-            }</details>`,
+            }`,
+          ),
         )
         .join(
           '',
         )}<div class="button-row"><button class="secondary" id="resetRules">恢复导出时开关</button><button class="primary" id="applyRules">应用</button></div>`,
+      () => panel('display'),
     )
     $('#applyRules').onclick = () =>
       run(() =>
@@ -1599,16 +1693,166 @@
   async function regexSourcePanel(scope, offset = 0) {
     const label = { global: '全局', preset: '预设', character: '角色卡' }[scope]
     if (!label) return
-    sheet('替换' + label + '正则', '<p class="hint">正在读取资源列表…</p>')
+    sheet('替换' + label + '正则', '<p class="hint">正在读取资源列表…</p>', regexPanel)
+    const root = $('#sheetBody').firstElementChild
     const types =
       scope === 'global' ? ['regex'] : [scope === 'preset' ? 'preset' : 'characterCard', 'regex']
     const result = await api.resources.list({ types, offset, limit: 25 })
-    if (!$('#sheet').open) return
+    if (!root?.isConnected || !$('#sheet').open) return
     sheet(
       '替换' + label + '正则',
       `<p class="hint">选取聊天当时使用的${label}或单独保存的正则。仅替换本组，保留所选规则的启停状态。</p><div class="results">${result.items.map((item) => `<button class="result" data-regex-pick="${esc(item.id)}" data-scope="${scope}"><span>${esc(item.name)}</span><small>${esc(item.description)}</small></button>`).join('') || '<p class="hint">暂无可选资源</p>'}</div><div class="button-row"><button class="secondary" data-regex-page="${Math.max(0, offset - 25)}" data-scope="${scope}" ${offset === 0 ? 'disabled' : ''}>上一页</button><button class="secondary" data-regex-page="${result.nextOffset || 0}" data-scope="${scope}" ${result.nextOffset === null ? 'disabled' : ''}>下一页</button><button class="secondary" id="backToRegex">返回正则设置</button></div>`,
+      regexPanel,
     )
     $('#backToRegex').onclick = regexPanel
+  }
+  async function loadScriptSettings(container) {
+    const activeId = chat?.id
+    let result
+    try {
+      result = await api.resources.readChat({
+        ...readOptions(),
+        scripts: false,
+        scriptList: true,
+        offset: pageData?.messages[0]?.index || 0,
+        limit: 1,
+      })
+    } catch (error) {
+      if (container.isConnected && chat?.id === activeId)
+        container.querySelector('.script-settings-content').innerHTML =
+          `<p class="error">${esc(error.message)}</p>${(state.scriptSources || []).map((id) => `<button class="secondary" data-script-remove="${esc(id)}">移除来源 ${esc(id)}</button>`).join('')}<button class="secondary" id="pickScripts">从资源库选择</button>`
+      if ($('#pickScripts')) $('#pickScripts').onclick = () => run(() => scriptSourcePanel())
+      return
+    }
+    if (!container.isConnected || chat?.id !== activeId || !$('#sheet').open) return
+    const sources = [
+      ...new Set(
+        result.scriptRules.map((rule) => rule.sourceId).filter((id) => id !== 'character'),
+      ),
+    ]
+    container.querySelector('.script-settings-content').innerHTML =
+      `<p class="hint">只影响这份聊天，默认关闭。先选择完整模式，再启用所需脚本。脚本读取当前楼层、当前回复的已保存变量；不能补出缺失的历史状态。远程依赖仍由独立开关控制。</p>${(result.scriptErrors || []).map((error) => `<p class="error">${esc(error)}</p>`).join('')}<div class="setting-row"><label for="scriptsEnabled">运行所选脚本</label><input id="scriptsEnabled" type="checkbox" ${state.scripts ? 'checked' : ''}></div>${[
+        'character',
+        ...sources,
+      ]
+        .map((id) => {
+          const rules = result.scriptRules.filter((rule) => rule.sourceId === id)
+          return ruleGroup(
+            id === 'character' ? '角色卡' : rules[0]?.sourceName || '资源库脚本',
+            rules.length,
+            `${rules.map((rule) => `<div class="setting-row"><label for="script-${esc(rule.key)}">${esc(rule.folder ? rule.folder + ' / ' + rule.name : rule.name)}</label><input id="script-${esc(rule.key)}" type="checkbox" data-script="${esc(rule.key)}" ${rule.enabled ? 'checked' : ''}></div>`).join('') || '<p class="hint">未附带可选脚本</p>'}${(state.scriptSources || []).includes(id) ? `<button class="text-button" data-script-remove="${esc(id)}">移除此来源</button>` : ''}`,
+          )
+        })
+        .join(
+          '',
+        )}<button class="secondary" id="pickScripts">从资源库选择</button><div class="button-row"><button class="secondary" id="disableScripts">关闭全部</button><button class="primary" id="applyScripts">应用脚本</button></div>`
+    $('#pickScripts').onclick = () => run(() => scriptSourcePanel())
+    const applyButton = $('#applyScripts')
+    const updateScriptAction = () => {
+      applyButton.textContent = $('#scriptsEnabled').checked ? '启用并应用' : '保存选择（不运行）'
+    }
+    $('#scriptsEnabled').onchange = updateScriptAction
+    updateScriptAction()
+    $('#applyScripts').onclick = () =>
+      run(async () => {
+        const enabled = $('#scriptsEnabled').checked
+        if (enabled && (prefs.renderMode !== 'full' || !runtime.network))
+          throw Error('请先使用兼容模式打开，并选择完整阅读模式')
+        const overrides = Object.fromEntries(
+          $$('[data-script]').map((el) => [el.dataset.script, el.checked]),
+        )
+        if (enabled && !Object.values(overrides).some(Boolean)) throw Error('请至少选择一个脚本')
+        const selectedKeys = (rules) =>
+          Object.keys(rules || {})
+            .filter((key) => rules[key])
+            .sort()
+            .join('\n')
+        const reload =
+          (state.scripts === true) !== enabled ||
+          (enabled && selectedKeys(state.scriptOverrides) !== selectedKeys(overrides))
+        const pos = currentPosition()
+        applyButton.disabled = true
+        $('#disableScripts').disabled = true
+        try {
+          state.scripts = enabled
+          state.scriptOverrides = overrides
+          await saveState()
+          if (reload) await read(pageData.messages[0]?.index || 0, pos)
+          notify(
+            enabled
+              ? reload
+                ? '已开启所选脚本运行'
+                : '脚本设置未变化，无需重新加载'
+              : '选择已保存，脚本未运行；打开“运行所选脚本”后应用',
+          )
+        } finally {
+          if (applyButton.isConnected) {
+            applyButton.disabled = false
+            $('#disableScripts').disabled = false
+          }
+        }
+      })
+    $('#disableScripts').onclick = () =>
+      run(async () => {
+        const pos = currentPosition()
+        state.scripts = false
+        state.scriptOverrides = {}
+        await saveState()
+        await read(pageData.messages[0]?.index || 0, pos)
+        await loadScriptSettings(container)
+      })
+  }
+  async function scriptSourcePanel(offset = 0) {
+    const activeId = chat?.id
+    sheet('选择阅读脚本', '<p class="hint">正在读取资源列表…</p>', showScriptSettings)
+    const root = $('#sheetBody').firstElementChild
+    const result = await api.resources.list({ types: ['script'], offset, limit: 25 })
+    if (!root?.isConnected || chat?.id !== activeId || !$('#sheet').open) return
+    sheet(
+      '选择阅读脚本',
+      `<p class="hint">选择已导入的 JavaScript 或 TavernHelper 脚本，例如小手机脚本。APK、网页链接与 STscript 不用于这里。添加来源后仍需勾选并应用。</p><div class="results">${result.items.map((item) => `<button class="result" data-script-pick="${esc(item.id)}" ${(state.scriptSources || []).includes(item.id) ? 'disabled' : ''}><span>${esc(item.name)}</span><small>${esc(item.description)}</small></button>`).join('') || '<p class="hint">暂无脚本，请先导入资源库</p>'}</div><div class="button-row"><button class="secondary" data-script-page="${Math.max(0, offset - 25)}" ${offset === 0 ? 'disabled' : ''}>上一页</button><button class="secondary" data-script-page="${result.nextOffset || 0}" ${result.nextOffset === null ? 'disabled' : ''}>下一页</button><button class="secondary" id="backToScripts">返回脚本设置</button></div>`,
+      showScriptSettings,
+    )
+    $('#backToScripts').onclick = () => run(showScriptSettings)
+  }
+  async function showScriptSettings() {
+    sheet(
+      '脚本管理',
+      '<div id="scriptSettings"><div class="script-settings-content"><p class="hint">正在读取脚本…</p></div></div>',
+      () => panel('display'),
+    )
+    await loadScriptSettings($('#scriptSettings'))
+  }
+  async function changeScriptSource(id, remove = false) {
+    const activeId = chat.id
+    const sources = remove
+      ? (state.scriptSources || []).filter((item) => item !== id)
+      : [...new Set([...(state.scriptSources || []), id])]
+    let result
+    try {
+      result = await api.resources.readChat({
+        ...readOptions(),
+        scripts: false,
+        scriptList: true,
+        scriptSources: sources,
+        offset: pageData.messages[0]?.index || 0,
+        limit: 1,
+      })
+    } catch (error) {
+      if (!remove) throw error
+      // Removing a broken reference must remain possible even when another source is missing.
+    }
+    if (chat?.id !== activeId || !$('#sheet').open) return
+    const pos = currentPosition()
+    state.scriptSources = sources
+    if (result)
+      state.scriptOverrides = Object.fromEntries(
+        result.scriptRules.map((rule) => [rule.key, rule.enabled]),
+      )
+    else state.scripts = false
+    await saveState()
+    await read(pageData.messages[0]?.index || 0, pos)
+    await showScriptSettings()
   }
   async function replaceRegexSource(scope, id) {
     const activeChatId = chat.id
@@ -1719,7 +1963,7 @@
           )
           .join(
             '',
-          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。打码与完整模式可同时开启：正文继续打码，交互状态栏保持原文，可能显示姓名；图片内文字不保证打码。</p><button class="secondary" id="regexRules">管理显示正则</button><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。上方“用户名打码”可随时关闭，保留填写的配置。完整模式只对正文打码，交互状态栏保持原文。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><label class="identity-field"><span>打码方式</span><select id="maskMode"><option value="replace">替换文字</option><option value="cover">遮住姓名</option></select></label><div class="identity-actions"><label class="identity-field" id="replacementField"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">应用打码</button></div></div></details>`,
+          )}<p class="hint">纯净只读正文，不加载 HTML 状态栏与媒体；精简显示静态状态栏；完整支持展开和切换。显示正则包含角色卡规则及互传随附的全局规则。打码与完整模式可同时开启：正文继续打码，交互状态栏保持原文，可能显示姓名；图片内文字不保证打码。</p><div class="button-row reader-management-buttons"><button class="secondary" id="regexRules">管理显示正则</button><button class="secondary" id="manageScripts">管理脚本</button></div><details class="identity-settings"><summary>用户名称与打码</summary><div class="identity-form"><p class="hint">自动识别聊天中的用户名，也可补充别称。上方“用户名打码”可随时关闭，保留填写的配置。完整模式只对正文打码，交互状态栏保持原文。</p><label class="identity-field"><span>人设名称</span><input id="userName" class="searchbox" value="${esc(state.userName)}" placeholder="识别不准确时填写" aria-label="用户人设名称"></label><label class="identity-field"><span>额外打码词</span><textarea id="maskWords" rows="3" placeholder="每行一个名字或别称">${esc(prefs.words)}</textarea></label><label class="identity-field"><span>打码方式</span><select id="maskMode"><option value="replace">替换文字</option><option value="cover">遮住姓名</option></select></label><div class="identity-actions"><label class="identity-field" id="replacementField"><span>替换文字</span><input id="replacement" class="searchbox" value="${esc(prefs.replacement)}" placeholder="例如：某某" aria-label="打码替换词"></label><button class="primary" id="saveMask">应用打码</button></div></div></details>`,
       )
       $$('[data-option]').forEach(
         (el) =>
@@ -1737,6 +1981,7 @@
             })),
       )
       $('#regexRules').onclick = () => regexPanel()
+      $('#manageScripts').onclick = () => run(showScriptSettings)
       $('#maskMode').value = prefs.maskMode || 'replace'
       const showReplacement = () => {
         $('#replacementField').hidden = $('#maskMode').value === 'cover'
@@ -1776,12 +2021,11 @@
           )
           .join(
             '',
-          )}</div><div class="setting-row"><span>文字大小</span><div class="stepper"><button id="fontMinus">−</button><span id="fontValue">${prefs.font}px</span><button id="fontPlus">＋</button></div></div><div class="setting-row"><label for="lineRange">行间距</label><input id="lineRange" type="range" min="1.5" max="2.5" step=".05" value="${prefs.leading}"></div><div class="button-row"><button class="secondary" id="pickBg">选择阅读背景</button><button class="secondary" id="clearBg">移除背景</button></div><p class="hint">图片背景仅本次有效。为保持文字可读，自动叠加纸色遮罩。</p><details><summary>自定义 CSS / 导入美化</summary><p class="hint">样式仅作用正文，不影响返回和设置。支持 CSS 与含 custom_css 的主题 JSON；酒馆整套界面选择器不保证直接兼容。</p><textarea class="code" id="cssInput" aria-label="正文 CSS">${esc(prefs.css)}</textarea><div class="button-row"><button class="secondary" id="libraryCss">资源库美化</button><button class="secondary" id="importCss">导入文件</button><button class="secondary" id="defaultCss">默认样式 / 导出</button><button class="primary" id="applyCss">应用 CSS</button></div></details><div class="button-row"><button class="secondary" id="appearanceRules">正则方案</button><button class="text-button" id="resetAppearance">${roleAppearance?.values ? '重置角色外观' : '恢复初始外观'}</button></div>`,
+          )}</div><div class="setting-row"><span>文字大小</span><div class="stepper"><button id="fontMinus">−</button><span id="fontValue">${prefs.font}px</span><button id="fontPlus">＋</button></div></div><div class="setting-row"><label for="lineRange">行间距</label><input id="lineRange" type="range" min="1.5" max="2.5" step=".05" value="${prefs.leading}"></div><div class="button-row"><button class="secondary" id="pickBg">选择阅读背景</button><button class="secondary" id="clearBg">移除背景</button></div><p class="hint">图片背景仅本次有效。为保持文字可读，自动叠加纸色遮罩。</p><details><summary>自定义 CSS / 导入美化</summary><p class="hint">样式仅作用正文，不影响返回和设置。支持 CSS 与含 custom_css 的主题 JSON；酒馆整套界面选择器不保证直接兼容。</p><textarea class="code" id="cssInput" aria-label="正文 CSS">${esc(prefs.css)}</textarea><div class="button-row"><button class="secondary" id="libraryCss">资源库美化</button><button class="secondary" id="importCss">导入文件</button><button class="secondary" id="defaultCss">默认样式 / 导出</button><button class="primary" id="applyCss">应用 CSS</button></div></details><div class="appearance-reset"><button class="text-button" id="resetAppearance">${roleAppearance?.values ? '重置角色外观' : '恢复初始外观'}</button></div>`,
       )
       $('#appearanceScope').value = roleAppearance?.enabled ? 'character' : 'default'
       $('#appearanceScope').onchange = (event) =>
         run(() => changeAppearanceMode(event.target.value === 'character'))
-      $('#appearanceRules').onclick = () => regexPanel()
       $('#panelAppearance').value = prefs.panelAppearance || 'author'
       $('#panelAppearance').onchange = (event) =>
         run(async () => {
@@ -1962,7 +2206,13 @@
       '关于读了么',
       '<p>从资源库读取聊天记录，按明确绑定的角色卡整理。</p><p class="hint">导入入口在资源库。备份时选择“聊天记录”和“读了么阅读数据”，保留聊天、配套资源以及备注、收藏、进度和外观。卸载 APP 默认保留阅读数据。</p><p class="hint">支持 JSONL / 严格 JSON 聊天。纯净模式只读正文；精简模式显示静态状态栏；完整模式原位交互，只读取已保存变量，不补猜历史。</p><button class="secondary" id="refreshAbout">刷新资源库</button>',
     )
-  $('#sheetClose').onclick = () => $('#sheet').close()
+  $('#sheetClose').onclick = closeSheet
+  $('#sheet').addEventListener('cancel', (e) => {
+    if (sheetReturn) {
+      e.preventDefault()
+      closeSheet()
+    }
+  })
   // Only suppress the compatibility click belonging to the hold/swipe, never a new gesture.
   document.addEventListener(
     'pointerdown',
@@ -1974,6 +2224,7 @@
   $('#sheet').addEventListener('close', () => {
     suppress = false
     searchVersion++
+    sheetReturn = null
   })
   $('#sheet').addEventListener('click', (e) => {
     if (suppress) {
@@ -1982,7 +2233,7 @@
     }
     if (e.target === $('#sheet')) {
       const r = $('#sheet').getBoundingClientRect()
-      if (e.clientY < r.top || e.clientX < r.left || e.clientX > r.right) $('#sheet').close()
+      if (e.clientY < r.top || e.clientX < r.left || e.clientX > r.right) closeSheet()
     }
   })
   $('#sheetBody').onclick = (e) =>
@@ -1994,6 +2245,9 @@
         await regexSourcePanel(t.dataset.scope, Number(t.dataset.regexPage))
       if (t.dataset.regexPick) await replaceRegexSource(t.dataset.scope, t.dataset.regexPick)
       if (t.dataset.regexRestore) await replaceRegexSource(t.dataset.regexRestore, '')
+      if (t.dataset.scriptPage !== undefined) await scriptSourcePanel(Number(t.dataset.scriptPage))
+      if (t.dataset.scriptPick) await changeScriptSource(t.dataset.scriptPick)
+      if (t.dataset.scriptRemove) await changeScriptSource(t.dataset.scriptRemove, true)
       if (t.dataset.readingMode) {
         if (t.dataset.readingMode !== prefs.renderMode) await setReadingMode(t.dataset.readingMode)
       }
@@ -2259,12 +2513,20 @@
         readingBaseCss
       applyShellCss(runtime.readerUiCss)
       applyPrefs()
-      await refresh()
+      await refresh(false)
       const resume = chats.find((item) => item.id === indexState.lastChat)
       if (indexState.resumeReading && resume && boundRole(resume)) await openChat(resume.id)
+      else await renderLibrary()
     })
     .catch((error) => {
       loading(error.message)
       notify(error.message, true)
+    })
+    .finally(async () => {
+      starting = false
+      document.documentElement.removeAttribute('data-reader-starting')
+      await syncNavigation()
+      // Bridge connection alone does not mean the initial page and appearance are ready.
+      await api?.ui?.setLoading?.('')
     })
 })()

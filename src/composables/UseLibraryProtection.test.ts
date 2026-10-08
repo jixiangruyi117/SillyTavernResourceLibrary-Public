@@ -10,19 +10,39 @@ const native = vi.hoisted(() => ({
   disable: vi.fn(),
   migrate: vi.fn(),
   repair: vi.fn(),
+  repairOldPngThumbnails: vi.fn(),
+  getOldPngThumbnailStatus: vi.fn(),
   lock: vi.fn(),
   unlock: vi.fn(),
   legacy: vi.fn(),
   clearLegacy: vi.fn(),
+  retained: vi.fn(),
+  clearRetained: vi.fn(),
+  preserveCopy: vi.fn(),
+}))
+vi.mock('../storage/AndroidNativeDexieCore', () => ({
+  isAndroidNativeAppDatabaseActive: () => true,
+}))
+vi.mock('../storage/AndroidNativeAppDatabaseRuntime', () => ({
+  canRetryAndroidNativeAppDatabaseMigration: () => false,
+  requestAndroidNativeAppDatabaseMigrationRetry: vi.fn(),
+  getRetainedIndexedDbCopy: native.retained,
+  clearRetainedIndexedDbCopy: native.clearRetained,
 }))
 vi.mock('../core/LibraryContainer', () => ({
+  database: { name: 'test-database' },
+  recycleBinService: { preserveLegacyDatabaseCopy: native.preserveCopy },
   browserStorageService: {
     getHealth: native.health,
     legacyLibraryHistoryCleanup: native.legacy,
     clearLegacyLibraryHistory: native.clearLegacy,
   },
   communitySourceStorage: { migrateVaultMode: native.migrate },
-  resourceService: { repairThumbnailAssets: native.repair },
+  resourceService: {
+    repairThumbnailAssets: native.repair,
+    getMissingPngThumbnailRepairStatus: native.getOldPngThumbnailStatus,
+    repairMissingPngCharacterCardThumbnails: native.repairOldPngThumbnails,
+  },
   vaultService: {
     enable: native.enable,
     disable: native.disable,
@@ -68,10 +88,71 @@ function createProtection() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  native.retained.mockResolvedValue({ records: 3, counts: { resources: 3 } })
   native.legacy.mockResolvedValue({ records: [{ id: 'old', size: 100, createdAt: 1 }], bytes: 100 })
+  native.getOldPngThumbnailStatus.mockResolvedValue({ status: 'not-started', repaired: 0 })
+  native.repairOldPngThumbnails.mockResolvedValue(0)
 })
 
 describe('useLibraryProtection', () => {
+  it('confirms old-copy cleanup before invoking the runtime and releases busy state on cancel', async () => {
+    const { protection } = createProtection()
+    native.confirm.mockResolvedValue(false)
+    await protection.clearRetainedNativeCopy()
+    expect(native.clearRetained).not.toHaveBeenCalled()
+    expect(protection.isClearingRetainedNativeCopy.value).toBe(false)
+    native.confirm.mockResolvedValue(true)
+    await protection.clearRetainedNativeCopy()
+    expect(native.clearRetained).toHaveBeenCalledWith(
+      'test-database',
+      { records: 3, counts: { resources: 3 } },
+      expect.any(Function),
+      undefined,
+      expect.any(Function),
+    )
+    expect(protection.isClearingRetainedNativeCopy.value).toBe(false)
+  })
+
+  it('saves any old table to the existing recycle bin before reporting cleanup', async () => {
+    const { protection, context } = createProtection()
+    native.confirm.mockResolvedValue(true)
+    const source = { stores: [{ name: 'settings', count: 3 }] }
+
+    native.clearRetained.mockImplementation(async (_name, _plan, _progress, _native, preserve) => {
+      await preserve(source)
+    })
+    await protection.clearRetainedNativeCopy()
+    expect(native.preserveCopy).toHaveBeenCalledWith(source)
+    expect(context.loadRecycleBin).toHaveBeenCalledOnce()
+    expect(context.showNotice).toHaveBeenCalledWith(
+      expect.stringContaining('3 条旧记录和附件已保存到回收站'),
+    )
+  })
+
+  it('runs the old PNG thumbnail scan only after an explicit request', async () => {
+    const { context, protection } = createProtection()
+    expect(native.repairOldPngThumbnails).not.toHaveBeenCalled()
+    native.repairOldPngThumbnails.mockResolvedValue(3)
+
+    await protection.repairOldPngThumbnails()
+
+    expect(native.repairOldPngThumbnails).toHaveBeenCalledOnce()
+    expect(native.repairOldPngThumbnails).toHaveBeenCalledWith({ restart: true })
+    expect(context.loadResources).toHaveBeenCalledOnce()
+    expect(context.showNotice).toHaveBeenCalledWith('已补回 3 张旧资源缩略图')
+    expect(protection.isRepairingOldPngThumbnails.value).toBe(false)
+  })
+
+  it('explicitly restarts a completed old PNG thumbnail scan', async () => {
+    native.getOldPngThumbnailStatus.mockResolvedValue({ status: 'complete', repaired: 2 })
+    const { context, protection } = createProtection()
+    await protection.refreshOldPngThumbnailRepairStatus()
+    await protection.repairOldPngThumbnails()
+
+    expect(native.repairOldPngThumbnails).toHaveBeenCalledWith({ restart: true })
+    expect(context.loadResources).not.toHaveBeenCalled()
+  })
+
   it('reserves legacy cleanup before confirmation, rejects repeated clicks and vault conversion, and cancels without deleting', async () => {
     let resolve!: (confirmed: boolean) => void
     native.confirm.mockReturnValue(

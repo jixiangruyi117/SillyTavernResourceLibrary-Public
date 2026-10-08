@@ -132,7 +132,6 @@ class NativeTavernBridgeService(
         return normalized
     }
     // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=native-worker-preferences
-
     fun join(codeValue: String): CompletableFuture<Unit> {
         val normalized = codeValue.trim().uppercase()
         require(Regex("^[2-9A-HJ-NP-Z]{8}$").matches(normalized)) { "设备码格式无效" }

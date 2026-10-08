@@ -187,7 +187,7 @@ const {
   searchQuery,
   cancelSearchInput,
   clearBrowsingState,
-  filteredResources,
+  filteredResourceCount,
   activeScopeLabel,
   toggleBatchMode,
   paginatedResources,
@@ -993,7 +993,7 @@ const isBatchBarVisible = computed(
       <LibraryToolbar :model="panelModel" />
 
       <section
-        v-if="filteredResources.length && layoutMode === 'grid'"
+        v-if="filteredResourceCount && layoutMode === 'grid'"
         ref="resourceGrid"
         class="resource-grid"
         aria-live="polite"
@@ -1016,7 +1016,7 @@ const isBatchBarVisible = computed(
       </section>
 
       <section
-        v-else-if="filteredResources.length && layoutMode === 'list'"
+        v-else-if="filteredResourceCount && layoutMode === 'list'"
         class="resource-list"
         aria-live="polite"
       >
@@ -1037,13 +1037,13 @@ const isBatchBarVisible = computed(
         />
       </section>
 
-      <section v-else-if="filteredResources.length" class="split-workspace" aria-live="polite">
+      <section v-else-if="filteredResourceCount" class="split-workspace" aria-live="polite">
         <div class="split-workspace__list">
           <header class="split-workspace__heading">
             <div>
               <small>ACTIVE ARCHIVE</small><strong>{{ activeScopeLabel }}</strong>
             </div>
-            <span>{{ filteredResources.length }} 项</span>
+            <span>{{ filteredResourceCount }} 项</span>
           </header>
           <div class="resource-list resource-list--split">
             <ResourceListRow
@@ -1073,7 +1073,7 @@ const isBatchBarVisible = computed(
         />
       </section>
 
-      <nav v-if="filteredResources.length > pageSize" class="pagination" aria-label="资源分页">
+      <nav v-if="filteredResourceCount > pageSize" class="pagination" aria-label="资源分页">
         <button
           type="button"
           :disabled="currentPage <= 1"
@@ -1099,7 +1099,7 @@ const isBatchBarVisible = computed(
         </button>
       </nav>
 
-      <section v-if="!filteredResources.length" class="empty-state">
+      <section v-if="!filteredResourceCount" class="empty-state">
         <div class="empty-state__folio" aria-hidden="true">
           <span></span><span></span><span></span>
         </div>
@@ -1123,7 +1123,7 @@ const isBatchBarVisible = computed(
     </main>
 
     <FeatureHub
-      v-if="isFeatureHubOpen"
+      v-if="isFeatureHubOpen || assistantHubRetained"
       v-show="isFeatureHubOpen"
       :active="isFeatureHubOpen"
       :resources="managedResources"

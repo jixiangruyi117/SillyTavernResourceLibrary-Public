@@ -47,8 +47,7 @@ describe('registry-owned appearance scopes', () => {
   it('gates optional APP styles on a successfully opened APP and preserves unrelated/global content on deletion', () => {
     const css = compileAppearancePreset(preset)
     // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-scope-ready-selector-test
-    expect(css).toContain('.feature-hub[data-feature-page="frontendWorkshop"]')
-    expect(css).not.toContain('data-official-app-ready')
+    expect(css).toContain(':has([data-official-app-ready="frontendWorkshop"])')
     // SRL-PUBLIC-SYNC: END REPLACE id=appearance-scope-ready-selector-test
     expect(css).not.toContain('--future')
     const next = removeAppAppearanceCss(css, [preset], 'frontendWorkshop')
@@ -62,8 +61,7 @@ describe('registry-owned appearance scopes', () => {
       ':root { --test: 1; }\n@scope (.feature-hub[data-feature-page="frontendWorkshop"]) {\n.panel { color: red; }\n}'
     const next = upgradeLegacyAppearanceCss(old, [preset])
     // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-scope-legacy-selector-test
-    expect(next).toContain('.feature-hub[data-feature-page="frontendWorkshop"]')
-    expect(next).not.toContain('data-official-app-ready')
+    expect(next).toContain(':has([data-official-app-ready="frontendWorkshop"])')
     // SRL-PUBLIC-SYNC: END REPLACE id=appearance-scope-legacy-selector-test
     expect(next).toContain('.panel { color: red; }')
     expect(upgradeLegacyAppearanceCss(next, [preset])).toBe(next)

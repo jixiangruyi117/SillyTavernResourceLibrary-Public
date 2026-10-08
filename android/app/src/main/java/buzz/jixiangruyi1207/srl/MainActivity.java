@@ -29,6 +29,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeTavernDirectoryPlugin.class);
         registerPlugin(NativeSystemUiPlugin.class);
         registerPlugin(NativePlatformPlugin.class);
+        registerPlugin(NativeMainApiPlugin.class);
         registerPlugin(ProjectNoticeStoragePlugin.class);
         super.onCreate(savedInstanceState);
         getBridge().setWebViewClient(new OfficialAppWebViewClient(getBridge()));

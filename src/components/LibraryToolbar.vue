@@ -17,7 +17,7 @@ type PanelModel = Pick<
   | 'clearSearchHistory'
   | 'useSearchHistory'
   | 'sortValue'
-  | 'filteredResources'
+  | 'filteredResourceCount'
   | 'isBatchMode'
   | 'toggleBatchMode'
   | 'openSimilarNameGroups'
@@ -36,7 +36,7 @@ const searchHistory = toRef(input.model, 'searchHistory')
 const clearSearchHistory = toRef(input.model, 'clearSearchHistory')
 const useSearchHistory = toRef(input.model, 'useSearchHistory')
 const sortValue = toRef(input.model, 'sortValue')
-const filteredResources = toRef(input.model, 'filteredResources')
+const filteredResourceCount = toRef(input.model, 'filteredResourceCount')
 const isBatchMode = toRef(input.model, 'isBatchMode')
 const toggleBatchMode = toRef(input.model, 'toggleBatchMode')
 const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
@@ -111,7 +111,7 @@ const openSimilarNameGroups = toRef(input.model, 'openSimilarNameGroups')
           <option value="size">文件大小</option>
         </select>
       </label>
-      <span class="toolbar__result"> 显示 {{ filteredResources.length }} 项 </span>
+      <span class="toolbar__result"> 显示 {{ filteredResourceCount }} 项 </span>
       <div class="toolbar__actions">
         <button
           class="batch-toggle toolbar__similar-names"

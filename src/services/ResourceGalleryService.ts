@@ -118,6 +118,13 @@ export class ResourceGalleryService {
     }
   }
 
+  /** Export plans visible image attachments without loading unrelated image bodies. */
+  async listExportImages(ownerId: string): Promise<ResourceSummary[]> {
+    return (await this.imagesOfType(ownerId)).filter(
+      (image) => galleryOwnerId(image) === ownerId && image.metadata.galleryVisible !== false,
+    )
+  }
+
   private async owner(id: string): Promise<Resource> {
     const owner = await this.storage.get(id)
     if (!owner || isResourceGalleryImage(owner)) throw new Error('资源已经不存在，请返回资源库')

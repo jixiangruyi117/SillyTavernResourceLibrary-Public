@@ -52,6 +52,15 @@ describe('PreviewResourcePreloader', () => {
     ])
   })
 
+  it('按需登记保留图片候选与视频封面，媒体流不进入整文件缓存且图片片段共用 URL', () => {
+    expect(
+      collectPreviewRemoteResourceUrls(
+        '<img src="https://cdn.example/sprite.svg#one"><img src="https://cdn.example/sprite.svg#two"><video src="https://cdn.example/large.mp4" poster="https://cdn.example/poster.png"><source src="https://cdn.example/fallback.webm"></video><audio src="https://cdn.example/audio.mp3"></audio>',
+        true,
+      ),
+    ).toEqual(['https://cdn.example/sprite.svg', 'https://cdn.example/poster.png'])
+  })
+
   it('递归收集并改写 TavernHelper iframe srcdoc 内的展示素材', async () => {
     const source = `<iframe srcdoc='<img src="https://cdn.example/nested-cover.png">'></iframe>`
     expect(collectPreviewRemoteResourceUrls(source)).toEqual([
@@ -169,6 +178,62 @@ describe('PreviewResourcePreloader', () => {
     expect(await rewrittenCssBlob.text()).toContain('blob:https://srl.example/')
   })
 
+  it('晚到的 CSS 新增素材仍填满空闲下载槽位', async () => {
+    mockObjectUrls()
+    let completeCss!: (response: Response) => void
+    const imageCompletions: Array<() => void> = []
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith('/theme.css'))
+        return new Promise<Response>((resolve) => {
+          completeCss = resolve
+        })
+      if (url.includes('/nested'))
+        return new Promise<Response>((resolve) => {
+          imageCompletions.push(() =>
+            resolve(new Response('image', { headers: { 'content-type': 'image/png' } })),
+          )
+        })
+      return Promise.resolve(new Response('image', { headers: { 'content-type': 'image/png' } }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const result = preloadPreviewDocumentResources(
+      '<link rel="stylesheet" href="https://cdn.example/theme.css"><img src="https://cdn.example/first.png"><img src="https://cdn.example/second.png">',
+    )
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    completeCss(
+      new Response(
+        'body{background:url("./nested1.png")}div{background:url("./nested2.png")}p{background:url("./nested3.png")}',
+        { headers: { 'content-type': 'text/css' } },
+      ),
+    )
+    await vi.waitFor(() => expect(imageCompletions).toHaveLength(3))
+    for (const complete of imageCompletions) complete()
+    expect((await result).loaded).toBe(6)
+  })
+
+  it('样式表优先于等待中的图片，原生传输收到取消信号', async () => {
+    nativeMocks.available.mockReturnValue(true)
+    nativeMocks.download.mockImplementation(async (url: string) => ({
+      resourceUrl: `https://app.example/cache/${url.split('/').at(-1)}`,
+      resolvedUrl: url,
+      contentType: url.endsWith('.css') ? 'text/css' : 'image/png',
+      text: url.endsWith('.css') ? 'body{}' : undefined,
+      size: 5,
+      cached: false,
+    }))
+    mockObjectUrls()
+    const controller = new AbortController()
+    await preloadPreviewDocumentResources(
+      '<img src="https://cdn.example/a.png"><link rel="stylesheet" href="https://cdn.example/theme.css">',
+      undefined,
+      { signal: controller.signal },
+    )
+    expect(nativeMocks.download.mock.calls[0]![0]).toBe('https://cdn.example/theme.css')
+    expect(nativeMocks.download.mock.calls.every((call) => call[2] === controller.signal)).toBe(
+      true,
+    )
+  })
+
   it('APK 原生 HTTP 拦截响应仍按真正的 CDN 地址解析 CSS 相对资源', async () => {
     mockObjectUrls()
     const fetchMock = vi.fn(async (url: string) => {
@@ -223,6 +288,7 @@ describe('PreviewResourcePreloader', () => {
     expect(nativeMocks.download).toHaveBeenCalledWith(
       'https://cdn.example/cover.png',
       12 * 1024 * 1024,
+      undefined,
     )
     expect(fetchMock).not.toHaveBeenCalled()
     expect(result.failedUrls).toEqual([])
@@ -267,6 +333,7 @@ describe('PreviewResourcePreloader', () => {
     expect(nativeMocks.download).toHaveBeenCalledWith(
       'https://files.catbox.moe/abc123.png',
       12 * 1024 * 1024,
+      undefined,
     )
     expect(result.document).toContain('/_capacitor_file_/data/user/0/cache/catbox.png')
     expect(result.failedUrls).toEqual([])

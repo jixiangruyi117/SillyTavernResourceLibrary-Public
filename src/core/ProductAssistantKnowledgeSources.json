@@ -1,0 +1,851 @@
+{
+  "knowledgeSha256": "826b3dd5bac615154bb24fda5dfa62a4a34679214334e7e7262a25a8074b0d7c",
+  "sources": [
+    {
+      "path": "src/core/FeatureAppRegistry.ts",
+      "guides": ["apps"],
+      "sha256": "77f1242d1a6b2a0c1d632481648b22f6b788fcbe03a45bd444d42095644040bd"
+    },
+    {
+      "path": "src/composables/UseFeatureHub.ts",
+      "guides": ["apps", "assistant"],
+      "sha256": "0fcbad6b1676cec71edd87e8812ce1160781d09ebd73b7f64da19adeedd62fbd"
+    },
+    {
+      "path": "src/composables/UseLibraryNavigation.ts",
+      "guides": ["import", "link-import", "assistant"],
+      "sha256": "744bba855ddca16ad998eae20c92312415801faa7495fde7a155be5ad6fd8de3"
+    },
+    {
+      "path": "src/composables/UseLibraryImport.ts",
+      "guides": ["import", "link-import"],
+      "sha256": "6a94c6d00888456cfc82eca867bf2079772b95af0919cb97c081fce872c4ceda"
+    },
+    {
+      "path": "src/components/LibraryLinkImportPanel.vue",
+      "guides": ["link-import"],
+      "sha256": "ddaa9796a01f93719589e32c9bbf22aed37397ec0be65a8b334494c827f42ff1"
+    },
+    {
+      "path": "src/components/AppearanceStudio.vue",
+      "guides": ["appearance"],
+      "sha256": "d9e79ef0bd6baa807e42223774d0f967a4c4c664c02c1f2823e7a191b54dfe8b"
+    },
+    {
+      "path": "src/core/AppearanceScopes.ts",
+      "guides": ["appearance"],
+      "sha256": "1bb9f0fd7e47fa0d043d8acd2ca56167b6c3298758a44da2f199c5f9ef312a81"
+    },
+    {
+      "path": "src/composables/UseAppearanceSettings.ts",
+      "guides": ["appearance"],
+      "sha256": "9ae1df2b8f8b4b3e61538058cd4beefd2d27f386b7af07c0e6b12c29fca1c9d5"
+    },
+    {
+      "path": "src/components/LibraryToolbar.vue",
+      "guides": ["library-search"],
+      "sha256": "85fd95fee82474d4d38e30516d805fac1bfc85f871c47e8b2819080587c7b01e"
+    },
+    {
+      "path": "src/composables/UseLibraryQueryView.ts",
+      "guides": ["library-search"],
+      "sha256": "a52d08da36ec7141d346503e91d9fc25184523d73d52e0c8b4b001f5b31db431"
+    },
+    {
+      "path": "src/services/ResourceVersionMatcher.ts",
+      "guides": ["versions"],
+      "sha256": "31e9a41749657843a2cfdccc097c75cf36e300f78b0256375b02e055155581eb"
+    },
+    {
+      "path": "src/services/ResourceVersionOperations.ts",
+      "guides": ["versions"],
+      "sha256": "f6f3c4ce94c7f08bbcfbc3a0090af1cea8797881b0ef70bc0bac6b53a1d12136"
+    },
+    {
+      "path": "src/components/CloudBackupCenter.vue",
+      "guides": ["backup"],
+      "sha256": "3e455da496da08e25c600ef4be78a5e66a28fc95282c493999ceea599d5cb903"
+    },
+    {
+      "path": "src/services/CloudBackupService.ts",
+      "guides": ["backup"],
+      "sha256": "25063be42c1a4f94f9759af7757a97e86dc4e699da8b7e1e2174a25898a7965d"
+    },
+    {
+      "path": "src/services/RestoreService.ts",
+      "guides": ["backup"],
+      "sha256": "387d0f6cd8aa9f2646ae928fee4c589fabc34c72d946e1def7ccd7a910b00697"
+    },
+    {
+      "path": "src/components/TavernBridgeCenter.vue",
+      "guides": ["bridge"],
+      "sha256": "e11d4fb91cf8746c8b39751c4dac70183288e473e7f4325207995120a124f054"
+    },
+    {
+      "path": "src/composables/UseTavernBridgeCenter.ts",
+      "guides": ["bridge"],
+      "sha256": "8c9b70fc3d522bcd58a15297c63097f9bec64dbeb0244eaba0fc49295d9a5946"
+    },
+    {
+      "path": "src/components/PresetStitcherApp.vue",
+      "guides": ["stitch"],
+      "sha256": "a5d7256d415192f0b4304bccec225048fa3523c4bae5223bd47b0df7e8b88294"
+    },
+    {
+      "path": "src/composables/UsePresetStitcherApp.ts",
+      "guides": ["stitch"],
+      "sha256": "ca64664e4c3437e7346e5b6f7dd944fb427da07d8819c4fc19f134690d2e656b"
+    },
+    {
+      "path": "src/services/ProductAssistantRequest.ts",
+      "guides": ["assistant", "appearance"],
+      "sha256": "e5bb9cad881e9fb7235040f4375ee91b09b9a49301751c5e8b0aa86749b296eb"
+    },
+    {
+      "path": "src/services/ProductAssistantService.ts",
+      "guides": ["assistant", "appearance"],
+      "sha256": "eb5c473c6064dacd737f3644c3cbaa26eaa68739a8288ceda697d04caad28fe1"
+    },
+    {
+      "path": "src/services/ProductAssistantWorkspaceService.ts",
+      "guides": ["assistant"],
+      "sha256": "790f1bcdf1bb9be4a73468f630be12a3a1e93812321a7fbeb629a987811f7227"
+    },
+    {
+      "path": "src/services/ProductAssistantScreenshot.ts",
+      "guides": ["assistant"],
+      "sha256": "c0bee39e9c6a70a7268aadf89e4a71ff0d77700954f38b44815941683a60d811"
+    },
+    {
+      "path": "src/components/ProductAssistantPet.vue",
+      "guides": ["assistant"],
+      "sha256": "0727cbdafb5446b94bae3ef1dd070a829e992839ba6f3feb76e1974dd4624bf0"
+    },
+    {
+      "path": "src/services/MainApiProtocol.ts",
+      "guides": ["assistant", "api"],
+      "sha256": "dd6bde896dfa3b01ec915046e41a7226c5d558226c34d86eb7110a43c8696f3c"
+    },
+    {
+      "path": "src/services/MainApiService.ts",
+      "guides": ["assistant", "api"],
+      "sha256": "854b050fdfad3dc976c4e62c93a23916ade464152a64819bdc3086b92bb4a955"
+    },
+    {
+      "path": "src/core/ProductAssistantViewContext.ts",
+      "guides": ["assistant"],
+      "sha256": "73646a2144782880ca30effc5b3fdf75ae476b02313e6e53af347e4df8b9d48b"
+    },
+    {
+      "path": "src/components/ProductAssistantSettings.vue",
+      "guides": ["assistant"],
+      "sha256": "b493e6b919cf6ba227e26fd745ec001474fcdf717f7c493ce7a6c6d3a6e24224"
+    },
+    {
+      "path": "src/components/ProductAssistant.vue",
+      "guides": ["assistant"],
+      "sha256": "fdcb4461846591abb09911bc1907e14dc91c547e0933182565e53cf3145d0b6e"
+    },
+    {
+      "path": "src/App.vue",
+      "guides": ["assistant", "import", "data-protection"],
+      "sha256": "2353a9bab63bf4ee4be6b612d2b71067e33cf8db629d18c3ff0a532d31d78874"
+    },
+    {
+      "path": "src/core/ProductAssistantGuidance.ts",
+      "guides": [
+        "assistant",
+        "import",
+        "link-import",
+        "appearance",
+        "library-search",
+        "backup",
+        "stitch",
+        "apps",
+        "data-protection",
+        "discord-posts"
+      ],
+      "sha256": "a72a2235b28567b7ca8331266a7bc42476c50f7d2e37f0c2424952d64c09e266"
+    },
+    {
+      "path": "src/components/ProductAssistantGuidance.vue",
+      "guides": ["assistant"],
+      "sha256": "64a1e920a11ac4dcad221fdfc5d64fd8104f966254607afa801636e39dab5f5a"
+    },
+    {
+      "path": "src/components/ProductAssistantMemory.vue",
+      "guides": ["assistant"],
+      "sha256": "56d23638465055aacfcb525c3677319b50166a2ec767f49e2260c471ac96b883"
+    },
+    {
+      "path": "src/components/ProductAssistantComparison.vue",
+      "guides": ["appearance"],
+      "sha256": "f2ce7467315fc9225edd183436db5e12d18beab3d15f1b4841604cc6a1330d42"
+    },
+    {
+      "path": "src/services/ProductAssistantAppearanceComparison.ts",
+      "guides": ["appearance"],
+      "sha256": "e95ea629a89564a59f5bc3b12e2dab086d37e93261167cfcfa2956f6b0bc79ef"
+    },
+    {
+      "path": "src/composables/UseProductAssistantMessageActions.ts",
+      "guides": ["assistant"],
+      "sha256": "3315a56acb23fa1f13ca51bbd8866c305554f41afb541cf43fccbae2a6586bff"
+    },
+    {
+      "path": "src/storage/IndexedDbProductAssistantStorage.ts",
+      "guides": ["assistant"],
+      "sha256": "45fd8f7ebfdbae52890a03002de6a6003dbaafd3dcd404ab5d55b68b5059b8aa"
+    },
+    {
+      "path": "src/services/ProductAssistantTools.ts",
+      "guides": ["assistant", "apps", "appearance"],
+      "sha256": "fecfa9d870c2a856221c27c18bc66770a05684973d6100faed390ea1c296ba09"
+    },
+    {
+      "path": "src/services/ProductAssistantAppSession.ts",
+      "guides": ["apps"],
+      "sha256": "5fbc7c9823de9bc59cc51a7a0a0f7d476351122033641b0b0390ff114ca9af64"
+    },
+    {
+      "path": "src/components/ProductAssistantAppPreview.vue",
+      "guides": ["apps"],
+      "sha256": "f5b34a957d00d83d5dff3b3669e9290e1a641d0cd7f72e92faa5432f820f455f"
+    },
+    {
+      "path": "src/components/ProductAssistantAppAcceptance.vue",
+      "guides": ["apps"],
+      "sha256": "2c5abb55485f5d7ef5d01e58f3dcb0c6136246ed3547bf255206b6d4c7e47671"
+    },
+    {
+      "path": "src/services/ExternalAppAcceptance.ts",
+      "guides": ["apps"],
+      "sha256": "f23d1d7f250a577a1a0adfaa3b8e42a87342b0c77e5a65c87c6059b4d0c98bff"
+    },
+    {
+      "path": "src/services/ExternalAppTrialInspection.ts",
+      "guides": ["apps"],
+      "sha256": "92ac7f0b1ead15be05694309b56fd1ca45e575574ccc69c6b8956a04675fd81d"
+    },
+    {
+      "path": "src/services/ExternalAppTrialSession.ts",
+      "guides": ["apps"],
+      "sha256": "51143be13771b7487dbcf8308bee0356d4b332e9ac3a177565f2612a79ba8c79"
+    },
+    {
+      "path": "src/services/ExternalAppRuntime.ts",
+      "guides": ["apps"],
+      "sha256": "ef9d2d568c55891649a25c58421ec572546870964f55d5749beebdb7ef547bd5"
+    },
+    {
+      "path": "src/components/ExternalAppManager.vue",
+      "guides": ["apps"],
+      "sha256": "9dc985308b0aa6104aa2ccf6a7519e1f55ce53fb7742d165a18568c302c5d2a7"
+    },
+    {
+      "path": "src/core/ProductAssistantPetState.ts",
+      "guides": ["assistant"],
+      "sha256": "824f2a71f6093f55e4a9feec88842c609b32536923af9e9237094f9d4d209a70"
+    },
+    {
+      "path": "src/services/ProductAssistantContext.ts",
+      "guides": ["assistant"],
+      "sha256": "d0950f8e4e3626fe353c5aa0aba359503b4a70b459fc7c521517257bd11dd8ab"
+    },
+    {
+      "path": "src/composables/UseProductAssistantContext.ts",
+      "guides": ["assistant"],
+      "sha256": "3b8e9f881b4585b97282dff6c43ac6828f7b81e3de7137e1722fafcf7e873f26"
+    },
+    {
+      "path": "src/components/ProductAssistantNavigationLink.vue",
+      "guides": ["assistant"],
+      "sha256": "c7a891c45d1ab9b8b5398e6685a27c8ff297aa8a62a61e46821b10a91bc199fe"
+    },
+    {
+      "path": "src/components/ProductAssistantTokenReview.vue",
+      "guides": ["assistant"],
+      "sha256": "6b5242af265bc691cab9170b01dcf954ad865e74ff5c6b2b23d8b9e28cec1523"
+    },
+    {
+      "path": "src/components/ConfirmDialog.vue",
+      "guides": ["assistant"],
+      "sha256": "440e1a0b15b93f28209eca894cfdc44914c5d946dc5af96cc289acc1ef949e41"
+    },
+    {
+      "path": "src/composables/UseConfirmDialog.ts",
+      "guides": ["assistant"],
+      "sha256": "58fd1987851bf52b1c19a14c16311ff20c5655c8db08dc642fbf35d0f99d7f24"
+    },
+    {
+      "path": "src/services/ProductAssistantOnline.ts",
+      "guides": ["assistant"],
+      "sha256": "7a88f9c8a15d61a8a7050d6f4baef84799b6539bca42d1f713c5feaac57c4fce"
+    },
+    {
+      "path": "src/components/MainApiSettings.vue",
+      "guides": ["assistant", "api"],
+      "sha256": "daf4bf358adb02abb48ff7cf79a242fc7015f30fa5f8b936669b4897b2a042ec"
+    },
+    {
+      "path": "src/services/BrowserStorageService.ts",
+      "guides": ["import", "resource-bundle", "bridge"],
+      "sha256": "87014755cf85527503796b75d0ce33a9d41a3f1cd006290dcf21d6cb4e28fb9a"
+    },
+    {
+      "path": "src/storage/IndexedDbResourceHealthStorage.ts",
+      "guides": ["import"],
+      "sha256": "668643da6bf4f177e325cd9e0ed150ba7911add7ceaa7eafbe5ed99f8c947255"
+    },
+    {
+      "path": "src/composables/UseLibraryProtection.ts",
+      "guides": ["import", "data-protection"],
+      "sha256": "625543f313f3d72782ecf19b65475a8cf339acd32a47fd70507078eccf379963"
+    },
+    {
+      "path": "src/components/LibraryProtectionPanel.vue",
+      "guides": ["import", "data-protection"],
+      "sha256": "26dc7ecbdb8fe0622ee6bc59febb4e600129f53ff484fa26cc8450ec39db2122"
+    },
+    {
+      "path": "src/components/ProductAssistantProjects.vue",
+      "guides": ["assistant"],
+      "sha256": "bdecea9f39a91d55a8c7541c2d67d9673461453cd4738222f397983031b0fca9"
+    },
+    {
+      "path": "src/components/ProductAssistantTaskTemplates.vue",
+      "guides": ["assistant"],
+      "sha256": "c2c4ab6002906b59dfe9e91579591179f64ea436c7af32e61a568d47bc57e634"
+    },
+    {
+      "path": "src/components/DiscordSourceHandoffIntake.vue",
+      "guides": ["discord-posts"],
+      "sha256": "e59cf52efcc2c0a30dbfd488769150148bc6cddcd0bde9533ed016b88aa72e02"
+    },
+    {
+      "path": "src/components/DiscordInboxCenter.vue",
+      "guides": ["discord-posts"],
+      "sha256": "b1a35eb387465661f6b1c617080e213d527ea31ef09696a4d6db29798ec0dc55"
+    },
+    {
+      "path": "src/components/ResourceLinkAdvancedSettings.vue",
+      "guides": ["discord-posts"],
+      "sha256": "67f60b47801033775513cf2f94fb1353018b6cb9f3f443963477791743b43c62"
+    },
+    {
+      "path": "src/components/DiscordInboxPanel.vue",
+      "guides": ["discord-posts"],
+      "sha256": "43ad57a2ed6fd73323e7b02783f811176c75b00d19ed86e644b4619754c34164"
+    },
+    {
+      "path": "src/components/DiscordResourceDownloadPanel.vue",
+      "guides": ["discord-posts"],
+      "sha256": "80feec91dacdd653b6890b18734dfaa280fde1f04c077bb0c3194e9e6f7edbef"
+    },
+    {
+      "path": "src/components/DiscordPendingSources.vue",
+      "guides": ["discord-posts"],
+      "sha256": "7ce8ba5fde76cee3c15418b9dcdd7786c590bec910f62d728630a20e2b254c10"
+    },
+    {
+      "path": "src/components/ResourcePicker.vue",
+      "guides": ["discord-posts"],
+      "sha256": "a90b5528b20eb8ab06db964450217f44b95e2fe7d501e8e6acd63b7effaad71a"
+    },
+    {
+      "path": "src/components/DiscordCommunitySources.vue",
+      "guides": ["discord-posts"],
+      "sha256": "5bca6282d58e590e25ef129931f2de8da5a1f1d423934b2e8b35bb1083d8b923"
+    },
+    {
+      "path": "src/components/DiscordSetupGuideDrawer.vue",
+      "guides": ["discord-posts"],
+      "sha256": "eaa26f9d2b00a782cb4ed3386999bc58a9e6057fc4d8ef195549513f003cd26a"
+    },
+    {
+      "path": "src/services/DiscordHandoffService.ts",
+      "guides": ["discord-posts"],
+      "sha256": "cdd43f5da85cf0ba549430409f6fd416ef5d48e8424026058a95b899f0260f65"
+    },
+    {
+      "path": "src/services/CommunitySourceService.ts",
+      "guides": ["discord-posts"],
+      "sha256": "bca0e7ce2226603e2f6f0d3e420ddcb2fe0b424e813d58b740198afe519456a6"
+    },
+    {
+      "path": "src/services/DiscordSourceSettingsService.ts",
+      "guides": ["discord-posts"],
+      "sha256": "6bb17bc5410397ad4b8307c63a914d8d34da5aa4d4b8ae6c137fa076b4645289"
+    },
+    {
+      "path": "src/components/ProductAssistantResultViewer.vue",
+      "guides": ["assistant"],
+      "sha256": "d86424b69a88449f702d1cbc4eb1673ff126fbda670bc4fd908c8e20693989c7"
+    },
+    {
+      "path": "src/components/FrontendWorkshopWorkbench.vue",
+      "guides": ["frontend-workshop"],
+      "sha256": "c2e6efe653c99c0328c55ba7f5d3574afa600c856a9bb70f9a7c432c1f35c327"
+    },
+    {
+      "path": "src/services/FrontendWorkshopSourcePatchService.ts",
+      "guides": ["frontend-workshop"],
+      "sha256": "aa708c6422fb9718593ccd4bea3b781a72b449e2f2e3bcca0e01774545dafc6d"
+    },
+    {
+      "path": "src/components/ChatReaderApp.vue",
+      "guides": ["chat-reader"],
+      "sha256": "d7556ded0e2458a09a7d5e37daefb88f3ccee122a5b19ea0e03e2fc196ac758a"
+    },
+    {
+      "path": "src/services/ChatReaderService.ts",
+      "guides": ["chat-reader"],
+      "sha256": "dd3d31506b134872826b64f644c3603391f665fc63c9e47a5fad7366d0d3a6d4"
+    },
+    {
+      "path": "src/services/ChatReaderRendering.ts",
+      "guides": ["chat-reader"],
+      "sha256": "2e214f6b66d6289c4af0d3b14ab3797266298479190929d92091212ae826c364"
+    },
+    {
+      "path": "src/composables/UseImageGenerationApp.ts",
+      "guides": ["image-generation"],
+      "sha256": "778fe7c4ed6e8ee5f7d69f9d16bd23a9885946629706b0805f35ea2cb55caa8a"
+    },
+    {
+      "path": "src/services/FrontendWorkshopImageGenerationService.ts",
+      "guides": ["image-generation"],
+      "sha256": "ca92505da8dfbe09dd148f239ce34857742eec862dc598686cec53ed51f12df5"
+    },
+    {
+      "path": "src/services/ImageGenerationCapabilities.ts",
+      "guides": ["image-generation"],
+      "sha256": "a7f0dbcd30c5799f8198fe0cbcd668cb633e075b3bb4a19ce6cb905b1413b7ca"
+    },
+    {
+      "path": "src/components/GeneratedImageAlbumApp.vue",
+      "guides": ["image-album"],
+      "sha256": "7cf81d4e1af874eefcdcc70a87b14330fcb3adee64babd6f2aa52b617f6bfb48"
+    },
+    {
+      "path": "src/services/GeneratedImageAlbumService.ts",
+      "guides": ["image-album"],
+      "sha256": "af57ef4020e1df6931f7fa5a41c28fc8cdc7923f5084aae95dcb66b3a0e87752"
+    },
+    {
+      "path": "src/storage/IndexedDbGeneratedImageAlbumStorage.ts",
+      "guides": ["image-album"],
+      "sha256": "1a021725e7ab9a631d2a8a7202352fb64df6215279acacb07d4375140e809084"
+    },
+    {
+      "path": "src/components/UserPersonaApp.vue",
+      "guides": ["user-persona"],
+      "sha256": "bc3ed2d557d9bc451da3bc43c1c74499eb4341f31a12f4e2535936609cc3a6d7"
+    },
+    {
+      "path": "src/composables/UseUserPersonaApp.ts",
+      "guides": ["user-persona"],
+      "sha256": "439a837fb52ce80c819b6022ae8d6298075119e1dd33d4060c46dd290453a8f1"
+    },
+    {
+      "path": "src/services/UserPersonaService.ts",
+      "guides": ["user-persona"],
+      "sha256": "be43458484d3425b3f12cbcf31c746503a145e1d57579e9e996927e93afc71c8"
+    },
+    {
+      "path": "src/components/ResourceBundleApp.vue",
+      "guides": ["resource-bundle"],
+      "sha256": "e90fbbf61679d66d5a1c8fb1f02f07e82ffede28e1af30d605e719c9090071ae"
+    },
+    {
+      "path": "src/components/DrawApp.vue",
+      "guides": ["draw"],
+      "sha256": "c5a17c693fc2183ce3e1cac87719ebf2195835759085d889e62c90f348e0d468"
+    },
+    {
+      "path": "src/composables/UseDrawApp.ts",
+      "guides": ["draw"],
+      "sha256": "ca33507112eca1c6483b148d339c4c62bbafe38f7a4debe6c8b252ceeabfdc73"
+    },
+    {
+      "path": "src/services/CharacterDrawService.ts",
+      "guides": ["draw"],
+      "sha256": "6d324b5285bfc4857feed043157030032dfdd58e4c11ce361014fb23a582b02f"
+    },
+    {
+      "path": "src/components/FolderLibraryView.vue",
+      "guides": ["folders"],
+      "sha256": "e83f3c9bf41771e125642e2ac73ff0aa382998b0e780e10601b790f8951f80ee"
+    },
+    {
+      "path": "src/composables/UseFolderLibraryView.ts",
+      "guides": ["folders"],
+      "sha256": "8e6a8ee0e1efca9d0ccdca7192397b682f32e0b5b024d96a1e53d636e56f3ca7"
+    },
+    {
+      "path": "src/composables/UseFolderCabinetDrag.ts",
+      "guides": ["folders"],
+      "sha256": "0e820ab70646849d704cd32e46238cb0ebca9e3d8c95dffeb7c7e1dfa75cd458"
+    },
+    {
+      "path": "src/composables/UseLibraryFolderOperations.ts",
+      "guides": ["folders"],
+      "sha256": "35112bc47c57b15bcf4a14aaa9ceaed7fdd6209e7b28a402eadc38aa94cd10c0"
+    },
+    {
+      "path": "src/services/LocalCredentialStore.ts",
+      "guides": ["api"],
+      "sha256": "802681350c9f583803635985d325565a55a90c75007246b50bfc5bf01ecb95c0"
+    },
+    {
+      "path": "src/components/AiTaggingPanel.vue",
+      "guides": ["ai-tagging"],
+      "sha256": "89f78a080acc571e020a13a275a7f39a7975ef6c553e53e5a9b391921e765858"
+    },
+    {
+      "path": "src/composables/UseAiTaggingPanel.ts",
+      "guides": ["ai-tagging"],
+      "sha256": "38047b73603d7f49b1c5d68cc3a702f06a97d7caa95d5b900ba2f1982ae32535"
+    },
+    {
+      "path": "src/services/AiTaggingService.ts",
+      "guides": ["ai-tagging"],
+      "sha256": "d85f6d4449901c84cca34d80b067c4831d9bfe398bb61fb2740cb42a361cd6ef"
+    },
+    {
+      "path": "src/services/AiTaggingDraftService.ts",
+      "guides": ["ai-tagging"],
+      "sha256": "b675ad77fdbf0b894c1d9733296237ff564a4706d64e30a68a3f969eb2e10195"
+    },
+    {
+      "path": "src/components/PersonalResourceEditor.vue",
+      "guides": ["personal-resources"],
+      "sha256": "750734f0b42b46e92f937d5cd03c34b0bac2668e10a2cf66d8edc6d2bb7009f0"
+    },
+    {
+      "path": "src/services/PersonalResourceService.ts",
+      "guides": ["personal-resources"],
+      "sha256": "9fcff3826746b069f96c0cd5ea1b01b186df984d68691f730398a60580e6d33c"
+    },
+    {
+      "path": "src/services/SecretResourceService.ts",
+      "guides": ["personal-resources"],
+      "sha256": "587459df4cffb16da5ae6b76effde94e16e30358e94f5f8b9cbea3c385b181bd"
+    },
+    {
+      "path": "src/components/PocketPhoneContents.vue",
+      "guides": ["personal-resources"],
+      "sha256": "17c2fe62b9e04710eb1524eddde7fb59069c074111e788ef54e3a4e65c942144"
+    },
+    {
+      "path": "src/components/ResourceGalleryPanel.vue",
+      "guides": ["gallery"],
+      "sha256": "5c8b2c845e04b5c480625af8f45d8b2fddb677993fc02318a94365162112186a"
+    },
+    {
+      "path": "src/services/ResourceGalleryService.ts",
+      "guides": ["gallery", "versions"],
+      "sha256": "e3090a2fce6b85169c714dc6c5575cc5b60ac599c61ff0a79343787f5d49a0e6"
+    },
+    {
+      "path": "src/storage/ResourceGalleryCategoryStorage.ts",
+      "guides": ["gallery"],
+      "sha256": "3877218fb351e3989b3807cf97e99796886fae00b8feb48c867d230086acee48"
+    },
+    {
+      "path": "src/services/VaultService.ts",
+      "guides": ["data-protection"],
+      "sha256": "095733bb14120017ef65131fcd18792cdcd9d13a37f0a997cd8143c72f818806"
+    },
+    {
+      "path": "src/services/RecycleBinService.ts",
+      "guides": ["data-protection"],
+      "sha256": "e6bdcd9e58c4c35a2439d8be2a0dd7b6aad5103318e237d354838632826697c1"
+    },
+    {
+      "path": "src/services/ProductAssistantPetAssets.ts",
+      "guides": ["assistant"],
+      "sha256": "d84d589eca1ca4a23562807a63262c287100e11f9b7c565ec4d699c8066e6388"
+    },
+    {
+      "path": "src/services/BrowserDevicePreferences.ts",
+      "guides": ["resource-bundle", "user-persona", "stitch", "bridge"],
+      "sha256": "8686f4863ce2dd0f2b5a7ef2b57a1be036602f88083f7eee3bfc5f2bcc443ab2"
+    },
+    {
+      "path": "src/services/CloudBackupRetentionOperations.ts",
+      "guides": ["backup"],
+      "sha256": "cea79a9889e44768848740c5e9774d74105ef57c3889cde5564c3b31839c1594"
+    },
+    {
+      "path": "src/services/CloudBackupSnapshotOperations.ts",
+      "guides": ["backup"],
+      "sha256": "0cb430a704ac909da6682966de9b3f70cba082b47c5d0372d7b0eb737e9f2aec"
+    },
+    {
+      "path": "src/services/ResourceCardVersionOperations.ts",
+      "guides": ["versions"],
+      "sha256": "1072082804ce1834d7e563a8cc37d2e8ae29d801880f84f0781dba41b2ecfc5e"
+    },
+    {
+      "path": "src/services/ResourceAssetOperations.ts",
+      "guides": ["import"],
+      "sha256": "d4aa268c2fd55a0ab84f2737886d555d6576eb7963bd9b9808640453e016f6d5"
+    },
+    {
+      "path": "src/services/ResourceRecognizedFileHashes.ts",
+      "guides": ["import"],
+      "sha256": "0c6cf65dd146f9fa03dc48984fd856b700affd246fdca1d6070128053b95898e"
+    },
+    {
+      "path": "src/core/LibraryContainer.ts",
+      "guides": ["import"],
+      "sha256": "88b18f975938d1e63abf00459f0fabe4266adede57bdce99b97f545aff9806df"
+    },
+    {
+      "path": "src/services/ResourceImportOperations.ts",
+      "guides": ["import"],
+      "sha256": "04a96db9fa2e2900d98d12f517f9f7203fbaf02de69e1b49ae139d90466d8aec"
+    },
+    {
+      "path": "src/services/NativePreparedImport.ts",
+      "guides": ["import"],
+      "sha256": "02b43d0e96298fd4a05c618be404cf5050a688c1af2c5a71010a0a086b39d8ff"
+    },
+    {
+      "path": "src/storage/NativeResourceFileMirror.ts",
+      "guides": ["import"],
+      "sha256": "6e8a9126ea696a09c8d7923050e72c5c51c78a04952a6fe671376260e64542b2"
+    },
+    {
+      "path": "src/types/Import.ts",
+      "guides": ["import"],
+      "sha256": "0ab0a873808923a8f890dd8914b7e4b4405ffaaad0147c8b4596266c4b3fb4b7"
+    },
+    {
+      "path": "src/services/TavernBridgeTransferOperations.ts",
+      "guides": ["bridge"],
+      "sha256": "c894bd9d60c7684984decc9d6fd25b8901ea28ec86a0a4428be70f08a5c545d5"
+    },
+    {
+      "path": "src/utils/ResourceDiff.ts",
+      "guides": ["versions"],
+      "sha256": "bf9abd39cc29cdab34954d876bab7fb8662ad45df9d503af8f1d4a0d0869a3b7"
+    },
+    {
+      "path": "src/utils/ResourceDiffShared.ts",
+      "guides": ["versions"],
+      "sha256": "d6624493231b0d0830bb878956eceac639cee90051cdbfb6b866c87236bfa643"
+    },
+    {
+      "path": "src/utils/ResourceHelperScriptDiff.ts",
+      "guides": ["versions"],
+      "sha256": "141b240d60a0625de0bdfbac0a49163cc0383d45e4ea8f16867a8b2a2eea35ff"
+    },
+    {
+      "path": "src/utils/ResourceRegexDiff.ts",
+      "guides": ["versions"],
+      "sha256": "a416907208be46b18e888a4bd504cb96b4bf3841cafdf006081feb6d743dd3de"
+    },
+    {
+      "path": "src/components/OfficialAssistantGate.vue",
+      "guides": ["assistant", "apps"],
+      "sha256": "ecdf048dc2b48b2d234d22244e76496041cd0e863c75dfdcfda6ad85b01800be"
+    },
+    {
+      "path": "src/components/TavernBridgeInstallGuide.vue",
+      "guides": ["bridge"],
+      "sha256": "6f4615d286c8e514e0cb19dfd8881817020b3cea548526166caf12018c5e6ff9"
+    },
+    {
+      "path": "src/components/LayoutSettingsPanel.vue",
+      "guides": ["import", "discord-posts", "data-protection"],
+      "sha256": "66d97f86a071cf1852c58d6054aededd4590671040f59efd50ef6f7fd73b4906"
+    },
+    {
+      "path": "src/composables/UseLibraryFileImport.ts",
+      "guides": ["import", "discord-posts"],
+      "sha256": "0b95fc95fb2ab968a1072f7e5503294ee59999d72cce3110823269d5d30cad40"
+    },
+    {
+      "path": "src/services/DiscordInboxAutoBinding.ts",
+      "guides": ["discord-posts"],
+      "sha256": "1dd409c2dc1df60191c04061fd93cc765dfc6af0fba1815dc8a45937f891d400"
+    },
+    {
+      "path": "src/services/DiscordInboxAutomationSettings.ts",
+      "guides": ["import", "discord-posts"],
+      "sha256": "d0aa7a5eb796c3c2a20014e0c4aebeae2c9608a767cb04252fb2177e4edcf2bb"
+    },
+    {
+      "path": "src/storage/IndexedDbCommunitySourceStorage.ts",
+      "guides": ["discord-posts"],
+      "sha256": "171c4acb23c58e6cfb15b39628b016c03f5fc35da80f6ecbb277cc455707fd23"
+    },
+    {
+      "path": "src/storage/IndexedDbResourceStorage.ts",
+      "guides": ["import"],
+      "sha256": "c044ce1ebcf47e7f3875a2e674303b96fb1b1f924a12c983f6306f66767c881a"
+    },
+    {
+      "path": "src/storage/NativeMirroredResourceStorage.ts",
+      "guides": ["import"],
+      "sha256": "9ccbd3193084020fd51f9457dd9513286cd0f42d7659db5d813b1b7125af2390"
+    },
+    {
+      "path": "src/storage/ResourceStorageAdapter.ts",
+      "guides": ["import"],
+      "sha256": "164d5bd60b5339c2789d35266db135b73f5ce73cfb4fa951124678688d9a4142"
+    },
+    {
+      "path": "src/components/ResourceOrganizer.vue",
+      "guides": ["versions"],
+      "sha256": "38f8dfbb617e3cb20922aff29259db94389bd9024c20dcd10fc9503eae1eb286"
+    },
+    {
+      "path": "src/composables/UseNativeResourceExport.ts",
+      "guides": ["versions"],
+      "sha256": "a4a163c8f1fbb320fcefd9182901e54687e78652a1caca21adb2b07257987fd7"
+    },
+    {
+      "path": "src/services/ExportService.ts",
+      "guides": ["versions", "bridge"],
+      "sha256": "c26cea2ab4946dbad3903684d043abf9668717f96d7f500df3437efe76d6e36c"
+    },
+    {
+      "path": "src/parser/ChatResourceParser.ts",
+      "guides": ["versions", "chat-reader"],
+      "sha256": "9f6bacffabe6ed1c29d8a08ed69b90e0059c0039b1c2e6fc05ae0b14419febbd"
+    },
+    {
+      "path": "src/composables/UseTavernTransferActions.ts",
+      "guides": ["bridge"],
+      "sha256": "f07e465caa82b518a1ba7b0ebf2a9c81ea06c2a269e0df0107af6211bf6cca93"
+    },
+    {
+      "path": "src/composables/UseTavernPersonaSendPlans.ts",
+      "guides": ["bridge"],
+      "sha256": "3d5af0b717a410e276840ee650393c514db33bfaf9c0002be86926cad7923ccc"
+    },
+    {
+      "path": "src/components/TavernParcelExchange.vue",
+      "guides": ["bridge"],
+      "sha256": "2d88a06d81a36e866f5193903cdb8dcb6a24cbe89a406dee4a2544c3c7a08d85"
+    },
+    {
+      "path": "src/components/ResourceHealthCenter.vue",
+      "guides": ["data-protection"],
+      "sha256": "0bc1d98720d49cca74128dfc67fb4e24d2f8abb91dd2bd4f34392ed59f0bdc8a"
+    },
+    {
+      "path": "src/storage/AndroidNativeAppDatabaseRuntime.ts",
+      "guides": ["data-protection"],
+      "sha256": "53c361fc76cc0d08e1e6abea955ee0c881960e49d313a1897d383fbcca6d7513"
+    },
+    {
+      "path": "src/services/OfficialAppService.ts",
+      "guides": ["apps"],
+      "sha256": "b289df951d3177047018e1ff5df0e079f285bd9f17fcf6a79128f1ba0722990f"
+    },
+    {
+      "path": "src/components/OfficialAppManager.vue",
+      "guides": ["apps"],
+      "sha256": "a8e452119e20ab616417e505cd6f9ec8d923623a41aafdf2f4c9567f9ee5eb3b"
+    },
+    {
+      "path": "src/services/ResourceVersionRecognitionService.ts",
+      "guides": ["versions"],
+      "sha256": "571a55b7d77a1049d574f4da59169a03fe2b1aad58167dc1ddb3987d6f2e9816"
+    },
+    {
+      "path": "src/services/ResourceVersionRecognitionProtocol.ts",
+      "guides": ["versions"],
+      "sha256": "85fe9517a0f2b7d0f7d6ee4e7690c591046eef40220ac5435ccadf0a7850c42d"
+    },
+    {
+      "path": "src/components/VersionRecognitionPanel.vue",
+      "guides": ["versions"],
+      "sha256": "28b8bc1e1a09dbecf6d2eff77405861d58df00151de91e4e29c1ff90bb52017a"
+    },
+    {
+      "path": "src/services/MainApiTextTransport.ts",
+      "guides": ["ai-tagging"],
+      "sha256": "1f81063774f523415f98918388fa9165944396ff7554001f3251b930919f7943"
+    },
+    {
+      "path": "src/utils/CharacterCardCustomization.ts",
+      "guides": ["versions", "bridge"],
+      "sha256": "9317dfd87465204f7d29eed61237e47b1be5b32205bde3cb611c3165e0a1e710"
+    },
+    {
+      "path": "src/components/StorageUsageChart.vue",
+      "guides": ["data-protection"],
+      "sha256": "6991e2789ca24e7c0a55bb1875b6b0c66ff1a34ba590741c886ec11a04539666"
+    },
+    {
+      "path": "src/components/WorldBookBrowser.vue",
+      "guides": ["world-book"],
+      "sha256": "b3cbea8caa01226c6afc9ed277d19e4dd960c52303b74521e5c1dbdb041f3c77"
+    },
+    {
+      "path": "src/utils/WorldBookEntries.ts",
+      "guides": ["world-book"],
+      "sha256": "3726e63b468a85cf3927eee7845c5e5001ad273df8e5ea8e6a40e75b334cc444"
+    },
+    {
+      "path": "src/components/CharacterCardDetails.vue",
+      "guides": ["world-book"],
+      "sha256": "8ef1c39b68c9b8788c6f71fbcb7592aaa25f86c0e10c6c66a451e57cbbf6b291"
+    },
+    {
+      "path": "src/components/StructuredResourceDetails.vue",
+      "guides": ["world-book"],
+      "sha256": "d17241b1caff297c89b3a004326b980c270fc44732082e1465476122f3bdedb8"
+    },
+    {
+      "path": "src/composables/UseCharacterCardDetails.ts",
+      "guides": ["world-book"],
+      "sha256": "30207e35f7dce92f64f4d5092de19d7554826e3b01bce3b595f7e04b45faf6b5"
+    },
+    {
+      "path": "src/composables/UseStructuredResourceDetails.ts",
+      "guides": ["world-book"],
+      "sha256": "0fc7a05e2f6440dcbe788b878537f6e656711b38c601f77ca96fdb497a34b8ff"
+    },
+    {
+      "path": "src/components/StructuredResourceContentWorkbench.vue",
+      "guides": ["world-book"],
+      "sha256": "5abb203612f27b3968799d8599ac89d3d25c6842dee45540626d3f016c0de8f2"
+    },
+    {
+      "path": "src/utils/StructuredResourceContent.ts",
+      "guides": ["world-book"],
+      "sha256": "85c8f96b8e79d881efd04f9025a9c900d9fc745a68772cb338ba6c45798ec5f9"
+    },
+    {
+      "path": "src/services/ResourceService.ts",
+      "guides": ["world-book"],
+      "sha256": "afc534aaa52c12c19ddeabb55d3908f807a2fb468dd586fee412342ed08d4f77"
+    },
+    {
+      "path": "src/components/CharacterCardContentWorkbench.vue",
+      "guides": ["world-book"],
+      "sha256": "dc66fdea5b5cd975295fd93b510721cfaa1e7961f377fd15db3767b53256add1"
+    },
+    {
+      "path": "src/composables/UseCharacterCardContentWorkbench.ts",
+      "guides": ["world-book"],
+      "sha256": "d5a5acceee695db71a82d0c3f799b981af486f585a4e3df4a444f4c72186e9e2"
+    },
+    {
+      "path": "src/components/ExternalAppHost.vue",
+      "guides": ["chat-reader"],
+      "sha256": "aecf2a54f6c1f335b02ab36381e746415288177013b926124ab65fd06c426b66"
+    },
+    {
+      "path": "src/services/CloudBackupJobStore.ts",
+      "guides": ["backup"],
+      "sha256": "f63be8b83c49ff175c7ec90dabb23f01381cba8d940d20cde5fbdabbd44c22ac"
+    }
+  ]
+}

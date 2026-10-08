@@ -29,6 +29,18 @@ import {
 import { isEncryptedResourceSummary, type EncryptedValue } from '../types/Vault'
 import type { CommunitySourceStorage } from './CommunitySourceStorage'
 import { isResourceGalleryImage } from '../types/ResourceGallery'
+import {
+  collectCommunitySourceLocalAssetIds,
+  sanitizeCommunitySourceAttachmentRefs,
+} from '../services/CommunitySourceAttachmentArchive'
+import { isAndroidNativeAppDatabaseActive, runAndroidNativeRead } from './AndroidNativeDexieCore'
+import {
+  decodeAppDatabaseValue,
+  encodeAppDatabaseKey,
+  isEncodedBlobValue,
+} from './AndroidAppDatabaseMigration'
+import { nativeAppDatabase } from './NativeAppDatabaseBridge'
+import type { StoredResourceSummary } from '../types/Vault'
 
 const MIGRATION_BATCH_SIZE = 24
 
@@ -199,6 +211,18 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     return result
   }
 
+  async countUnboundSources(): Promise<number> {
+    const sourceKeys = await this.database.communitySources.toCollection().primaryKeys()
+    const unboundSourceIds = new Set(
+      sourceKeys.filter((key): key is string => typeof key === 'string'),
+    )
+    const bindingSourceKeys = await this.database.resourceSourceBindings.orderBy('sourceId').keys()
+    for (const key of bindingSourceKeys) {
+      if (typeof key === 'string') unboundSourceIds.delete(key)
+    }
+    return unboundSourceIds.size
+  }
+
   async listMessages(sourceId: string): Promise<CommunitySourceMessage[]> {
     const messages = await this.database.communitySourceMessages
       .where('sourceId')
@@ -248,6 +272,13 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     return decoded
   }
 
+  async listBoundResourceIds(): Promise<string[]> {
+    // Safari/WebKit can reject `nextunique` cursors with `Unable to open cursor`.
+    // Read the ordinary index keys and deduplicate in memory instead.
+    const keys = await this.database.resourceSourceBindings.orderBy('resourceId').keys()
+    return [...new Set(keys.filter((key): key is string => typeof key === 'string'))]
+  }
+
   async listBindingsForSource(sourceId: string): Promise<ResourceSourceBinding[]> {
     const bindings = await this.database.resourceSourceBindings
       .where('sourceId')
@@ -280,6 +311,23 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     await this.database.resourceSourceBindings.put(await this.encodeBinding(binding))
   }
 
+  async putSourceWithBinding(
+    source: CommunitySource,
+    binding: ResourceSourceBinding,
+  ): Promise<void> {
+    const storedSource = await this.encodeSource(source)
+    const storedBinding = await this.encodeBinding(binding)
+    await this.database.transaction(
+      'rw',
+      this.database.communitySources,
+      this.database.resourceSourceBindings,
+      async () => {
+        await this.database.communitySources.put(storedSource)
+        await this.database.resourceSourceBindings.put(storedBinding)
+      },
+    )
+  }
+
   async deleteBinding(id: string): Promise<void> {
     await this.database.resourceSourceBindings.delete(id)
   }
@@ -296,7 +344,14 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
       this.database.resourceSummaries,
       async () => {
         const table = this.database.resourceSourceBindings
-        const resourceIds = await table.orderBy('resourceId').uniqueKeys()
+        // Keep this on a regular cursor direction for Safari/WebKit compatibility.
+        const resourceIds = [
+          ...new Set(
+            (await table.orderBy('resourceId').keys()).filter(
+              (key): key is string => typeof key === 'string',
+            ),
+          ),
+        ]
         let removed = 0
         for (const resourceId of resourceIds) {
           if (typeof resourceId !== 'string' || validResourceIds.has(resourceId)) continue
@@ -336,6 +391,152 @@ export class IndexedDbCommunitySourceStorage implements CommunitySourceStorage {
     for (const binding of storedBindings)
       bindings.push(await decodeResourceSourceBinding(binding, this.codec))
     return { version: 1, sources, messages, bindings }
+  }
+
+  private mediaIds(data: CommunitySourceBackupData): Set<string> {
+    const ids = new Set<string>()
+    const messages = [
+      ...data.messages,
+      ...data.sources.flatMap((source) =>
+        (source.revisions ?? []).flatMap((revision) => revision.messages),
+      ),
+    ]
+    for (const message of messages)
+      for (const attachment of message.attachments) {
+        if (
+          attachment.localAssetId &&
+          (/^(image|audio|video)\//iu.test(attachment.contentType ?? '') ||
+            /\.(png|jpe?g|webp|gif|avif|bmp|svg|mp4|webm|mov|mp3|wav|ogg|m4a|flac)$/iu.test(
+              attachment.name,
+            ))
+        )
+          ids.add(attachment.localAssetId)
+      }
+    return ids
+  }
+
+  async downloadedMediaUsage(): Promise<{ count: number; bytes: number }> {
+    const ids = this.mediaIds(await this.exportAll())
+    let bytes = 0
+    for (const id of ids) bytes += (await this.database.assets.get(id))?.size ?? 0
+    return { count: ids.size, bytes }
+  }
+
+  async clearDownloadedMedia(): Promise<{ count: number; bytes: number; retainedCount: number }> {
+    // A single transaction rechecks every reference and publishes remote-only posts together
+    // with file removal. Failed decoding or a concurrent native write aborts the whole cleanup.
+    return this.database.transaction('rw', this.database.tables, async (transaction) => {
+      const data = await Dexie.waitFor(this.exportAll())
+      const candidates = this.mediaIds(data)
+      const available = collectCommunitySourceLocalAssetIds(data)
+      for (const id of candidates) available.delete(id)
+      const remoteOnly = sanitizeCommunitySourceAttachmentRefs(data, available)
+      const referenced = new Set<string>()
+      const visit = (value: unknown): void => {
+        if (typeof value === 'string') {
+          for (const id of candidates) if (value.includes(id)) referenced.add(id)
+        } else if (
+          value &&
+          typeof value === 'object' &&
+          !(value instanceof Blob) &&
+          !(value instanceof ArrayBuffer) &&
+          !ArrayBuffer.isView(value)
+        ) {
+          if ('localState' in value && 'url' in value && 'size' in value) {
+            if ('localAssetId' in value) visit(value.localAssetId)
+            return
+          }
+          // Unknown ciphertext / native text cannot prove exclusive ownership: retain its assets.
+          if (
+            isEncodedBlobValue(value) ||
+            ('encrypted' in value && value.encrypted === true && 'payload' in value)
+          ) {
+            for (const id of candidates) referenced.add(id)
+          } else for (const child of Object.values(value)) visit(child)
+        }
+      }
+      visit(remoteOnly)
+      const skipped = new Set([
+        'communitySources',
+        'communitySourceMessages',
+        'resourceSummaries',
+        'resourceListSummaries',
+        'resourceVersionSummaries',
+        'assetFiles',
+      ])
+      for (const table of this.database.tables) {
+        if (skipped.has(table.name)) continue
+        const keys = await table.toCollection().primaryKeys()
+        for (const key of keys) {
+          let value: unknown = isAndroidNativeAppDatabaseActive()
+            ? await table.core.get({
+                trans: transaction.idbtrans,
+                key,
+                loadBinary: false,
+              } as Parameters<typeof table.core.get>[0])
+            : await table.get(key)
+          if (table.name === 'resources' || table.name === 'resourceVersions') {
+            const record = value as StoredResourceSummary | undefined
+            if (record && isEncryptedResourceSummary(record)) {
+              const payload =
+                record.payload.data instanceof Blob
+                  ? record.payload
+                  : await Dexie.waitFor(
+                      runAndroidNativeRead(transaction.idbtrans, () =>
+                        decodeAppDatabaseValue(
+                          record.payload,
+                          table.name as 'resources' | 'resourceVersions',
+                          encodeAppDatabaseKey(key),
+                          nativeAppDatabase,
+                        ),
+                      ),
+                    )
+              value = await Dexie.waitFor(
+                this.vault.decodeResourceSummary({
+                  ...record,
+                  payload: payload as typeof record.payload,
+                }),
+              )
+            } else if (record) {
+              // Original/thumbnail binary descriptors do not hold references to assetFiles.
+              const {
+                originalBlob: _original,
+                thumbnailBlob: _thumbnail,
+                nativeOriginal: _native,
+                ...metadata
+              } = record as unknown as Record<string, unknown>
+              value = metadata
+            }
+          }
+          if (table.name === 'assets' && candidates.has(String(key)) && value) {
+            const {
+              assetId: _id,
+              webStorageRef: _ref,
+              ...references
+            } = value as Record<string, unknown>
+            value = references
+          }
+          visit(value)
+        }
+      }
+      let count = 0,
+        bytes = 0
+      for (const id of candidates) {
+        const asset = await this.database.assets.get(id)
+        if (referenced.has(id) || (asset && asset.source !== 'remote')) continue
+        await this.database.assetFiles.delete(id)
+        await this.database.assets.delete(id)
+        count++
+        bytes += asset?.size ?? 0
+      }
+      for (const source of remoteOnly.sources)
+        await this.database.communitySources.put(await Dexie.waitFor(this.encodeSource(source)))
+      for (const message of remoteOnly.messages)
+        await this.database.communitySourceMessages.put(
+          await Dexie.waitFor(this.encodeMessage(message)),
+        )
+      return { count, bytes, retainedCount: candidates.size - count }
+    })
   }
 
   async mergeAll(data: CommunitySourceBackupData): Promise<void> {

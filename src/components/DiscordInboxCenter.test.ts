@@ -18,10 +18,10 @@ vi.mock('../services/DiscordSourceSettingsService', () => ({
 
 const stubs = {
   DiscordInboxPanel: {
-    props: ['mode'],
+    props: ['mode', 'view'],
     methods: inboxActions,
     template:
-      "<section :data-testid=\"mode === 'pairing' ? 'pairing-settings' : 'post-inbox'\">收件面板</section>",
+      "<section :data-testid=\"mode === 'pairing' ? 'pairing-settings' : view === 'review' ? 'binding-review' : 'post-inbox'\"><button data-testid=\"emit-organization-counts\" @click=\"$emit('organization-counts', { review: 3, reviewHasMore: true, pending: 12 })\"></button>收件面板</section>",
   },
   DiscordResourceDownloadPanel: {
     template: '<section data-testid="resource-inbox">资源下载</section>',
@@ -70,7 +70,7 @@ describe('standalone inbox', () => {
       expect(back.handled).toBe(true)
       expect(document.querySelector('[role="dialog"]')).toBeNull()
       expect(wrapper.get('h1').text()).toBe('收件箱')
-      expect(wrapper.find('[data-testid="pending-sources"]').exists()).toBe(true)
+      expect(wrapper.find('.discord-inbox-center__secondary').text()).toContain('待整理来源')
       await wrapper
         .findAll('button')
         .find((button) => button.text() === '连接设置')!
@@ -88,6 +88,42 @@ describe('standalone inbox', () => {
       await flushPromises()
       expect(document.querySelector('[role="dialog"]')).toBeNull()
       expect(wrapper.find('[data-testid="resource-inbox"]').exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('groups pending-source review directly under auto-binding review before resource downloads', async () => {
+    const wrapper = mount(DiscordInboxCenter, { global: { stubs } })
+    try {
+      const labels = wrapper
+        .findAll('.discord-inbox-center__secondary button')
+        .map((button) => button.text())
+      expect(labels).toEqual(['自动绑定审核›', '待整理来源›'])
+      const text = wrapper.text()
+      expect(text.indexOf('自动绑定审核')).toBeLessThan(text.indexOf('待整理来源'))
+      expect(text.indexOf('待整理来源')).toBeLessThan(text.indexOf('资源下载'))
+
+      await wrapper
+        .findAll('.discord-inbox-center__secondary button')
+        .find((button) => button.text().includes('待整理来源'))!
+        .trigger('click')
+      expect(wrapper.get('h1').text()).toBe('待整理来源')
+      expect(wrapper.find('[data-testid="pending-sources"]').exists()).toBe(true)
+      expect(wrapper.find('[aria-label="清理云端"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="收件箱设置"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('shows counts for automatic-binding review and pending sources', async () => {
+    const wrapper = mount(DiscordInboxCenter, { global: { stubs } })
+    try {
+      await wrapper.get('[data-testid="emit-organization-counts"]').trigger('click')
+      const secondary = wrapper.get('.discord-inbox-center__secondary')
+      expect(secondary.text()).toContain('3+')
+      expect(secondary.text()).toContain('12')
     } finally {
       wrapper.unmount()
     }

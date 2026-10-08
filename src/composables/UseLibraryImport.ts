@@ -7,7 +7,7 @@ import {
   resourceService,
 } from '../core/LibraryContainer'
 import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
-import { autoBindIncomingCard } from '../services/DiscordInboxAutoBinding'
+import { autoBindIncomingCardBatch } from '../services/DiscordInboxAutoBinding'
 import { noticeCenter } from '../core/NoticeCenter'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 import { confirmChatImports } from './UseChatImportConfirmation'
@@ -27,6 +27,7 @@ import {
   RESOURCE_LINK_PURPOSE_LABELS,
   RESOURCE_LINK_TYPE,
   type ResourceLink,
+  type ResourceListSummary,
 } from '../types/Resource'
 import { summarizeFileNames, summarizeResourceTypes } from '../utils/LibraryFormatting'
 import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
@@ -158,8 +159,10 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
     })
   })
 
-  function createImportTask(options: { name: string; phase: string }): string {
-    const operationId = crypto.randomUUID()
+  function createImportTask(
+    options: { name: string; phase: string },
+    operationId: string = crypto.randomUUID(),
+  ): string {
     const controller = new AbortController()
     activeImportTaskId = operationId
     activeImportAbortController = controller
@@ -515,11 +518,14 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         context.isBusy.value = false
       }
     }
-    const operationId = createImportTask({
-      name:
-        route === 'libraryBackup' ? '识别分享的资源库备份' : `识别分享的 ${files.length} 个资源`,
-      phase: '检查文件结构',
-    })
+    const operationId = createImportTask(
+      {
+        name:
+          route === 'libraryBackup' ? '识别分享的资源库备份' : `识别分享的 ${files.length} 个资源`,
+        phase: '检查文件结构',
+      },
+      shareBatch?.taskOperationId,
+    )
     try {
       await startImportTask(operationId)
       throwIfImportStopped()
@@ -600,11 +606,21 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
         context.showNotice(error.message, 9000)
         return false
       }
-      taskCenter.complete(operationId)
-      context.showNotice(
-        `分享资源处理完成：成功 ${totals.imported}，重复 ${totals.duplicate}。`,
-        9000,
-      )
+      const waitingForVersion =
+        shareBatch?.taskOperationId &&
+        context.pendingVersionImports.value.some(
+          (candidate) => candidate.shareRecoveryId === shareBatch.recoveryId,
+        )
+      if (waitingForVersion)
+        taskCenter.update(operationId, { phase: '等待确认历史版本', cancelable: false })
+      else {
+        taskCenter.complete(operationId)
+      }
+      if (!shareBatch?.automaticCloud)
+        context.showNotice(
+          `分享资源处理完成：成功 ${totals.imported}，重复 ${totals.duplicate}。`,
+          9000,
+        )
       return 'consumed'
     } catch (error) {
       if (activeImportAbortController?.signal.aborted) return false
@@ -615,6 +631,15 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       handlingSharedImport = false
       context.isBusy.value = false
       await stopImportTask(operationId)
+      if (
+        context.isNativeApk &&
+        shareBatch?.automaticCloud &&
+        document.visibilityState !== 'hidden' &&
+        taskCenter
+          .list()
+          .some((task) => task.operationId === operationId && task.status === 'completed')
+      )
+        taskCenter.dismiss(operationId)
     }
   }
 
@@ -960,6 +985,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
       const automationSettings = await discordInboxAutomationSettingsService
         .load()
         .catch(() => ({ ...DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS }))
+      const autoBindingResources: ResourceListSummary[] = []
       const results = await resourceService.importFiles(protectedFiles, {
         ...chatOptions,
         extractCharacterAssets: context.extractCharacterAssets.value,
@@ -1009,25 +1035,12 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           await shareBatch?.onItemComplete?.(result)
           if (
             shareBatch?.automaticCloud &&
+            !shareBatch.deferAutomaticBinding &&
             automationSettings.bindForeground &&
-            result.status === 'imported'
-          ) {
-            try {
-              const binding = await autoBindIncomingCard(
-                communitySourceService,
-                result.resource,
-                automationSettings,
-              )
-              if (binding)
-                window.dispatchEvent(
-                  new CustomEvent('srl:community-sources-changed', {
-                    detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
-                  }),
-                )
-            } catch {
-              // Binding is best effort; it must not turn a committed resource import into a failure.
-            }
-          }
+            result.status === 'imported' &&
+            result.resource.type === RESOURCE_TYPE.CHARACTER_CARD
+          )
+            autoBindingResources.push(result.resource)
         },
         onProgress: ({ completed, total, fileName, phase }) => {
           updateImportTask(taskId, {
@@ -1037,6 +1050,27 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           })
         },
       })
+      if (
+        shareBatch?.automaticCloud &&
+        !shareBatch.deferAutomaticBinding &&
+        automationSettings.bindForeground
+      ) {
+        try {
+          const bindings = await autoBindIncomingCardBatch(
+            communitySourceService,
+            autoBindingResources,
+            automationSettings,
+          )
+          for (const binding of bindings)
+            window.dispatchEvent(
+              new CustomEvent('srl:community-sources-changed', {
+                detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
+              }),
+            )
+        } catch {
+          // Binding is best effort; it must not turn a committed resource import into a failure.
+        }
+      }
       resultsReceived = true
       if (totals && !shareBatch) {
         totals.imported += results.filter((result) => result.status === 'imported').length
@@ -1321,7 +1355,7 @@ export function useLibraryImport(getContext: () => LibraryImportContext) {
           committedHash,
           pending.sourceContentHash,
         )
-      await pending.onResolved?.(committedHash)
+      await pending.onResolved?.(committedHash, resolvedResourceId)
       const nextPending = context.pendingVersionImports.value[1]
       if (nextPending && resolvedResourceId) {
         const candidates = nextPending.candidates.filter(

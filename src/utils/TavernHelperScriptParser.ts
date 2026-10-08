@@ -193,7 +193,7 @@ export function extractTavernHelperScripts(
 }
 
 export async function readTavernHelperScriptBlob(
-  blob: Blob,
+  blob: Pick<Blob, 'text'>,
   fileName: string,
   options: ExtractScriptOptions,
 ): Promise<HelperScriptRecord[]> {

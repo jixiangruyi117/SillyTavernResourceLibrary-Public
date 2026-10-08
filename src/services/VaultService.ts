@@ -9,7 +9,6 @@ import { hydrateResourceFromIndexedDb } from '../storage/ResourceStorageClone'
 import {
   normalizeResource,
   toResourceListSummary,
-  toResourceSummary,
   type BackupRecord,
   type Category,
   type Resource,
@@ -332,23 +331,6 @@ export class VaultService {
     })
   }
 
-  private storedSummary(resource: StoredResource): StoredResourceSummary {
-    if (isNativeBackedResource(resource)) {
-      const { nativeOriginal: _nativeOriginal, ...summary } = resource
-      return summary
-    }
-    if (!isEncryptedResource(resource)) return toResourceSummary(resource)
-    return {
-      id: resource.id,
-      contentHash: resource.contentHash,
-      versionGroupId: resource.versionGroupId,
-      updatedAt: resource.updatedAt,
-      encrypted: true,
-      payload: resource.payload,
-      thumbnail: resource.thumbnail,
-    }
-  }
-
   private async runMigration(job: VaultMigrationJob, key: CryptoKey): Promise<void> {
     job.status = 'running'
     job.lastError = undefined
@@ -598,20 +580,17 @@ export class VaultService {
     versions: boolean,
   ): Promise<void> {
     this.advanceJob(job, converted.at(-1)!.id, converted.length)
-    const summaries = converted.map((resource) => this.storedSummary(resource))
-    const listSummaries = versions
-      ? []
-      : await Promise.all(
-          converted.map(async (resource) => {
-            const plain = isEncryptedResource(resource)
-              ? await this.decryptResourceWithKey(resource, this.requireKey())
-              : resource
-            const light = toResourceListSummary(plain)
-            return job.targetMode === 'encrypted'
-              ? this.encryptResourceSummaryWithKey(light, this.requireKey())
-              : light
-          }),
-        )
+    const listSummaries = await Promise.all(
+      converted.map(async (resource) => {
+        const plain = isEncryptedResource(resource)
+          ? await this.decryptResourceWithKey(resource, this.requireKey())
+          : resource
+        const light = toResourceListSummary(plain)
+        return job.targetMode === 'encrypted'
+          ? this.encryptResourceSummaryWithKey(light, this.requireKey())
+          : light
+      }),
+    )
     const recordsTable = versions ? this.database.resourceVersions : this.database.resources
     const summariesTable = versions
       ? this.database.resourceVersionSummaries
@@ -624,7 +603,7 @@ export class VaultService {
       this.database.settings,
       async () => {
         await recordsTable.bulkPut(converted)
-        await summariesTable.bulkPut(summaries)
+        await summariesTable.bulkPut(listSummaries)
         if (!versions) await this.database.resourceListSummaries.bulkPut(listSummaries)
         await this.saveMigrationJob(job)
       },

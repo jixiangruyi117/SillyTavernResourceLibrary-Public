@@ -19,6 +19,7 @@ import {
   createResourceSourceBindingId,
   toCommunitySourceSummary,
   type CommunitySource,
+  type CommunitySourceAutoBindScan,
   type CommunitySourceBackupData,
   type CommunitySourceMessage,
   type CommunitySourceMessageKind,
@@ -96,10 +97,25 @@ type DiscordCaptureSaveOptions = {
 export class CommunitySourceService {
   private readonly storage: CommunitySourceStorage
   private readonly assetStore?: CommunitySourceAssetStore
+  private readonly shouldDownloadPostMedia: () => boolean | Promise<boolean>
 
-  constructor(storage: CommunitySourceStorage, assetStore?: CommunitySourceAssetStore) {
+  async downloadedMediaUsage() {
+    return this.storage.downloadedMediaUsage?.() ?? { count: 0, bytes: 0 }
+  }
+
+  async clearDownloadedMedia() {
+    if (!this.storage.clearDownloadedMedia) throw new Error('当前存储未提供帖子媒体清理')
+    return withCaptureSave('discord-local-media', () => this.storage.clearDownloadedMedia!())
+  }
+
+  constructor(
+    storage: CommunitySourceStorage,
+    assetStore?: CommunitySourceAssetStore,
+    shouldDownloadPostMedia: () => boolean | Promise<boolean> = () => true,
+  ) {
     this.storage = storage
     this.assetStore = assetStore
+    this.shouldDownloadPostMedia = shouldDownloadPostMedia
   }
 
   private async getSourceSummary(sourceId: string): Promise<CommunitySourceSummary | undefined> {
@@ -121,20 +137,39 @@ export class CommunitySourceService {
       .sort((left, right) => right.source.updatedAt - left.source.updatedAt)
   }
 
+  async listUnboundResources<T extends ResourceListSummary>(resources: readonly T[]): Promise<T[]> {
+    let boundIds = await this.storage.listBoundResourceIds?.()
+    if (!boundIds) {
+      boundIds = []
+      for (const resource of resources) {
+        if ((await this.storage.listBindingsForResource(resource.id)).length)
+          boundIds.push(resource.id)
+      }
+    }
+    const bound = new Set(boundIds)
+    return resources.filter((resource) => !bound.has(resource.id))
+  }
+
   async getForResource(
     resourceId: string,
     sourceId: string,
   ): Promise<ResourceCommunitySourceView | undefined> {
-    const binding = (await this.storage.listBindingsForResource(resourceId)).find(
-      (candidate) => candidate.sourceId === sourceId,
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const binding = (await this.storage.listBindingsForResource(resourceId)).find(
+          (candidate) => candidate.sourceId === sourceId,
+        )
+        if (!binding) return undefined
+        const source = await this.storage.getSource(sourceId)
+        if (!source) return undefined
+        const messages = await this.storage.listMessages(sourceId)
+        const summarized = withMessageSummary(source, messages)
+        if (!sourceSummaryMatches(source, messages)) await this.storage.putSource(summarized)
+        return { source: summarized, messages, binding }
+      },
+      'shared',
     )
-    if (!binding) return undefined
-    const source = await this.storage.getSource(sourceId)
-    if (!source) return undefined
-    const messages = await this.storage.listMessages(sourceId)
-    const summarized = withMessageSummary(source, messages)
-    if (!sourceSummaryMatches(source, messages)) await this.storage.putSource(summarized)
-    return { source: summarized, messages, binding }
   }
 
   /** 兼容其它调用方；高频来源目录必须使用 listSummariesForResource。 */
@@ -170,12 +205,19 @@ export class CommunitySourceService {
     return views
   }
 
+  async countPendingSources(): Promise<number> {
+    if (this.storage.countUnboundSources) return this.storage.countUnboundSources()
+    return (await this.storage.listUnboundSources(100)).length
+  }
+
   async listUnboundForAutomation(
     limit = 5,
+    includeUntracked = false,
   ): Promise<Array<{ source: CommunitySource; starter?: CommunitySourceMessage }>> {
-    const sources = await this.storage.listUnboundSources(Math.min(5, Math.max(1, limit)))
+    const sources = await this.storage.listUnboundSources(Math.min(100, Math.max(1, limit)))
     const views: Array<{ source: CommunitySource; starter?: CommunitySourceMessage }> = []
-    for (const source of sources)
+    for (const source of sources) {
+      if (!includeUntracked && !source.autoBindScan && !source.autoBindPendingPng) continue
       views.push({
         source,
         starter: this.storage.getStarterMessage
@@ -184,7 +226,75 @@ export class CommunitySourceService {
               (message) => message.kind === 'starter',
             ),
       })
+    }
     return views
+  }
+
+  async listAutoBindReviews(limit = 50): Promise<
+    Array<{
+      source: CommunitySource
+      candidates: NonNullable<CommunitySourceAutoBindScan['reviewCandidates']>
+    }>
+  > {
+    const sources = await this.storage.listUnboundSources(Math.min(100, Math.max(1, limit * 2)))
+    const reviews: Array<{
+      source: CommunitySource
+      candidates: NonNullable<CommunitySourceAutoBindScan['reviewCandidates']>
+    }> = []
+    for (const source of sources) {
+      const candidates = source.autoBindScan?.reviewCandidates
+      if (!candidates?.length) continue
+      reviews.push({ source, candidates })
+      if (reviews.length >= limit) break
+    }
+    return reviews
+  }
+
+  async updateAutoBindScan(
+    sourceId: string,
+    scan: CommunitySourceAutoBindScan | undefined,
+  ): Promise<void> {
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) return
+        if (scan) source.autoBindScan = structuredClone(scan)
+        else delete source.autoBindScan
+        source.updatedAt = Date.now()
+        await this.storage.putSource(source)
+      },
+      'shared',
+    )
+  }
+
+  async chooseAutoBindCandidate(sourceId: string, resourceId: string): Promise<void> {
+    const source = await this.storage.getSource(sourceId)
+    const candidate = source?.autoBindScan?.reviewCandidates?.find(
+      (item) => item.resourceId === resourceId,
+    )
+    if (!source || !candidate) throw new Error('自动匹配候选已变化，请刷新收件箱。')
+    await this.bindSource(
+      resourceId,
+      sourceId,
+      `自动关联：${candidate.rule === 'same-name' ? '同名' : '同作者'} · ${candidate.reason}`,
+      candidate.rule,
+    )
+  }
+
+  async dismissAutoBindReview(sourceId: string): Promise<void> {
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) return
+        delete source.autoBindScan
+        delete source.autoBindPendingPng
+        source.updatedAt = Date.now()
+        await this.storage.putSource(source)
+      },
+      'shared',
+    )
   }
 
   async getSourceForAutomation(sourceId: string): Promise<CommunitySource | undefined> {
@@ -192,12 +302,18 @@ export class CommunitySourceService {
   }
 
   async updateAutomationPendingPng(sourceId: string, pending: boolean): Promise<void> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) return
-    if (pending) source.autoBindPendingPng = true
-    else delete source.autoBindPendingPng
-    source.updatedAt = Date.now()
-    await this.storage.putSource(source)
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) return
+        if (pending) source.autoBindPendingPng = true
+        else delete source.autoBindPendingPng
+        source.updatedAt = Date.now()
+        await this.storage.putSource(source)
+      },
+      'shared',
+    )
   }
 
   async findDiscordSourceForCapture(captureInput: DiscordCapture): Promise<
@@ -241,8 +357,13 @@ export class CommunitySourceService {
     const capturedAt = options.capturedAt ?? Date.now()
     if (!Number.isFinite(capturedAt) || capturedAt < 0) throw new Error('Discord 快照时间无效')
     const sourceKeyHash = await hashIdentity(createDiscordSourceKey(capture))
-    return withCaptureSave(sourceKeyHash, () =>
-      this.persistDiscordCapture(capture, sourceKeyHash, capturedAt, options),
+    return withCaptureSave(
+      'discord-local-media',
+      () =>
+        withCaptureSave(sourceKeyHash, () =>
+          this.persistDiscordCapture(capture, sourceKeyHash, capturedAt, options),
+        ),
+      'shared',
     )
   }
 
@@ -414,8 +535,13 @@ export class CommunitySourceService {
     if (!this.assetStore) return
     const source = await this.storage.getSource(sourceId)
     if (!source) return
-    await withCaptureSave(source.sourceKeyHash, () =>
-      this.persistSavedMessageAttachments(sourceId, messageId),
+    await withCaptureSave(
+      'discord-local-media',
+      () =>
+        withCaptureSave(source.sourceKeyHash, () =>
+          this.persistSavedMessageAttachments(sourceId, messageId),
+        ),
+      'shared',
     )
   }
 
@@ -447,26 +573,44 @@ export class CommunitySourceService {
     note?: string,
     autoBindingRule?: ResourceSourceBinding['autoBindingRule'],
   ): Promise<void> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) throw new Error('社区来源不存在')
-    const existing = (await this.storage.listBindingsForResource(resourceId)).some(
-      (binding) => binding.sourceId === sourceId,
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) throw new Error('社区来源不存在')
+        const existing = (await this.storage.listBindingsForResource(resourceId)).some(
+          (binding) => binding.sourceId === sourceId,
+        )
+        if (!existing) {
+          const binding = {
+            id: createResourceSourceBindingId(resourceId, sourceId),
+            resourceId,
+            sourceId,
+            note: clean(note, 2_000),
+            ...(autoBindingRule ? { autoBindingRule } : {}),
+            createdAt: Date.now(),
+          }
+          if (autoBindingRule) {
+            delete source.autoBindScan
+            delete source.autoBindPendingPng
+            source.updatedAt = Date.now()
+            if (this.storage.putSourceWithBinding)
+              await this.storage.putSourceWithBinding(source, binding)
+            else {
+              await this.storage.putSource(source)
+              await this.storage.putBinding(binding)
+            }
+          } else await this.storage.putBinding(binding)
+        }
+        if (typeof window !== 'undefined')
+          window.dispatchEvent(
+            new CustomEvent('srl:community-source-bound', {
+              detail: { sourceKeyHash: source.sourceKeyHash },
+            }),
+          )
+      },
+      'shared',
     )
-    if (!existing)
-      await this.storage.putBinding({
-        id: createResourceSourceBindingId(resourceId, sourceId),
-        resourceId,
-        sourceId,
-        note: clean(note, 2_000),
-        ...(autoBindingRule ? { autoBindingRule } : {}),
-        createdAt: Date.now(),
-      })
-    if (typeof window !== 'undefined')
-      window.dispatchEvent(
-        new CustomEvent('srl:community-source-bound', {
-          detail: { sourceKeyHash: source.sourceKeyHash },
-        }),
-      )
   }
 
   async unbindSource(resourceId: string, sourceId: string): Promise<void> {
@@ -536,12 +680,18 @@ export class CommunitySourceService {
     messageId: string,
     kind: CommunitySourceMessageKind,
   ): Promise<CommunitySourceMessage> {
-    const keyHash = await messageKeyHash(sourceId, messageId)
-    const message = await this.storage.getMessage(sourceId, keyHash)
-    if (!message) throw new Error('已保存的 Discord 消息不存在')
-    const updated = { ...message, kind, updatedAt: Date.now() }
-    await this.storage.putMessage(updated)
-    return updated
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const keyHash = await messageKeyHash(sourceId, messageId)
+        const message = await this.storage.getMessage(sourceId, keyHash)
+        if (!message) throw new Error('已保存的 Discord 消息不存在')
+        const updated = { ...message, kind, updatedAt: Date.now() }
+        await this.storage.putMessage(updated)
+        return updated
+      },
+      'shared',
+    )
   }
 
   async recordRemoteCheck(
@@ -550,41 +700,59 @@ export class CommunitySourceService {
     hasRemoteUpdate = false,
     syncState?: DiscordRefreshSyncState,
   ): Promise<CommunitySource> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) throw new Error('社区来源不存在')
-    const updated: CommunitySource = {
-      ...source,
-      remoteState: state,
-      hasRemoteUpdate: state === COMMUNITY_SOURCE_REMOTE_STATE.AVAILABLE && hasRemoteUpdate,
-      lastCheckedAt: Date.now(),
-      ...(syncState ?? {}),
-    }
-    delete updated.discordRefreshMode
-    await this.storage.putSource(updated)
-    return updated
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) throw new Error('社区来源不存在')
+        const updated: CommunitySource = {
+          ...source,
+          remoteState: state,
+          hasRemoteUpdate: state === COMMUNITY_SOURCE_REMOTE_STATE.AVAILABLE && hasRemoteUpdate,
+          lastCheckedAt: Date.now(),
+          ...(syncState ?? {}),
+        }
+        delete updated.discordRefreshMode
+        await this.storage.putSource(updated)
+        return updated
+      },
+      'shared',
+    )
   }
 
   async clearRemoteAvailability(sourceId: string): Promise<CommunitySource> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) throw new Error('社区来源不存在')
-    const updated = { ...source }
-    delete updated.remoteState
-    delete updated.hasRemoteUpdate
-    await this.storage.putSource(updated)
-    return updated
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) throw new Error('社区来源不存在')
+        const updated = { ...source }
+        delete updated.remoteState
+        delete updated.hasRemoteUpdate
+        await this.storage.putSource(updated)
+        return updated
+      },
+      'shared',
+    )
   }
 
   async recordManualRefresh(sourceId: string): Promise<CommunitySource> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) throw new Error('社区来源不存在')
-    const updated: CommunitySource = {
-      ...source,
-      discordRefreshMode: COMMUNITY_SOURCE_REFRESH_MODE.MANUAL,
-    }
-    delete updated.remoteState
-    delete updated.hasRemoteUpdate
-    await this.storage.putSource(updated)
-    return updated
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) throw new Error('社区来源不存在')
+        const updated: CommunitySource = {
+          ...source,
+          discordRefreshMode: COMMUNITY_SOURCE_REFRESH_MODE.MANUAL,
+        }
+        delete updated.remoteState
+        delete updated.hasRemoteUpdate
+        await this.storage.putSource(updated)
+        return updated
+      },
+      'shared',
+    )
   }
 
   async recordMessageRemoteCheck(
@@ -592,24 +760,31 @@ export class CommunitySourceService {
     presentMessageIds: readonly string[],
     missingMessageIds: readonly string[],
   ): Promise<void> {
-    const present = new Set(presentMessageIds)
-    const missing = new Set(missingMessageIds)
-    const now = Date.now()
-    const messages = await this.storage.listMessages(sourceId)
-    for (const message of messages) {
-      const nextState = missing.has(message.messageId)
-        ? COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.MISSING
-        : present.has(message.messageId)
-          ? COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.AVAILABLE
-          : undefined
-      if (!nextState || (message.remoteState === nextState && message.lastRemoteCheckedAt)) continue
-      await this.storage.putMessage({
-        ...message,
-        remoteState: nextState,
-        lastRemoteCheckedAt: now,
-        updatedAt: now,
-      })
-    }
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const present = new Set(presentMessageIds)
+        const missing = new Set(missingMessageIds)
+        const now = Date.now()
+        const messages = await this.storage.listMessages(sourceId)
+        for (const message of messages) {
+          const nextState = missing.has(message.messageId)
+            ? COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.MISSING
+            : present.has(message.messageId)
+              ? COMMUNITY_SOURCE_MESSAGE_REMOTE_STATE.AVAILABLE
+              : undefined
+          if (!nextState || (message.remoteState === nextState && message.lastRemoteCheckedAt))
+            continue
+          await this.storage.putMessage({
+            ...message,
+            remoteState: nextState,
+            lastRemoteCheckedAt: now,
+            updatedAt: now,
+          })
+        }
+      },
+      'shared',
+    )
   }
 
   async ignoreRemoteMessages(
@@ -617,21 +792,27 @@ export class CommunitySourceService {
     messageIds: readonly string[],
     syncState?: DiscordRefreshSyncState,
   ): Promise<CommunitySource> {
-    const source = await this.storage.getSource(sourceId)
-    if (!source) throw new Error('社区来源不存在')
-    const ignoredRemoteMessageIds = normalizeMessageIds(
-      [...(source.ignoredRemoteMessageIds ?? []), ...messageIds],
-      MAX_IGNORED_REMOTE_MESSAGE_IDS,
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        const source = await this.storage.getSource(sourceId)
+        if (!source) throw new Error('社区来源不存在')
+        const ignoredRemoteMessageIds = normalizeMessageIds(
+          [...(source.ignoredRemoteMessageIds ?? []), ...messageIds],
+          MAX_IGNORED_REMOTE_MESSAGE_IDS,
+        )
+        const updated: CommunitySource = {
+          ...source,
+          hasRemoteUpdate: false,
+          ignoredRemoteMessageIds,
+          ...(syncState ?? {}),
+          updatedAt: Date.now(),
+        }
+        await this.storage.putSource(updated)
+        return updated
+      },
+      'shared',
     )
-    const updated: CommunitySource = {
-      ...source,
-      hasRemoteUpdate: false,
-      ignoredRemoteMessageIds,
-      ...(syncState ?? {}),
-      updatedAt: Date.now(),
-    }
-    await this.storage.putSource(updated)
-    return updated
   }
 
   async applyDiscordRefresh(
@@ -641,8 +822,13 @@ export class CommunitySourceService {
   ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
     const source = await this.storage.getSource(sourceId)
     if (!source) throw new Error('社区来源不存在')
-    return withCaptureSave(source.sourceKeyHash, () =>
-      this.persistDiscordRefresh(sourceId, captureInputs, options),
+    return withCaptureSave(
+      'discord-local-media',
+      () =>
+        withCaptureSave(source.sourceKeyHash, () =>
+          this.persistDiscordRefresh(sourceId, captureInputs, options),
+        ),
+      'shared',
     )
   }
 
@@ -813,7 +999,11 @@ export class CommunitySourceService {
   ): Promise<{ source: CommunitySource; messages: CommunitySourceMessage[] }> {
     const source = await this.storage.getSource(sourceId)
     if (!source) throw new Error('社区来源不存在')
-    return withCaptureSave(source.sourceKeyHash, () => this.persistRevision(sourceId, revisionId))
+    return withCaptureSave(
+      'discord-local-media',
+      () => withCaptureSave(source.sourceKeyHash, () => this.persistRevision(sourceId, revisionId)),
+      'shared',
+    )
   }
 
   private async persistRevision(
@@ -877,6 +1067,23 @@ export class CommunitySourceService {
     messageId: string,
     attachmentId: string,
   ): Promise<CommunitySourceMessage> {
+    const source = await this.storage.getSource(sourceId)
+    if (!source) throw new Error('社区来源不存在')
+    return withCaptureSave(
+      'discord-local-media',
+      () =>
+        withCaptureSave(source.sourceKeyHash, () =>
+          this.persistAttachmentToLocal(sourceId, messageId, attachmentId),
+        ),
+      'shared',
+    )
+  }
+
+  private async persistAttachmentToLocal(
+    sourceId: string,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<CommunitySourceMessage> {
     if (!this.assetStore) throw new Error('当前环境没有可用的本地附件存储')
     const keyHash = await messageKeyHash(sourceId, messageId)
     const message = await this.storage.getMessage(sourceId, keyHash)
@@ -908,36 +1115,42 @@ export class CommunitySourceService {
     messageId: string,
     mode: 'message-only' | 'entire-source' = 'message-only',
   ): Promise<void> {
-    if (mode === 'entire-source') {
-      await this.deleteSource(sourceId)
-      return
-    }
-    const keyHash = await messageKeyHash(sourceId, messageId)
-    const message = await this.storage.getMessage(sourceId, keyHash)
-    if (!message) return
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        if (mode === 'entire-source') {
+          await this.deleteSource(sourceId)
+          return
+        }
+        const keyHash = await messageKeyHash(sourceId, messageId)
+        const message = await this.storage.getMessage(sourceId, keyHash)
+        if (!message) return
 
-    const messages = await this.storage.listMessages(sourceId)
-    if (messages.length <= 1) {
-      const bindings = await this.storage.listBindingsForSource(sourceId)
-      if (bindings.length) {
-        throw new Error(
-          '这是这个 Discord 来源最后一条本地内容，请使用“来源管理”解除关联或永久删除来源。',
-        )
-      }
-      await this.storage.deleteSource(sourceId)
-      return
-    }
+        const messages = await this.storage.listMessages(sourceId)
+        if (messages.length <= 1) {
+          const bindings = await this.storage.listBindingsForSource(sourceId)
+          if (bindings.length) {
+            throw new Error(
+              '这是这个 Discord 来源最后一条本地内容，请使用“来源管理”解除关联或永久删除来源。',
+            )
+          }
+          await this.storage.deleteSource(sourceId)
+          return
+        }
 
-    await this.storage.deleteMessage(message.id)
-    const source = await this.storage.getSource(sourceId)
-    if (source) {
-      await this.storage.putSource(
-        withMessageSummary(
-          source,
-          messages.filter((candidate) => candidate.id !== message.id),
-        ),
-      )
-    }
+        await this.storage.deleteMessage(message.id)
+        const source = await this.storage.getSource(sourceId)
+        if (source) {
+          await this.storage.putSource(
+            withMessageSummary(
+              source,
+              messages.filter((candidate) => candidate.id !== message.id),
+            ),
+          )
+        }
+      },
+      'shared',
+    )
   }
 
   async deleteSource(sourceId: string, options: { force?: boolean } = {}): Promise<void> {
@@ -955,11 +1168,23 @@ export class CommunitySourceService {
   }
 
   restoreBackup(data: CommunitySourceBackupData, mode: 'merge' | 'replace'): Promise<void> {
-    return mode === 'replace' ? this.storage.replaceAll(data) : this.storage.mergeAll(data)
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        return mode === 'replace' ? this.storage.replaceAll(data) : this.storage.mergeAll(data)
+      },
+      'shared',
+    )
   }
 
   replaceAll(data: CommunitySourceBackupData): Promise<void> {
-    return this.storage.replaceAll(data)
+    return withCaptureSave(
+      'discord-local-media',
+      async () => {
+        return this.storage.replaceAll(data)
+      },
+      'shared',
+    )
   }
 
   private prepareDeferredAttachments(
@@ -990,6 +1215,9 @@ export class CommunitySourceService {
     force = false,
   ): Promise<DiscordAttachmentMeta[]> {
     const normalized = normalizeAttachments([...remoteAttachments])
+    if (!force && !(await this.shouldDownloadPostMedia())) {
+      return this.prepareDeferredAttachments(normalized, existingAttachments)
+    }
     if (!this.assetStore) return normalized
     const existingById = new Map(
       existingAttachments.map((attachment) => [attachment.id, attachment]),

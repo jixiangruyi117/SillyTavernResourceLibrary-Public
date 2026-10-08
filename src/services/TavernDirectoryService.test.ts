@@ -41,6 +41,35 @@ function fixture() {
 }
 
 describe('offline Tavern directory', () => {
+  it('reads settings once per selected batch and refreshes the next operation', async () => {
+    const { files, storage, service, json } = fixture()
+    const regex = Array.from({ length: 20 }, (_, index) => ({
+      id: 'r-' + index,
+      scriptName: 'r-' + index,
+      findRegex: 'x',
+      replaceString: String(index),
+    }))
+    files.set('settings.json', json({ extension_settings: { regex } }))
+    const selected = (await service.listResources()).filter((item) => item.kind === 'regexGlobal')
+    let reads = 0
+    const original = storage.read.bind(storage)
+    storage.read = async (path) => {
+      if (path === 'settings.json') reads++
+      return original(path)
+    }
+    const batchId = crypto.randomUUID()
+    const result = []
+    for (const item of selected) result.push(...(await service.pullResources([item], batchId)))
+    service.finishPullBatch(batchId)
+    expect(result).toHaveLength(20)
+    expect(reads).toBe(1)
+    regex[0]!.replaceString = 'updated'
+    files.set('settings.json', json({ extension_settings: { regex } }))
+    const fresh = await service.pullResources([selected[0]!])
+    expect(reads).toBe(2)
+    expect(JSON.parse(await fresh[0]!.text()).global[0].replaceString).toBe('updated')
+  })
+
   it('lists only character-card names for persona matching without reading card files', async () => {
     const { files, storage, service } = fixture()
     let cardReads = 0

@@ -92,6 +92,7 @@ function disableScripts(value: unknown): unknown {
 export class TavernDirectoryService {
   private readonly items = new Map<string, LocatedItem>()
   private writeChain: Promise<unknown> = Promise.resolve()
+  private readonly readBatches = new Map<string, Map<string, Promise<Json>>>()
   readonly capabilities = [
     ...Object.keys(FOLDERS),
     'userPersona',
@@ -152,6 +153,7 @@ export class TavernDirectoryService {
         detail: path,
       }
       this.items.set(id, { item, path, value, parentKind })
+      return item
     }
     if (kind === 'character') {
       for (const folder of FOLDERS.character ?? []) {
@@ -204,17 +206,14 @@ export class TavernDirectoryService {
                 : /\.json$/iu
           if (!valid.test(entry.name)) continue
           const path = `${folder}/${entry.name}`
-          add(kind, nameOf(entry.name), path)
+          const native = add(kind, nameOf(entry.name), path)
           // Scoped scripts/regex are read only for their owning resource, not entire settings.
           if (kind === 'character' || kind === 'preset') {
             const file = await this.storage.read(path)
             if (!file || file.size > MAX_BYTES) continue
-            const native = [...this.items.values()].find(
-              (located) => located.path === path && located.item.kind === kind,
-            )!
-            native.item.contentHash = await hashBlob(file)
-            native.item.size = file.size
-            native.item.updatedAt = file.lastModified
+            native.contentHash = await hashBlob(file)
+            native.size = file.size
+            native.updatedAt = file.lastModified
             let data: Json
             try {
               data =
@@ -285,14 +284,22 @@ export class TavernDirectoryService {
     return [...this.items.values()].map(({ item }) => ({ ...item }))
   }
 
-  async pullResources(items: TavernResourceItem[]): Promise<File[]> {
+  async pullResources(items: TavernResourceItem[], batchId?: string): Promise<File[]> {
     const result: File[] = []
+    let reads = new Map<string, Promise<Json>>()
+    if (batchId) {
+      if (!this.readBatches.has(batchId)) {
+        if (this.readBatches.size >= 2) throw new Error('已有未结束的目录读取批次')
+        this.readBatches.set(batchId, reads)
+      }
+      reads = this.readBatches.get(batchId)!
+    }
     if (!this.items.size) await this.listResources()
     for (const item of items) {
       const entry = this.items.get(item.id)
       if (!entry) throw new Error(`${item.name} 已不存在，请刷新目录`)
       if (entry.value !== undefined) {
-        const current = await this.readEmbedded(entry)
+        const current = await this.readEmbedded(entry, reads)
         const value =
           item.kind === 'regexGlobal'
             ? { global: [current], sourceName: item.name }
@@ -315,14 +322,30 @@ export class TavernDirectoryService {
     return result
   }
 
-  private async readEmbedded(entry: LocatedItem): Promise<unknown> {
+  finishPullBatch(batchId: string): void {
+    this.readBatches.delete(batchId)
+  }
+
+  private async readEmbedded(
+    entry: LocatedItem,
+    reads: Map<string, Promise<Json>>,
+  ): Promise<unknown> {
+    const read = (path: string, load: () => Promise<Json>): Promise<Json> => {
+      if (!reads.has(path)) {
+        // Keep settings plus only the current parent file for this explicit batch.
+        for (const key of reads.keys()) if (key !== 'settings.json') reads.delete(key)
+        reads.set(path, load())
+      }
+      return reads.get(path)!
+    }
     if (entry.parentKind) {
-      const file = await this.storage.read(entry.path)
-      if (!file || file.size > MAX_BYTES) throw new Error('绑定资源已不存在或过大，请刷新目录')
-      const card =
-        entry.parentKind === 'character'
+      const card = await read(entry.path, async () => {
+        const file = await this.storage.read(entry.path)
+        if (!file || file.size > MAX_BYTES) throw new Error('绑定资源已不存在或过大，请刷新目录')
+        return entry.parentKind === 'character'
           ? object((await new PngResourceParser().parse(file)).metadata.card)
           : await parse(file)
+      })
       const data = entry.parentKind === 'character' ? object(card.data ?? card) : card
       const ext = object(data.extensions)
       const result = entry.item.kind.startsWith('regex')
@@ -332,7 +355,7 @@ export class TavernDirectoryService {
         throw new Error('绑定的正则或脚本已变化，请刷新目录')
       return result
     }
-    const { data } = await this.settings()
+    const data = await read('settings.json', async () => (await this.settings()).data)
     if (entry.item.kind === 'userPersona') {
       const id = entry.path.slice('persona/'.length)
       if (!Object.hasOwn(object(data.personas), id)) throw new Error('人设已不存在，请刷新目录')

@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import { hashCloudBlob } from './CloudArchiveCodec'
 
 export const GITHUB_BUNDLE_FORMAT = 'srl-github-backup-bundle'
@@ -54,17 +56,30 @@ const GEAR_TABLE = (() => {
   return values
 })()
 
-async function contentDefinedParts(blob: Blob): Promise<Blob[]> {
-  if (!blob.size) return [blob.slice(0, 0)]
-  const parts: Blob[] = []
+async function contentDefinedParts(
+  blob: Blob,
+  computeTotal: boolean,
+): Promise<{
+  blobs: Blob[]
+  parts: GitHubBundlePart[]
+  totalSha256?: string
+}> {
+  const blobs: Blob[] = []
+  const parts: GitHubBundlePart[] = []
   let start = 0
   let offset = 0
   let rolling = 0
+  let partHash = sha256.create()
+  const totalHash = computeTotal ? sha256.create() : undefined
   const reader = blob.stream().getReader()
+  let yieldedAt = 0
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      totalHash?.update(value)
+      let segmentStart = 0
+      const valueOffset = offset
       for (const byte of value) {
         rolling = (Math.imul(rolling, 2) + (GEAR_TABLE[byte] ?? 0)) >>> 0
         offset += 1
@@ -73,17 +88,34 @@ async function contentDefinedParts(blob: Blob): Promise<Blob[]> {
           size >= GITHUB_MIN_PART_SIZE &&
           ((rolling & CONTENT_BOUNDARY_MASK) === 0 || size >= GITHUB_PART_SIZE)
         ) {
-          parts.push(blob.slice(start, offset))
+          const segmentEnd = offset - valueOffset
+          partHash.update(value.subarray(segmentStart, segmentEnd))
+          const hash = bytesToHex(partHash.digest())
+          blobs.push(blob.slice(start, offset))
+          parts.push({ name: `srl-chunk--sha256-${hash}`, size: offset - start, sha256: hash })
           start = offset
           rolling = 0
+          partHash = sha256.create()
+          segmentStart = segmentEnd
         }
       }
+      partHash.update(value.subarray(segmentStart))
+      // Preserve UI opportunities during large-file planning without a second read/hash pass.
+      if (offset - yieldedAt >= 1024 * 1024) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        yieldedAt = offset
+      }
+    }
+    if (offset !== blob.size) throw new Error('云备份分块读取长度与原件不一致')
+    if (start < offset || !parts.length) {
+      const hash = bytesToHex(partHash.digest())
+      blobs.push(blob.slice(start, offset))
+      parts.push({ name: `srl-chunk--sha256-${hash}`, size: offset - start, sha256: hash })
     }
   } finally {
     reader.releaseLock()
   }
-  if (start < offset) parts.push(blob.slice(start, offset))
-  return parts
+  return { blobs, parts, totalSha256: totalHash ? bytesToHex(totalHash.digest()) : undefined }
 }
 
 export async function createGitHubBundle(
@@ -96,19 +128,22 @@ export async function createGitHubBundle(
     throw new Error('GitHub 分包大小无效')
   if (knownTotalSha256 !== undefined && !/^[a-f0-9]{64}$/i.test(knownTotalSha256))
     throw new Error('云备份总哈希无效')
-  const blobs =
+  const streamed =
     partSize === undefined
-      ? await contentDefinedParts(blob)
-      : Array.from({ length: Math.max(1, Math.ceil(blob.size / partSize)) }, (_, index) =>
-          blob.slice(index * partSize, Math.min(blob.size, (index + 1) * partSize)),
-        )
-  const parts: GitHubBundlePart[] = []
-
-  for (const part of blobs) {
-    const sha256 = await hashCloudBlob(part)
-    const name = `srl-chunk--sha256-${sha256}`
-    parts.push({ name, size: part.size, sha256 })
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      ? await contentDefinedParts(blob, knownTotalSha256 === undefined)
+      : undefined
+  const blobs =
+    streamed?.blobs ??
+    Array.from({ length: Math.max(1, Math.ceil(blob.size / partSize!)) }, (_, index) =>
+      blob.slice(index * partSize!, Math.min(blob.size, (index + 1) * partSize!)),
+    )
+  const parts: GitHubBundlePart[] = streamed?.parts ?? []
+  if (!streamed) {
+    for (const part of blobs) {
+      const hash = await hashCloudBlob(part)
+      parts.push({ name: `srl-chunk--sha256-${hash}`, size: part.size, sha256: hash })
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
   }
 
   return {
@@ -119,7 +154,7 @@ export async function createGitHubBundle(
       createdAt: new Date().toISOString(),
       fileName,
       totalSize: blob.size,
-      totalSha256: knownTotalSha256 ?? (await hashCloudBlob(blob)),
+      totalSha256: knownTotalSha256 ?? streamed?.totalSha256 ?? (await hashCloudBlob(blob)),
       parts,
     },
   }

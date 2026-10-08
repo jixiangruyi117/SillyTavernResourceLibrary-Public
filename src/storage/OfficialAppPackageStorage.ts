@@ -2,6 +2,7 @@ import type { InstalledOfficialApp, OfficialAppFile, OfficialAppId } from '../ty
 
 export interface OfficialAppPackageStorage {
   list(): Promise<InstalledOfficialApp[]>
+  get?(id: OfficialAppId): Promise<InstalledOfficialApp | undefined>
   save(app: InstalledOfficialApp): Promise<void>
   remove(id: OfficialAppId): Promise<void>
   writeFile(path: string, bytes: Uint8Array): Promise<void>

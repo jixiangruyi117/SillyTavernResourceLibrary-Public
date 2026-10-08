@@ -1,4 +1,5 @@
 import Dexie from 'dexie'
+import { hashBlob, hashBytes } from '../services/HashService'
 
 import {
   APP_DATABASE_STORES,
@@ -35,6 +36,7 @@ interface StoreCheckpoint {
   status: 'copying' | 'failed' | 'verified'
   sourceCount: number
   copiedCount: number
+  sourceDigest?: string
   lastKey?: string
   updatedAt: number
   error?: string
@@ -58,6 +60,7 @@ type NativeMigrationPort = Pick<
   | 'status'
   | 'getState'
   | 'putState'
+  | 'clearStore'
   | 'getRecordsByKeys'
   | 'putRecordsWithState'
   | 'writeBlob'
@@ -155,11 +158,13 @@ function getPrimaryKey(value: unknown, keyPath: string | string[]): IDBValidKey 
   return key as IDBValidKey
 }
 
+export { getPrimaryKey as getAppDatabasePrimaryKey }
+
 function fieldPath(parent: string, segment: string | number): string {
   return `${parent}/${String(segment).replaceAll('~', '~0').replaceAll('/', '~1')}`
 }
 
-function isEncodedBlobValue(value: unknown): value is EncodedBlobValue {
+export function isEncodedBlobValue(value: unknown): value is EncodedBlobValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as Partial<EncodedBlobValue>
   return (
@@ -181,21 +186,22 @@ export async function encodeAppDatabaseValue(
   value: unknown,
   store: NativeAppDatabaseStore,
   key: string,
-  native: NativeMigrationPort = nativeAppDatabase,
+  native: Pick<NativeMigrationPort, 'writeBlob'> = nativeAppDatabase,
   blobOwnerKey = key,
+  largeStringThreshold = LARGE_STRING_THRESHOLD,
 ): Promise<unknown> {
   const ancestors = new WeakSet<object>()
 
   const visit = async (current: unknown, path: string): Promise<unknown> => {
     if (current === undefined) return { [VALUE_TAG]: 'undefined' }
     if (typeof current === 'bigint') return { [VALUE_TAG]: 'bigint', value: current.toString() }
-    if (typeof current === 'number' && !Number.isFinite(current)) {
-      return { [VALUE_TAG]: 'number', value: String(current) }
+    if (typeof current === 'number' && (!Number.isFinite(current) || Object.is(current, -0))) {
+      return { [VALUE_TAG]: 'number', value: Object.is(current, -0) ? '-0' : String(current) }
     }
     if (typeof current === 'function' || typeof current === 'symbol') {
       throw new Error('IndexedDB 记录包含无法迁移的值')
     }
-    if (typeof current === 'string' && current.length > LARGE_STRING_THRESHOLD) {
+    if (typeof current === 'string' && current.length > largeStringThreshold) {
       const blob = new Blob([current], { type: 'text/plain;charset=utf-8' })
       const stored = await native.writeBlob(store, key, path, blob, blobOwnerKey)
       return {
@@ -257,23 +263,28 @@ export async function encodeAppDatabaseValue(
     ancestors.add(current)
     try {
       if (Array.isArray(current)) {
-        return Promise.all(current.map((item, index) => visit(item, fieldPath(path, index))))
+        const items: unknown[] = []
+        for (let index = 0; index < current.length; index++)
+          items.push(await visit(current[index], fieldPath(path, index)))
+        return items
       }
       if (current instanceof Map) {
-        const entries = await Promise.all(
-          [...current.entries()].map(async ([mapKey, mapValue], index) => [
+        const entries: Array<[unknown, unknown]> = []
+        for (const [mapKey, mapValue] of current) {
+          const index = entries.length
+          entries.push([
             await visit(mapKey, fieldPath(path, `key-${index}`)),
             await visit(mapValue, fieldPath(path, `value-${index}`)),
-          ]),
-        )
+          ])
+        }
         return { [VALUE_TAG]: 'map', entries }
       }
       if (current instanceof Set) {
+        const values: unknown[] = []
+        for (const item of current) values.push(await visit(item, fieldPath(path, values.length)))
         return {
           [VALUE_TAG]: 'set',
-          values: await Promise.all(
-            [...current].map((item, index) => visit(item, fieldPath(path, index))),
-          ),
+          values,
         }
       }
       const prototype = Object.getPrototypeOf(current)
@@ -283,14 +294,12 @@ export async function encodeAppDatabaseValue(
         )
       }
       if (Object.prototype.hasOwnProperty.call(current, VALUE_TAG)) {
+        const entries: Array<[string, unknown]> = []
+        for (const [property, item] of Object.entries(current))
+          entries.push([property, await visit(item, fieldPath(path, property))])
         return {
           [VALUE_TAG]: 'object',
-          entries: await Promise.all(
-            Object.entries(current).map(async ([property, item]) => [
-              property,
-              await visit(item, fieldPath(path, property)),
-            ]),
-          ),
+          entries,
         }
       }
       const record: Record<string, unknown> = {}
@@ -311,6 +320,7 @@ export async function decodeAppDatabaseValue(
   store: NativeAppDatabaseStore,
   key: string,
   native: NativeMigrationPort = nativeAppDatabase,
+  loadBinary = true,
 ): Promise<unknown> {
   const visit = async (current: unknown): Promise<unknown> => {
     if (Array.isArray(current)) return Promise.all(current.map(visit))
@@ -320,6 +330,7 @@ export async function decodeAppDatabaseValue(
     if (kind === 'undefined') return undefined
     if (kind === 'bigint') return BigInt(String(tagged.value))
     if (kind === 'number') {
+      if (tagged.value === '-0') return -0
       if (tagged.value === 'NaN') return Number.NaN
       if (tagged.value === 'Infinity') return Number.POSITIVE_INFINITY
       if (tagged.value === '-Infinity') return Number.NEGATIVE_INFINITY
@@ -345,7 +356,15 @@ export async function decodeAppDatabaseValue(
       return record
     }
     if (isEncodedBlobValue(current)) {
-      const blob = await native.readBlob(store, current.blobOwnerKey ?? key, current.fieldPath)
+      // Metadata scans retain binary size/hash references without crossing the file bridge.
+      // Text is still decoded: it can contain an externalized scalar or metadata field.
+      if (!loadBinary && kind !== 'text') return current
+      const blob = await native.readBlob(
+        store,
+        current.blobOwnerKey ?? key,
+        current.fieldPath,
+        current.sha256,
+      )
       if (!blob || blob.size !== current.size || blob.type !== current.mimeType) {
         throw new Error(
           `原生数据库附件缺失或元数据不匹配（${store}/${current.blobOwnerKey ?? key}/${current.fieldPath}，期望 ${current.size}/${current.mimeType}，实际 ${blob?.size ?? 'missing'}/${blob?.type ?? ''}）`,
@@ -405,6 +424,164 @@ export function canonicalizeAppDatabaseValue(value: unknown): string {
   return canonicalJson(value)
 }
 
+async function advanceSourceDigest(digest: string, key: string, value: unknown): Promise<string> {
+  return hashBytes(new TextEncoder().encode(`${digest}\n${canonicalJson({ key, value })}`))
+}
+
+function normalizeCommittedBlobOwners(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeCommittedBlobOwners)
+  if (!value || typeof value !== 'object') return value
+  const record = Object.fromEntries(
+    Object.entries(value).map(([name, item]) => [name, normalizeCommittedBlobOwners(item)]),
+  )
+  // verifyStore proves the referenced file. Its transaction owner is a storage
+  // location, while fieldPath/type/size/mime/hash still prove logical equality.
+  if (isEncodedBlobValue(value)) delete record.blobOwnerKey
+  return record
+}
+
+async function sameEncodedContent(left: unknown, right: unknown): Promise<boolean> {
+  // Bridge compaction can move even short strings into files. Compare their verified
+  // content descriptors, not their storage representation; never write/read attachments here.
+  if (typeof left === 'string' && isEncodedBlobValue(right) && right[VALUE_TAG] === 'text') {
+    // Blob replaces lone UTF-16 surrogates with U+FFFD: equal UTF-8 hashes would
+    // not prove equality with such an inline source. Paired emoji remain valid.
+    if (/[\uD800-\uDFFF]/u.test(left)) return false
+    const blob = new Blob([left], { type: 'text/plain;charset=utf-8' })
+    return (
+      right.mimeType === blob.type &&
+      right.size === blob.size &&
+      right.sha256 === (await hashBlob(blob))
+    )
+  }
+  if (typeof right === 'string' && isEncodedBlobValue(left) && left[VALUE_TAG] === 'text')
+    return sameEncodedContent(right, left)
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) return false
+    for (let index = 0; index < left.length; index++)
+      if (!(await sameEncodedContent(left[index], right[index]))) return false
+    return true
+  }
+  if (
+    left &&
+    right &&
+    typeof left === 'object' &&
+    typeof right === 'object' &&
+    !Array.isArray(left) &&
+    !Array.isArray(right)
+  ) {
+    const leftRecord = left as Record<string, unknown>
+    const rightRecord = right as Record<string, unknown>
+    const keys = Object.keys(leftRecord)
+    if (keys.length !== Object.keys(rightRecord).length) return false
+    for (const key of keys)
+      if (
+        !Object.hasOwn(rightRecord, key) ||
+        !(await sameEncodedContent(leftRecord[key], rightRecord[key]))
+      )
+        return false
+    return true
+  }
+  return canonicalJson(left) === canonicalJson(right)
+}
+
+/** Read the migration source without writing attachments; also prove legacy receipts against native rows. */
+export async function fingerprintAppDatabaseStore(
+  database: Dexie,
+  store: NativeAppDatabaseStore,
+  options: {
+    native?: NativeMigrationPort
+    compareNative?: boolean
+    limit?: number
+    batchSize?: number
+    isQuiesced?: () => boolean
+    keepTransactionAlive?: boolean
+  } = {},
+): Promise<{
+  digest: string
+  matches: boolean
+  count: number
+  firstMismatch?: { key: string; fields: string[] }
+}> {
+  const table = database.table(store)
+  const keyPath = table.schema.primKey.keyPath
+  if (!keyPath) throw new Error(`IndexedDB 表 ${store} 使用了不支持的外置主键`)
+  const native = options.native ?? nativeAppDatabase
+  const external = <T>(promise: Promise<T>): PromiseLike<T> =>
+    options.keepTransactionAlive ? Dexie.waitFor(promise, Infinity) : promise
+  const verificationNative: NativeMigrationPort = {
+    ...native,
+    writeBlob: async (_store, _key, _path, blob) => ({
+      size: blob.size,
+      mimeType: blob.type,
+      sha256: await hashBlob(blob),
+    }),
+  }
+  let count = 0
+  let digest = await external(hashBytes(new Uint8Array()))
+  let matches = true
+  let firstMismatch: { key: string; fields: string[] } | undefined
+  let after: IDBValidKey = Dexie.minKey
+  const limit = options.limit ?? (await table.count())
+  const batchSize = Math.max(1, Math.min(100, options.batchSize ?? DEFAULT_BATCH_SIZE))
+  while (count < limit) {
+    if (options.isQuiesced && !options.isQuiesced())
+      throw new Error('应用数据库已恢复写入，迁移已暂停')
+    const source = await table
+      .where(table.schema.primKey.name)
+      .above(after)
+      .limit(Math.min(batchSize, limit - count))
+      .toArray()
+    if (!source.length) return { digest, matches: false, count, firstMismatch }
+    const keys = source.map((value) => encodeAppDatabaseKey(getPrimaryKey(value, keyPath)))
+    const actual = options.compareNative
+      ? new Map(
+          (await external(native.getRecordsByKeys(store, keys))).map((row) => [row.key, row.value]),
+        )
+      : undefined
+    for (let index = 0; index < source.length; index++) {
+      const key = keys[index]!
+      let encoded = await external(
+        encodeAppDatabaseValue(source[index], store, key, verificationNative),
+      )
+      const indexes = encodeAppDatabaseIndexes(source[index], table.schema.indexes)
+      if (JSON.stringify({ key, value: encoded, indexes }).length > MAX_BATCH_JSON_CHARS)
+        encoded = await external(
+          encodeAppDatabaseValue(source[index], store, key, verificationNative, key, 0),
+        )
+      digest = await external(advanceSourceDigest(digest, key, encoded))
+      if (actual) {
+        const normalized = normalizeCommittedBlobOwners(actual.get(key))
+        if (!actual.has(key) || !(await external(sameEncodedContent(encoded, normalized)))) {
+          matches = false
+          if (!firstMismatch) {
+            const fields: string[] = []
+            if (!actual.has(key)) fields.push('原生记录缺失')
+            else {
+              const expectedRecord = encoded as Record<string, unknown>
+              const actualRecord = normalized as Record<string, unknown>
+              for (const field of new Set([
+                ...Object.keys(expectedRecord),
+                ...Object.keys(actualRecord),
+              ])) {
+                if (
+                  Object.hasOwn(expectedRecord, field) !== Object.hasOwn(actualRecord, field) ||
+                  !(await external(sameEncodedContent(expectedRecord[field], actualRecord[field])))
+                )
+                  fields.push(field)
+              }
+            }
+            firstMismatch = { key, fields }
+          }
+        }
+      }
+    }
+    count += source.length
+    after = getPrimaryKey(source.at(-1), keyPath)
+  }
+  return { digest, matches, count, firstMismatch }
+}
+
 export class AndroidAppDatabaseMigrator {
   private readonly database: Dexie
   private readonly native: NativeMigrationPort
@@ -461,6 +638,28 @@ export class AndroidAppDatabaseMigrator {
     let checkpoint = rawState ? (JSON.parse(rawState) as StoreCheckpoint) : undefined
     const nativeCount = (await this.native.status()).counts[storeName] ?? 0
 
+    if (checkpoint && checkpoint.sourceCount === sourceCount && checkpoint.copiedCount > 0) {
+      // A failed startup can reopen IndexedDB for normal editing. Equal counts do not prove
+      // that its previously copied rows are unchanged; validate the prefix before resuming.
+      const prefix = await fingerprintAppDatabaseStore(this.database, storeName, {
+        native: this.native,
+        compareNative: true,
+        limit: checkpoint.copiedCount,
+        batchSize: this.batchSize,
+        isQuiesced: this.isQuiesced,
+      })
+      if (!prefix.matches) {
+        if ((await this.native.getState('migration:appdb:v1:active')) !== undefined)
+          throw new Error(`原生数据库已启用；拒绝重置表 ${storeName} 的迁移副本`)
+        await this.native.clearStore(storeName)
+        await this.native.putState(stateKey, '')
+        checkpoint = undefined
+      } else {
+        checkpoint.sourceDigest = prefix.digest
+        await this.native.putState(stateKey, JSON.stringify(checkpoint))
+      }
+    }
+
     if (
       checkpoint?.status === 'verified' &&
       checkpoint.sourceCount === sourceCount &&
@@ -468,11 +667,20 @@ export class AndroidAppDatabaseMigrator {
     ) {
       return { store: storeName, copied: sourceCount, total: sourceCount, status: 'verified' }
     }
-    if (!checkpoint && nativeCount > 0) {
+    if (!checkpoint && ((await this.native.status()).counts[storeName] ?? 0) > 0) {
       throw new Error(`原生表 ${storeName} 已有数据但没有迁移检查点；为避免覆盖，已停止`)
     }
     if (checkpoint && checkpoint.sourceCount !== sourceCount) {
-      throw new Error(`IndexedDB 表 ${storeName} 在迁移期间发生变化；保留原数据并停止续传`)
+      if ((await this.native.getState('migration:appdb:v1:active')) !== undefined) {
+        throw new Error(`原生数据库已启用；拒绝重置表 ${storeName} 的迁移副本`)
+      }
+      // The app may have fallen back to IndexedDB after an earlier interrupted attempt. That
+      // source remains authoritative and can legitimately gain or lose rows before retry. An
+      // inactive native store contains only the partial migration copy, so rebuild this store
+      // from the current source instead of leaving migration permanently blocked by its old count.
+      await this.native.clearStore(storeName)
+      await this.native.putState(stateKey, '')
+      checkpoint = undefined
     }
     if (!checkpoint) {
       checkpoint = {
@@ -480,6 +688,7 @@ export class AndroidAppDatabaseMigrator {
         status: 'copying',
         sourceCount,
         copiedCount: 0,
+        sourceDigest: await hashBytes(new Uint8Array()),
         updatedAt: Date.now(),
       }
     } else {
@@ -516,26 +725,41 @@ export class AndroidAppDatabaseMigrator {
         for (const value of values) {
           const sourceKey = getPrimaryKey(value, keyPath)
           const nativeKey = encodeAppDatabaseKey(sourceKey)
-          const encodedValue = await encodeAppDatabaseValue(
-            value,
-            storeName,
-            nativeKey,
-            this.native,
-          )
+          let encodedValue = await encodeAppDatabaseValue(value, storeName, nativeKey, this.native)
           if (!encodedValue || typeof encodedValue !== 'object' || Array.isArray(encodedValue)) {
             throw new Error(`IndexedDB 表 ${storeName} 包含非对象记录`)
           }
-          const row = {
+          let row = {
             key: nativeKey,
             value: encodedValue as Record<string, unknown>,
             indexes: encodeAppDatabaseIndexes(value, table.schema.indexes),
           }
+          let rowChars = JSON.stringify(row).length
+          if (rowChars > MAX_BATCH_JSON_CHARS) {
+            // Several individually small strings can still make one bridge payload too large.
+            // Store all string values as blobs for this row and retry the compact record write.
+            encodedValue = await encodeAppDatabaseValue(
+              value,
+              storeName,
+              nativeKey,
+              this.native,
+              nativeKey,
+              0,
+            )
+            if (!encodedValue || typeof encodedValue !== 'object' || Array.isArray(encodedValue)) {
+              throw new Error(`IndexedDB 表 ${storeName} 包含非对象记录`)
+            }
+            row = {
+              ...row,
+              value: encodedValue as Record<string, unknown>,
+            }
+            rowChars = JSON.stringify(row).length
+            if (rowChars > MAX_BATCH_JSON_CHARS) {
+              throw new Error(`IndexedDB 表 ${storeName} 单条记录的结构元数据超过原生迁移批次上限`)
+            }
+          }
           rows.push(row)
           sourceKeys.push({ encoded: encodeAppDatabaseKey(sourceKey), nativeKey })
-          const rowChars = JSON.stringify(row).length
-          if (rowChars > MAX_BATCH_JSON_CHARS) {
-            throw new Error(`IndexedDB 表 ${storeName} 单条记录超过原生迁移批次上限`)
-          }
           chars += rowChars
           if (chars > MAX_BATCH_JSON_CHARS && rows.length > 1) {
             rows.pop()
@@ -547,11 +771,15 @@ export class AndroidAppDatabaseMigrator {
 
         const nextCopied = copied + rows.length
         const nextLastKey = sourceKeys.at(-1)!.encoded
+        let sourceDigest: string = checkpoint.sourceDigest ?? (await hashBytes(new Uint8Array()))
+        for (const row of rows)
+          sourceDigest = await advanceSourceDigest(sourceDigest, row.key, row.value)
         checkpoint = {
           version: 1,
           status: 'copying',
           sourceCount,
           copiedCount: nextCopied,
+          sourceDigest,
           lastKey: nextLastKey,
           updatedAt: Date.now(),
         }

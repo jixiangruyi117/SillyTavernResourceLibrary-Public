@@ -24,6 +24,16 @@
   backdrop-filter: blur(2px);
 }
 
+.confirm-dialog__overlay--safety-layer {
+  z-index: 2147483646;
+}
+
+/* Keep confirmations usable when an embedded WebView cannot enter the top layer. */
+.confirm-dialog__overlay--fallback {
+  background: rgba(18, 24, 21, 0.45);
+  backdrop-filter: blur(2px);
+}
+
 .confirm-dialog__overlay.is-centered {
   align-items: center;
 }
@@ -75,6 +85,17 @@
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+.confirm-dialog > footer.confirm-dialog__choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.confirm-dialog > footer.confirm-dialog__choices button {
+  min-width: 0;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
 }
 
 .confirm-dialog__confirm {

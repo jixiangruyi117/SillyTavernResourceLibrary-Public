@@ -32,13 +32,37 @@ final class NativeCharacterCardProcessor {
     private NativeCharacterCardProcessor() {}
 
     static JSONObject parseOnly(File incoming, String fileName, File parsedResourceFile) throws Exception {
+        return parseResource(incoming, fileName, parsedResourceFile, false);
+    }
+
+    static JSONObject parseBackgroundResource(File incoming, String fileName, File parsedResourceFile) throws Exception {
+        return parseResource(incoming, fileName, parsedResourceFile, true);
+    }
+
+    private static JSONObject parseResource(File incoming, String fileName, File parsedResourceFile, boolean includeTavernResources) throws Exception {
         JSONObject result = new JSONObject().put("state", "not_character_card");
-        CardPayload payload = readCard(incoming, fileName);
+        CardPayload payload;
+        JSONObject resource = null;
+        if (isJsonName(fileName)) {
+            Object value = NativeTavernResourceParser.readJson(incoming);
+            payload = value instanceof JSONObject && isCharacterCard((JSONObject) value)
+                ? new CardPayload((JSONObject) value, "") : null;
+            if (payload == null && includeTavernResources) resource = NativeTavernResourceParser.parseJson(value, fileName);
+        } else payload = readCard(incoming, fileName);
+        if (payload == null && includeTavernResources && !isJsonName(fileName)) resource = NativeTavernResourceParser.parse(incoming, fileName);
+        if (resource != null) {
+            if ("chat".equals(resource.optString("type")) && isJsonName(fileName) && incoming.length() > 20 * 1024 * 1024)
+                throw new IllegalArgumentException("JSON 数组聊天超过 20 MiB，请使用酒馆 JSONL 导出");
+            writeJsonAtomically(parsedResourceFile, resource);
+            return result.put("state", "parsed").put("resourceType", resource.optString("type"))
+                .put("name", resource.optString("name"))
+                .put("parsedResourceUri", Uri.fromFile(parsedResourceFile).toString());
+        }
         if (payload == null) return result;
         JSONObject card = payload.card;
         CardInfo parsed = info(card, fileName);
         writeJsonAtomically(parsedResourceFile, parsedResource(card, parsed, fileName, payload.chunk));
-        return result.put("state", "parsed")
+        return result.put("state", "parsed").put("resourceType", "characterCard")
             .put("parsedResourceUri", Uri.fromFile(parsedResourceFile).toString());
     }
 

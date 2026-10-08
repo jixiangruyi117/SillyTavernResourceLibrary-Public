@@ -11,6 +11,21 @@ import { ExternalAppService } from './ExternalAppService'
 
 const databases: AppDatabase[] = []
 
+it('trusts only inspected build-shipped reader bytes, never an ID or restored fingerprint alone', async () => {
+  const service = createService('builtin-reader-identity')
+  const preview = await service.inspect(createPackage({ ...manifest, id: 'com.srl.duleme' }))
+  const installed = await service.install(preview, 'trustedCompatible')
+  expect(service.isBuiltinReader(installed)).toBe(false)
+  service.registerBuiltinReader(preview)
+  expect(service.isBuiltinReader(installed)).toBe(true)
+  expect(
+    service.isBuiltinReader({ ...installed, runtimeHtml: '<html>forged runtime</html>' }),
+  ).toBe(false)
+  expect(service.isBuiltinReader({ ...installed, packageFingerprint: 'different' })).toBe(false)
+  expect(service.isBuiltinReader({ ...installed, runtimeMode: 'isolated' })).toBe(false)
+  expect(service.isBuiltinReader({ ...installed, enabled: false })).toBe(false)
+})
+
 function createService(name: string): ExternalAppService {
   const database = new AppDatabase(name)
   databases.push(database)
@@ -48,6 +63,16 @@ const manifest = {
   permissions: ['app.storage'],
 }
 
+it('reads an installed APP summary without loading its runtime table', async () => {
+  const database = new AppDatabase(`app-summary-${crypto.randomUUID()}`)
+  databases.push(database)
+  await database.externalApps.put({ id: manifest.id, manifest, enabled: true } as never)
+  const runtimeRead = vi.spyOn(database.externalAppRuntimes, 'get')
+  const service = new ExternalAppService(new IndexedDbExternalAppStorage(database))
+  expect(await service.getSummary(manifest.id)).toMatchObject({ id: manifest.id, enabled: true })
+  expect(runtimeRead).not.toHaveBeenCalled()
+})
+
 afterEach(async () => {
   const opened = databases.splice(0)
   const names = opened.map((database) => database.name)
@@ -56,6 +81,20 @@ afterEach(async () => {
 })
 
 describe('ExternalAppService', () => {
+  it('reads live installation summaries without loading executable package data', async () => {
+    const database = new AppDatabase(`summary-${crypto.randomUUID()}`)
+    databases.push(database)
+    const storage = new IndexedDbExternalAppStorage(database)
+    const service = new ExternalAppService(storage)
+    await service.install(createPackage(manifest))
+    const fullRead = vi.spyOn(storage, 'get')
+    expect(await service.getSummary(manifest.id)).toMatchObject({ enabled: true })
+    await service.setEnabled(manifest.id, false)
+    expect(await service.getSummary(manifest.id)).toMatchObject({ enabled: false })
+    expect(await service.getSummary('missing')).toBeUndefined()
+    expect(fullRead).not.toHaveBeenCalled()
+  })
+
   it('discovers only installed declarations, pages metadata, disables incompatible/denied tools, detects source changes and preserves backup source/data', async () => {
     const service = createService(`tools-${crypto.randomUUID()}`)
     const definition = {

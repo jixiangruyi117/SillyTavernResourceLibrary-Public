@@ -1,4 +1,5 @@
 import { toRaw } from 'vue'
+import { isEncodedBlobValue } from './AndroidAppDatabaseMigration'
 import {
   normalizeResource,
   normalizeResourceLinks,
@@ -147,6 +148,7 @@ export function storedResourceBinarySize(resource: StoredResource): number {
   const originalBlob = resource.originalBlob as unknown
   if (originalBlob instanceof Blob) return originalBlob.size
   if (originalBlob instanceof ArrayBuffer) return originalBlob.byteLength
+  if (isEncodedBlobValue(originalBlob)) return originalBlob.size
   return 0
 }
 

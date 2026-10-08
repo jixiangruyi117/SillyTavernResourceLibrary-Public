@@ -19,10 +19,24 @@ type PanelModel = Pick<
   | 'storageUsagePercent'
   | 'isClearingNativeCache'
   | 'clearNativeTemporaryStorage'
+  | 'canClearRetainedNativeCopy'
+  | 'retainedNativeCopy'
+  | 'isClearingRetainedNativeCopy'
+  | 'retainedNativeCopyProgress'
+  | 'refreshRetainedNativeCopy'
+  | 'clearRetainedNativeCopy'
+  | 'isRetryingNativeMigration'
+  | 'canRetryNativeMigration'
+  | 'retryNativeMigration'
   | 'legacyLibraryHistory'
   | 'isClearingLegacyLibraryHistory'
   | 'refreshLegacyLibraryHistory'
   | 'clearLegacyLibraryHistory'
+  | 'oldPngThumbnailRepairStatus'
+  | 'isRepairingOldPngThumbnails'
+  | 'refreshOldPngThumbnailRepairStatus'
+  | 'repairOldPngThumbnails'
+  | 'vaultStatus'
   | 'isVaultBusy'
   | 'formatBackupDate'
   | 'lastFullBackupAt'
@@ -51,14 +65,30 @@ const displayedStorageAvailable = toRef(input.model, 'displayedStorageAvailable'
 const storageUsagePercent = toRef(input.model, 'storageUsagePercent')
 const isClearingNativeCache = toRef(input.model, 'isClearingNativeCache')
 const clearNativeTemporaryStorage = toRef(input.model, 'clearNativeTemporaryStorage')
+const canClearRetainedNativeCopy = toRef(input.model, 'canClearRetainedNativeCopy')
+const retainedNativeCopy = toRef(input.model, 'retainedNativeCopy')
+const isClearingRetainedNativeCopy = toRef(input.model, 'isClearingRetainedNativeCopy')
+const retainedNativeCopyProgress = toRef(input.model, 'retainedNativeCopyProgress')
+const clearRetainedNativeCopy = toRef(input.model, 'clearRetainedNativeCopy')
+const isRetryingNativeMigration = toRef(input.model, 'isRetryingNativeMigration')
+const canRetryNativeMigration = toRef(input.model, 'canRetryNativeMigration')
+const retryNativeMigration = toRef(input.model, 'retryNativeMigration')
 const legacyLibraryHistory = toRef(input.model, 'legacyLibraryHistory')
 const isClearingLegacyLibraryHistory = toRef(input.model, 'isClearingLegacyLibraryHistory')
 const clearLegacyLibraryHistory = toRef(input.model, 'clearLegacyLibraryHistory')
+const oldPngThumbnailRepairStatus = toRef(input.model, 'oldPngThumbnailRepairStatus')
+const isRepairingOldPngThumbnails = toRef(input.model, 'isRepairingOldPngThumbnails')
+const repairOldPngThumbnails = toRef(input.model, 'repairOldPngThumbnails')
 const isVaultBusy = toRef(input.model, 'isVaultBusy')
+const vaultStatus = toRef(input.model, 'vaultStatus')
 watch(
   isDataProtectionOpen,
   (open) => {
-    if (open) void input.model.refreshLegacyLibraryHistory().catch(() => undefined)
+    if (open) {
+      void input.model.refreshLegacyLibraryHistory().catch(() => undefined)
+      void input.model.refreshOldPngThumbnailRepairStatus()
+      void input.model.refreshRetainedNativeCopy()
+    }
   },
   { immediate: true },
 )
@@ -169,6 +199,25 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
             {{ isClearingLegacyLibraryHistory ? '正在清理…' : '清理旧整库快照' }}
           </button>
         </template>
+        <template v-if="isNativeApk && canClearRetainedNativeCopy">
+          <p>
+            迁移前的旧副本：{{
+              retainedNativeCopy ? `${retainedNativeCopy.records} 条旧记录` : '正在读取…'
+            }}。不包含当前原生主库新增的数据。
+          </p>
+          <p v-if="isClearingRetainedNativeCopy" role="status">
+            {{ retainedNativeCopyProgress || '正在确认…' }}
+          </p>
+          <button
+            v-if="retainedNativeCopy?.records"
+            class="protection-card__action"
+            type="button"
+            :disabled="isClearingRetainedNativeCopy || isVaultBusy"
+            @click="clearRetainedNativeCopy"
+          >
+            {{ isClearingRetainedNativeCopy ? '正在校验并清理…' : '清理迁移前旧副本' }}
+          </button>
+        </template>
         <button
           v-if="isNativeApk"
           class="protection-card__action"
@@ -177,6 +226,20 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
           @click="clearNativeTemporaryStorage"
         >
           {{ isClearingNativeCache ? '正在清理…' : '清理临时缓存' }}
+        </button>
+      </article>
+
+      <article v-if="canRetryNativeMigration" class="protection-card protection-card--storage">
+        <span class="protection-card__label">原生资源库迁移</span>
+        <strong>可从保留的网页数据库重试</strong>
+        <p>迁移会复制资源和附件，需要额外的设备空间；原数据库会保留到迁移完成。</p>
+        <button
+          class="protection-card__action"
+          type="button"
+          :disabled="isRetryingNativeMigration"
+          @click="retryNativeMigration"
+        >
+          {{ isRetryingNativeMigration ? '正在重启…' : '重启并重试迁移' }}
         </button>
       </article>
 
@@ -223,6 +286,36 @@ const isParsedTagCleanerOpen = toRef(input.model, 'isParsedTagCleanerOpen')
           @click="isExtractedCleanerOpen = true"
         >
           打开拆分副本清理
+        </button>
+      </article>
+
+      <article class="protection-card protection-card--extracted">
+        <span class="protection-card__label">旧资源缩略图补回</span>
+        <strong>
+          {{
+            oldPngThumbnailRepairStatus.status === 'complete'
+              ? `已完成 · ${oldPngThumbnailRepairStatus.repaired} 张`
+              : oldPngThumbnailRepairStatus.status === 'running'
+                ? `上次中断 · 已补回 ${oldPngThumbnailRepairStatus.repaired} 张`
+                : '尚未扫描'
+          }}
+        </strong>
+        <p>仅检查缺封面的 PNG 角色卡；扫描可断点续做，完成后可再次扫描新增或遗漏的资源。</p>
+        <button
+          class="protection-card__action"
+          type="button"
+          :disabled="isRepairingOldPngThumbnails || isVaultBusy || vaultStatus.locked"
+          @click="repairOldPngThumbnails"
+        >
+          {{
+            isRepairingOldPngThumbnails
+              ? '正在补回…'
+              : oldPngThumbnailRepairStatus.status === 'complete'
+                ? '再次扫描'
+                : oldPngThumbnailRepairStatus.status === 'running'
+                  ? '继续补回'
+                  : '开始补回'
+          }}
         </button>
       </article>
 

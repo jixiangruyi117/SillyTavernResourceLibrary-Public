@@ -10,8 +10,20 @@ import {
   type DiscordResourceJob,
 } from '../services/DiscordResourceInboxService'
 import { loadDiscordSourceConnectionSettings } from '../services/DiscordSourceSettingsService'
+import { taskCenter } from '../core/TaskCenter'
 
 const jobs = ref<DiscordResourceJob[]>([])
+const localTasks = ref(taskCenter.list())
+const unsubscribeTasks = taskCenter.subscribe(() => {
+  localTasks.value = taskCenter.list()
+})
+function localTask(job: DiscordResourceJob) {
+  return localTasks.value.find((task) => task.operationId === `discord-resource-${job.id}`)
+}
+function jobLabel(job: DiscordResourceJob): string {
+  const task = localTask(job)
+  return task?.status === 'running' ? task.phase : labels[job.state]
+}
 const visibleJobs = computed(() => jobs.value.filter((job) => job.state !== 'imported'))
 const completedJobs = computed(() => jobs.value.filter((job) => job.state === 'imported'))
 const loading = ref(false)
@@ -125,6 +137,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   disposed = true
+  unsubscribeTasks()
   window.removeEventListener('srl:discord-resources-updated', changed)
   window.removeEventListener('srl:receive-discord-inbox', changed)
 })
@@ -165,7 +178,7 @@ onBeforeUnmount(() => {
         </span>
         <div class="discord-downloads__file">
           <span :title="job.name">{{ job.name }}</span>
-          <small :data-state="job.state">{{ labels[job.state] }}</small>
+          <small :data-state="job.state">{{ jobLabel(job) }}</small>
           <p v-if="job.error" class="discord-downloads__error">{{ job.error }}</p>
         </div>
         <button
@@ -177,7 +190,10 @@ onBeforeUnmount(() => {
           重试
         </button>
         <button
-          v-if="job.state === 'queued' || job.state === 'downloading'"
+          v-if="
+            (job.state === 'queued' || job.state === 'downloading') &&
+            localTask(job)?.cancelable !== false
+          "
           type="button"
           :aria-label="`取消 ${job.name}`"
           @click="cancel(job)"

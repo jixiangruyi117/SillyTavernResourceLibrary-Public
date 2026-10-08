@@ -1,31 +1,33 @@
 import { computed, ref, shallowRef } from 'vue'
 import { recycleBinService, syncNativeResourceFiles } from '../core/AppContainer'
 import { confirmAction } from './UseConfirmDialog'
-import type { BackupRecord } from '../types/Resource'
+import type { BackupRecord, BackupRecordSummary, ResourceSummary } from '../types/Resource'
 import { taskCenter } from '../core/TaskCenter'
 interface RecycleBinContext {
   isDataProtectionOpen: import('vue').Ref<boolean>
-  loadResources: () => Promise<void>
+  prepareResourceRefresh: () => (resources?: ResourceSummary[]) => Promise<void>
   loadLibrary: () => Promise<void>
   refreshStorageHealth: () => Promise<void>
   showNotice: (message: string, duration?: number, keepUndo?: boolean) => void
 }
 export function useRecycleBin(context: RecycleBinContext) {
-  const { isDataProtectionOpen, loadResources, loadLibrary, refreshStorageHealth, showNotice } =
-    context
+  const {
+    isDataProtectionOpen,
+    prepareResourceRefresh,
+    loadLibrary,
+    refreshStorageHealth,
+    showNotice,
+  } = context
   const isRecycleBinOpen = ref(false)
 
   const isRecycleBinBusy = ref(false)
 
-  const recycleBinEntries = shallowRef<BackupRecord[]>([])
+  const recycleBinEntries = shallowRef<BackupRecordSummary[]>([])
 
   const recycleUndoEntry = shallowRef<BackupRecord>()
 
   const recycleBinSize = computed(() =>
-    recycleBinEntries.value.reduce(
-      (total, record) => total + (record.size ?? record.blob?.size ?? 0),
-      0,
-    ),
+    recycleBinEntries.value.reduce((total, record) => total + (record.size ?? 0), 0),
   )
 
   async function loadRecycleBin(): Promise<void> {
@@ -40,8 +42,9 @@ export function useRecycleBin(context: RecycleBinContext) {
 
   async function moveResourcesToRecycleBin(ids: string[]): Promise<void> {
     const operationId = taskCenter.start({ name: '移入回收站', phase: '打包所选资源' })
+    const refreshResources = prepareResourceRefresh()
     try {
-      const record = await recycleBinService.moveToRecycleBin(ids, (progress) => {
+      const { record, resources } = await recycleBinService.moveToRecycleBin(ids, (progress) => {
         if (progress.phase === 'archive') {
           taskCenter.update(operationId, { phase: '打包所选资源' })
           if (progress.writtenBytes !== undefined) {
@@ -61,7 +64,7 @@ export function useRecycleBin(context: RecycleBinContext) {
         }
       })
       recycleUndoEntry.value = record
-      await Promise.all([loadResources(), loadRecycleBin(), refreshStorageHealth()])
+      await Promise.all([refreshResources(resources), loadRecycleBin(), refreshStorageHealth()])
       taskCenter.complete(operationId)
       showNotice(
         record.resourceCount === 1

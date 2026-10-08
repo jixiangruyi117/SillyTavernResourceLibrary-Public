@@ -10,7 +10,8 @@ import type {
 
 import { confirmAction } from '../composables/UseConfirmDialog'
 
-import { browserStorageService, resourceService } from '../core/AppContainer'
+import { browserStorageService, exportService, resourceService } from '../core/AppContainer'
+import type { TavernSendContent } from '../types/BrowserPreferences'
 
 import { tavernConnectionStore, type TavernConnectionSnapshot } from '../core/TavernConnectionStore'
 
@@ -31,6 +32,7 @@ import { BRIDGE_EXTENSION_VERSION } from '../utils/BridgeInstall'
 import { mapPersonaCharacterVariantsForTavern } from '../utils/TavernPersonaTransfer'
 
 export interface UseTavernTransferActionsContext {
+  sendContent: import('vue').Ref<TavernSendContent>
   activeAbortController: import('vue').ShallowRef<AbortController | null, AbortController | null>
   canCancelTransfer: import('vue').Ref<boolean, boolean>
   progress: import('vue').Ref<string, string>
@@ -135,6 +137,8 @@ export interface UseTavernTransferActionsContext {
   localDirectEnabled: import('vue').Ref<boolean, boolean>
   deviceCode: import('vue').Ref<string, string>
   selectedTavernIds: import('vue').Ref<Set<string>>
+  includeChatScripts: import('vue').Ref<boolean>
+  selectedChatScriptIds?: import('vue').Ref<Set<string>>
   tavernReceiveFilter: import('vue').Ref<TavernReceiveFilter, TavernReceiveFilter>
   tavernReceiveFilters: import('vue').ComputedRef<
     { key: TavernReceiveFilter; label: string; count: number }[]
@@ -143,25 +147,7 @@ export interface UseTavernTransferActionsContext {
   disposed: boolean
   emit: ((event: 'back') => void) &
     ((event: 'import-files', files: File[], onComplete?: (() => void) | undefined) => void)
-  transferQueue: import('vue').Ref<
-    {
-      key: string
-      name: string
-      label: string
-      status: 'pending' | 'active' | 'done' | 'failed'
-      detail: string
-      operationId?: string | undefined
-    }[],
-    | TransferQueueItem[]
-    | {
-        key: string
-        name: string
-        label: string
-        status: 'pending' | 'active' | 'done' | 'failed'
-        detail: string
-        operationId?: string | undefined
-      }[]
-  >
+  transferQueue: import('vue').Ref<TransferQueueItem[]>
   recordReport: (entry: string) => void
   transferOrigin: string
   beginTransfer: () => AbortSignal
@@ -361,6 +347,7 @@ export async function runPullQueue(
   let batchBytes = 0
   let receivedCount = 0
   let done = 0
+  const exportBatchId = items.length > 1 ? crypto.randomUUID() : undefined
   const importBatch = async (): Promise<void> => {
     if (!files.length || operations.disposed) return
     const batch = files
@@ -386,7 +373,16 @@ export async function runPullQueue(
       entry.status = 'active'
       operations.progress.value = `正在接收 ${done + 1} / ${items.length}：${item.name}`
       try {
-        const [file] = await tavernBridgeService.pullResources([item], { signal })
+        const [file] = await tavernBridgeService.pullResources(
+          [
+            {
+              ...item,
+              readingScriptIds: entry.readingScriptIds,
+              carryReadingScripts: entry.carryReadingScripts,
+            },
+          ],
+          { signal, exportBatchId },
+        )
         if (!file) throw new Error('酒馆没有返回文件，资源可能已被删除')
         files.push(file)
         batchBytes += file.size
@@ -440,6 +436,8 @@ export async function runPullQueue(
     )
     tavernConnectionStore.recordSync(operations.tavernItems.value)
   } finally {
+    if (exportBatchId)
+      await tavernBridgeService.finishPullBatch(exportBatchId).catch(() => undefined)
     operations.busy.value = false
   }
 }
@@ -457,6 +455,14 @@ export async function pullFromTavern(operations: UseTavernTransferActionsContext
     label: '取回',
     status: 'pending',
     detail: '',
+    ...(item.kind === 'chat'
+      ? {
+          carryReadingScripts: operations.includeChatScripts.value,
+          readingScriptIds: operations.includeChatScripts.value
+            ? [...(operations.selectedChatScriptIds?.value || [])]
+            : [],
+        }
+      : {}),
   }))
   const signal = operations.beginTransfer()
   try {
@@ -550,6 +556,10 @@ export async function sendToTavern(operations: UseTavernTransferActionsContext):
     key: summary.id,
     name: summary.name,
     label: '发送',
+    content: operations.sendContent.value,
+    syncCharacterTags:
+      operations.sendContent.value === 'modified' &&
+      browserStorageService.getModifiedResourceSyncTags(),
     status: 'pending',
     detail: '等待发送前核对',
     operationId: crypto.randomUUID(),
@@ -669,6 +679,9 @@ export async function runSendQueue(
   operations.busy.value = true
   operations.error.value = ''
   let sentCount = 0
+  const content = operations.sendContent.value
+  const syncCharacterTags =
+    content === 'modified' && browserStorageService.getModifiedResourceSyncTags()
   const transferredCharacterAvatars = new Set<string>()
   try {
     for (let index = 0; index < summaries.length; index += 1) {
@@ -685,6 +698,15 @@ export async function runSendQueue(
       const summary = summaries[index]!
       const entry = operations.transferQueue.value.find((queued) => queued.key === summary.id)
       if (!entry) continue
+      if (
+        (entry.content ?? 'original') !== content ||
+        (entry.syncCharacterTags ?? false) !== syncCharacterTags
+      ) {
+        // Changed payloads must not reuse a receiver's acknowledgement of an older operation.
+        entry.operationId = crypto.randomUUID()
+      }
+      entry.content = content
+      entry.syncCharacterTags = syncCharacterTags
       entry.status = 'active'
       operations.progress.value = `正在发送 ${index + 1} / ${summaries.length}：${summary.name}`
       const personaPlan = personaPlans.get(summary.id)
@@ -756,10 +778,22 @@ export async function runSendQueue(
                 continue
               }
               try {
+                let file = missing.file
+                if (content === 'modified' && missing.resourceId) {
+                  const card = await resourceService.get(missing.resourceId)
+                  if (!card) throw new Error('待补传角色卡已不存在')
+                  file = await exportService.createTavernTransferFile(
+                    card,
+                    content,
+                    resourceService,
+                    missing.avatarId,
+                    { syncCharacterTags },
+                  )
+                }
                 const [cardResult] = await tavernBridgeService.sendFiles(
                   [
                     {
-                      file: missing.file,
+                      file,
                       kind: 'character',
                       displayName: `${missing.name} · 角色卡`,
                       operationId: `${entry.operationId}:character:${missing.avatarId}`,
@@ -790,9 +824,7 @@ export async function runSendQueue(
           }
           const personaSourceFile =
             personaFile ??
-            new File([resource.originalBlob], resource.fileName, {
-              type: resource.mimeType,
-            })
+            (await exportService.createTavernTransferFile(resource, content, resourceService))
           const personaBackup = JSON.parse(await personaSourceFile.text())
           const mappedBackup = mapPersonaCharacterVariantsForTavern(personaBackup, characterTargets)
           personaFile = new File([JSON.stringify(mappedBackup, null, 2)], personaSourceFile.name, {
@@ -811,14 +843,19 @@ export async function runSendQueue(
           if (roleCardImported) sentCount += 1
           continue
         }
+        const transferFile =
+          personaFile ??
+          (await exportService.createTavernTransferFile(
+            resource,
+            content,
+            resourceService,
+            undefined,
+            { syncCharacterTags },
+          ))
         const [result] = await tavernBridgeService.sendFiles(
           [
             {
-              file:
-                personaFile ??
-                new File([resource.originalBlob], resource.fileName, {
-                  type: resource.mimeType,
-                }),
+              file: transferFile,
               kind: operations.bridgeKind(summary),
               displayName: summary.name,
               operationId: entry.operationId,
@@ -846,7 +883,7 @@ export async function runSendQueue(
           { signal },
         )
         if (resource.type === RESOURCE_TYPE.CHARACTER_CARD && result?.status !== 'skipped') {
-          transferredCharacterAvatars.add(resource.fileName)
+          transferredCharacterAvatars.add(transferFile.name)
         }
         if (chatPlan?.regexFile) {
           avatarDetail = '聊天已导入'

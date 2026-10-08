@@ -215,6 +215,12 @@ function remapManualBindings(
 ): Record<string, unknown> {
   return {
     ...remapGalleryMetadata(metadata, ids),
+    ...(typeof metadata.chatReadingScriptId === 'string'
+      ? {
+          chatReadingScriptId:
+            ids.get(metadata.chatReadingScriptId) ?? metadata.chatReadingScriptId,
+        }
+      : {}),
     ...(typeof metadata.chatDisplayRegexId === 'string'
       ? { chatDisplayRegexId: ids.get(metadata.chatDisplayRegexId) ?? metadata.chatDisplayRegexId }
       : {}),

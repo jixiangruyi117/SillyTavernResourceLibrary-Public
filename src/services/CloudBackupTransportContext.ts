@@ -51,7 +51,13 @@ export interface WebDavCapabilities {
 export type CloudBackupProgressCallback = (message: string) => void
 
 export interface CloudBackupTransportContext {
-  activeGitHubInventory: { releaseId: number; assets: Map<number, GitHubAsset> } | undefined
+  activeGitHubInventory:
+    | {
+        key: string
+        assets: Map<number, Map<number, GitHubAsset>>
+        releases: Map<string, GitHubRelease | undefined>
+      }
+    | undefined
   activeMetrics: CloudBackupMetricsTracker | undefined
   jobStore: CloudBackupJobStore
   activeWebDavInventory: { key: string; objects: Map<string, WebDavObject> } | undefined
@@ -71,6 +77,7 @@ export interface CloudBackupTransportContext {
     create: boolean,
     tag?: string,
   ): Promise<GitHubRelease | undefined>
+  listGitHubObjectContainers(config: GitHubBackupConfig, secret: string): Promise<GitHubRelease[]>
   listGitHubAssets(
     config: GitHubBackupConfig,
     secret: string,

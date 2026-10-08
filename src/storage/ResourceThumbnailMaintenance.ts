@@ -1,5 +1,6 @@
 import type { AppDatabase } from '../database/AppDatabase'
 
+import { RESOURCE_TYPE, type Resource } from '../types/Resource'
 import type { VaultService } from '../services/VaultService'
 
 import { normalizeResource } from '../types/Resource'
@@ -14,12 +15,14 @@ import {
 import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 
 import { hydrateResourceFromIndexedDb } from './ResourceStorageClone'
+import { createImageThumbnail } from '../utils/createImageThumbnail'
 
 export interface ResourceThumbnailMaintenanceContext {
   thumbnailMigrationPromise: Promise<number> | undefined
   database: AppDatabase
   assets: IndexedDbAssetStore
   vault: VaultService | undefined
+  loadResource: (id: string) => Promise<Resource | undefined>
   toStoredSummary: (resource: StoredResource) => StoredResourceSummary
   createStoredListSummariesFromSummaries: (
     summaries: StoredResourceSummary[],
@@ -31,6 +34,9 @@ export const THUMBNAIL_ASSET_MIGRATION_SETTING_ID = 'migration.resourceThumbnail
 export const THUMBNAIL_ASSET_REPAIR_SETTING_ID = 'repair.resourceThumbnails.asset.v24'
 
 export const THUMBNAIL_EMBEDDED_REPAIR_SETTING_ID = 'repair.resourceThumbnails.asset.v25'
+
+export const MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID = 'repair.resourceThumbnails.missingPng.v28'
+const LEGACY_MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID = 'repair.resourceThumbnails.missingPng.v27'
 
 export const THUMBNAIL_MIGRATION_BATCH_SIZE = 25
 
@@ -55,6 +61,18 @@ export interface ThumbnailEmbeddedRepairState {
   status: 'running' | 'complete'
   stage: 'resources' | 'resourceVersions' | 'complete'
   checkpoint?: string
+  repaired: number
+}
+
+export interface MissingPngThumbnailRepairState {
+  version: 28
+  status: 'running' | 'complete'
+  checkpoint?: string
+  repaired: number
+}
+
+export interface MissingPngThumbnailRepairStatus {
+  status: 'not-started' | 'running' | 'complete'
   repaired: number
 }
 
@@ -91,6 +109,147 @@ export function repairThumbnailAssets(
     })
     .catch(() => undefined)
   return operation
+}
+
+/** Backfill previews for older PNG cards that were imported before background preview support. */
+export async function getMissingPngThumbnailRepairStatus(
+  context: ResourceThumbnailMaintenanceContext,
+): Promise<MissingPngThumbnailRepairStatus> {
+  const saved = await context.database.settings.get(MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID)
+  const value = saved?.value as Partial<MissingPngThumbnailRepairState> | undefined
+  if (value?.version === 28 && (value.status === 'running' || value.status === 'complete'))
+    return { status: value.status, repaired: value.repaired ?? 0 }
+
+  const legacy = await context.database.settings.get(LEGACY_MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID)
+  const legacyValue = legacy?.value as
+    { version?: number; status?: string; repaired?: number } | undefined
+  if (legacyValue?.version === 27 && legacyValue.status === 'running')
+    return { status: 'running', repaired: legacyValue.repaired ?? 0 }
+  return { status: 'not-started', repaired: 0 }
+}
+
+export async function repairMissingPngCharacterCardThumbnails(
+  context: ResourceThumbnailMaintenanceContext,
+  options: { restart?: boolean } = {},
+): Promise<number> {
+  if (context.vault?.getStatus().locked) return 0
+
+  const saved = await context.database.settings.get(MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID)
+  let previous = saved?.value as Partial<MissingPngThumbnailRepairState> | undefined
+  if (previous?.version !== 28) {
+    const legacy = await context.database.settings.get(
+      LEGACY_MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID,
+    )
+    const legacyValue = legacy?.value as
+      { version?: number; status?: string; checkpoint?: string; repaired?: number } | undefined
+    previous =
+      legacyValue?.version === 27 && legacyValue.status === 'running'
+        ? { checkpoint: legacyValue.checkpoint, repaired: legacyValue.repaired }
+        : undefined
+  }
+  if (previous?.version === 28 && previous.status === 'complete') {
+    if (!options.restart) return 0
+    previous = undefined
+  }
+
+  let checkpoint = previous?.checkpoint
+  let repaired = previous?.repaired ?? 0
+  await context.database.settings.put({
+    id: MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID,
+    value: { version: 28, status: 'running', checkpoint, repaired },
+    updatedAt: Date.now(),
+  })
+
+  const table = context.database.resourceSummaries
+  // Enumerate IDs once: a native primary-key cursor can otherwise rescan the entire
+  // table for every page. Only the current batch's summary values cross the bridge.
+  const ids = await (
+    checkpoint ? table.where('id').above(checkpoint) : table.orderBy('id')
+  ).primaryKeys()
+  for (let offset = 0; offset < ids.length; offset += THUMBNAIL_MIGRATION_BATCH_SIZE) {
+    const batchIds = ids.slice(offset, offset + THUMBNAIL_MIGRATION_BATCH_SIZE)
+    const batch = (await table.bulkGet(batchIds)).filter(
+      (summary): summary is StoredResourceSummary => summary !== undefined,
+    )
+
+    let batchRepaired = 0
+    for (const summary of batch) {
+      if (
+        isEncryptedResourceSummary(summary) ||
+        summary.type !== RESOURCE_TYPE.CHARACTER_CARD ||
+        summary.thumbnailAssetId ||
+        summary.thumbnailBlob instanceof Blob ||
+        !(summary.mimeType === 'image/png' || /\.png$/iu.test(summary.fileName))
+      )
+        continue
+
+      const resource = await context.loadResource(summary.id)
+      if (
+        !resource ||
+        !(resource.mimeType === 'image/png' || /\.png$/iu.test(resource.fileName)) ||
+        !(resource.originalBlob instanceof Blob)
+      )
+        continue
+
+      const thumbnail = await createImageThumbnail(resource.originalBlob, {
+        maxEdge: 640,
+        allowImageElement: true,
+      })
+      if (!thumbnail) continue
+      const asset = await context.assets.put(thumbnail, { source: 'thumbnail' })
+      const updated = { ...resource, thumbnailAssetId: asset.assetId, thumbnailBlob: undefined }
+      const storedSummary = context.toStoredSummary(updated as StoredResource)
+      const [listSummary] = await context.createStoredListSummariesFromSummaries([storedSummary])
+      if (!listSummary) continue
+
+      await context.database.transaction(
+        'rw',
+        context.database.resources,
+        context.database.resourceSummaries,
+        context.database.resourceListSummaries,
+        async () => {
+          const current = await context.database.resources.get(resource.id)
+          if (!current || isEncryptedResource(current)) return
+          if (current.thumbnailAssetId || current.thumbnailBlob instanceof Blob) return
+          await context.database.resources.update(resource.id, (record) => {
+            if (isEncryptedResource(record)) return
+            record.thumbnailAssetId = asset.assetId
+            record.thumbnailBlob = undefined
+          })
+          await context.database.resourceSummaries.put(listSummary)
+          await context.database.resourceListSummaries.put(listSummary)
+          batchRepaired++
+        },
+      )
+    }
+
+    // A summary may have been deleted since ID enumeration; still advance past that ID.
+    checkpoint = batchIds.at(-1)!
+    repaired += batchRepaired
+    await context.database.settings.put({
+      id: MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID,
+      value: {
+        version: 28,
+        status: 'running',
+        checkpoint,
+        repaired,
+      } satisfies MissingPngThumbnailRepairState,
+      updatedAt: Date.now(),
+    })
+    if (offset + THUMBNAIL_MIGRATION_BATCH_SIZE < ids.length) await yieldMainThread()
+  }
+
+  await context.database.settings.put({
+    id: MISSING_PNG_THUMBNAIL_REPAIR_SETTING_ID,
+    value: {
+      version: 28,
+      status: 'complete',
+      checkpoint,
+      repaired,
+    } satisfies MissingPngThumbnailRepairState,
+    updatedAt: Date.now(),
+  })
+  return repaired
 }
 
 export async function migrateLegacyThumbnails(
@@ -377,11 +536,10 @@ export async function repairEmbeddedThumbnailAssets(
       const replacement = context.vault
         ? await context.vault.encodeResource(externalized)
         : externalized
-      const summary = context.toStoredSummary(replacement)
-      const listSummary =
-        stage === 'resources'
-          ? (await context.createStoredListSummariesFromSummaries([summary]))[0]
-          : undefined
+      const summary = (
+        await context.createStoredListSummariesFromSummaries([context.toStoredSummary(replacement)])
+      )[0]!
+      const listSummary = stage === 'resources' ? summary : undefined
       replacements.push({
         id: stored.id,
         stored: replacement,

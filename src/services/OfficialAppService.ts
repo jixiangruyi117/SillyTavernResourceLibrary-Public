@@ -13,6 +13,8 @@ async function downloadAndUnzipPackage(
   url: URL,
   expectedBytes: number,
   expectedHash: string,
+  onDownload?: (bytes: number) => void,
+  onCheck?: () => void,
 ): ReturnType<typeof unzipPackage> {
   const response = await fetcher(url, { cache: 'no-store' })
   if (!response.ok || !response.body) throw new Error('APP 下载失败，请检查网络后重试')
@@ -31,11 +33,13 @@ async function downloadAndUnzipPackage(
         throw new Error('APP 下载大小不匹配')
       }
       bytes.set(value, length - value.byteLength)
+      onDownload?.(length)
     }
   } finally {
     reader.releaseLock()
   }
   if (length !== expectedBytes) throw new Error('APP 下载不完整')
+  onCheck?.()
   if ((await hashPackageBytes(bytes)) !== expectedHash) throw new Error('APP 下载校验失败')
   return unzipPackage(bytes.buffer)
 }
@@ -50,6 +54,8 @@ import {
   type OfficialAppDownload,
   type OfficialAppFile,
   type OfficialAppId,
+  type OfficialAppInstallProgress,
+  type OfficialAppInstallResult,
   type OfficialAppPackage,
   type OfficialAppUpdateInfo,
 } from '../types/OfficialApp'
@@ -77,6 +83,49 @@ async function officialAppContentHash(
 }
 
 export class OfficialAppService {
+  private registry?: InstalledOfficialApp[]
+  private registryLoad?: Promise<InstalledOfficialApp[]>
+  private readonly registrySubscribers = new Set<(apps: InstalledOfficialApp[]) => void>()
+  private readonly checkedStatus = new Map<
+    OfficialAppId,
+    { record: string; ready: boolean; integrityFailed?: boolean }
+  >()
+
+  private checkedReady(app: InstalledOfficialApp): boolean | undefined {
+    const status = this.checkedStatus.get(app.id)
+    return status?.record === JSON.stringify(app) ? status.ready : undefined
+  }
+
+  get installedSnapshot(): readonly InstalledOfficialApp[] {
+    return this.registry ?? []
+  }
+
+  subscribeInstalled(listener: (apps: InstalledOfficialApp[]) => void): () => void {
+    this.registrySubscribers.add(listener)
+    return () => this.registrySubscribers.delete(listener)
+  }
+
+  loadInstalled(): Promise<InstalledOfficialApp[]> {
+    if (this.registry) return Promise.resolve(this.registry)
+    this.registryLoad ??= navigator.locks
+      .request('srl-official-app-install', { mode: 'shared' }, () => this.list())
+      .finally(() => {
+        this.registryLoad = undefined
+      })
+    return this.registryLoad
+  }
+
+  private publishInstalled(apps: InstalledOfficialApp[]): void {
+    this.registry = apps
+    for (const listener of this.registrySubscribers) listener(apps)
+  }
+
+  private async saveInstalled(app: InstalledOfficialApp): Promise<void> {
+    await this.storage.save(app)
+    this.checkedStatus.delete(app.id)
+    if (this.registry)
+      this.publishInstalled([...this.registry.filter((item) => item.id !== app.id), app])
+  }
   private readonly runtimeEntry?: string
   private readonly storage: OfficialAppPackageStorage
   private readonly hostApiVersion: number
@@ -124,23 +173,41 @@ export class OfficialAppService {
     this.clearStyles = clearStyles
   }
 
-  list(): Promise<InstalledOfficialApp[]> {
-    return this.storage.list()
+  async list(): Promise<InstalledOfficialApp[]> {
+    const apps = await this.storage.list()
+    this.publishInstalled(apps)
+    return apps
+  }
+
+  async getInstalled(id: OfficialAppId): Promise<InstalledOfficialApp | undefined> {
+    return this.storage.get
+      ? this.storage.get(id)
+      : (await this.list()).find((app) => app.id === id)
   }
 
   async ready(id: OfficialAppId): Promise<boolean> {
-    return Boolean(await this.getReadyPackage(id))
+    return navigator.locks.request('srl-official-app-install', { mode: 'shared' }, async () => {
+      const app = await this.getInstalled(id)
+      if (!app) return false
+      const record = JSON.stringify(app)
+      const previous = this.checkedStatus.get(id)
+      if (previous?.record === record && previous.integrityFailed) return false
+      const ready = await this.isReadyForPackage(app)
+      this.checkedStatus.set(id, { record, ready })
+      return ready
+    })
   }
 
   async getReadyPackage(id: OfficialAppId): Promise<InstalledOfficialApp | undefined> {
     return navigator.locks.request('srl-official-app-install', { mode: 'shared' }, async () => {
-      const app = (await this.list()).find((app) => app.id === id)
-      if (!app || !(await this.isReadyForPackage(app))) return undefined
+      const app = await this.getInstalled(id)
+      if (!app || this.checkedReady(app) === false || !(await this.isReadyForPackage(app, false)))
+        return undefined
       return app
     })
   }
 
-  private async isReadyForPackage(app: InstalledOfficialApp): Promise<boolean> {
+  private async isReadyForPackage(app: InstalledOfficialApp, checkFiles = true): Promise<boolean> {
     if ((app.hostApiVersion ?? 1) !== this.hostApiVersion) return false
     const hostFiles = this.requiredHostFiles(app)
     // Legacy self-contained packages lost their shared-file markers at installation.
@@ -156,18 +223,45 @@ export class OfficialAppService {
     const ownedFiles = app.files.filter(
       (file) => app.assetMode === 'self-contained' || !file.bundled,
     )
-    if (this.storage.hasFiles) {
+    if (checkFiles && this.storage.hasFiles) {
       if (!(await this.storage.hasFiles(ownedFiles))) return false
-    } else {
+    } else if (checkFiles) {
       for (const file of ownedFiles)
         if (!(await this.storage.hasFile(file.path, file.size))) return false
     }
-    if (this.runtimeEntry !== undefined) return true
     return this.matchesHostFiles(
       app.hostApiVersion ?? 1,
       hostFiles,
       hostFiles.length ? await this.getShellFiles() : {},
     )
+  }
+
+  async checkInstalledStatus(): Promise<Array<{ id: OfficialAppId; ready: boolean }>> {
+    return navigator.locks.request('srl-official-app-install', { mode: 'shared' }, async () => {
+      const results: Array<{ id: OfficialAppId; ready: boolean }> = []
+      for (const app of await this.list()) {
+        let ready = await this.isReadyForPackage(app)
+        if (ready) {
+          for (const file of app.files.filter(
+            (file) => app.assetMode === 'self-contained' || !file.bundled,
+          )) {
+            if (
+              !(await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled))
+            ) {
+              ready = false
+              break
+            }
+          }
+        }
+        results.push({ id: app.id, ready })
+        this.checkedStatus.set(app.id, {
+          record: JSON.stringify(app),
+          ready,
+          integrityFailed: !ready,
+        })
+      }
+      return results
+    })
   }
 
   private requiredHostFiles(app: OfficialAppPackage): OfficialAppFile[] | undefined {
@@ -230,7 +324,9 @@ export class OfficialAppService {
         // Missing local package files or a missing shell asset affects readiness,
         // but must not be presented as a new APP version when its content revision is unchanged.
         const requiresHostUpdate = (app.hostApiVersion ?? 1) !== this.hostApiVersion
-        const requiresAssetRepair = !requiresHostUpdate && !(await this.isReadyForPackage(app))
+        const requiresAssetRepair =
+          !requiresHostUpdate &&
+          (this.checkedReady(app) === false || !(await this.isReadyForPackage(app, false)))
         if (
           currentRevision >= latest.appContentRevision &&
           !requiresHostUpdate &&
@@ -274,16 +370,7 @@ export class OfficialAppService {
     let shellFiles: Record<string, { size: number; sha256: string }> | undefined
     for (const candidate of sorted) {
       if (candidate.assetMode === 'self-contained' && !candidate.hostFiles?.length) continue
-      if (this.runtimeEntry !== undefined) {
-        if (
-          candidate.runtimeEntry === this.runtimeEntry &&
-          Array.isArray(candidate.hostFiles) &&
-          candidate.hostFiles.some((file) => file.path === this.runtimeEntry) &&
-          candidate.hostApiVersion === this.hostApiVersion
-        )
-          return candidate
-        continue
-      }
+      if (this.runtimeEntry !== undefined && candidate.runtimeEntry !== this.runtimeEntry) continue
       if (this.matchesHostFiles(candidate.hostApiVersion, candidate.hostFiles, {})) return candidate
       if (candidate.hostApiVersion !== this.hostApiVersion || !Array.isArray(candidate.hostFiles))
         continue
@@ -352,201 +439,283 @@ export class OfficialAppService {
   }
 
   async install(id: OfficialAppId): Promise<void> {
-    // Locks also serialize mutations from other open tabs sharing the same installation.
-    return this.withExclusiveAppUse(id, '更新', () =>
-      navigator.locks.request(
-        'srl-official-app-download-active',
-        { ifAvailable: true },
-        async (downloadLock) => {
-          if (!downloadLock) throw new Error('另一个内置 APP 正在下载或更新，请完成后再试')
-          // Wait for short read-only update checks to finish without misreporting them
-          // as another download. The separate active lock above rejects only a second install.
-          return navigator.locks.request('srl-official-app-install', async () => {
-            const candidates = (await this.catalog()).apps[id]
-            const download = await this.latestCompatibleDownload(candidates ?? [])
-            if (
-              !download ||
-              typeof download.shellVersion !== 'string' ||
-              !safeHash(download.sha256) ||
-              !safeHash(download.appContentHash) ||
-              !Number.isSafeInteger(download.appContentRevision) ||
-              download.appContentRevision < LEGACY_OFFICIAL_APP_CONTENT_REVISION ||
-              !safeAsset(download.entry) ||
-              !Number.isSafeInteger(download.downloadBytes) ||
-              download.downloadBytes <= 0 ||
-              download.downloadBytes > MAX_PACKAGE_BYTES
-            )
-              throw new Error('APP 下载信息无效，请更新资源库')
-            const url = new URL(download.url, this.origin)
-            const packagePath = url.pathname.startsWith('/official-apps/')
-              ? url.pathname.slice('/official-apps/'.length)
-              : ''
-            if (
-              url.origin !== this.origin ||
-              !packagePath ||
-              !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.srlapp$/u.test(packagePath) ||
-              packagePath.split('/').some((segment) => segment === '.' || segment === '..')
-            )
-              throw new Error('APP 下载来源无效')
-            const files = await downloadAndUnzipPackage(
-              this.fetcher,
-              url,
-              download.downloadBytes,
-              download.sha256,
-            )
-            if (!files['manifest.json'] || files['manifest.json'].length > 128 * 1024)
-              throw new Error('APP 缺少文件清单')
-            const app = this.validate(
-              JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['manifest.json'])),
-              id,
-              download.entry,
-            )
-            if (Object.keys(files).length !== app.files.length + 1)
-              throw new Error('APP 包含未声明文件')
-            delete files['manifest.json']
-            for (const file of app.files) {
-              const data = files[file.path.slice(1)]
-              if (
-                !data ||
-                data.length !== file.size ||
-                (await hashPackageBytes(data)) !== file.sha256
-              )
-                throw new Error('APP 文件校验失败')
-            }
-            if (app.assetMode !== download.assetMode)
-              throw new Error('APP 安装包资源模式与下载清单不匹配')
-            const appContentHash = await officialAppContentHash(app.files, app.assetMode ?? 'host')
-            if (
-              appContentHash !== download.appContentHash ||
-              app.appContentHash !== appContentHash ||
-              (app.appContentRevision ?? LEGACY_OFFICIAL_APP_CONTENT_REVISION) !==
-                download.appContentRevision
-            )
-              throw new Error('APP 内容指纹或更新修订号与清单不匹配')
-            const hostFiles = this.requiredHostFiles(app)!
-            if (
-              this.runtimeEntry === undefined &&
-              !this.matchesHostFiles(
-                app.hostApiVersion ?? 1,
-                hostFiles,
-                hostFiles.length ? await this.getShellFiles() : {},
-              )
-            )
-              throw new Error('APP 的共享运行时与当前资源库不兼容，请下载兼容版本')
-            const previous = await this.list()
-            const previousFilesByPath = new Map(
-              previous.flatMap((installed) =>
-                installed.files.map((file) => [file.path, file] as const),
-              ),
-            )
-            for (const file of app.files) {
-              const old = previousFilesByPath.get(file.path)
-              if (old && (old.size !== file.size || old.sha256 !== file.sha256))
-                throw new Error('APP 更新包复用了不同内容的文件路径，已保留当前版本')
-            }
-            const protectedPaths = new Set(
-              previous.flatMap((app) => app.files.map((file) => file.path)),
-            )
-            const written: string[] = []
-            // Self-contained packages own all bytes, including assets that happen to
-            // share a URL with this shell. Persist each one for Web and APK runtimes.
-            const installedFiles = app.files.map((file) =>
-              app.assetMode === 'self-contained' ? { ...file, bundled: false } : file,
-            )
-            const installed: InstalledOfficialApp = {
-              ...app,
-              files: installedFiles,
-              appContentHash,
-              appContentRevision: download.appContentRevision,
-              installedAt: Date.now(),
-            }
-            try {
-              for (const file of installedFiles) {
-                const path = file.path.slice(1)
-                if (
-                  await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled)
-                ) {
-                  delete files[path]
-                  continue
-                }
-                written.push(file.path)
-                await this.storage.writeFile(file.path, files[path]!)
-                if (
-                  !(await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled))
-                )
-                  throw new Error('APP 文件写入后的校验失败，当前版本未切换')
-                delete files[path]
-              }
-              const currentPaths = new Set([
-                ...app.files.map((file) => file.path),
-                ...previous
-                  .filter((installedApp) => installedApp.id !== id)
-                  .flatMap((installedApp) => installedApp.files.map((file) => file.path)),
-              ])
-              const cleanupByPath = new Map<string, OfficialAppFile>()
-              for (const old of previous.filter((installedApp) => installedApp.id === id)) {
-                for (const file of [...old.files, ...(old.pendingCleanupFiles ?? [])])
-                  if (!currentPaths.has(file.path)) cleanupByPath.set(file.path, file)
-              }
-              const cleanupFiles = [...cleanupByPath.values()]
-              const nextRecord = cleanupFiles.length
-                ? { ...installed, pendingCleanupFiles: cleanupFiles }
-                : installed
-              await this.storage.save(nextRecord)
+    // Acquire the APP use lock before fetching, including for a single installation.
+    await this.withExclusiveAppUse(id, '更新', async () => {
+      const [result] = await this.installBatch([id], undefined, id)
+      if (result?.error) throw result.error
+    })
+  }
 
-              const pendingCleanupFiles: OfficialAppFile[] = []
-              for (const file of cleanupFiles) {
-                try {
-                  await this.storage.deleteFile(file.path, file.bundled)
-                } catch {
-                  pendingCleanupFiles.push(file)
-                }
-              }
-              if (cleanupFiles.length) {
-                const cleanupRecord = pendingCleanupFiles.length
-                  ? { ...installed, pendingCleanupFiles }
-                  : withoutPendingCleanupFiles(nextRecord)
-                // The committed record already contains a retry list, so a failed cleanup
-                // metadata write is safe and the next install can retry idempotently.
-                try {
-                  await this.storage.save(cleanupRecord)
-                } catch {
-                  // Keep the original persisted retry list.
-                }
-              }
-            } catch (error) {
-              const rollbackCleanup = new Map<string, OfficialAppFile>()
-              for (const path of written) {
-                if (protectedPaths.has(path)) continue
-                const file = installedFiles.find((candidate) => candidate.path === path)
-                try {
-                  await this.storage.deleteFile(path, file?.bundled)
-                } catch {
-                  if (file) rollbackCleanup.set(path, file)
-                }
-              }
-              const previousApp = previous.find((installedApp) => installedApp.id === id)
-              if (previousApp && rollbackCleanup.size) {
-                const pendingByPath = new Map(
-                  (previousApp.pendingCleanupFiles ?? []).map((file) => [file.path, file] as const),
+  installMany(
+    ids: readonly OfficialAppId[],
+    onProgress?: (progress: OfficialAppInstallProgress) => void,
+  ): Promise<OfficialAppInstallResult[]> {
+    return this.installBatch(ids, onProgress)
+  }
+
+  private async installBatch(
+    requested: readonly OfficialAppId[],
+    onProgress?: (progress: OfficialAppInstallProgress) => void,
+    heldApp?: OfficialAppId,
+  ): Promise<OfficialAppInstallResult[]> {
+    const ids = [...new Set(requested)]
+    if (ids.some((id) => !isOfficialAppId(id))) throw new Error('APP 标识无效')
+    if (!ids.length) return []
+    return navigator.locks.request(
+      'srl-official-app-download-active',
+      { ifAvailable: true },
+      async (downloadLock) => {
+        if (!downloadLock) throw new Error('另一个内置 APP 正在下载或更新，请完成后再试')
+        // Hold the existing cross-tab mutation lock while reusing verified shared files.
+        // Only two packages can be downloading/prepared; commits remain sequential.
+        return navigator.locks.request('srl-official-app-install', async () => {
+          const catalog = await this.catalog()
+          const verifiedFiles = new Map<string, string>()
+          const results: OfficialAppInstallResult[] = new Array(ids.length)
+          let next = 0
+          let commitTail = Promise.resolve()
+          for (const id of ids) onProgress?.({ id, stage: 'queued' })
+          const worker = async () => {
+            while (next < ids.length) {
+              const index = next++
+              const id = ids[index]!
+              const work = async () => {
+                const prepared = await this.prepareInstall(id, catalog.apps[id] ?? [], onProgress)
+                onProgress?.({ id, stage: 'waiting' })
+                const commit = commitTail.then(() =>
+                  this.applyInstall(id, prepared, verifiedFiles, onProgress),
                 )
-                for (const [path, file] of rollbackCleanup) pendingByPath.set(path, file)
-                try {
-                  await this.storage.save({
-                    ...previousApp,
-                    pendingCleanupFiles: [...pendingByPath.values()],
-                  })
-                } catch {
-                  // Preserve the original update error; untracked staging files are harmless
-                  // and the installed record continues to identify the usable old package.
-                }
+                commitTail = commit.catch(() => {})
+                await commit
               }
-              throw error
+              try {
+                if (id === heldApp) await work()
+                else await this.withExclusiveAppUse(id, '更新', work)
+                results[index] = { id }
+                onProgress?.({ id, stage: 'done' })
+              } catch (failure) {
+                const error = failure instanceof Error ? failure : new Error('APP 安装失败')
+                results[index] = { id, error }
+                onProgress?.({ id, stage: 'failed', message: error.message })
+              }
             }
-          })
-        },
-      ),
+          }
+          await Promise.all(Array.from({ length: Math.min(2, ids.length) }, worker))
+          return results
+        })
+      },
     )
+  }
+
+  private async prepareInstall(
+    id: OfficialAppId,
+    candidates: OfficialAppDownload[],
+    onProgress?: (progress: OfficialAppInstallProgress) => void,
+  ) {
+    const download = await this.latestCompatibleDownload(candidates)
+    if (
+      !download ||
+      typeof download.shellVersion !== 'string' ||
+      !safeHash(download.sha256) ||
+      !safeHash(download.appContentHash) ||
+      !Number.isSafeInteger(download.appContentRevision) ||
+      download.appContentRevision < LEGACY_OFFICIAL_APP_CONTENT_REVISION ||
+      !safeAsset(download.entry) ||
+      !Number.isSafeInteger(download.downloadBytes) ||
+      download.downloadBytes <= 0 ||
+      download.downloadBytes > MAX_PACKAGE_BYTES
+    )
+      throw new Error('APP 下载信息无效，请更新资源库')
+    const url = new URL(download.url, this.origin)
+    const packagePath = url.pathname.startsWith('/official-apps/')
+      ? url.pathname.slice('/official-apps/'.length)
+      : ''
+    if (
+      url.origin !== this.origin ||
+      !packagePath ||
+      !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.srlapp$/u.test(packagePath) ||
+      packagePath.split('/').some((segment) => segment === '.' || segment === '..')
+    )
+      throw new Error('APP 下载来源无效')
+    const files = await downloadAndUnzipPackage(
+      this.fetcher,
+      url,
+      download.downloadBytes,
+      download.sha256,
+      (downloadedBytes) =>
+        onProgress?.({
+          id,
+          stage: 'downloading',
+          downloadedBytes,
+          totalBytes: download.downloadBytes,
+        }),
+      () => onProgress?.({ id, stage: 'checking' }),
+    )
+    if (!files['manifest.json'] || files['manifest.json'].length > 128 * 1024)
+      throw new Error('APP 缺少文件清单')
+    const app = this.validate(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(files['manifest.json'])),
+      id,
+      download.entry,
+    )
+    if (Object.keys(files).length !== app.files.length + 1) throw new Error('APP 包含未声明文件')
+    delete files['manifest.json']
+    for (const file of app.files) {
+      const data = files[file.path.slice(1)]
+      if (!data || data.length !== file.size || (await hashPackageBytes(data)) !== file.sha256)
+        throw new Error('APP 文件校验失败')
+    }
+    if (app.assetMode !== download.assetMode) throw new Error('APP 安装包资源模式与下载清单不匹配')
+    const appContentHash = await officialAppContentHash(app.files, app.assetMode ?? 'host')
+    if (
+      appContentHash !== download.appContentHash ||
+      app.appContentHash !== appContentHash ||
+      (app.appContentRevision ?? LEGACY_OFFICIAL_APP_CONTENT_REVISION) !==
+        download.appContentRevision
+    )
+      throw new Error('APP 内容指纹或更新修订号与清单不匹配')
+    const hostFiles = this.requiredHostFiles(app)!
+    if (
+      !this.matchesHostFiles(
+        app.hostApiVersion ?? 1,
+        hostFiles,
+        hostFiles.length ? await this.getShellFiles() : {},
+      )
+    )
+      throw new Error('APP 的共享运行时与当前资源库不兼容，请下载兼容版本')
+    return { app, download, files, appContentHash }
+  }
+
+  private async applyInstall(
+    id: OfficialAppId,
+    prepared: Awaited<ReturnType<OfficialAppService['prepareInstall']>>,
+    verifiedFiles: Map<string, string>,
+    onProgress?: (progress: OfficialAppInstallProgress) => void,
+  ): Promise<void> {
+    const { app, download, files, appContentHash } = prepared
+    const previous = await this.list()
+    const previousFilesByPath = new Map(
+      previous.flatMap((installed) => installed.files.map((file) => [file.path, file] as const)),
+    )
+    for (const file of app.files) {
+      const old = previousFilesByPath.get(file.path)
+      if (old && (old.size !== file.size || old.sha256 !== file.sha256))
+        throw new Error('APP 更新包复用了不同内容的文件路径，已保留当前版本')
+    }
+    const protectedPaths = new Set(previous.flatMap((app) => app.files.map((file) => file.path)))
+    const written: string[] = []
+    // Self-contained packages own all bytes, including assets that happen to
+    // share a URL with this shell. Persist each one for Web and APK runtimes.
+    const installedFiles = app.files.map((file) =>
+      app.assetMode === 'self-contained' ? { ...file, bundled: false } : file,
+    )
+    const installed: InstalledOfficialApp = {
+      ...app,
+      files: installedFiles,
+      appContentHash,
+      appContentRevision: download.appContentRevision,
+      installedAt: Date.now(),
+    }
+    try {
+      let completedFiles = 0
+      const reportFile = () =>
+        onProgress?.({
+          id,
+          stage: 'installing',
+          completedFiles: ++completedFiles,
+          totalFiles: installedFiles.length,
+        })
+      onProgress?.({ id, stage: 'installing', completedFiles, totalFiles: installedFiles.length })
+      for (const file of installedFiles) {
+        const path = file.path.slice(1)
+        const identity = `${file.size}:${file.sha256}:${Boolean(file.bundled)}`
+        if (
+          verifiedFiles.get(file.path) === identity ||
+          (await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled))
+        ) {
+          verifiedFiles.set(file.path, identity)
+          delete files[path]
+          reportFile()
+          continue
+        }
+        written.push(file.path)
+        await this.storage.writeFile(file.path, files[path]!)
+        if (!(await this.storage.hasFileHash(file.path, file.size, file.sha256, file.bundled)))
+          throw new Error('APP 文件写入后的校验失败，当前版本未切换')
+        verifiedFiles.set(file.path, identity)
+        delete files[path]
+        reportFile()
+      }
+      const currentPaths = new Set([
+        ...app.files.map((file) => file.path),
+        ...previous
+          .filter((installedApp) => installedApp.id !== id)
+          .flatMap((installedApp) => installedApp.files.map((file) => file.path)),
+      ])
+      const cleanupByPath = new Map<string, OfficialAppFile>()
+      for (const old of previous.filter((installedApp) => installedApp.id === id)) {
+        for (const file of [...old.files, ...(old.pendingCleanupFiles ?? [])])
+          if (!currentPaths.has(file.path)) cleanupByPath.set(file.path, file)
+      }
+      const cleanupFiles = [...cleanupByPath.values()]
+      const nextRecord = cleanupFiles.length
+        ? { ...installed, pendingCleanupFiles: cleanupFiles }
+        : installed
+      if (!(await this.isReadyForPackage(installed)))
+        throw new Error('APP 尚未达到可启动状态，当前版本未切换')
+      await this.saveInstalled(nextRecord)
+
+      const pendingCleanupFiles: OfficialAppFile[] = []
+      for (const file of cleanupFiles) {
+        verifiedFiles.delete(file.path)
+        try {
+          await this.storage.deleteFile(file.path, file.bundled)
+        } catch {
+          pendingCleanupFiles.push(file)
+        }
+      }
+      if (cleanupFiles.length) {
+        const cleanupRecord = pendingCleanupFiles.length
+          ? { ...installed, pendingCleanupFiles }
+          : withoutPendingCleanupFiles(nextRecord)
+        // The committed record already contains a retry list, so a failed cleanup
+        // metadata write is safe and the next install can retry idempotently.
+        try {
+          await this.saveInstalled(cleanupRecord)
+        } catch {
+          // Keep the original persisted retry list.
+        }
+      }
+    } catch (error) {
+      const rollbackCleanup = new Map<string, OfficialAppFile>()
+      for (const path of written) {
+        verifiedFiles.delete(path)
+        if (protectedPaths.has(path)) continue
+        const file = installedFiles.find((candidate) => candidate.path === path)
+        try {
+          await this.storage.deleteFile(path, file?.bundled)
+        } catch {
+          if (file) rollbackCleanup.set(path, file)
+        }
+      }
+      const previousApp = previous.find((installedApp) => installedApp.id === id)
+      if (previousApp && rollbackCleanup.size) {
+        const pendingByPath = new Map(
+          (previousApp.pendingCleanupFiles ?? []).map((file) => [file.path, file] as const),
+        )
+        for (const [path, file] of rollbackCleanup) pendingByPath.set(path, file)
+        try {
+          await this.saveInstalled({
+            ...previousApp,
+            pendingCleanupFiles: [...pendingByPath.values()],
+          })
+        } catch {
+          // Preserve the original update error; untracked staging files are harmless
+          // and the installed record continues to identify the usable old package.
+        }
+      }
+      throw error
+    }
   }
 
   async uninstall(id: OfficialAppId, deleteData: boolean, deleteStyles = false): Promise<number> {
@@ -573,6 +742,8 @@ export class OfficialAppService {
             if (!file.bundled) freed += file.size
           }
         await this.storage.remove(id)
+        this.checkedStatus.delete(id)
+        if (this.registry) this.publishInstalled(this.registry.filter((item) => item.id !== id))
         return freed
       }),
     )

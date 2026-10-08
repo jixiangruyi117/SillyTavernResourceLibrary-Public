@@ -207,16 +207,22 @@ public class NativeShareImportService extends Service {
     }
 
     static boolean isCommitted(File folder, String token) {
+        return isCommitted(folder, token, NativeShareImportService::readMetadata);
+    }
+
+    static boolean isCommitted(File folder, String token, MetadataReader metadataReader) {
         File payload = new File(folder, token);
         File metadata = new File(folder, token + ".json");
         if (!payload.isFile() || !metadata.isFile() || metadata.length() > 64 * 1024) return false;
         try {
-            JSONObject saved = readMetadata(metadata);
+            JSONObject saved = metadataReader.read(metadata);
             return saved.optString("cleanupToken").equals(token) && saved.optLong("size", -1) == payload.length();
         } catch (Exception ignored) {
             return false;
         }
     }
+
+    interface MetadataReader { JSONObject read(File file) throws Exception; }
 
     static String stagedToken(String operationId, int index) { return operationId + "-" + index; }
 

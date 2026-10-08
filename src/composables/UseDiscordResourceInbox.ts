@@ -1,6 +1,16 @@
 import { Capacitor } from '@capacitor/core'
 import { onBeforeUnmount, onMounted, watch, type Ref } from 'vue'
-import { initializeVaultOnce } from '../core/LibraryContainer'
+import {
+  communitySourceService,
+  discordInboxAutomationSettingsService,
+  initializeVaultOnce,
+  resourceService,
+} from '../core/LibraryContainer'
+import {
+  autoBindIncomingCardBatch,
+  beginIncomingCardBindingBatch,
+  flushDeferredPostBindings,
+} from '../services/DiscordInboxAutoBinding'
 import { noticeCenter } from '../core/NoticeCenter'
 import { taskCenter } from '../core/TaskCenter'
 import { requestNativeNotifications } from '../core/NativeSecurity'
@@ -25,9 +35,20 @@ import {
   type SharedFileBatch,
 } from '../utils/ShareTargetIntake'
 import type { VaultStatus } from '../types/Vault'
+import { RESOURCE_TYPE, type ResourceListSummary } from '../types/Resource'
+
+interface WebResourceCycle {
+  target: DiscordInboxTarget
+  automatic: boolean
+  jobs: DiscordResourceJob[]
+  resourceIds: Set<string>
+  hasMore: boolean
+  finishBindingBatch: (discard?: boolean) => void
+}
 
 interface ActiveResource {
   job: Pick<DiscordResourceJob, 'id' | 'name'>
+  automatic: boolean
   target: DiscordInboxTarget
   taskId: string
   controller: AbortController
@@ -37,21 +58,25 @@ interface ActiveResource {
   confirm?: () => Promise<void>
   confirming?: Promise<void>
   staging?: SharedFileBatch
+  webCycle?: WebResourceCycle
 }
 
 /** Transport coordination only: every file and decision goes through the existing share importer. */
 export function useDiscordResourceInbox(
   vault: Ref<VaultStatus>,
   receive: (batch: SharedFileBatch) => void,
+  refreshNativeResources?: () => Promise<void>,
 ) {
   const active = new Map<string, ActiveResource>()
   const native = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
   let disposed = false
   let running = false
   let requested = false
+  let requestedAutomatic = true
   let nativeTimer: number | undefined
   let readingNative = false
   let notificationPermissionChecked = false
+  let webCycle: WebResourceCycle | undefined
   const visible = () =>
     document.visibilityState !== 'hidden' || (native && isNativeDiscordInboxRunning())
 
@@ -88,17 +113,26 @@ export function useDiscordResourceInbox(
   }
   async function failure(entry: ActiveResource, reason: unknown): Promise<void> {
     const message = reason instanceof Error ? reason.message : String(reason || '资源下载失败')
+    if (!taskCenter.list().some((task) => task.operationId === entry.taskId))
+      startEntryTask(entry, entry.imported ? '已导入，云端确认未完成' : '导入未完成')
     if (entry.imported) {
       taskCenter.fail(entry.taskId, '资源已导入，云端确认或暂存清理未完成，可重试确认。')
-      active.delete(entry.job.id)
+      if (native) active.delete(entry.job.id)
+      releaseWebDownload(entry)
       changed()
       return
     }
     taskCenter.fail(entry.taskId, message)
     await notifyResult(entry, 'failed')
     active.delete(entry.job.id)
-    const confirmation = state(entry, 'failed', message).catch(() => undefined)
-    if (!native) await confirmation
+    const confirmation = state(entry, 'failed', message).then(
+      () => true,
+      () => false,
+    )
+    if (!native) {
+      const confirmed = await confirmation
+      releaseWebDownload(entry, confirmed && entry.delivered)
+    }
     noticeCenter.push({ id: entry.taskId, type: 'error', message: `${entry.job.name}：${message}` })
     changed()
   }
@@ -112,20 +146,41 @@ export function useDiscordResourceInbox(
     if (!['imported', 'duplicate_file', 'duplicate_card'].includes(outcome.state ?? ''))
       return false
     entry.imported = true
+    taskCenter.update(entry.taskId, { phase: '后台已导入资源库' })
+    // Android writes directly to SQLite, bypassing the foreground import owner's refresh.
+    // Publish committed local data before a slow/offline cloud acknowledgement.
+    if (refreshNativeResources) {
+      try {
+        await refreshNativeResources()
+      } catch {
+        noticeCenter.push({
+          id: 'discord-native-library-refresh',
+          type: 'warning',
+          message: '后台导入已完成，但资源列表刷新失败；请重新打开资源库查看。',
+        })
+      }
+    }
+    if (document.visibilityState !== 'hidden') {
+      taskCenter.complete(entry.taskId)
+      taskCenter.dismiss(entry.taskId)
+    }
     try {
       entry.confirm = async () => {
         await state(entry, 'imported')
         const resultState = outcome.state === 'imported' ? 'imported' : 'duplicate'
         await notifyResult(entry, resultState)
-        await cleanupCompletedCloudDiscordResource(entry.job.id).catch(() => undefined)
+        if (!outcome.automaticBindingPending)
+          await cleanupCompletedCloudDiscordResource(entry.job.id).catch(() => undefined)
       }
       await entry.confirm()
       taskCenter.update(entry.taskId, { phase: '后台已导入资源库' })
       taskCenter.complete(entry.taskId)
+      if (native && document.visibilityState !== 'hidden') taskCenter.dismiss(entry.taskId)
       active.delete(entry.job.id)
       noticeCenter.dismiss(entry.taskId)
       changed()
     } catch (error) {
+      startEntryTask(entry, '已导入，云端确认未完成')
       taskCenter.fail(entry.taskId, '资源已在后台导入，云端确认失败；打开收件箱后可重试确认。')
       noticeCenter.push({
         id: entry.taskId,
@@ -155,6 +210,9 @@ export function useDiscordResourceInbox(
     let duplicateItems = 0
     const batch: SharedFileBatch = {
       ...original,
+      taskOperationId: entry.taskId,
+      automaticCloud: entry.automatic,
+      deferAutomaticBinding: Boolean(entry.webCycle),
       route: 'resource',
       // Explicit cloud command chooses resources; a retained file does not open the route picker.
       recoveryId: original.recoveryId || entry.taskId,
@@ -165,15 +223,24 @@ export function useDiscordResourceInbox(
         taskCenter.cancelled(entry.taskId)
         await notifyResult(entry, 'cancelled')
         active.delete(entry.job.id)
+        releaseWebDownload(entry)
         changed()
       },
       onItemComplete: async (result) => {
+        if (
+          entry.webCycle &&
+          (result.status === 'imported' || result.status === 'duplicate') &&
+          result.resource.type === RESOURCE_TYPE.CHARACTER_CARD
+        )
+          entry.webCycle.resourceIds.add(result.resource.versionGroupId || result.resource.id)
         if (result.status === 'failed') failed = true
         if (result.status === 'imported') importedItems += 1
         if (result.status === 'duplicate') duplicateItems += 1
         if (result.status === 'versionCandidate') {
           waiting += 1
-          taskCenter.update(entry.taskId, { phase: '等待确认历史版本' })
+          taskCenter.update(entry.taskId, {
+            phase: native ? '等待确认历史版本' : '等待确认历史版本，处理后继续领取',
+          })
           await notifyResult(entry, 'waiting_version')
           const confirmation = state(entry, 'waiting_version').catch(() => {
             noticeCenter.push({
@@ -185,9 +252,11 @@ export function useDiscordResourceInbox(
           if (!native) await confirmation
         }
       },
-      onVersionResolved: async (hash) => {
+      onVersionResolved: async (hash, resourceId) => {
         waiting = Math.max(0, waiting - 1)
         if (!hash) skipped = true
+        else importedItems += 1
+        if (hash && resourceId) entry.webCycle?.resourceIds.add(resourceId)
       },
       onFailure: (message) => failure(entry, message),
       acknowledge: async () => {
@@ -204,15 +273,25 @@ export function useDiscordResourceInbox(
           const confirmation = state(
             entry,
             skipped ? 'cancelled' : 'failed',
-            skipped ? '已跳过版本导入，文件未新增。' : '资源解析或导入失败。',
-          ).catch(() => {
-            noticeCenter.push({
-              type: 'warning',
-              message: '本机处理已结束，云端状态尚未确认，暂存文件仍保留。',
+            importedItems + duplicateItems > 0
+              ? skipped
+                ? '部分资源已保存；已跳过其余版本选择。'
+                : '部分资源已保存；其余资源解析或导入失败，可重试。'
+              : skipped
+                ? '已跳过版本导入，文件未新增。'
+                : '资源解析或导入失败。',
+          )
+            .then(() => true)
+            .catch(() => {
+              noticeCenter.push({
+                type: 'warning',
+                message: '本机处理已结束，云端状态尚未确认，暂存文件仍保留。',
+              })
+              return false
             })
-          })
-          if (!native) await confirmation
+          const confirmed = native ? false : await confirmation
           active.delete(entry.job.id)
+          releaseWebDownload(entry, confirmed)
           changed()
           return
         }
@@ -241,12 +320,20 @@ export function useDiscordResourceInbox(
         await original.acknowledge()
         taskCenter.update(entry.taskId, { phase: '已导入资源库' })
         taskCenter.complete(entry.taskId)
+        if (native && document.visibilityState !== 'hidden') taskCenter.dismiss(entry.taskId)
         active.delete(entry.job.id)
+        releaseWebDownload(entry)
         noticeCenter.dismiss(entry.taskId)
         changed()
       } catch (error) {
         if (!native) throw error
         const message = '资源已导入，云端确认或暂存清理未完成，可重试确认。'
+        if (
+          !taskCenter
+            .list()
+            .some((task) => task.operationId === entry.taskId && task.status === 'running')
+        )
+          startEntryTask(entry, '已导入，云端确认未完成')
         taskCenter.fail(entry.taskId, message)
         changed()
         throw new Error(message, { cause: error })
@@ -260,6 +347,47 @@ export function useDiscordResourceInbox(
   function releaseNativeClaim(batch: SharedFileBatch): void {
     // Undo only this session's delivery claim; retain every staged file and checkpoint.
     for (const token of batch.nativeShareTokens ?? []) allowDiscordAttachmentRetry(token)
+  }
+  function releaseWebDownload(entry: ActiveResource, resume = true): void {
+    if (native) return
+    // The remote source remains available for failed/skipped imports; retain hash checkpoints,
+    // but release this completed attachment before admitting another Web download.
+    if (entry.staging) entry.staging.files.length = 0
+    entry.staging = undefined
+    if (resume) void request(entry.automatic)
+  }
+
+  async function settleWebCycle(cycle: WebResourceCycle): Promise<void> {
+    cycle.finishBindingBatch()
+    if (!targetCurrent(cycle.target)) return
+    try {
+      const settings = await discordInboxAutomationSettingsService.load()
+      const bindings = await flushDeferredPostBindings(
+        communitySourceService,
+        resourceService,
+        settings,
+      )
+      const resources: ResourceListSummary[] = []
+      // Reload only the final lightweight records: later containers/versions may change the
+      // current name, author or PNG representation without changing the logical resource ID.
+      for (const id of cycle.automatic && settings.bindForeground ? cycle.resourceIds : []) {
+        if (disposed || vault.value.locked || !targetCurrent(cycle.target)) return
+        const summary = await resourceService.getResourceListSummary(id)
+        if (summary) resources.push(summary)
+      }
+      if (disposed || vault.value.locked || !targetCurrent(cycle.target)) return
+      bindings.push(
+        ...(await autoBindIncomingCardBatch(communitySourceService, resources, settings)),
+      )
+      for (const binding of bindings)
+        window.dispatchEvent(
+          new CustomEvent('srl:community-sources-changed', {
+            detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
+          }),
+        )
+    } catch {
+      // Binding remains best effort; a completed local import must not be rolled back.
+    }
   }
 
   async function readNative(): Promise<void> {
@@ -318,20 +446,23 @@ export function useDiscordResourceInbox(
   function createEntry(
     job: ActiveResource['job'],
     target: DiscordInboxTarget,
+    automatic: boolean,
   ): ActiveResource | undefined {
     if (active.has(job.id) || active.size >= 100) return
     const controller = new AbortController()
     const taskId = `discord-resource-${job.id}`
     const entry: ActiveResource = {
       job,
+      automatic,
       target,
       taskId,
       controller,
       delivered: false,
       imported: false,
+      webCycle: native ? undefined : webCycle,
     }
     active.set(job.id, entry)
-    startEntryTask(entry, '准备下载')
+    startEntryTask(entry, native ? '正在读取本机收件状态' : '准备下载')
     return entry
   }
   function startEntryTask(entry: ActiveResource, phase: string): void {
@@ -358,17 +489,21 @@ export function useDiscordResourceInbox(
         }
         if (entry.staging) releaseNativeClaim(entry.staging)
         await acknowledgeDiscordResource(job.id, 'queued', target)
-        await request()
+        await request(entry.automatic)
       },
     })
   }
 
-  async function accept(job: DiscordResourceJob, target: DiscordInboxTarget): Promise<void> {
-    const entry = createEntry(job, target)
+  async function accept(
+    job: DiscordResourceJob,
+    target: DiscordInboxTarget,
+    automatic: boolean,
+  ): Promise<void> {
+    const entry = createEntry(job, target, automatic)
     if (!entry) return
     const { taskId, controller } = entry
     try {
-      taskCenter.update(taskId, { phase: '正在下载' })
+      if (!native) taskCenter.update(taskId, { phase: '正在下载' })
       if (native) {
         if (!notificationPermissionChecked) {
           notificationPermissionChecked = true
@@ -396,6 +531,7 @@ export function useDiscordResourceInbox(
           return
         }
         if (entry.delivered) return
+        taskCenter.update(taskId, { phase: '正在下载' })
         await state(entry, 'downloading')
         const fresh = await readDiscordResourceJob(job.id, target)
         await stageCloudDiscordResource({
@@ -403,6 +539,7 @@ export function useDiscordResourceInbox(
           libraryId: target.libraryId,
           workerUrl: target.workerUrl,
           url: fresh.url,
+          automaticAutoBinding: entry.automatic,
         })
         scheduleNative()
       } else {
@@ -418,7 +555,8 @@ export function useDiscordResourceInbox(
         if (!targetCurrent(target) || vault.value.locked || disposed)
           throw new DOMException('下载领取已暂停', 'AbortError')
         await state(entry, 'importing')
-        deliver(entry, cloudWebResourceBatch(file, taskId))
+        entry.staging = cloudWebResourceBatch(file, taskId, entry.automatic)
+        deliver(entry, entry.staging)
       }
     } catch (error) {
       if (
@@ -430,10 +568,13 @@ export function useDiscordResourceInbox(
         if (!entry.cancelRequested) {
           const paused = document.visibilityState === 'hidden' || vault.value.locked || disposed
           await state(entry, paused ? 'queued' : 'cancelled').catch(() => undefined)
+          // Pausing a download does not finish that member of the logical batch.
+          if (paused && entry.webCycle === webCycle) entry.webCycle?.jobs.unshift(job)
         }
       } else await failure(entry, error)
     }
   }
+
   async function receiveNativeCompletion(id: string): Promise<void> {
     if (disposed || vault.value.locked || active.get(id)?.delivered) return
     try {
@@ -444,11 +585,15 @@ export function useDiscordResourceInbox(
       // Native staging checks the stored worker/library and payload size before returning a file.
       // A completed file must not wait for the separate network queue/progress acknowledgement.
       const result = await readCloudDiscordResource({ id, ...target })
-      if (result.nativeImportOutcome?.state === 'imported') {
+      if (
+        result.nativeImportOutcome?.state === 'imported' ||
+        result.nativeImportOutcome?.state === 'duplicate_file' ||
+        result.nativeImportOutcome?.state === 'duplicate_card'
+      ) {
         const existing = active.get(id)
         const entry =
           existing ??
-          createEntry({ id, name: result.nativeImportOutcome.name || '云端角色卡' }, target)
+          createEntry({ id, name: result.nativeImportOutcome.name || '云端角色卡' }, target, true)
         if (entry) await finishNativeImport(entry, result.nativeImportOutcome)
         return
       }
@@ -458,7 +603,7 @@ export function useDiscordResourceInbox(
         return
       }
       const existing = active.get(id)
-      const entry = existing ?? createEntry({ id, name: result.batch.files[0]!.name }, target)
+      const entry = existing ?? createEntry({ id, name: result.batch.files[0]!.name }, target, true)
       if (entry && targetCurrent(entry.target)) deliver(entry, result.batch)
       else releaseNativeClaim(result.batch)
     } catch {
@@ -466,14 +611,55 @@ export function useDiscordResourceInbox(
     }
   }
 
-  async function request(): Promise<void> {
+  async function snapshotWebCycle(
+    target: DiscordInboxTarget,
+    automatic: boolean,
+  ): Promise<WebResourceCycle | undefined> {
+    const jobs: DiscordResourceJob[] = []
+    const seen = new Set<string>()
+    let cursor: string | undefined
+    let hasMore = false
+    // Read only queue metadata before downloading. A later-page failure leaves the whole
+    // snapshot unclaimed rather than presenting a partial cohort as a unique match.
+    for (let page = 0; page < 5; page += 1) {
+      if (disposed || vault.value.locked || !visible() || !targetCurrent(target)) return
+      const result = await listDiscordResourceJobs(target, cursor)
+      for (const job of result.jobs)
+        if (!seen.has(job.id)) {
+          seen.add(job.id)
+          jobs.push(job)
+        }
+      hasMore = result.hasMore && result.jobs.length > 0
+      if (!hasMore) break
+      const last = result.jobs.at(-1)!
+      const next = `${last.createdAt}:${last.id}`
+      if (cursor === next) {
+        hasMore = false // An older Worker may ignore pagination; do not repeat its first page.
+        break
+      }
+      cursor = next
+    }
+    if (disposed || vault.value.locked || !targetCurrent(target)) return
+    return {
+      target,
+      automatic,
+      jobs,
+      resourceIds: new Set(),
+      hasMore,
+      finishBindingBatch: beginIncomingCardBindingBatch(),
+    }
+  }
+
+  async function request(automatic = true): Promise<void> {
     requested = true
+    requestedAutomatic = automatic
     if (running || disposed) return
     running = true
     try {
       await initializeVaultOnce()
       do {
         requested = false
+        const automaticRequest = requestedAutomatic
         if (vault.value.locked || !visible()) break
         let target: DiscordInboxTarget
         try {
@@ -491,6 +677,35 @@ export function useDiscordResourceInbox(
             '当前配对已改变，未向新目标导入；原生已领取的文件仍在原目标暂存。',
           )
         }
+        if (!native) {
+          if (webCycle && !targetCurrent(webCycle.target)) {
+            webCycle.finishBindingBatch(true)
+            webCycle = undefined
+          }
+          // A single attachment owns all importer callbacks, including every item inside a ZIP.
+          // Keep at most one downloaded Web attachment until its import/decisions finish.
+          for (const entry of active.values())
+            if (!entry.delivered && entry.staging) deliver(entry, entry.staging)
+          if (active.size) break
+          webCycle ??= await snapshotWebCycle(target, automaticRequest)
+          if (!webCycle) break
+          const cycle = webCycle
+          while (cycle.jobs.length && !disposed) {
+            if (vault.value.locked || !visible() || !targetCurrent(cycle.target)) break
+            await accept(cycle.jobs.shift()!, cycle.target, cycle.automatic)
+            if (active.size) break
+          }
+          if (active.size || cycle.jobs.length || vault.value.locked || !visible()) break
+          await settleWebCycle(cycle)
+          cycle.resourceIds.clear()
+          webCycle = undefined
+          // Preserve the existing 100-job bound per cohort, with later arrivals in another cohort.
+          if (cycle.hasMore) {
+            requested = true
+            requestedAutomatic = cycle.automatic
+          }
+          continue
+        }
         const handled = new Set<string>()
         let cursor: string | undefined
         for (let page = 0; page < 5 && !disposed; page += 1) {
@@ -499,7 +714,7 @@ export function useDiscordResourceInbox(
           for (const job of jobs) {
             if (vault.value.locked || !visible() || !targetCurrent(target)) break
             handled.add(job.id)
-            await accept(job, target)
+            await accept(job, target, automaticRequest)
           }
           if (!result.hasMore || !result.jobs.length) break
           const last = result.jobs.at(-1)!
@@ -507,7 +722,7 @@ export function useDiscordResourceInbox(
           if (cursor === next) break // An older Worker may ignore pagination; do not loop its first page.
           cursor = next
         }
-        if (native) await readNative()
+        await readNative()
       } while (requested && !disposed)
     } catch (error) {
       // Older Workers remain usable for post saving; the panel explains the missing resource update.
@@ -524,6 +739,10 @@ export function useDiscordResourceInbox(
 
   function visibility(): void {
     if (document.visibilityState !== 'hidden') {
+      if (native)
+        for (const task of taskCenter.list())
+          if (task.operationId.startsWith('discord-resource-') && task.status === 'completed')
+            taskCenter.dismiss(task.operationId)
       void request()
       scheduleNative()
     } else {
@@ -533,6 +752,10 @@ export function useDiscordResourceInbox(
     }
   }
   function wake(event?: Event): void {
+    if (native && event?.type === 'srl:native-active') {
+      visibility()
+      return
+    }
     // A claimed native download may finish while the WebView is still alive in the background.
     // Deliver that retained file through the existing background import owner without polling new jobs.
     const detail = (event as CustomEvent<{ cloud?: boolean; token?: string }> | undefined)?.detail
@@ -543,7 +766,7 @@ export function useDiscordResourceInbox(
     if (native && id && event?.type === 'srl:native-share-download-completed')
       void receiveNativeCompletion(id)
     else if (native && event?.type.startsWith('srl:native-share-download-')) void readNative()
-    void request()
+    void request(event?.type !== 'srl:receive-discord-resources')
   }
   function cancelRequested(event: Event): void {
     const id = (event as CustomEvent<{ id?: string }>).detail?.id
@@ -580,6 +803,8 @@ export function useDiscordResourceInbox(
   })
   onBeforeUnmount(() => {
     disposed = true
+    webCycle?.finishBindingBatch(true)
+    webCycle = undefined
     if (nativeTimer !== undefined) clearTimeout(nativeTimer)
     for (const entry of active.values()) entry.controller.abort()
     for (const event of events) window.removeEventListener(event, wake)

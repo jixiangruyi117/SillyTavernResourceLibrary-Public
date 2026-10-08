@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import console from 'node:console'
 import process from 'node:process'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { URL } from 'node:url'
 import { officialAppIds } from './Check-FeatureContracts.mjs'
@@ -141,8 +141,11 @@ try {
     )
     const permission = page.locator('.external-app-permission')
     if (name === '读了么') {
-      await permission.waitFor({ state: 'visible' })
-      await permission.getByRole('button', { name: '仅同意这次' }).click()
+      const reader = page.frameLocator('iframe[title="读了么 内置 APP"]')
+      await reader.locator('#aboutBtn').waitFor({ state: 'visible' })
+      assert.equal(await permission.count(), 0, '内置读了么普通读取不得重复确认')
+      assert.ok((await reader.locator('html').getAttribute('class')).includes('builtin-shell'))
+      assert.equal(await reader.locator('.topbar').isVisible(), false, '内置读了么不得显示重复页头')
     } else if (await permission.count()) {
       await permission.getByRole('button', { name: '仅同意这次' }).click()
     }
@@ -213,7 +216,13 @@ try {
         name,
       )
       const permission = page.locator('.external-app-permission')
-      if (name === '读了么') await permission.waitFor({ state: 'visible' })
+      if (name === '读了么') {
+        await page
+          .frameLocator('.external-app-host__frame')
+          .locator('#aboutBtn')
+          .waitFor({ state: 'visible' })
+        assert.equal(await permission.count(), 0)
+      }
       if (await permission.count())
         await permission.getByRole('button', { name: '仅同意这次' }).click()
       assert.ok((await page.locator('body').innerText()).includes(name))
@@ -277,6 +286,125 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('srl.draw.showNames')), 'true')
   console.log('旧安装修复通过：导入前拦截、下载兼容包、原数据保留')
   await back()
+  const markBatchRepair = () =>
+    page.evaluate(
+      () =>
+        new Promise((accept, reject) => {
+          const opening = indexedDB.open('SillyTavernResourceLibrary')
+          opening.onerror = () => reject(opening.error)
+          opening.onsuccess = () => {
+            const database = opening.result
+            const transaction = database.transaction('settings', 'readwrite')
+            const store = transaction.objectStore('settings')
+            for (const id of ['draw', 'stitch']) {
+              const getting = store.get(`official-app:${id}`)
+              getting.onsuccess = () => {
+                const record = getting.result
+                if (!record?.value?.runtimeEntry) {
+                  transaction.abort()
+                  return
+                }
+                delete record.value.runtimeEntry
+                store.put(record)
+              }
+            }
+            transaction.oncomplete = () => {
+              database.close()
+              accept()
+            }
+            transaction.onabort = () => {
+              database.close()
+              reject(new Error('Batch repair fixture failed'))
+            }
+          }
+        }),
+    )
+  const openBatchManager = async () => {
+    await page.reload()
+    await page.getByRole('button', { name: '功能', exact: true }).click()
+    await manager()
+    await page.locator('.official-app-manager__updates-dialog').waitFor({ state: 'visible' })
+  }
+  await markBatchRepair()
+  await mkdir(environment.outputDir, { recursive: true })
+  for (const theme of ['light', 'dark']) {
+    for (const [width, height] of [
+      [320, 800],
+      [375, 812],
+      [390, 844],
+      [430, 932],
+    ]) {
+      await page.setViewportSize({ width, height })
+      await openBatchManager()
+      await page.evaluate((theme) => {
+        document.documentElement.dataset.theme = theme
+      }, theme)
+      await page
+        .locator('.official-app-manager__updates-footer')
+        .getByRole('button', { name: '稍后处理' })
+        .tap()
+      for (const name of ['抽了么', '缝了么']) {
+        const checkbox = page.getByRole('checkbox', { name: `选择更新${name}` })
+        await checkbox.locator('..').tap()
+        assert.equal(await checkbox.isChecked(), true)
+      }
+      const batchButton = page.getByRole('button', { name: '更新所选（2）', exact: true })
+      await batchButton.scrollIntoViewIfNeeded()
+      const layout = await page.evaluate(() => ({
+        overflow: document.documentElement.scrollWidth > innerWidth,
+        titleFits: (() => {
+          const title = document.querySelector('.feature-app-header h1')
+          return title.scrollWidth <= title.clientWidth
+        })(),
+        controls: [
+          ...document.querySelectorAll(
+            '.official-app-manager button,.official-app-manager__select-update,.official-app-manager__batch-update',
+          ),
+        ].every((element) => {
+          const box = element.getBoundingClientRect()
+          return box.left >= 0 && box.right <= innerWidth && box.height >= 44
+        }),
+      }))
+      assert.deepEqual(
+        layout,
+        { overflow: false, titleFits: true, controls: true },
+        `${theme} ${width}: batch controls`,
+      )
+      await page.screenshot({ path: resolve(environment.outputDir, `batch-${width}-${theme}.png`) })
+    }
+  }
+  await page.getByRole('button', { name: '更新所选（2）', exact: true }).tap()
+  await status('更新结束：完成 2 个')
+  assert.equal(await page.locator('.official-app-manager__update-dot').count(), 0)
+  assert.equal(
+    await page.locator('.official-app-manager__progress').filter({ hasText: '更新成功' }).count(),
+    2,
+  )
+  assert.equal(await page.evaluate(() => localStorage.getItem('srl.draw.showNames')), 'true')
+  await verifyBatchCompleteOnReentry()
+  async function verifyBatchCompleteOnReentry() {
+    // A fresh management visit must not ask for the same completed updates again.
+    await page.reload()
+    await page.getByRole('button', { name: '功能', exact: true }).click()
+    await manager()
+    await page.waitForFunction(
+      (count) => document.querySelectorAll('.official-app-manager__latest').length === count,
+      officialAppIds().length,
+    )
+    assert.equal(await page.locator('.official-app-manager__updates-dialog').count(), 0)
+  }
+  await markBatchRepair()
+  await openBatchManager()
+  await page
+    .locator('.official-app-manager__updates-footer')
+    .getByRole('button', { name: '更新全部（2）', exact: true })
+    .tap()
+  await status('更新结束：完成 2 个')
+  assert.equal(await page.locator('.official-app-manager__update-dot').count(), 0)
+  console.log(
+    '批量更新通过：四宽度浅深色冷进入、真实触控多选和更新全部、两项就绪、再次进入不重复提醒、原数据保留',
+  )
+  await back()
   await openAuditFeature(page, '抽了么')
   await page.locator('.draw-app__stats').waitFor()
   const originalInstallations = await page.evaluate(
@@ -335,7 +463,13 @@ try {
   assert.ok((await updateDialog.innerText()).includes('当前 APP 包版本：'))
   const latestVersion = await page.evaluate(
     async () =>
-      (await (await fetch('/official-apps/api-1/catalog.json')).json()).apps.draw[0].shellVersion,
+      (
+        await (
+          await fetch(
+            `/official-apps/api-${(await (await fetch('/official-app-assets.json')).json()).hostApiVersion}/catalog.json`,
+          )
+        ).json()
+      ).apps.draw[0].shellVersion,
   )
   const latestVersionLabel = latestVersion.replace(/^srl-/u, '').replace(/-v(\d+)$/u, ' (v$1)')
   assert.ok((await updateDialog.innerText()).includes(latestVersionLabel))
@@ -450,11 +584,17 @@ try {
     for (const path of readiness.files)
       assert.equal(
         readiness.reads.filter((read) => read === path).length,
-        1,
-        `${name} 文件齐全检查必须只做一次：${path}`,
+        0,
+        `${name} 日常打开不得重跑文件齐全扫描：${path}`,
       )
     const permissionDialog = page.locator('.external-app-permission')
-    if (name === '读了么') await permissionDialog.waitFor({ state: 'visible' })
+    if (name === '读了么') {
+      await page
+        .frameLocator('.external-app-host__frame')
+        .locator('#aboutBtn')
+        .waitFor({ state: 'visible' })
+      assert.equal(await permissionDialog.count(), 0)
+    }
     if (await permissionDialog.count())
       await permissionDialog.getByRole('button', { name: '仅同意这次' }).click()
     assert.ok(

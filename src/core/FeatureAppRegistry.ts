@@ -33,6 +33,9 @@ export function getAssistantNavigationTargets(includeLibrary = false) {
       title: app.name,
       entry: ['功能', app.name],
     })),
+    // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=assistant-official-app-destination
+    { id: 'officialApps', title: 'APP 管理', entry: ['功能', 'APP 管理'] },
+    // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=assistant-official-app-destination
     ...(includeLibrary
       ? ASSISTANT_LIBRARY_DESTINATIONS.map((item) => ({ ...item, entry: [...item.entry] }))
       : []),

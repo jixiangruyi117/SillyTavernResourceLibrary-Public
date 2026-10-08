@@ -13,6 +13,29 @@ vi.mock('../composables/UseConfirmDialog', () => ({
 }))
 
 describe('CharacterCardContentWorkbench', () => {
+  it('keeps exit, import, new and the parent save in that order while editing an entry', async () => {
+    const wrapper = mount(CharacterCardContentWorkbench, {
+      props: { card: { data: { first_mes: '原开场' } }, edits: [] },
+      slots: { save: '<button type="submit" form="resource-organize-section">保存</button>' },
+    })
+    const actions = () =>
+      wrapper.findAll('.card-content-workbench__header button').map((button) => button.text())
+    try {
+      expect(actions()).toEqual(['退出编辑', '导入', '新建', '保存'])
+      await wrapper.findAll('.card-content-workbench__header button')[2]!.trigger('click')
+      expect(actions()).toEqual(['退出编辑', '导入', '新建', '保存'])
+      await wrapper.get('textarea').setValue('保留草稿')
+      await wrapper.get('[aria-label="返回列表"]').trigger('click')
+      expect(wrapper.text()).toContain('还有未应用的输入')
+      await wrapper
+        .findAll('button')
+        .find((button) => button.text() === '继续编辑')!
+        .trigger('click')
+      expect(wrapper.get('textarea').element.value).toBe('保留草稿')
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('keeps alternate greeting identity after deleting an earlier greeting', async () => {
     vi.mocked(chooseAction).mockResolvedValue('confirm')
     vi.mocked(confirmAction).mockResolvedValue(true)
@@ -92,5 +115,15 @@ describe('CharacterCardContentWorkbench', () => {
       1,
     )
     expect(wrapper.get('textarea').element.value).toBe('初始开场白')
+    await wrapper.get('textarea').setValue('暂存的开场白')
+    await wrapper.get('button[aria-label="返回列表"]').trigger('click')
+    expect(wrapper.find('.card-content-workbench__editor').exists()).toBe(false)
+    expect(wrapper.text()).toContain('还有未应用的输入，已暂存')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '继续编辑')!
+      .trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('暂存的开场白')
+    wrapper.unmount()
   })
 })

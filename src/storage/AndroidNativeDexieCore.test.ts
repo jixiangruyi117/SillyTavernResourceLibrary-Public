@@ -1,14 +1,45 @@
 import 'fake-indexeddb/auto'
 
+import Dexie, { liveQuery } from 'dexie'
 import { describe, expect, it, vi } from 'vitest'
 
 import { AppDatabase } from '../database/AppDatabase'
+import type { VaultService } from '../services/VaultService'
 import { APP_DATABASE_STORES, nativeAppDatabase } from './NativeAppDatabaseBridge'
-import { createAndroidNativeDexieCore } from './AndroidNativeDexieCore'
+import {
+  createAndroidNativeDexieCore,
+  activateAndroidNativeAppDatabase,
+  deactivateAndroidNativeAppDatabase,
+  compactAndroidNativeAppDatabase,
+} from './AndroidNativeDexieCore'
+import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
+import { IndexedDbAssetStore } from './IndexedDbAssetStore'
+import { RecycleBinService } from '../services/RecycleBinService'
+import { RESOURCE_TYPE, type Resource, type ResourceSummary } from '../types/Resource'
+import {
+  AndroidAppDatabaseMigrator,
+  encodeAppDatabaseKey,
+  decodeAppDatabaseKey,
+  encodeAppDatabaseIndexes,
+  fingerprintAppDatabaseStore,
+} from './AndroidAppDatabaseMigration'
+import { hashBlob } from '../services/HashService'
+import { ChatReaderService } from '../services/ChatReaderService'
+import type { ResourceService } from '../services/ResourceService'
+import {
+  getRetainedIndexedDbCopy,
+  clearRetainedIndexedDbCopy,
+} from './AndroidNativeAppDatabaseRuntime'
 
-function createNativeStore() {
+function createNativeStore(keyPages = false) {
   const stores = new Map<string, Map<string, Record<string, unknown>>>()
   const blobs = new Map<string, Blob>()
+  const states = new Map<string, string>()
+  const bump = (store: string) => {
+    const key = `revision:appdb:v1:${store}`
+    states.set(key, String(Number(states.get(key) ?? 0) + 1))
+  }
+  const indexes = new Map<string, Array<{ name: string; keys: string[] }>>()
   let failNextApplyBatch = false
   for (const name of APP_DATABASE_STORES) stores.set(name, new Map())
   const read = (store: string) => stores.get(store)!
@@ -42,6 +73,16 @@ function createNativeStore() {
       const nextKey = rows.length === limit ? rows.at(-1)?.key : undefined
       return { rows, count: read(store).size, nextKey }
     },
+    async getRecordKeys(store: string, afterKey: string | undefined, limit: number) {
+      const keys = [...read(store).keys()]
+        .filter((key) => afterKey === undefined || key > afterKey)
+        .sort()
+        .slice(0, limit)
+      return { keys, nextKey: keys.length === limit ? keys.at(-1) : undefined }
+    },
+    async countRecords(store: string) {
+      return read(store).size
+    },
     async getRecordsByKeys(store: string, keys: string[]) {
       return keys.flatMap((key) => {
         const value = read(store).get(key)
@@ -56,12 +97,16 @@ function createNativeStore() {
       for (const [primaryKey, value] of read(store)) {
         // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=native-index-prefer-const-lint-compat
         // eslint-disable-next-line prefer-const
-        let extracted: unknown = keyPaths.length === 1
-          ? value[keyPaths[0]!]
-          : keyPaths.map((path) => value[path])
-        const candidates = indexName.startsWith('*') && Array.isArray(extracted)
-          ? extracted
-          : [extracted]
+        const saved = indexes.get(`${store}\0${primaryKey}`)
+        if (saved) {
+          for (const key of saved.find((index) => index.name === indexName)?.keys ?? [])
+            if (indexKey === undefined || indexKey === key) rows.push({ indexKey: key, primaryKey })
+          continue
+        }
+        const extracted: unknown =
+          keyPaths.length === 1 ? value[keyPaths[0]!] : keyPaths.map((path) => value[path])
+        const candidates =
+          indexName.startsWith('*') && Array.isArray(extracted) ? extracted : [extracted]
         for (const candidate of candidates) {
           if (candidate === undefined || candidate === null) continue
           const encoded = JSON.stringify(candidate)
@@ -71,7 +116,16 @@ function createNativeStore() {
       }
       return rows
     },
-    async applyBatch(operations: Array<Record<string, unknown>>) {
+    async countIndexEntries(store: string, indexName: string, indexKey?: string) {
+      return (await native.getIndexEntries(store as never, indexName, indexKey)).length
+    },
+    async applyBatch(
+      operations: Array<Record<string, unknown>>,
+      options?: { expectedRevisions?: Record<string, number> },
+    ) {
+      for (const [store, revision] of Object.entries(options?.expectedRevisions ?? {}))
+        if (Number(states.get(`revision:appdb:v1:${store}`) ?? 0) !== revision)
+          throw new Error('data changed during transaction')
       if (failNextApplyBatch) {
         failNextApplyBatch = false
         throw new Error('forced native commit failure')
@@ -86,6 +140,7 @@ function createNativeStore() {
           for (const row of operation.rows as Array<{
             key: string
             value: Record<string, unknown>
+            indexes?: Array<{ name: string; keys: string[] }>
           }>) {
             target.set(
               row.key,
@@ -94,8 +149,10 @@ function createNativeStore() {
                 unknown
               >,
             )
+            if (row.indexes) indexes.set(`${operation.store}\0${row.key}`, row.indexes)
           }
         }
+        bump(String(operation.store))
       }
       return operations.length
     },
@@ -105,12 +162,32 @@ function createNativeStore() {
         counts: Object.fromEntries([...stores].map(([name, rows]) => [name, rows.size])),
       }
     },
-    async getState() {
-      return undefined
+    async getState(key: string) {
+      return states.get(key)
     },
-    async putState() {},
+    async putState(key: string, value: string) {
+      states.set(key, value)
+    },
+    async putRecordsWithState(
+      store: string,
+      rows: Array<{
+        key: string
+        value: Record<string, unknown>
+        indexes?: Array<{ name: string; keys: string[] }>
+      }>,
+      key: string,
+      value: string,
+    ) {
+      for (const row of rows) {
+        read(store).set(row.key, row.value)
+        if (row.indexes) indexes.set(`${store}\0${row.key}`, row.indexes)
+      }
+      states.set(key, value)
+      return rows.length
+    },
     async putRecords(store: string, rows: Array<{ key: string; value: Record<string, unknown> }>) {
       for (const row of rows) read(store).set(row.key, row.value)
+      bump(store)
       return rows.length
     },
     async deleteRecords(store: string, keys: string[]) {
@@ -129,7 +206,7 @@ function createNativeStore() {
     ) {
       blobs.set(blobKey(store, attachmentOwnerKey, path), source)
       return {
-        sha256: `${source.size}`.padStart(64, '0'),
+        sha256: await hashBlob(source),
         size: source.size,
         mimeType: source.type,
       }
@@ -141,6 +218,51 @@ function createNativeStore() {
       blobs.delete(blobKey(store, key, path))
     },
   } as unknown as typeof nativeAppDatabase
+  if (keyPages) {
+    const fixtureIndexes = native.getIndexEntries.bind(native)
+    native.queryKeyPage = vi.fn(async (store, query) => {
+      const revision = states.get(`revision:appdb:v1:${store}`) ?? '0'
+      if (query.revision !== undefined && query.revision !== revision)
+        throw new Error('原生查询期间数据已变化')
+      const compare = (a: string, b: string) =>
+        indexedDB.cmp(decodeAppDatabaseKey(a), decodeAppDatabaseKey(b))
+      let rows = query.indexName
+        ? await fixtureIndexes(store, query.indexName)
+        : [...read(store).keys()].map((key) => ({ indexKey: key, primaryKey: key }))
+      rows = rows.filter(
+        (row) =>
+          (query.lower === undefined ||
+            compare(row.indexKey, query.lower) > (query.lowerOpen ? 0 : -1)) &&
+          (query.upper === undefined ||
+            compare(row.indexKey, query.upper) < (query.upperOpen ? 0 : 1)),
+      )
+      if (query.unique) {
+        rows.sort((a, b) => compare(a.indexKey, b.indexKey) || compare(a.primaryKey, b.primaryKey))
+        rows = rows.filter(
+          (row, index) => !index || compare(row.indexKey, rows[index - 1]!.indexKey) !== 0,
+        )
+      }
+      const sign = query.reverse ? -1 : 1
+      rows.sort(
+        (a, b) => sign * (compare(a.indexKey, b.indexKey) || compare(a.primaryKey, b.primaryKey)),
+      )
+      const tuple = (row: (typeof rows)[number], key: string, primary?: string) =>
+        compare(row.indexKey, key) ||
+        (primary === undefined || query.unique ? 0 : compare(row.primaryKey, primary))
+      rows = rows.filter(
+        (row) =>
+          (query.afterKey === undefined ||
+            sign * tuple(row, query.afterKey, query.afterPrimaryKey) > 0) &&
+          (query.seekKey === undefined ||
+            sign * tuple(row, query.seekKey, query.seekPrimaryKey) >= 0),
+      )
+      if (query.countOnly) return { count: rows.length, revision }
+      return {
+        rows: rows.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 100)),
+        revision,
+      }
+    })
+  }
   return {
     stores,
     blobs,
@@ -153,6 +275,1356 @@ function createNativeStore() {
 }
 
 describe('AndroidNativeDexieCore', () => {
+  it('paginates mirror scans with an unbounded upper key and supports an unbounded lower key', async () => {
+    const name = `native-open-range-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const database = new AppDatabase(name)
+    const { native, stores } = createNativeStore(true)
+    for (const id of ['a', 'b', 'c']) stores.get('resources')!.set(JSON.stringify(id), { id })
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      expect(
+        (await database.resources.where('id').above('').limit(2).toArray()).map((row) => row.id),
+      ).toEqual(['a', 'b'])
+      expect(
+        (await database.resources.where('id').above('b').limit(2).toArray()).map((row) => row.id),
+      ).toEqual(['c'])
+      expect(await database.resources.where('id').below('b').primaryKeys()).toEqual(['a'])
+    } finally {
+      database.close()
+      await new AppDatabase(name).delete()
+    }
+  })
+  it.each(['page', 'attachment'] as const)(
+    'does not revive a stopped cursor after an in-flight %s read',
+    async (phase) => {
+      const name = `native-cursor-stop-${crypto.randomUUID()}`
+      const seed = new AppDatabase(name)
+      await seed.open()
+      seed.close()
+      const database = new AppDatabase(name)
+      const { native, stores, blobs, blobKey } = createNativeStore(true)
+      let unblock!: () => void, started!: () => void
+      const blocked = new Promise<void>((resolve) => {
+        unblock = resolve
+      })
+      const ready = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const blob = new Blob(['abc'], { type: 'text/plain' })
+      for (let i = 0; i < 120; i++) {
+        const id = String(i).padStart(3, '0')
+        stores.get('settings')!.set(JSON.stringify(id), {
+          id,
+          data: {
+            __srlAppDatabaseValueV1: 'blob',
+            fieldPath: '$/data',
+            size: blob.size,
+            mimeType: blob.type,
+            sha256: await hashBlob(blob),
+          },
+        })
+        blobs.set(blobKey('settings', JSON.stringify(id), '$/data'), blob)
+      }
+      if (phase === 'page') {
+        const original = vi.mocked(native.queryKeyPage).getMockImplementation()!
+        vi.mocked(native.queryKeyPage).mockImplementation(async (store, query) => {
+          const result = await original(store, query)
+          if (query.afterKey !== undefined) {
+            started()
+            await blocked
+          }
+          return result
+        })
+      } else {
+        const read = native.readBlob.bind(native)
+        vi.spyOn(native, 'readBlob').mockImplementation(async (...args) => {
+          const value = await read(...args)
+          started()
+          await blocked
+          return value
+        })
+      }
+      database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+      let cursor: Awaited<ReturnType<typeof database.settings.core.openCursor>>
+      let callbacks = 0
+      try {
+        const reading = database.transaction('r', database.settings, async (transaction) => {
+          cursor = await database.settings.core.openCursor({
+            trans: transaction.idbtrans,
+            query: {
+              index: database.settings.core.schema.primaryKey,
+              range: { type: 3, lower: null, upper: null },
+            },
+            values: phase === 'attachment',
+          })
+          await cursor!.start(() => {
+            callbacks++
+            cursor!.continue()
+          })
+        })
+        await ready
+        cursor!.stop()
+        await reading
+        await database.settings.put({ id: 'after-stop', value: true, updatedAt: 1 })
+        unblock()
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(callbacks).toBe(phase === 'page' ? 100 : 0)
+        expect(cursor!.value).toBeUndefined()
+        expect(cursor!.done).toBe(true)
+        expect(await database.settings.get('after-stop')).toMatchObject({ value: true })
+      } finally {
+        unblock()
+        database.close()
+        await new AppDatabase(name).delete()
+      }
+    },
+  )
+
+  it.each([1000, 10000])(
+    'reads indexed ranges and cursor pages from a %i-row native library in bounded bridge pages',
+    async (size) => {
+      const name = `native-pages-${crypto.randomUUID()}`
+      const seed = new AppDatabase(name)
+      await seed.open()
+      seed.close()
+      const database = new AppDatabase(name)
+      const { native, stores } = createNativeStore(true)
+      for (let i = 0; i < size; i++) {
+        const id = String(i).padStart(5, '0')
+        stores
+          .get('resourceListSummaries')!
+          .set(JSON.stringify(id), { id, updatedAt: i, tags: ['shared', `tag-${i % 3}`] })
+      }
+      database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+      const fullKeys = vi.spyOn(native, 'getRecordKeys')
+      const fullIndexes = vi.spyOn(native, 'getIndexEntries')
+      const bytes = vi.spyOn(native, 'readBlob')
+      const records = vi.spyOn(native, 'getRecordsByKeys')
+      const record = vi.spyOn(native, 'getRecord')
+      const pages = vi.mocked(native.queryKeyPage)
+      try {
+        const result = await database.resourceListSummaries
+          .where('updatedAt')
+          .between(9, 500, false, true)
+          .reverse()
+          .limit(7)
+          .toArray()
+        expect(result.map((row) => row.id)).toEqual(
+          Array.from({ length: 7 }, (_, i) => String(500 - i).padStart(5, '0')),
+        )
+        expect(pages).toHaveBeenCalledTimes(1)
+        await expect(pages.mock.results[0]!.value).resolves.toMatchObject({
+          rows: expect.any(Array),
+        })
+        expect(records.mock.calls.flatMap((call) => call[1])).toHaveLength(7)
+        pages.mockClear()
+        records.mockClear()
+        const last = await database.resourceListSummaries
+          .orderBy('updatedAt')
+          .offset(size - 8)
+          .limit(8)
+          .toArray()
+        expect(last.map((row) => row.updatedAt)).toEqual(
+          Array.from({ length: 8 }, (_, i) => size - 8 + i),
+        )
+        expect(pages.mock.calls.length).toBeLessThanOrEqual(2)
+        expect(pages.mock.calls.every(([, query]) => (query.limit ?? 100) <= 100)).toBe(true)
+        expect(record.mock.calls.length).toBeLessThanOrEqual(9)
+        expect(records).not.toHaveBeenCalled()
+        pages.mockClear()
+        const selected = await database.resourceListSummaries
+          .where('updatedAt')
+          .anyOf([2, 110, 800])
+          .primaryKeys()
+        expect(selected).toEqual(['00002', '00110', '00800'])
+        expect(pages.mock.calls.length).toBeLessThanOrEqual(4)
+        pages.mockClear()
+        expect(
+          await database.resourceListSummaries
+            .where('updatedAt')
+            .between(10, 19, true, true)
+            .count(),
+        ).toBe(10)
+        expect(pages.mock.calls[0]?.[1].countOnly).toBe(true)
+        expect(fullKeys).not.toHaveBeenCalled()
+        expect(fullIndexes).not.toHaveBeenCalled()
+        expect(bytes).not.toHaveBeenCalled()
+        // A failed optional API uses the established path; actual errors remain visible.
+        pages.mockRejectedValueOnce({ code: 'UNIMPLEMENTED' })
+        expect(
+          await database.resourceListSummaries.orderBy('updatedAt').limit(1).primaryKeys(),
+        ).toEqual(['00000'])
+        expect(fullIndexes).toHaveBeenCalledOnce()
+        pages.mockRejectedValueOnce(new Error('SQLite failed'))
+        await expect(
+          database.resourceListSummaries.orderBy('updatedAt').limit(1).primaryKeys(),
+        ).rejects.toThrow('SQLite failed')
+      } finally {
+        database.close()
+        await new AppDatabase(name).delete()
+      }
+    },
+  )
+
+  it('keeps paged mixed keys, reverse unique keys and revision changes consistent', async () => {
+    const name = `native-mixed-pages-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const database = new AppDatabase(name)
+    const { native, stores } = createNativeStore(true)
+    const keys: IDBValidKey[] = [
+      2,
+      10,
+      -1,
+      new Date('2020-01-01'),
+      'a',
+      'a"',
+      'a\\',
+      '🌧',
+      '\ue000',
+      new Uint8Array([0, 255]).buffer,
+      [],
+      ['a', 2],
+      ['a', 10],
+      [['a']],
+    ]
+    for (const key of keys)
+      stores.get('settings')!.set(encodeAppDatabaseKey(key), { id: key, value: true })
+    for (let i = 0; i < 230; i++) {
+      const id = String(i).padStart(3, '0')
+      stores
+        .get('resourceListSummaries')!
+        .set(JSON.stringify(id), { id, updatedAt: Math.floor(i / 2) })
+    }
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      expect(await database.settings.toCollection().primaryKeys()).toEqual(
+        [...keys].sort((a, b) => indexedDB.cmp(a, b)),
+      )
+      expect(await database.settings.where('id').anyOf([2, 10]).primaryKeys()).toEqual([2, 10])
+      // IDB prevunique returns the lowest primary key, even though index keys descend.
+      const result: string[] = []
+      await database.transaction('r', database.resourceListSummaries, async (transaction) => {
+        const cursor = await database.resourceListSummaries.core.openCursor({
+          trans: transaction.idbtrans,
+          query: {
+            index: database.resourceListSummaries.core.schema.indexes.find(
+              (index) => index.name === 'updatedAt',
+            )!,
+            range: { type: 3, lower: null, upper: null },
+          },
+          unique: true,
+          reverse: true,
+          values: false,
+        })
+        await cursor!.start(() => {
+          result.push(String(cursor!.primaryKey))
+          cursor!.continue()
+        })
+      })
+      expect(result).toEqual(
+        Array.from({ length: 115 }, (_, i) => String(228 - 2 * i).padStart(3, '0')),
+      )
+      const page = vi.mocked(native.queryKeyPage)
+      const original = page.getMockImplementation()!
+      let called = false
+      page.mockImplementation(async (store, query) => {
+        if (called && query.afterKey !== undefined) throw new Error('原生查询期间数据已变化')
+        called = true
+        return original(store, query)
+      })
+      await expect(
+        database.resourceListSummaries
+          .toCollection()
+          .filter(() => true)
+          .primaryKeys(),
+      ).rejects.toThrow('已变化')
+    } finally {
+      database.close()
+      await new AppDatabase(name).delete()
+    }
+  })
+
+  it('lists large recycle archives without Blob reads and restores only the selected archive', async () => {
+    const name = `native-recycle-metadata-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const database = new AppDatabase(name)
+    const { native, stores, blobs, blobKey } = createNativeStore(true)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const selected = new Blob(['selected archive bytes'], { type: 'application/zip' })
+    for (let index = 0; index < 250; index++) {
+      const id = `archive-${String(index).padStart(3, '0')}`
+      const key = encodeAppDatabaseKey(id)
+      stores.get('backupRecords')!.set(key, {
+        id,
+        adapter: index % 2 ? 'local-recycle-bin-persona-version' : 'local-recycle-bin',
+        objectKey: `${id}.zip`,
+        resourceCount: index + 1,
+        createdAt: index,
+        ...(index % 3 ? { size: 77 } : {}),
+        ...(index === 1 ? { encrypted: true, encryptionIv: 'retained-iv' } : {}),
+        blob: {
+          __srlAppDatabaseValueV1: 'blob',
+          fieldPath: '/blob',
+          size: index === 0 ? selected.size : 1024 ** 3,
+          mimeType: 'application/zip',
+          sha256: 'a'.repeat(64),
+        },
+      })
+    }
+    stores
+      .get('backupRecords')!
+      .set('"unrelated"', { id: 'unrelated', adapter: 'local-history', createdAt: 1000 })
+    blobs.set(blobKey('backupRecords', '"archive-000"', '/blob'), selected)
+    const reads = vi.spyOn(native, 'readBlob')
+    const batch = vi.spyOn(native, 'getRecordsByKeys')
+    const restore = vi.fn(async () => {})
+    const prepare = vi.fn(async (file: File) => {
+      expect(await file.text()).toBe('selected archive bytes')
+      return { preview: { mode: 'partial' }, resources: [] }
+    })
+    type Args = ConstructorParameters<typeof RecycleBinService>
+    const service = new RecycleBinService(
+      database,
+      {
+        listResourceListSummaries: async () => [],
+        restoreRelatedLinks: async () => {},
+      } as unknown as Args[1],
+      { list: async () => [] } as unknown as Args[2],
+      {} as Args[3],
+      { prepare, restore } as unknown as Args[4],
+      {} as Args[5],
+      {} as Args[6],
+    )
+    activateAndroidNativeAppDatabase()
+    try {
+      const records = await service.list()
+      expect(records).toHaveLength(250)
+      expect(records[0]?.id).toBe('archive-249')
+      expect(records.find((record) => record.id === 'archive-001')).toMatchObject({
+        size: 77,
+        encrypted: true,
+        encryptionIv: 'retained-iv',
+      })
+      expect(records.find((record) => record.id === 'archive-003')?.size).toBe(1024 ** 3)
+      expect(records.every((record) => !('blob' in record))).toBe(true)
+      expect(reads).not.toHaveBeenCalled()
+      expect(batch).toHaveBeenCalledTimes(3)
+      expect(batch.mock.calls.every(([, keys]) => keys.length <= 100)).toBe(true)
+      await service.restore('archive-000')
+      expect(prepare).toHaveBeenCalledOnce()
+      expect(restore).toHaveBeenCalledOnce()
+      expect(reads).toHaveBeenCalledExactlyOnceWith(
+        'backupRecords',
+        '"archive-000"',
+        '/blob',
+        'a'.repeat(64),
+      )
+      expect(stores.get('backupRecords')!.has('"archive-000"')).toBe(false)
+      expect(stores.get('backupRecords')!.has('"archive-003"')).toBe(true)
+      reads.mockClear()
+      expect(await service.list()).toHaveLength(249)
+      expect(reads).not.toHaveBeenCalled()
+      batch.mockRejectedValueOnce(new Error('native metadata failure'))
+      await expect(service.list()).rejects.toThrow('native metadata failure')
+      expect(reads).not.toHaveBeenCalled()
+      const progress = vi.fn()
+      await service.purge('archive-002', progress)
+      expect(progress.mock.calls.map(([value]) => value.completed)).toEqual([0, 1])
+      expect(stores.get('backupRecords')!.has('"archive-002"')).toBe(false)
+      expect(reads).not.toHaveBeenCalled()
+      await expect(service.purge('unrelated')).rejects.toThrow('回收站记录已经不存在')
+      await expect(service.purge('missing')).rejects.toThrow('回收站记录已经不存在')
+      expect(stores.get('backupRecords')!.has('"unrelated"')).toBe(true)
+      await service.empty()
+      expect(await service.list()).toEqual([])
+      expect(stores.get('backupRecords')!.has('"unrelated"')).toBe(true)
+      expect(reads).not.toHaveBeenCalled()
+    } finally {
+      deactivateAndroidNativeAppDatabase()
+      reads.mockRestore()
+      batch.mockRestore()
+      database.close()
+      await new AppDatabase(name).delete()
+    }
+  })
+
+  it.each([false, true])(
+    'reads full card summaries without original/thumbnail hydration (encrypted=%s)',
+    async (encrypted) => {
+      const name = `native-role-summary-${crypto.randomUUID()}`
+      const seed = new AppDatabase(name)
+      await seed.open()
+      seed.close()
+      const database = new AppDatabase(name)
+      const { native, stores, blobs, blobKey } = createNativeStore()
+      database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+      const metadata = {
+        card: { description: 'complete lore', extensions: { regex_scripts: ['rule'] } },
+      }
+      const payload = new Blob(
+        [JSON.stringify({ type: RESOURCE_TYPE.CHARACTER_CARD, name: '角色', metadata })],
+        { type: 'application/octet-stream' },
+      )
+      const descriptor = {
+        __srlAppDatabaseValueV1: 'blob',
+        fieldPath: '/originalBlob',
+        size: 1024 ** 3,
+        mimeType: 'image/png',
+        sha256: 'a'.repeat(64),
+      }
+      const record = encrypted
+        ? {
+            id: 'card',
+            contentHash: 'card-hash',
+            updatedAt: 1,
+            encrypted: true,
+            payload: {
+              iv: 'metadata-iv',
+              data: {
+                ...descriptor,
+                fieldPath: '/payload/data',
+                size: payload.size,
+                mimeType: payload.type,
+              },
+            },
+            original: { iv: 'original-iv', data: descriptor },
+            thumbnail: {
+              iv: 'thumbnail-iv',
+              data: { ...descriptor, fieldPath: '/thumbnail/data' },
+            },
+          }
+        : {
+            id: 'card',
+            contentHash: 'card-hash',
+            type: RESOURCE_TYPE.CHARACTER_CARD,
+            metadata,
+            originalBlob: descriptor,
+            thumbnailBlob: { ...descriptor, fieldPath: '/thumbnailBlob' },
+          }
+      stores.get('resources')!.set('"card"', record)
+      blobs.set(blobKey('resources', '"card"', '/payload/data'), payload)
+      const reads = vi.spyOn(native, 'readBlob')
+      const payloadRead = vi
+        .spyOn(nativeAppDatabase, 'readBlob')
+        .mockImplementation(native.readBlob.bind(native))
+      const decodeSummary = vi.fn(async (value: Record<string, unknown>) => {
+        expect(value).not.toHaveProperty('original')
+        expect(value).not.toHaveProperty('thumbnail')
+        const content = value.payload as { data: Blob }
+        return {
+          id: value.id,
+          contentHash: value.contentHash,
+          ...JSON.parse(await content.data.text()),
+        }
+      })
+      activateAndroidNativeAppDatabase()
+      try {
+        const vault = encrypted
+          ? ({ decodeResourceSummary: decodeSummary } as unknown as VaultService)
+          : undefined
+        const storage = new IndexedDbResourceStorage(database, vault)
+        const summary = await storage.getSummary('card')
+        expect(summary?.metadata).toEqual(metadata)
+        expect(summary?.type).toBe(RESOURCE_TYPE.CHARACTER_CARD)
+        expect(summary).not.toHaveProperty('originalBlob')
+        expect(summary?.thumbnailBlob).toBeUndefined()
+        expect(await storage.getSummary('missing')).toBeUndefined()
+        if (encrypted) {
+          expect(payloadRead).toHaveBeenCalledOnce()
+          expect(payloadRead.mock.calls[0]?.slice(0, 3)).toEqual([
+            'resources',
+            '"card"',
+            '/payload/data',
+          ])
+          decodeSummary.mockRejectedValueOnce(new Error('保险库已锁定'))
+          await expect(storage.getSummary('card')).rejects.toThrow('保险库已锁定')
+        } else expect(reads).not.toHaveBeenCalled()
+      } finally {
+        deactivateAndroidNativeAppDatabase()
+        payloadRead.mockRestore()
+        reads.mockRestore()
+        database.close()
+        await new AppDatabase(name).delete()
+      }
+    },
+  )
+
+  it('preserves JSONL UTF-8 boundaries and fails a changed original between byte chunks', async () => {
+    const name = `native-chat-utf8-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const database = new AppDatabase(name)
+    const { native, blobs, blobKey } = createNativeStore()
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const rows = [
+      { name: '角色', mes: '中🌧'.repeat(45000), is_user: false },
+      { name: '用户', mes: '末楼', is_user: true },
+    ]
+    const originalBlob = new File(
+      [
+        '\uFEFF' +
+          JSON.stringify({ chat_metadata: {} }) +
+          '\r\n\r\n' +
+          rows.map((row) => JSON.stringify(row)).join('\r\n'),
+      ],
+      'chat.jsonl',
+      { type: 'application/x-ndjson' },
+    )
+    const resource: Resource = {
+      id: 'chat',
+      type: RESOURCE_TYPE.CHAT,
+      name: 'chat',
+      description: '',
+      fileName: 'chat.jsonl',
+      mimeType: originalBlob.type,
+      fileSize: originalBlob.size,
+      contentHash: 'chat',
+      categoryId: null,
+      favorite: false,
+      tags: [],
+      createdAt: 1,
+      updatedAt: 1,
+      originalBlob,
+      metadata: { format: 'jsonl', messageCount: 2, visibleMessageCount: 2 },
+    }
+    await database.resources.put(resource)
+    const fullRead = vi.spyOn(native, 'readBlob')
+    let changeAtSecondChunk = false
+    const range = vi
+      .spyOn(nativeAppDatabase, 'readBlobRange')
+      .mockImplementation(async (store, key, path, offset, length, expected) => {
+        if (changeAtSecondChunk && offset > 0) throw new Error('附件已变化')
+        const blob = blobs.get(blobKey(store, key, path))!
+        expect(await hashBlob(blob)).toBe(expected.sha256)
+        return blob.slice(offset, offset + length).arrayBuffer()
+      })
+    activateAndroidNativeAppDatabase()
+    try {
+      const storage = new IndexedDbResourceStorage(database)
+      const reader = new ChatReaderService({
+        getReadSource: storage.getReadSource.bind(storage),
+      } as unknown as ResourceService)
+      const page = await reader.read('chat', 0, 2)
+      expect(page.messages.map((entry) => entry.message)).toEqual(rows)
+      expect(range.mock.calls.map((call) => call[3])).toEqual([0, 0, 256 * 1024])
+      expect(fullRead).not.toHaveBeenCalled()
+      const source = await storage.getReadSource('chat')
+      expect(await source!.originalSource.text()).toBe(await originalBlob.text())
+      changeAtSecondChunk = true
+      // A different service has no cached floors; it must propagate a mid-read identity failure.
+      const freshReader = new ChatReaderService({
+        getReadSource: storage.getReadSource.bind(storage),
+      } as unknown as ResourceService)
+      await expect(freshReader.read('chat', 0, 2)).rejects.toThrow('已变化')
+      expect(fullRead).not.toHaveBeenCalled()
+    } finally {
+      deactivateAndroidNativeAppDatabase()
+      range.mockRestore()
+      database.close()
+      await new AppDatabase(name).delete()
+    }
+  })
+
+  it('reads a small chat page without hydrating a declared 1 GiB original and guards cache identity', async () => {
+    const name = `native-chat-range-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const database = new AppDatabase(name)
+    const { native, stores } = createNativeStore()
+    const descriptor = {
+      __srlAppDatabaseValueV1: 'file',
+      fieldPath: '/originalBlob',
+      size: 1024 ** 3,
+      mimeType: 'application/x-ndjson',
+      sha256: 'a'.repeat(64),
+    }
+    const row = {
+      id: 'chat',
+      type: RESOURCE_TYPE.CHAT,
+      name: 'chat',
+      description: '',
+      fileName: 'chat.jsonl',
+      mimeType: descriptor.mimeType,
+      fileSize: descriptor.size,
+      contentHash: 'resource-identity',
+      categoryId: null,
+      tags: [],
+      favorite: false,
+      createdAt: 1,
+      updatedAt: 1,
+      originalBlob: descriptor,
+      metadata: { format: 'jsonl', messageCount: 10000, visibleMessageCount: 10000 },
+    }
+    stores.get('resources')!.set('"chat"', row)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const fullRead = vi.spyOn(native, 'readBlob')
+    let content = '旧楼'
+    const range = vi
+      .spyOn(nativeAppDatabase, 'readBlobRange')
+      .mockImplementation(async (_store, _key, _path, offset, length, expected) => {
+        if (expected.sha256 !== descriptor.sha256) throw new Error('附件已变化')
+        const line = JSON.stringify({ name: '角色', mes: content, is_user: false }) + '\n'
+        const bytes = new TextEncoder().encode(line.repeat(6000))
+        return bytes.slice(offset, offset + length).buffer
+      })
+    activateAndroidNativeAppDatabase()
+    try {
+      const storage = new IndexedDbResourceStorage(database)
+      const resources = {
+        getReadSource: storage.getReadSource.bind(storage),
+      } as unknown as ResourceService
+      const reader = new ChatReaderService(resources)
+      const page = await reader.read('chat', 0, 2)
+      expect(page.messages.map((entry) => entry.message.mes)).toEqual(['旧楼', '旧楼'])
+      expect(range.mock.calls.map((call) => call[4])).toEqual([1, 256 * 1024])
+      range.mockClear()
+      await reader.read('chat', 0, 2)
+      expect(range.mock.calls.map((call) => call[4])).toEqual([1])
+      // Resource contentHash can include other identities. The actual attachment SHA must evict floors.
+      descriptor.sha256 = 'b'.repeat(64)
+      content = '新楼'
+      expect((await reader.read('chat', 0, 1)).messages[0]!.message.mes).toBe('新楼')
+      expect(fullRead).not.toHaveBeenCalled()
+      const source = await storage.getReadSource('chat')
+      expect(source).not.toHaveProperty('originalBlob')
+      expect(source?.originalSource).not.toBeInstanceOf(Blob)
+      // Each byte read respects overlapping writers, without holding a whole reading session open.
+      let release!: () => void, started!: () => void
+      const ready = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const writer = database.transaction('rw', database.resources, async () => {
+        await database.resources.get('missing')
+        started()
+        await Dexie.waitFor(held)
+      })
+      await ready
+      range.mockClear()
+      const reading = Dexie.ignoreTransaction(() =>
+        source!.originalSource.slice(0, 32).arrayBuffer(),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(range).not.toHaveBeenCalled()
+      release()
+      await writer
+      expect((await reading).byteLength).toBe(32)
+      stores.get('resources')!.delete('"chat"')
+      await expect(reader.read('chat', 0, 1)).rejects.toThrow('不存在')
+    } finally {
+      deactivateAndroidNativeAppDatabase()
+      range.mockRestore()
+      database.close()
+      await new AppDatabase(name).delete()
+    }
+  })
+
+  it.each([1000, 10000])(
+    'checks a healthy %i-item list index without transferring resource primary keys or attachments',
+    async (size) => {
+      const name = `native-list-check-${crypto.randomUUID()}`
+      const seed = new AppDatabase(name)
+      await seed.open()
+      seed.close()
+      const database = new AppDatabase(name)
+      const { native, stores } = createNativeStore()
+      for (let index = 0; index < size; index++) {
+        const id = `card-${index}`
+        const row = {
+          id,
+          type: RESOURCE_TYPE.CHARACTER_CARD,
+          name: id,
+          description: '',
+          fileName: `${id}.png`,
+          mimeType: 'image/png',
+          fileSize: 1,
+          contentHash: 'a'.repeat(64),
+          favorite: false,
+          categoryId: null,
+          tags: [],
+          metadata: {},
+          createdAt: index,
+          updatedAt: index,
+        }
+        stores.get('resources')!.set(JSON.stringify(id), row)
+        stores.get('resourceListSummaries')!.set(JSON.stringify(id), row)
+      }
+      stores.get('settings')!.set(JSON.stringify('index.resourceListSummaries.v20'), {
+        id: 'index.resourceListSummaries.v20',
+        value: true,
+        updatedAt: 1,
+      })
+      database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+      const compare = vi
+        .spyOn(nativeAppDatabase, 'haveSameRecordKeys')
+        .mockImplementation(async (left, right) => {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          const a = stores.get(left)!,
+            b = stores.get(right)!
+          return a.size === b.size && [...a.keys()].every((key) => b.has(key))
+        })
+      const keys = vi.spyOn(native, 'getRecordKeys')
+      const binary = vi.spyOn(native, 'readBlob')
+      const record = vi.spyOn(native, 'getRecord')
+      activateAndroidNativeAppDatabase()
+      try {
+        const storage = new IndexedDbResourceStorage(database)
+        for (let entry = 0; entry < 2; entry++) {
+          const result = await storage.listResourceListSummaries()
+          expect(result).toHaveLength(size)
+          expect(result[0]?.id).toBe(`card-${size - 1}`)
+        }
+        expect(compare).toHaveBeenCalledTimes(2)
+        expect(keys.mock.calls.every(([store]) => store === 'resourceListSummaries')).toBe(true)
+        expect(record.mock.calls.some(([store]) => store === 'resources')).toBe(false)
+        expect(binary).not.toHaveBeenCalled()
+        if (size === 1000) {
+          let release!: () => void
+          let started!: () => void
+          const ready = new Promise<void>((resolve) => {
+            started = resolve
+          })
+          const blocked = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          const writer = database.transaction('rw', database.resources, async () => {
+            await database.resources.get('card-0')
+            started()
+            await Dexie.waitFor(blocked)
+          })
+          await ready
+          const reading = Dexie.ignoreTransaction(() => storage.listResourceListSummaries())
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          expect(compare).toHaveBeenCalledTimes(2)
+          release()
+          await writer
+          await expect(reading).resolves.toHaveLength(size)
+          expect(compare).toHaveBeenCalledTimes(3)
+        }
+        compare.mockRejectedValueOnce({ code: 'UNIMPLEMENTED' })
+        await expect(storage.listResourceListSummaries()).resolves.toHaveLength(size)
+        expect(keys.mock.calls.some(([store]) => store === 'resources')).toBe(true)
+        compare.mockRejectedValueOnce(new Error('SQLite read failed'))
+        await expect(storage.listResourceListSummaries()).rejects.toThrow('SQLite read failed')
+      } finally {
+        deactivateAndroidNativeAppDatabase()
+        compare.mockRestore()
+        database.close()
+        await database.delete()
+      }
+    },
+  )
+  it.each([1000, 5000])(
+    'preserves cabinet thumbnail references after migration and reads only four visible assets in a %i-item library on every entry',
+    async (size) => {
+      const database = new AppDatabase(`native-cabinet-thumbnails-${size}-${crypto.randomUUID()}`)
+      const { native } = createNativeStore()
+      let enabled = false
+      database.use(createAndroidNativeDexieCore({ enabled: () => enabled, native }))
+      const assets = new IndexedDbAssetStore(database)
+      try {
+        await database.open()
+        const thumbnails = Array.from({ length: 4 }, (_, index) => {
+          const bytes = new Uint8Array(32 * 1024).fill(index + 1)
+          return new Blob([bytes], { type: 'image/webp' })
+        })
+        const ids: string[] = []
+        for (const blob of thumbnails)
+          ids.push((await assets.put(blob, { source: 'thumbnail' })).assetId)
+        const summaries: ResourceSummary[] = Array.from({ length: size }, (_, index) => ({
+          id: `card-${index}`,
+          type: RESOURCE_TYPE.CHARACTER_CARD,
+          name: `角色${index}`,
+          description: '',
+          fileName: `card-${index}.png`,
+          mimeType: 'image/png',
+          fileSize: 1024,
+          contentHash: index.toString(16).padStart(64, '0'),
+          favorite: false,
+          categoryId: null,
+          categoryIds: [],
+          tags: [],
+          metadata: {},
+          thumbnailAssetId: ids[index % ids.length],
+          createdAt: 1,
+          updatedAt: 1,
+        }))
+        await database.resourceListSummaries.bulkPut(summaries)
+        await new AndroidAppDatabaseMigrator({
+          database,
+          native,
+          isQuiesced: () => true,
+        }).migrateAllStores()
+        enabled = true
+        const scan = vi.spyOn(native, 'getRecords')
+        const keys = vi.spyOn(native, 'getRecordKeys')
+        const indexed = vi.spyOn(native, 'getIndexEntries')
+        const bulk = vi.spyOn(native, 'getRecordsByKeys')
+        const record = vi.spyOn(native, 'getRecord')
+        const binary = vi.spyOn(native, 'readBlob')
+        const visible = await database.resourceListSummaries.bulkGet([
+          'card-0',
+          'card-1',
+          'card-2',
+          'card-3',
+        ])
+        const visibleAssetIds = visible.map((row) => {
+          if (!row || !('thumbnailAssetId' in row) || typeof row.thumbnailAssetId !== 'string')
+            throw new Error('Expected an unencrypted thumbnail reference in this fixture')
+          return row.thumbnailAssetId
+        })
+        expect(visibleAssetIds).toEqual(ids)
+        expect(binary).not.toHaveBeenCalled()
+        expect(bulk).toHaveBeenCalledTimes(1)
+        for (let entry = 0; entry < 3; entry++) {
+          if (entry === 2) {
+            database.close()
+            await database.open()
+          }
+          record.mockClear()
+          binary.mockClear()
+          bulk.mockClear()
+          const loaded = await Promise.all(visibleAssetIds.map((id) => assets.getBlob(id)))
+          expect(loaded).toHaveLength(4)
+          for (let index = 0; index < loaded.length; index++) {
+            expect(loaded[index]?.type).toBe('image/webp')
+            expect(await hashBlob(loaded[index]!)).toBe(await hashBlob(thumbnails[index]!))
+          }
+          expect(binary).toHaveBeenCalledTimes(4)
+          expect(binary.mock.calls.every(([store]) => store === 'assetFiles')).toBe(true)
+          expect(record).toHaveBeenCalledTimes(8)
+          expect(bulk).not.toHaveBeenCalled()
+        }
+        expect(scan).not.toHaveBeenCalled()
+        expect(keys).not.toHaveBeenCalled()
+        expect(indexed).not.toHaveBeenCalled()
+      } finally {
+        database.close()
+        await database.delete()
+        vi.restoreAllMocks()
+      }
+    },
+    30000,
+  )
+
+  it('omits invalid secondary index values in pending writes like IndexedDB', async () => {
+    const database = new AppDatabase(`native-core-invalid-index-${crypto.randomUUID()}`)
+    const { native } = createNativeStore()
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await database.transaction('rw', database.settings, async () => {
+        await database.settings.put({ id: 'invalid', value: 'kept', updatedAt: null } as never)
+        await database.settings.put({ id: 'valid', value: 'kept', updatedAt: 1 })
+        expect(await database.settings.orderBy('updatedAt').primaryKeys()).toEqual(['valid'])
+        expect(await database.settings.get('invalid')).toBeDefined()
+      })
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('rejects a foreground commit when the background changes its read data', async () => {
+    const database = new AppDatabase(`native-core-background-conflict-${crypto.randomUUID()}`)
+    const { native } = createNativeStore()
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await database.settings.put({ id: 'editing', value: 'before', updatedAt: 1 })
+      await expect(
+        database.transaction('rw', database.settings, async () => {
+          const old = await database.settings.get('editing')
+          await Dexie.waitFor(
+            native.putRecords('settings', [
+              {
+                key: '"editing"',
+                value: { id: 'editing', value: 'background update', updatedAt: 2 },
+              },
+            ]),
+          )
+          await database.settings.put({ ...old!, value: 'stale foreground edit' })
+        }),
+      ).rejects.toThrow('data changed during transaction')
+      expect((await database.settings.get('editing'))!.value).toBe('background update')
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('serializes writers across connections and releases the reservation after abort', async () => {
+    const name = `native-core-two-connections-${crypto.randomUUID()}`
+    const { native } = createNativeStore()
+    const first = new AppDatabase(name),
+      second = new AppDatabase(name)
+    first.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    second.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await first.settings.put({ id: 'counter', value: 0, updatedAt: 1 })
+      const increment = (database: AppDatabase) =>
+        database.transaction('rw', database.settings, async () => {
+          const current = await database.settings.get('counter')
+          await database.settings.put({ ...current!, value: Number(current!.value) + 1 })
+        })
+      const aborted = first.transaction('rw', first.settings, async () => {
+        await first.settings.put({ id: 'counter', value: 99, updatedAt: 2 })
+        throw new Error('abort this edit')
+      })
+      const queued = increment(second)
+      await expect(aborted).rejects.toThrow('abort this edit')
+      await queued
+      await Promise.all([increment(first), increment(second)])
+      expect((await first.settings.get('counter'))!.value).toBe(3)
+    } finally {
+      first.close()
+      second.close()
+      await first.delete()
+    }
+  })
+  it('round-trips every AppDatabase table through migration, native writes and reopening without changing IndexedDB', async () => {
+    const name = `native-all-tables-${crypto.randomUUID()}`
+    const { native, stores } = createNativeStore()
+    let enabled = false
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => enabled, native }))
+    const writes = vi.spyOn(native, 'putRecordsWithState')
+    try {
+      await database.open()
+      const tableNames = database.tables.map((table) => table.name)
+      expect(
+        new Set(
+          APP_DATABASE_STORES.filter(
+            (store) => !['cloudBackupJobs', 'cloudBackupOrphans'].includes(store),
+          ),
+        ),
+      ).toEqual(new Set(tableNames))
+      for (const table of database.tables) {
+        const row = {
+          id: `${table.name}-a`,
+          assetId: `${table.name}-a`,
+          projectId: `${table.name}-a`,
+          jobId: 'job',
+          path: '附件/中文.txt',
+          chunkIndex: 0,
+          type: 'characterCard',
+          name: '完整数据',
+          appId: 'app-a',
+          sourceId: 'source-a',
+          resourceId: 'card-a',
+          sourceKeyHash: 'key-a',
+          messageKeyHash: 'message-a',
+          kind: 'thread',
+          updatedAt: 2,
+          createdAt: 1,
+          categoryIds: ['one', 'two'],
+          tags: ['中文', 'tag'],
+          payload: {
+            text: '内容',
+            blob: new Blob(['完整附件'], { type: 'text/plain' }),
+            bytes: new Uint16Array([12, 65000]),
+            date: new Date(10),
+            map: new Map([['key', '值']]),
+            set: new Set(['a', 'b']),
+            missing: undefined,
+            regex: /中文/gi,
+          },
+          ...(table.name === 'externalAppRuntimes' ? { runtimeHtml: '模板'.repeat(140000) } : {}),
+        }
+        await table.put(row)
+      }
+      const baseline = new Map<string, { key: string | string[]; value: Record<string, unknown> }>()
+      for (const table of database.tables)
+        baseline.set(table.name, {
+          key: (await table.toCollection().primaryKeys())[0]!,
+          value: (await table.toArray())[0],
+        })
+      const result = await new AndroidAppDatabaseMigrator({
+        database,
+        native,
+        isQuiesced: () => true,
+      }).migrateAllStores()
+      expect(result.stores).toHaveLength(tableNames.length)
+      for (const [store, rows] of writes.mock.calls)
+        for (const row of rows)
+          expect(row.indexes).toEqual(
+            encodeAppDatabaseIndexes(
+              baseline.get(store)!.value,
+              database.table(store).schema.indexes,
+            ),
+          )
+      enabled = true
+      for (const [store, { key, value }] of baseline) {
+        const table = database.table(store)
+        const actual = await table.get(key)
+        expect(actual, store).toEqual(value)
+        expect(await actual.payload.blob.text()).toBe('完整附件')
+        expect(await table.count()).toBe(1)
+        for (const index of encodeAppDatabaseIndexes(value, table.schema.indexes))
+          for (const encoded of index.keys)
+            expect(
+              await table.where(index.name).equals(JSON.parse(encoded)).primaryKeys(),
+              `${store}/${index.name}`,
+            ).toEqual([key])
+        await table.put({ ...actual, name: '原生修改', updatedAt: 3 })
+        expect((await table.get(key)).name).toBe('原生修改')
+        expect(stores.get(store)!.has(encodeAppDatabaseKey(key))).toBe(true)
+      }
+      database.close()
+      await database.open()
+      for (const [store, { key }] of baseline)
+        expect((await database.table(store).get(key)).name).toBe('原生修改')
+      const retained = new Dexie(name)
+      try {
+        await retained.open()
+        for (const [store, { key }] of baseline)
+          expect((await retained.table(store).get(key)).name).toBe('完整数据')
+      } finally {
+        retained.close()
+      }
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('serializes overlapping read-modify-write transactions like IndexedDB', async () => {
+    const database = new AppDatabase(`native-core-concurrent-${crypto.randomUUID()}`)
+    const { native } = createNativeStore()
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    try {
+      await database.settings.put({ id: 'counter', value: 0, updatedAt: 1 })
+      const increment = () =>
+        database.transaction('rw', database.settings, async () => {
+          const current = await database.settings.get('counter')
+          await database.settings.put({
+            id: 'counter',
+            value: Number(current!.value) + 1,
+            updatedAt: 2,
+          })
+        })
+      await Promise.all([increment(), increment()])
+      expect((await database.settings.get('counter'))!.value).toBe(2)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('enumerates 3000 keys and counts without reading resource bodies or blobs, then batches summaries', async () => {
+    const name = `native-core-bounded-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    for (let i = 0; i < 3000; i++) {
+      const id = `card-${i.toString().padStart(4, '0')}`
+      stores.get('resources')!.set(JSON.stringify(id), {
+        id,
+        type: 'characterCard',
+        originalBlob: { __srlAppDatabaseValueV1: 'blob', size: 1024 * 1024 },
+      })
+      stores.get('resourceListSummaries')!.set(JSON.stringify(id), { id, name: id })
+    }
+    const eager = vi.spyOn(native, 'getRecords')
+    const single = vi.spyOn(native, 'getRecord')
+    const blobs = vi.spyOn(native, 'readBlob')
+    const batches = vi.spyOn(native, 'getRecordsByKeys')
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const keys = await database.resources.toCollection().primaryKeys()
+    expect(keys).toHaveLength(3000)
+    expect(await database.resources.count()).toBe(3000)
+    expect(await database.resourceListSummaries.bulkGet(keys.slice(0, 250))).toHaveLength(250)
+    expect(batches).toHaveBeenCalledTimes(3)
+    expect(eager).not.toHaveBeenCalled()
+    expect(single).not.toHaveBeenCalled()
+    expect(blobs).not.toHaveBeenCalled()
+    database.close()
+    await database.delete()
+  })
+
+  it('clears the old IndexedDB connection while the application keeps reading the active native library', async () => {
+    const name = `native-core-cleanup-live-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.resources.put({ id: 'old-copy', type: 'characterCard' } as never)
+    const plan = await getRetainedIndexedDbCopy(name)
+    const { digest } = await fingerprintAppDatabaseStore(seed, 'resources')
+    seed.close()
+    const { native, stores } = createNativeStore()
+    stores.get('resources')!.set('"native-new"', { id: 'native-new', type: 'characterCard' })
+    const active = JSON.stringify({ version: 1, databaseVersion: 25, activatedAt: 1 })
+    native.getState = async (key) =>
+      key === 'migration:appdb:v1:active'
+        ? active
+        : key === 'migration:appdb:indexes:v1:active'
+          ? 'verified-v1'
+          : JSON.stringify({
+              version: 1,
+              status: 'verified',
+              sourceCount: plan.counts[key.replace('migration:appdb:v1:', '')] ?? 0,
+              copiedCount: plan.counts[key.replace('migration:appdb:v1:', '')] ?? 0,
+              sourceDigest: key === 'migration:appdb:v1:resources' ? digest : undefined,
+            })
+    native.verifyStore = async () => ({ records: 1, files: 0, bytes: 0 })
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    expect(await database.resources.toCollection().primaryKeys()).toEqual(['native-new'])
+    await clearRetainedIndexedDbCopy(name, plan, undefined, native)
+    expect((await getRetainedIndexedDbCopy(name)).records).toBe(0)
+    expect(await database.resources.toCollection().primaryKeys()).toEqual(['native-new'])
+    database.close()
+    await database.open()
+    expect(await database.resources.get('native-new')).toBeDefined()
+    database.close()
+    await database.delete()
+  })
+
+  it('keeps IndexedDB key ordering, cursor seeks and range deletion using only keys', async () => {
+    const name = `native-core-key-order-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    const keys = [2, 10, -1, 'a', 'a"', 'a\\', '中', ['a', 2], ['a', 10]]
+    for (const key of keys)
+      stores.get('settings')!.set(JSON.stringify(key), { id: key, value: true })
+    const eager = vi.spyOn(native, 'getRecords')
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    expect(await database.settings.toCollection().primaryKeys()).toEqual([
+      -1,
+      2,
+      10,
+      'a',
+      'a"',
+      'a\\',
+      '中',
+      ['a', 2],
+      ['a', 10],
+    ])
+    expect(await database.settings.where('id').anyOf([2, 10]).primaryKeys()).toEqual([2, 10])
+    expect(
+      await database.settings.where('id').between(2, 10, true, true).reverse().primaryKeys(),
+    ).toEqual([10, 2])
+    await database.settings.where('id').between(2, 10, true, false).delete()
+    expect(await database.settings.get(2 as never)).toBeUndefined()
+    expect(await database.settings.get(10 as never)).toBeDefined()
+    expect(eager).not.toHaveBeenCalled()
+    database.close()
+    await database.delete()
+  })
+
+  it('preserves clear/read-your-writes and abort without scanning payloads', async () => {
+    const name = `native-core-clear-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    stores.get('settings')!.set('"old"', { id: 'old', value: true })
+    const eager = vi.spyOn(native, 'getRecords')
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    await expect(
+      database.transaction('rw', database.settings, async () => {
+        await database.settings.clear()
+        expect(await database.settings.count()).toBe(0)
+        expect(await database.settings.get('old')).toBeUndefined()
+        await database.settings.put({ id: 'new', value: 1 } as never)
+        expect(await database.settings.toCollection().primaryKeys()).toEqual(['new'])
+        throw new Error('abort test')
+      }),
+    ).rejects.toThrow('abort test')
+    expect(stores.get('settings')!.has('"old"')).toBe(true)
+    await database.transaction('rw', database.settings, async () => {
+      await database.settings.clear()
+      await database.settings.put({ id: 'new', value: 2 } as never)
+    })
+    expect([...stores.get('settings')!.keys()]).toEqual(['"new"'])
+    expect(eager).not.toHaveBeenCalled()
+    database.close()
+    await database.delete()
+  })
+
+  it('does not rerun resource liveQuery after an unrelated settings write', async () => {
+    const name = `native-core-observe-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native } = createNativeStore()
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const query = vi.fn(() => database.resources.count())
+    const values: number[] = []
+    const errors: unknown[] = []
+    const sub = liveQuery(query).subscribe({
+      next: (value) => values.push(value),
+      error: (error) => errors.push(error),
+    })
+    await vi.waitFor(() => expect(values).toEqual([0]))
+    await database.settings.put({ id: 'unrelated', value: true } as never)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(query).toHaveBeenCalledTimes(1)
+    await database.resources.put({ id: 'resource', type: 'characterCard' } as never)
+    await vi.waitFor(() => expect(values.at(-1)).toBe(1))
+    expect(errors).toEqual([])
+    sub.unsubscribe()
+    database.close()
+    await database.delete()
+  })
+
+  it('keeps native transactions alive while Dexie.waitFor bridges asynchronous work', async () => {
+    const name = `native-core-wait-for-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+
+    await database.transaction('rw', database.settings, async () => {
+      await Dexie.waitFor(new Promise((resolve) => setTimeout(resolve, 100)))
+      await database.settings.put({ id: 'waited', value: true } as never)
+    })
+
+    expect(stores.get('settings')?.get('"waited"')).toMatchObject({ value: true })
+    database.close()
+    await database.delete()
+  })
+
+  it('waits for every concurrent native request before auto-completing a transaction', async () => {
+    const name = `native-core-parallel-requests-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    const getRecordKeys = native.getRecordKeys.bind(native)
+    native.getRecordKeys = async (store, afterKey, limit) => {
+      if (store === 'categories') await new Promise((resolve) => setTimeout(resolve, 30))
+      return getRecordKeys(store, afterKey, limit)
+    }
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+
+    await database.transaction('rw', database.settings, database.categories, async () => {
+      await Promise.all([database.settings.toArray(), database.categories.toArray()])
+      await database.settings.put({ id: 'parallel-read', value: true } as never)
+    })
+
+    expect(stores.get('settings')?.get('"parallel-read"')).toMatchObject({ value: true })
+    database.close()
+    await database.delete()
+  })
+
+  it('runs explicit compaction between overlapping transactions and releases its reservation', async () => {
+    const name = `native-core-compaction-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native } = createNativeStore()
+    let start!: () => void, release!: () => void, compactRelease!: () => void
+    const started = new Promise<void>((resolve) => {
+      start = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const compactPaused = new Promise<void>((resolve) => {
+      compactRelease = resolve
+    })
+    const compact = vi.fn(async () => {
+      await compactPaused
+      return { beforeBytes: 100, afterBytes: 50 }
+    })
+    const port = Object.assign(native, { compact })
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native: port }))
+    activateAndroidNativeAppDatabase()
+    try {
+      const applyBatch = port.applyBatch.bind(port)
+      port.applyBatch = async (...args) => {
+        start()
+        await paused
+        return applyBatch(...args)
+      }
+      const writing = database.settings.put({ id: 'setting', value: 'retained', updatedAt: 1 })
+      await started
+      const compacting = compactAndroidNativeAppDatabase(port)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(compact).not.toHaveBeenCalled()
+      release()
+      await writing
+      let finished = false
+      const reading = database.settings.get('setting').then((value) => {
+        finished = true
+        return value
+      })
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(compact).toHaveBeenCalledOnce()
+      expect(finished).toBe(false)
+      compactRelease()
+      expect(await compacting).toEqual({ beforeBytes: 100, afterBytes: 50 })
+      expect(await reading).toMatchObject({ value: 'retained' })
+    } finally {
+      release()
+      compactRelease()
+      deactivateAndroidNativeAppDatabase()
+      database.close()
+      await database.delete()
+    }
+  })
+  it('repairs the resource summary index while asynchronous vault work uses the native transaction', async () => {
+    const name = `native-core-summary-repair-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native, stores } = createNativeStore()
+    stores.get('resources')!.set('"card-a"', {
+      id: 'card-a',
+      type: 'characterCard',
+      name: 'Card A',
+      description: '',
+      fileName: 'card-a.png',
+      mimeType: 'image/png',
+      fileSize: 1,
+      contentHash: 'a'.repeat(64),
+      favorite: false,
+      categoryId: null,
+      tags: [],
+      metadata: {},
+      originalBlob: new Blob(['x'], { type: 'image/png' }),
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const asyncVault = {
+      isEnabled: () => true,
+      decodeResourceSummary: async (summary: Record<string, unknown>) => {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return summary
+      },
+      encodeResourceSummary: async (summary: Record<string, unknown>) => {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return summary
+      },
+    } as unknown as VaultService
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    const storage = new IndexedDbResourceStorage(database, asyncVault)
+
+    await expect(storage.listResourceListSummaries()).resolves.toMatchObject([
+      { id: 'card-a', name: 'Card A' },
+    ])
+
+    expect(stores.get('resourceListSummaries')?.has('"card-a"')).toBe(true)
+    database.close()
+    await database.delete()
+  })
+
   it('uses native reads, secondary-index queries, and cursor iteration', async () => {
     const name = `native-core-read-${crypto.randomUUID()}`
     const seed = new AppDatabase(name)
@@ -185,6 +1657,42 @@ describe('AndroidNativeDexieCore', () => {
     await database.resources.delete('b')
     expect(await database.resources.get('b')).toBeUndefined()
 
+    database.close()
+    await database.delete()
+  })
+
+  it('notifies Dexie live queries with valid mutation ranges after native writes', async () => {
+    const name = `native-core-live-query-${crypto.randomUUID()}`
+    const seed = new AppDatabase(name)
+    await seed.open()
+    seed.close()
+    const { native } = createNativeStore()
+    const database = new AppDatabase(name)
+    database.use(createAndroidNativeDexieCore({ enabled: () => true, native }))
+    let latest: number | undefined
+    let queryError: unknown
+    const subscription = liveQuery(
+      async () => (await database.resources.where('type').equals('character').toArray()).length,
+    ).subscribe({
+      next(value) {
+        latest = value
+      },
+      error(error) {
+        queryError = error
+      },
+    })
+
+    await vi.waitFor(() => expect(latest).toBe(0))
+    await database.transaction('rw', 'resources', () => database.resources.get('absent'))
+    expect(queryError).toBeUndefined()
+    await database.resources.put({ id: 'live', type: 'character' } as never)
+    await vi.waitFor(() => expect(latest).toBe(1))
+    expect(queryError).toBeUndefined()
+    await database.resources.delete('live')
+    await vi.waitFor(() => expect(latest).toBe(0))
+    expect(queryError).toBeUndefined()
+
+    subscription.unsubscribe()
     database.close()
     await database.delete()
   })

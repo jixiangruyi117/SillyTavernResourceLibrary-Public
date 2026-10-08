@@ -167,6 +167,25 @@ describe('NativeResourceFileMirror', () => {
     expect(nativePlugin.clear).not.toHaveBeenCalled()
   })
 
+  it('only requests detailed accounting explicitly, keeping ordinary refreshes out of the database scan', async () => {
+    await getNativeResourceStorageInfo()
+    expect(nativePlugin.getStorageInfo).toHaveBeenLastCalledWith()
+    await getNativeResourceStorageInfo({ includeDetails: false })
+    expect(nativePlugin.getStorageInfo).toHaveBeenLastCalledWith()
+    await getNativeResourceStorageInfo({ includeDetails: true })
+    expect(nativePlugin.getStorageInfo).toHaveBeenLastCalledWith({ includeDetails: true })
+  })
+
+  it('restricts retired model cleanup to an explicit native scope', async () => {
+    await expect(clearNativeTemporaryCaches({ scope: 'retiredTranslationModels' })).resolves.toBe(
+      12,
+    )
+    expect(nativePlugin.clearTemporaryCaches).toHaveBeenCalledWith({
+      scope: 'retiredTranslationModels',
+    })
+    expect(nativePlugin.clear).not.toHaveBeenCalled()
+  })
+
   it('按需从 NativeLibrary 文件 URL 读取对象，不经过 Base64 bridge', async () => {
     vi.stubGlobal(
       'fetch',
@@ -275,5 +294,19 @@ describe('NativeResourceFileMirror', () => {
       size: 10,
     })
     expect(nativePlugin.cleanupCharacterCardParse).toHaveBeenCalledWith({ token: 'parse-token' })
+  })
+})
+
+describe('backup-only native identity query', () => {
+  it('requests identity without directory usage but retains full usage for storage management', async () => {
+    nativePlugin.getStorageInfo.mockResolvedValue({
+      storageVersion: 4,
+      currentCount: 3,
+      versionCount: 2,
+    })
+    await getNativeResourceStorageInfo(false)
+    expect(nativePlugin.getStorageInfo).toHaveBeenLastCalledWith({ includeUsage: false })
+    await getNativeResourceStorageInfo()
+    expect(nativePlugin.getStorageInfo.mock.calls.at(-1)).toEqual([])
   })
 })

@@ -36,6 +36,8 @@ const {
   selectedIds,
   customPrompt,
   batchSize,
+  concurrency,
+  AI_TAGGING_MAX_CONCURRENCY,
   batchSizeError,
   AI_TAGGING_RESOURCE_CHAR_BUDGET,
   openReviewResource,
@@ -59,7 +61,6 @@ const {
   toggleResource,
   RESOURCE_TYPE_LABELS,
   progressPercent,
-  progressBatch,
   progressBatchCount,
   message,
   progressCompleted,
@@ -68,6 +69,10 @@ const {
   requestStop,
   setAllAccepted,
   reviewItems,
+  reviewPage,
+  reviewPageSize,
+  reviewPageCount,
+  pageReviewItems,
   removeTag,
   addDraftTag,
   failures,
@@ -311,6 +316,15 @@ function selectRuleTemplate(event: Event): void {
                 >
                 <small v-if="batchSizeError" role="alert">{{ batchSizeError }}</small>
               </label>
+              <label class="ai-tagging__field ai-tagging__field--batch">
+                <span>同时请求数</span>
+                <select v-model.number="concurrency" aria-label="同时请求数">
+                  <option v-for="count in AI_TAGGING_MAX_CONCURRENCY" :key="count" :value="count">
+                    {{ count }}
+                  </option>
+                </select>
+                <small>默认同时处理两批；服务商限制并发时可调为 1。每批内容和请求总数不变。</small>
+              </label>
               <div class="ai-tagging__taxonomy">
                 <label class="ai-tagging__field ai-tagging__field--wide">
                   <span>标签规范模板</span>
@@ -534,18 +548,30 @@ function selectRuleTemplate(event: Event): void {
             aria-label="资源识别进度"
           ></progress>
           <div class="ai-tagging__run-counts">
-            <span>第 {{ progressBatch || 1 }} / {{ progressBatchCount }} 批</span
+            <span>共 {{ progressBatchCount }} 批 · 同时请求 {{ concurrency }} 批</span
             ><strong>{{ progressCompleted }} / {{ progressTotal }} 项已处理</strong>
           </div>
           <div class="ai-tagging__run-resources">
             <h4>当前批次</h4>
             <ul v-if="progressResourceNames.length">
-              <li v-for="(name, index) in progressResourceNames" :key="index">
+              <li v-for="(name, index) in progressResourceNames.slice(0, 8)" :key="index">
                 <span>{{ index + 1 }}</span
                 >{{ name }}
               </li>
             </ul>
-            <p v-else>正在准备资源内容…</p>
+            <p v-if="progressResourceNames.length > 8">
+              另有 {{ progressResourceNames.length - 8 }} 项正在识别。
+            </p>
+            <p v-if="!progressResourceNames.length">正在准备资源内容…</p>
+          </div>
+          <div v-if="reviewItems.length" class="ai-tagging__run-resources">
+            <h4>已得到 {{ reviewItems.length }} 项建议，最近完成：</h4>
+            <ul>
+              <li v-for="item in reviewItems.slice(-4)" :key="item.resourceId">
+                <span>{{ item.resource.name }}</span
+                >{{ item.tags.map((tag) => tag.name).join('、') || '暂无新标签' }}
+              </li>
+            </ul>
           </div>
           <p class="ai-tagging__api-summary">{{ selectedApiSummary }}</p>
           <div class="ai-tagging__run-bottom">
@@ -570,7 +596,7 @@ function selectRuleTemplate(event: Event): void {
         </header>
         <div class="ai-tagging__review-list">
           <article
-            v-for="(item, index) in reviewItems"
+            v-for="(item, index) in pageReviewItems"
             :key="item.resourceId"
             class="ai-tagging__review-card"
             :class="{ 'is-rejected': !item.accepted }"
@@ -581,7 +607,9 @@ function selectRuleTemplate(event: Event): void {
                   v-model="item.accepted"
                   type="checkbox"
                   :aria-label="`接受 ${item.resource.name} 的标签`"
-                /><span>{{ String(index + 1).padStart(2, '0') }}</span></label
+                /><span>{{
+                  String((reviewPage - 1) * reviewPageSize + index + 1).padStart(2, '0')
+                }}</span></label
               >
               <div>
                 <strong>{{ item.resource.name }}</strong
@@ -640,6 +668,13 @@ function selectRuleTemplate(event: Event): void {
           </article>
           <p v-if="!reviewItems.length" class="ai-tagging__empty">没有可审核的结果。</p>
         </div>
+        <nav v-if="reviewPageCount > 1" class="ai-tagging__pagination" aria-label="标签建议分页">
+          <button type="button" :disabled="reviewPage <= 1" @click="reviewPage--">上一页</button>
+          <span>第 {{ reviewPage }} / {{ reviewPageCount }} 页</span>
+          <button type="button" :disabled="reviewPage >= reviewPageCount" @click="reviewPage++">
+            下一页
+          </button>
+        </nav>
       </section>
     </main>
 

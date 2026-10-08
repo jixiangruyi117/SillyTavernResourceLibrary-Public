@@ -4,6 +4,8 @@ export interface ChatArchiveRegexContext {
   presetEnabled?: boolean
   characterEnabled?: boolean
   presetRules?: unknown[]
+  carryReadingScripts?: boolean
+  readingScripts?: Array<{ sourceName: string; scripts: Record<string, unknown> | unknown[] }>
 }
 export function createChatArchive(
   card: File,
@@ -18,6 +20,11 @@ export function readChatArchive(file: File): Promise<{
   chat: File
   displayRules: Record<string, unknown>[]
   presetRules: Record<string, unknown>[]
+  readingScripts: NonNullable<ChatArchiveRegexContext['readingScripts']>
+  hasReadingScriptSnapshot: boolean
+  carryReadingScripts: boolean
   hasRegexSnapshot: boolean
   regexContext: ChatArchiveRegexContext
 }>
+
+export function disableChatArchiveReadingScripts(file: File): Promise<File>

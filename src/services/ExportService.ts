@@ -3,6 +3,8 @@ import {
   includeResourceGalleryIds,
   isResourceGalleryImage,
   galleryOwnerId,
+  galleryImageUrl,
+  resourceCoverId,
 } from '../types/ResourceGallery'
 import {
   encodeArchive,
@@ -43,8 +45,46 @@ import {
 } from '../types/Resource'
 import {
   createModifiedCharacterResource,
+  createCharacterCardArtworkFile,
   readCharacterCardOverrides,
 } from '../utils/CharacterCardCustomization'
+import { hashBlob } from './HashService'
+import { readJsonChatDocument, readChatMessages } from '../parser/ChatResourceParser'
+import { isRecord } from '../utils/UnknownValue'
+import { JsonResourceParser } from '../parser/JsonResourceParser'
+import { getModifiedResourceSyncTags } from './BrowserDevicePreferences'
+import type { TavernSendContent } from '../types/BrowserPreferences'
+
+/** Only host-readable formats get a standalone modified download. */
+export function resourceDownloadFileHint(resource: Resource): string | undefined {
+  if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) return '角色卡 PNG，导入酒馆角色列表'
+  if (resource.type === RESOURCE_TYPE.CHAT) return '聊天 JSONL，在对应角色的聊天管理中导入'
+  if (!/\.json$/iu.test(resource.fileName)) return undefined
+  switch (resource.type) {
+    case RESOURCE_TYPE.WORLD_BOOK:
+      return '世界书 JSON，导入酒馆世界书'
+    case RESOURCE_TYPE.PRESET:
+      return '预设 JSON，导入对应模型/API 的预设'
+    case RESOURCE_TYPE.REGEX:
+      return resource.metadata.detectedVariant === 'regexPreset'
+        ? '正则启用方案 JSON，导入酒馆正则方案'
+        : '正则 JSON，导入正则扩展；酒馆助手格式需对应扩展'
+    case RESOURCE_TYPE.QUICK_REPLY:
+      return '快速回复 JSON，导入酒馆快速回复扩展'
+    case RESOURCE_TYPE.USER_PERSONA:
+      return '人设备份 JSON，在酒馆人设管理中恢复；头像图片需另行导入'
+    case RESOURCE_TYPE.BEAUTIFICATION:
+      return resource.metadata.detectedVariant === 'theme'
+        ? '主题 JSON，在酒馆主题设置中导入'
+        : undefined
+    case RESOURCE_TYPE.SCRIPT:
+      return String(resource.metadata.detectedVariant).startsWith('tavernHelperScript')
+        ? '酒馆助手脚本 JSON，需在酒馆助手脚本库中导入'
+        : undefined
+    default:
+      return undefined
+  }
+}
 
 function safeFileName(fileName: string): string {
   const withoutControlCharacters = Array.from(fileName, (character) =>
@@ -254,10 +294,16 @@ export interface ArchiveSource {
 
 export async function createResourceArchiveSource(
   service: import('./ResourceService').ResourceService,
+  selectedIds?: string[],
 ): Promise<ArchiveSource> {
+  const resources = await service.listResourceListSummaries()
+  const selection = selectedIds ? new Set(selectedIds) : undefined
+  if (selection) includeResourceGalleryIds(resources, selection, true)
   return {
-    resources: await service.listResourceListSummaries(),
-    versions: await service.listVersionSummaries(true),
+    resources: selection ? resources.filter((resource) => selection.has(resource.id)) : resources,
+    versions: selection
+      ? await service.listVersionSummariesForResources([...selection])
+      : await service.listVersionSummaries(true),
     read: async (summary, historical) => {
       const resource = historical
         ? await service.getVersion(summary.id)
@@ -292,6 +338,238 @@ export class ExportService {
   ) {
     this.communitySourceExportProvider = communitySourceExportProvider
     this.communitySourceAttachmentExportProvider = communitySourceAttachmentExportProvider
+  }
+
+  /** A single-resource delivery uses the existing restore format for library-only details. */
+  async createResourceDownloadArchive(
+    resource: Resource,
+    attachments: Resource[],
+    categories: Category[],
+    replacementResources: Resource[] = [],
+  ): Promise<CreatedArchive> {
+    const exported = await this.prepareCharacterDownload(
+      resource,
+      attachments,
+      replacementResources,
+    )
+    const coverId = resourceCoverId(resource)
+    const images = attachments.map((image) =>
+      image.id === coverId && isResourceGalleryImage(image)
+        ? { ...image, metadata: { ...image.metadata, galleryOwnerId: exported.id } }
+        : image,
+    )
+    const result = await this.createArchive([exported, ...images], categories, {
+      mode: 'partial',
+      resourceIds: [exported.id],
+      resourceContent: 'modified',
+      preserveExternalRelatedResourceIds: true,
+    })
+    return { ...result, fileName: `${safeFileName(resource.name)}-修改版.zip` }
+  }
+
+  async createResourceDownloadFile(
+    resource: Resource,
+    attachments: Resource[] = [],
+    replacementResources: Resource[] = [],
+    options: { syncCharacterTags?: boolean } = { syncCharacterTags: getModifiedResourceSyncTags() },
+  ): Promise<File> {
+    if (!resourceDownloadFileHint(resource))
+      throw new Error('此资源没有酒馆原生单文件格式，请下载原版或完整修改包')
+    const stem = safeFileName(resource.name).replace(/\.(png|jsonl|json)$/iu, '')
+    if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) {
+      const prepared = await this.prepareCharacterDownload(
+        resource,
+        attachments,
+        replacementResources,
+        true,
+        options.syncCharacterTags,
+      )
+      return new File([prepared.originalBlob], `${stem}-修改版.png`, { type: 'image/png' })
+    }
+    if (resource.type === RESOURCE_TYPE.CHAT) {
+      if (resource.metadata.format !== 'json' && !/\.json$/iu.test(resource.fileName)) {
+        // Validate through the existing streaming reader; retain header, swipes and unknown fields.
+        let count = 0
+        for await (const message of readChatMessages(resource.originalBlob, 'jsonl')) {
+          void message
+          count++
+        }
+        if (!count) throw new Error('聊天记录中没有消息')
+        return new File([resource.originalBlob], `${stem}-修改版.jsonl`, {
+          type: 'application/x-ndjson',
+        })
+      }
+      const { header: savedHeader, messages } = await readJsonChatDocument(resource.originalBlob)
+      const header = savedHeader ?? {
+        user_name: messages.find((item) => item.is_user)?.name ?? 'User',
+        character_name: messages.find((item) => !item.is_user)?.name ?? resource.name,
+        chat_metadata: {},
+      }
+      return new File(
+        [
+          JSON.stringify(header) + '\n',
+          ...messages.map((message) => JSON.stringify(message) + '\n'),
+        ],
+        `${stem}-修改版.jsonl`,
+        { type: 'application/x-ndjson' },
+      )
+    }
+    const parsed = await new JsonResourceParser().parse(
+      new File([resource.originalBlob], resource.fileName, { type: 'application/json' }),
+    )
+    if (parsed.type !== resource.type)
+      throw new Error('文件内容与资源类型不一致，请核对后下载原版或完整修改包')
+    // These editors save through the resource/version owner, so the current bytes are authoritative.
+    if (
+      resource.type === RESOURCE_TYPE.REGEX &&
+      resource.metadata.detectedVariant === 'regexCollection'
+    ) {
+      const value: unknown = JSON.parse(await resource.originalBlob.text())
+      if (isRecord(value)) {
+        const scripts = ['global', 'scoped', 'preset'].flatMap((key) =>
+          Array.isArray(value[key]) ? value[key] : [],
+        )
+        if (scripts.length)
+          return new File([JSON.stringify(scripts, null, 2)], `${stem}-修改版.json`, {
+            type: 'application/json',
+          })
+      }
+    }
+    return new File([await this.prepareNativeNamedContent(resource)], `${stem}-修改版.json`, {
+      type: 'application/json',
+    })
+  }
+
+  /** Only native names are materialized; collection members and scope bindings keep their identity. */
+  private async prepareNativeNamedContent(resource: Resource): Promise<Blob> {
+    const name = resource.name.trim()
+    if (!name) return resource.originalBlob
+    const supported = [
+      RESOURCE_TYPE.WORLD_BOOK,
+      RESOURCE_TYPE.PRESET,
+      RESOURCE_TYPE.REGEX,
+      RESOURCE_TYPE.SCRIPT,
+      RESOURCE_TYPE.QUICK_REPLY,
+      RESOURCE_TYPE.BEAUTIFICATION,
+      RESOURCE_TYPE.USER_PERSONA,
+    ]
+    if (!supported.includes(resource.type as (typeof supported)[number]))
+      return resource.originalBlob
+    if (!/\.json$/iu.test(resource.fileName)) return resource.originalBlob
+    if (
+      resource.type === RESOURCE_TYPE.BEAUTIFICATION &&
+      resource.metadata.detectedVariant !== 'theme'
+    )
+      return resource.originalBlob
+    const value: unknown = JSON.parse(await resource.originalBlob.text())
+    if (!isRecord(value)) return resource.originalBlob
+    if (resource.type === RESOURCE_TYPE.REGEX) {
+      if (typeof value.scriptName === 'string') value.scriptName = name
+      else if (typeof value.script_name === 'string') value.script_name = name
+      else if (resource.metadata.detectedVariant === 'regexPreset') value.name = name
+      else return resource.originalBlob
+    } else if (resource.type === RESOURCE_TYPE.USER_PERSONA) {
+      if (!isRecord(value.personas)) return resource.originalBlob
+      const avatars = Object.keys(value.personas)
+      if (avatars.length !== 1) return resource.originalBlob
+      value.personas[avatars[0]!] = name
+    } else {
+      value.name = name
+    }
+    return new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })
+  }
+
+  /** Cards retain avatar identity; other native files use saved names without changing scope targets. */
+  async createTavernTransferFile(
+    resource: Resource,
+    content: TavernSendContent,
+    source: Pick<import('./ResourceService').ResourceService, 'get'>,
+    fileName = resource.fileName,
+    options: { syncCharacterTags?: boolean } = { syncCharacterTags: getModifiedResourceSyncTags() },
+  ): Promise<File> {
+    if (content === 'original')
+      return new File([resource.originalBlob], fileName, { type: resource.mimeType })
+    if (!resourceDownloadFileHint(resource))
+      return new File([resource.originalBlob], fileName, { type: resource.mimeType })
+    const stem = safeFileName(resource.name).replace(/\.(png|jsonl|json)$/iu, '')
+    if (resource.type !== RESOURCE_TYPE.CHARACTER_CARD && resource.type !== RESOURCE_TYPE.CHAT)
+      return new File([await this.prepareNativeNamedContent(resource)], `${stem}.json`, {
+        type: resource.mimeType,
+      })
+    const attachments: Resource[] = []
+    const replacements: Resource[] = []
+    if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) {
+      const coverId = resourceCoverId(resource)
+      if (coverId) {
+        const cover = await source.get(coverId)
+        if (!cover) throw new Error('自定义封面已不存在，无法发送修改版')
+        attachments.push(cover)
+      }
+      const overrides = readCharacterCardOverrides(resource.metadata)
+      for (const id of new Set([overrides.worldBookResourceId, overrides.greetingResourceId])) {
+        if (!id) continue
+        const replacement = await source.get(id)
+        if (replacement) replacements.push(replacement)
+      }
+    }
+    const file = await this.createResourceDownloadFile(resource, attachments, replacements, options)
+    const extension = resource.type === RESOURCE_TYPE.CHARACTER_CARD ? '.png' : '.jsonl'
+    const name =
+      resource.type === RESOURCE_TYPE.CHAT
+        ? stem + extension
+        : safeFileName(fileName).replace(/\.[^.]+$/u, '') + extension
+    return new File([file], name, { type: file.type })
+  }
+
+  private async prepareCharacterDownload(
+    resource: Resource,
+    attachments: Resource[],
+    replacementResources: Resource[],
+    png = false,
+    syncCharacterTags = getModifiedResourceSyncTags(),
+  ): Promise<Resource> {
+    let exported =
+      resource.type === RESOURCE_TYPE.CHARACTER_CARD
+        ? await createModifiedCharacterResource(
+            resource,
+            replacementResources,
+            undefined,
+            syncCharacterTags,
+          )
+        : resource
+    const coverId = resourceCoverId(resource)
+    if (
+      resource.type === RESOURCE_TYPE.CHARACTER_CARD &&
+      (coverId || (png && !/\.png$/iu.test(exported.fileName) && exported.mimeType !== 'image/png'))
+    ) {
+      const cover = coverId ? attachments.find((image) => image.id === coverId) : undefined
+      if (coverId && !cover) throw new Error('自定义封面已不存在，无法导出修改版')
+      const url = cover ? galleryImageUrl(cover) : undefined
+      // JSON cards without artwork use a neutral PNG carrier, never an unrelated image.
+      const blank =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+      let artwork =
+        cover?.originalBlob ??
+        resource.thumbnailBlob ??
+        new Blob([Uint8Array.from(atob(blank), (value) => value.charCodeAt(0))], {
+          type: 'image/png',
+        })
+      if (url) {
+        const response = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' })
+        if (!response.ok) throw new Error(`自定义封面下载失败（${response.status}）`)
+        artwork = await response.blob()
+      }
+      const file = await createCharacterCardArtworkFile(exported, artwork)
+      exported = {
+        ...exported,
+        originalBlob: file,
+        fileName: file.name,
+        mimeType: file.type,
+        fileSize: file.size,
+        contentHash: await hashBlob(file),
+      }
+    }
+    return exported
   }
 
   async prepareOptions(options: ArchiveOptions): Promise<ArchiveOptions> {
@@ -581,7 +859,12 @@ export class ExportService {
               }
             }
           }
-          resource = await createModifiedCharacterResource(resource, related)
+          resource = await createModifiedCharacterResource(
+            resource,
+            related,
+            undefined,
+            getModifiedResourceSyncTags(),
+          )
         }
         return resource
       },

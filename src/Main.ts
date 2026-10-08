@@ -1,6 +1,9 @@
 import { createApp } from 'vue'
 
+import { installAndroidAppUpdateChecks } from './core/AndroidAppUpdate'
+// SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=official-apk-update-bootstrap-import
 import { appDatabase } from './core/AppDatabaseInstance'
+// SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=official-apk-update-bootstrap-import
 import { installGlobalErrorHandlers } from './core/FatalErrorNotice'
 import { installNativeRuntime } from './core/NativeRuntime'
 import { installPerformanceMonitor } from './core/PerformanceMonitor'
@@ -34,6 +37,7 @@ import './styles/ProjectNoticeDialog.css'
 import './styles/IOSStandaloneSafeAreaSurface.css'
 
 let viewportFrame: number | undefined
+let androidNativeDatabaseMigrationWarning: string | undefined
 let lastViewportHeight = -1
 let lastLayoutHeight = -1
 let expandedVisualViewportHeight = -1
@@ -53,7 +57,8 @@ async function prepareAndroidNativeDatabaseBeforeMount(): Promise<boolean> {
   if (!isCapacitorApp() || !canUseAndroidNativeDexieCore()) return true
   const root = document.querySelector<HTMLElement>('#app')
   let progress: HTMLParagraphElement | undefined
-  if (root) {
+  function showPreparation(): void {
+    if (!root || progress) return
     const shell = document.createElement('main')
     shell.setAttribute('aria-live', 'polite')
     shell.style.cssText =
@@ -62,13 +67,14 @@ async function prepareAndroidNativeDatabaseBeforeMount(): Promise<boolean> {
     title.textContent = '正在准备本机数据'
     title.style.cssText = 'font-size:1.25rem;margin:0 0 12px'
     progress = document.createElement('p')
-    progress.textContent = '首次打开会安全迁移数据，旧数据会保留。'
+    progress.textContent = '正在保存并核验旧数据，原件会保留。'
     progress.style.cssText = 'margin:0;max-width:30rem;line-height:1.6'
     shell.append(title, progress)
     root.replaceChildren(shell)
   }
   try {
     await initializeAndroidNativeAppDatabase(appDatabase, (state) => {
+      showPreparation()
       if (progress)
         progress.textContent =
           state.status === 'verified'
@@ -78,6 +84,7 @@ async function prepareAndroidNativeDatabaseBeforeMount(): Promise<boolean> {
     root?.replaceChildren()
     return true
   } catch (error) {
+    androidNativeDatabaseMigrationWarning = error instanceof Error ? error.message : String(error)
     console.error('Android 原生数据库迁移未完成，继续使用原 IndexedDB。', error)
     window.dispatchEvent(
       new CustomEvent('srl:android-native-database-migration-failed', {
@@ -85,6 +92,7 @@ async function prepareAndroidNativeDatabaseBeforeMount(): Promise<boolean> {
       }),
     )
     if (isAndroidNativeAppDatabaseActive() && root) {
+      showPreparation()
       const shell = root.firstElementChild
       const title = shell?.querySelector('h1')
       const status = shell?.querySelector('p')
@@ -302,6 +310,7 @@ const startupAttempt = beginStartupAttempt()
 if (isSafeModeActive()) installSafeModeBanner()
 else if (startupAttempt.rescueRequired) installStartupRescuePrompt()
 installNativeRuntime()
+installAndroidAppUpdateChecks()
 void disableServiceWorkerForNativeApp()
 window.addEventListener('resize', scheduleViewportState, { passive: true })
 window.addEventListener('orientationchange', scheduleViewportState, { passive: true })
@@ -318,6 +327,26 @@ installGlobalErrorHandlers(app)
 installPerformanceMonitor()
 installSystemInsetsService()
 app.mount('#app')
+
+if (androidNativeDatabaseMigrationWarning) {
+  const notice = document.createElement('aside')
+  notice.setAttribute('role', 'alert')
+  notice.style.cssText =
+    'position:fixed;z-index:2147483000;top:calc(env(safe-area-inset-top,0px) + 8px);left:12px;right:12px;max-width:760px;margin:0 auto;padding:12px 14px;border:1px solid #d7a04b;border-radius:12px;background:#fff8e8;color:#513b1c;box-shadow:0 8px 24px #0002;font:14px/1.5 system-ui,sans-serif;pointer-events:none'
+  const title = document.createElement('strong')
+  title.textContent = '本机资源库迁移未完成'
+  const description = document.createElement('p')
+  description.style.cssText = 'margin:4px 0 0;overflow-wrap:anywhere'
+  description.textContent = `当前仍使用原本机数据库；附件暂时无法自动导入。失败原因：${androidNativeDatabaseMigrationWarning}`
+  const dismiss = document.createElement('button')
+  dismiss.type = 'button'
+  dismiss.textContent = '知道了'
+  dismiss.style.cssText =
+    'display:block;margin:8px 0 0 auto;padding:4px 10px;border:1px solid #bca77f;border-radius:8px;background:#fff;color:inherit;font:inherit;pointer-events:auto'
+  dismiss.addEventListener('click', () => notice.remove())
+  notice.append(title, description, dismiss)
+  document.body.append(notice)
+}
 
 // 先让当前页面的入口与异步主界面完成加载，再检查网站更新。
 // 避免刚发布新版本时，首屏动态分包下载和 Service Worker 预缓存同时争用网络，

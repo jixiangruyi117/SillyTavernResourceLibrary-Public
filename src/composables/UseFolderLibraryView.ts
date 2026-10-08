@@ -30,6 +30,7 @@ import {
 } from '../types/Resource'
 import { normalizeFolderCoverUrl } from '../utils/FolderCover'
 import { useFolderCabinetDrag } from './UseFolderCabinetDrag'
+import { enqueueThumbnailRead } from './UseResourceThumbnail'
 export type {
   FolderLibraryViewEvents,
   FolderLibraryViewProps,
@@ -81,7 +82,7 @@ export function useFolderLibraryView(
 
   const cabinetStorage = new BrowserStorageService()
 
-  let thumbnailGeneration = 0
+  const pendingThumbnails = new Map<string, () => void>()
   const thumbnailSources = new Map<string, { blob?: Blob; assetId?: string; hash: string }>()
 
   const searchQuery = ref('')
@@ -333,6 +334,14 @@ export function useFolderLibraryView(
       ).length,
   )
 
+  const visibleFolderCoverCandidates = computed(() => {
+    const covers = new Map<ResourceSummary[], ResourceSummary[]>()
+    for (const entry of visibleCabinetEntries.value)
+      if (entry.kind === 'folder' && !entry.category.coverImage)
+        covers.set(entry.resources, folderCoverCandidates(entry.resources))
+    return covers
+  })
+
   const visibleThumbnailResources = computed(() => {
     const resources = new Map<string, ResourceSummary>()
     for (const entry of visibleCabinetEntries.value) {
@@ -344,19 +353,14 @@ export function useFolderLibraryView(
       }
       if (entry.kind === 'empty') continue
       if (entry.category.coverImage) continue
-      for (const resource of entry.resources
-        .filter((item) => item.thumbnailBlob || item.thumbnailAssetId)
-        .slice(0, 4)) {
+      for (const resource of visibleFolderCoverCandidates.value.get(entry.resources) ?? []) {
         resources.set(resource.id, resource)
       }
-    }
-    for (const resource of trayResources.value) {
-      if (resource.thumbnailBlob || resource.thumbnailAssetId) resources.set(resource.id, resource)
     }
     for (const resource of visibleDetailResources.value) {
       if (resource.thumbnailBlob || resource.thumbnailAssetId) resources.set(resource.id, resource)
     }
-    for (const resource of organizerResources.value) {
+    for (const resource of isOrganizerOpen.value ? organizerResources.value : []) {
       if (resource.thumbnailBlob || resource.thumbnailAssetId) resources.set(resource.id, resource)
     }
     return Array.from(resources.values())
@@ -402,57 +406,63 @@ export function useFolderLibraryView(
 
   watch(
     visibleThumbnailResources,
-    async (resources) => {
-      const generation = ++thumbnailGeneration
-      const previous = thumbnailUrls.value
-      const next = new Map<string, string>()
-      const sources = new Map<string, { blob?: Blob; assetId?: string; hash: string }>()
-      const created: string[] = []
-      let committed = false
-      try {
-        for (const resource of resources) {
-          const source = {
-            blob: resource.thumbnailBlob,
-            assetId: resource.thumbnailAssetId,
-            hash: resource.contentHash,
-          }
-          const old = thumbnailSources.get(resource.id)
-          const oldUrl = previous.get(resource.id)
-          if (
-            oldUrl &&
-            old?.blob === source.blob &&
-            old?.assetId === source.assetId &&
-            old?.hash === source.hash
-          ) {
-            next.set(resource.id, oldUrl)
-            sources.set(resource.id, source)
-            continue
-          }
-          const blob =
-            source.blob ?? (source.assetId ? await assetStore.getBlob(source.assetId) : undefined)
-          if (generation !== thumbnailGeneration) return
-          if (blob) {
-            const url = URL.createObjectURL(blob)
-            created.push(url)
-            next.set(resource.id, url)
-            sources.set(resource.id, source)
-          }
+    (resources) => {
+      for (const [id, old] of thumbnailSources) {
+        const resource = resources.find((item) => item.id === id)
+        if (
+          resource?.contentHash === old.hash &&
+          resource.thumbnailBlob === old.blob &&
+          resource.thumbnailAssetId === old.assetId
+        )
+          continue
+        pendingThumbnails.get(id)?.()
+        pendingThumbnails.delete(id)
+        thumbnailSources.delete(id)
+        const url = thumbnailUrls.value.get(id)
+        if (url) URL.revokeObjectURL(url)
+        thumbnailUrls.value.delete(id)
+      }
+      thumbnailUrls.value = new Map(thumbnailUrls.value)
+      for (const resource of resources) {
+        if (thumbnailSources.has(resource.id)) continue
+        const source = {
+          blob: resource.thumbnailBlob,
+          assetId: resource.thumbnailAssetId,
+          hash: resource.contentHash,
         }
-        if (generation !== thumbnailGeneration) return
-        for (const [id, url] of previous) if (next.get(id) !== url) URL.revokeObjectURL(url)
-        thumbnailSources.clear()
-        for (const [id, source] of sources) thumbnailSources.set(id, source)
-        thumbnailUrls.value = next
-        committed = true
-      } finally {
-        if (!committed) for (const url of created) URL.revokeObjectURL(url)
+        thumbnailSources.set(resource.id, source)
+        const publish = (blob: Blob | undefined) => {
+          if (blob && thumbnailSources.get(resource.id) === source)
+            thumbnailUrls.value = new Map(thumbnailUrls.value).set(
+              resource.id,
+              URL.createObjectURL(blob),
+            )
+        }
+        if (source.blob) {
+          publish(source.blob)
+          continue
+        }
+        pendingThumbnails.set(
+          resource.id,
+          enqueueThumbnailRead(async () => {
+            try {
+              publish(source.assetId ? await assetStore.getBlob(source.assetId) : undefined)
+            } catch {
+              /* A missing thumbnail must not hold back other cabinet images. */
+            } finally {
+              if (thumbnailSources.get(resource.id) === source)
+                pendingThumbnails.delete(resource.id)
+            }
+          }),
+        )
       }
     },
     { immediate: true },
   )
 
   onUnmounted(() => {
-    thumbnailGeneration += 1
+    for (const cancel of pendingThumbnails.values()) cancel()
+    pendingThumbnails.clear()
     revokeThumbnailUrls()
   })
 
@@ -506,7 +516,18 @@ export function useFolderLibraryView(
   })
 
   function coverResources(resources: ResourceSummary[]): ResourceSummary[] {
-    return resources.filter((resource) => thumbnailUrls.value.has(resource.id)).slice(0, 4)
+    return (visibleFolderCoverCandidates.value.get(resources) ?? []).filter((resource) =>
+      thumbnailUrls.value.has(resource.id),
+    )
+  }
+
+  function folderCoverCandidates(resources: ResourceSummary[]): ResourceSummary[] {
+    const candidates: ResourceSummary[] = []
+    for (const resource of resources) {
+      if (resource.thumbnailBlob || resource.thumbnailAssetId) candidates.push(resource)
+      if (candidates.length === 4) break
+    }
+    return candidates
   }
 
   function toggleResource(resourceId: string): void {

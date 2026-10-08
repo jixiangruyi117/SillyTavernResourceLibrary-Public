@@ -20,6 +20,7 @@ const props = withDefaults(
     categories?: readonly Category[]
     disabled?: boolean
     showActions?: boolean
+    matchBadges?: Readonly<Record<string, readonly ('作' | '名')[]>>
   }>(),
   {
     title: '选择资源',
@@ -28,6 +29,7 @@ const props = withDefaults(
     categories: undefined,
     disabled: false,
     showActions: true,
+    matchBadges: undefined,
   },
 )
 
@@ -161,6 +163,16 @@ function toggle(id: string): void {
           <strong>{{ resource.name }}</strong>
           <small>{{ RESOURCE_TYPE_LABELS[resource.type] }} · {{ resource.fileName }}</small>
           <small v-if="resourceAuthorLabel(resource)">{{ resourceAuthorLabel(resource) }}</small>
+          <span v-if="matchBadges?.[resource.id]?.length" class="resource-picker__match-badges">
+            <small
+              v-for="badge in matchBadges[resource.id]"
+              :key="badge"
+              class="resource-picker__match-badge"
+              :aria-label="badge === '名' ? '角色卡名称出现在帖子中' : '角色卡作者出现在帖子中'"
+              :title="badge === '名' ? '名称命中' : '作者命中'"
+              >{{ badge }}</small
+            >
+          </span>
         </span>
       </button>
     </div>
@@ -324,6 +336,24 @@ function toggle(id: string): void {
   place-items: center;
   border: 1px solid var(--color-line-strong);
   border-radius: 0.35rem;
+}
+
+.resource-picker__match-badges {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+}
+
+.resource-picker__match-badge {
+  display: inline-grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  place-items: center;
+  border: 1px solid var(--color-accent);
+  border-radius: 50%;
+  color: var(--color-accent);
+  font-size: 0.65rem;
+  font-weight: 700;
 }
 
 .resource-picker footer {

@@ -1,3 +1,4 @@
+// SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=public-hosted-package-validation-test
 package buzz.jixiangruyi1207.srl;
 
 import static org.junit.Assert.assertEquals;
@@ -42,3 +43,4 @@ public class OfficialAppWebViewClientTest {
         );
     }
 }
+// SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=public-hosted-package-validation-test

@@ -66,7 +66,11 @@ interface LibraryLifecycleContext {
 }
 
 export function useLibraryLifecycle(context: LibraryLifecycleContext) {
-  useDiscordResourceInbox(context.vaultStatus, context.receiveSharedFileBatch)
+  useDiscordResourceInbox(
+    context.vaultStatus,
+    context.receiveSharedFileBatch,
+    context.loadResources,
+  )
   let searchIndexTimer: number | undefined
   let cloudBackupTimer: number | undefined
   let libraryMaintenanceTimer: number | undefined

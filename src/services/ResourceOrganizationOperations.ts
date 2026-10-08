@@ -9,10 +9,12 @@ import {
   normalizeResourceLinkUrl,
   normalizeResourceLinks,
   normalizeResource,
+  toResourceListSummary,
   RESOURCE_TYPE,
   type Resource,
   type ResourceLink,
   type ResourceType,
+  type ResourceListSummary,
 } from '../types/Resource'
 import {
   hasCharacterCardOverrides,
@@ -371,7 +373,7 @@ export async function deleteMany(
   storage: ResourceStorageAdapter,
   ids: string[],
   onProgress?: (progress: { completed: number; total: number }) => void,
-): Promise<void> {
+): Promise<ResourceListSummary[] | undefined> {
   if (!ids.length) return
   // Surface the destructive phase before relation cleanup and the IndexedDB
   // transaction start; Web storage cannot report progress inside that transaction.
@@ -400,6 +402,8 @@ export async function deleteMany(
     (image) => isResourceGalleryImage(image) && deletedIds.has(galleryOwnerId(image)),
   )
   if (lateImages.length) await storage.deleteMany(lateImages.map((image) => image.id))
+  const lateIds = new Set(lateImages.map((image) => image.id))
+  return afterDelete.filter((resource) => !lateIds.has(resource.id)).map(toResourceListSummary)
 }
 
 /** 同内容副本的组织信息归并；成功写入保留项后沿用 Service 删除入口清理反向关联。 */

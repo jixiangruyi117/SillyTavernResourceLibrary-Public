@@ -1,4 +1,5 @@
 import type { TavernResourceKind } from '../services/TavernBridgeProtocol'
+import type { TavernSendContent } from './BrowserPreferences'
 
 import { type Category, type ResourceSummary } from '../types/Resource'
 
@@ -35,6 +36,10 @@ export interface TransferQueueItem {
   status: 'pending' | 'active' | 'done' | 'failed'
   detail: string
   operationId?: string
+  content?: TavernSendContent
+  syncCharacterTags?: boolean
+  readingScriptIds?: string[]
+  carryReadingScripts?: boolean
 }
 
 export type PersonaAvatarMode = 'none' | 'missing' | 'replace'
@@ -56,6 +61,7 @@ export interface PersonaSendPlan {
     avatarId: string
     name: string
     file?: File
+    resourceId?: string
   }>
   sendMissingCharacters?: boolean
   identicalPersona?: boolean

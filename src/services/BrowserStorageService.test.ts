@@ -1,15 +1,49 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { BrowserStorageService } from './BrowserStorageService'
 
 describe('BrowserStorageService cabinet desktop resources', () => {
-  it('remembers only the matching resource plaza notice version on this device', () => {
+  it('defaults modified tags to preserved and includes the explicit choice in portable preferences', () => {
     const service = new BrowserStorageService()
-    expect(service.hasAcknowledgedResourcePlazaNotice('notice-v1')).toBe(false)
-    service.acknowledgeResourcePlazaNotice('notice-v1')
-    expect(new BrowserStorageService().hasAcknowledgedResourcePlazaNotice('notice-v1')).toBe(true)
-    expect(service.hasAcknowledgedResourcePlazaNotice('notice-v2')).toBe(false)
+    expect(service.getModifiedResourceSyncTags()).toBe(false)
+    service.setModifiedResourceSyncTags(true)
+    const saved = service.exportGeneralPreferences()
+    expect(saved.modifiedResourceSyncTags).toBe(true)
+    localStorage.clear()
+    service.importGeneralPreferences(saved)
+    expect(new BrowserStorageService().getModifiedResourceSyncTags()).toBe(true)
+    service.importGeneralPreferences({ ...saved, modifiedResourceSyncTags: undefined })
+    expect(service.getModifiedResourceSyncTags()).toBe(true)
+    service.setModifiedResourceSyncTags(false)
+    expect(service.getModifiedResourceSyncTags()).toBe(false)
+  })
+  it('defaults chat script carriage on and persists an off choice through reopening and backup', () => {
+    const service = new BrowserStorageService()
+    expect(service.getTavernChatCarryScripts()).toBe(true)
+    service.setTavernChatCarryScripts(false)
+    expect(new BrowserStorageService().getTavernChatCarryScripts()).toBe(false)
+    const saved = service.exportGeneralPreferences()
+    localStorage.clear()
+    service.importGeneralPreferences(saved)
+    expect(service.getTavernChatCarryScripts()).toBe(false)
+    service.importGeneralPreferences({ ...saved, tavernChatCarryScripts: undefined })
+    expect(service.getTavernChatCarryScripts()).toBe(false)
+  })
+  it('defaults bridge sending to modified and restores its choice through portable preferences', () => {
+    const service = new BrowserStorageService()
+    expect(service.getTavernSendContent()).toBe('modified')
+    service.setTavernSendContent('original')
+    expect(new BrowserStorageService().getTavernSendContent()).toBe('original')
+    const saved = service.exportGeneralPreferences()
+    expect(saved.tavernSendContent).toBe('original')
+    localStorage.clear()
+    service.importGeneralPreferences(saved)
+    expect(service.getTavernSendContent()).toBe('original')
+    service.importGeneralPreferences({ ...saved, tavernSendContent: undefined })
+    expect(service.getTavernSendContent()).toBe('original')
+    localStorage.setItem('srl.tavern.sendContent', 'invalid')
+    expect(service.getTavernSendContent()).toBe('modified')
   })
   it('imports older preferences while dropping the retired history retention field on export', () => {
     const service = new BrowserStorageService()
@@ -37,31 +71,6 @@ describe('BrowserStorageService cabinet desktop resources', () => {
   beforeEach(() => {
     localStorage.clear()
     document.cookie = 'srl_project_notice=; Max-Age=0; Path=/'
-  })
-  it('remembers only the exact resource plaza notice on this device', () => {
-    const service = new BrowserStorageService()
-    expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
-    service.acknowledgeResourcePlazaNotice('current')
-    expect(new BrowserStorageService().hasAcknowledgedResourcePlazaNotice('current')).toBe(true)
-    expect(service.hasAcknowledgedResourcePlazaNotice('updated')).toBe(false)
-    localStorage.clear()
-    expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
-  })
-  it('requires acknowledgement again when device storage is unavailable', () => {
-    const service = new BrowserStorageService()
-    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('unavailable')
-    })
-    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('quota')
-    })
-    try {
-      expect(() => service.acknowledgeResourcePlazaNotice('current')).not.toThrow()
-      expect(service.hasAcknowledgedResourcePlazaNotice('current')).toBe(false)
-    } finally {
-      read.mockRestore()
-      write.mockRestore()
-    }
   })
   it('defaults to hiding companion chat regex and preserves the choice in portable preferences', () => {
     const service = new BrowserStorageService()
@@ -403,4 +412,34 @@ describe('BrowserStorageService cabinet desktop resources', () => {
     service.clearPresetStitchCheckpoint()
     expect(service.getPresetStitchCheckpoint()).toBeUndefined()
   })
+})
+
+it('round-trips selected chat scripts in the existing transfer draft and rejects unsafe source IDs', () => {
+  const service = new BrowserStorageService()
+  const item = {
+    key: 'chat:one',
+    name: '雨夜',
+    label: '聊天',
+    detail: '',
+    status: 'pending' as const,
+    readingScriptIds: ['scriptGlobal:phone', 'scriptPreset:preset'],
+  }
+  const draft = {
+    direction: 'pull' as const,
+    origin: 'https://tavern.test',
+    policy: 'copy' as const,
+    at: Date.now(),
+    items: [item],
+  }
+  service.setBridgeTransferDraft(draft)
+  expect(service.getBridgeTransferDraft()?.items[0]?.readingScriptIds).toEqual(
+    item.readingScriptIds,
+  )
+  for (const ids of [['character:secret'], Array.from({ length: 9 }, () => 'scriptGlobal:a')]) {
+    service.setBridgeTransferDraft({ ...draft, items: [{ ...item, readingScriptIds: ids }] })
+    expect(service.getBridgeTransferDraft()).toBeUndefined()
+  }
+  service.setBridgeTransferDraft({ ...draft, items: [{ ...item, readingScriptIds: undefined }] })
+  expect(service.getBridgeTransferDraft()?.items).toHaveLength(1)
+  localStorage.removeItem('srl-bridge-transfer-draft')
 })

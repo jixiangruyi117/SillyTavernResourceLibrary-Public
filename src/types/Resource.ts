@@ -305,6 +305,9 @@ export function includeChatCompanionIds<
     const regexId = chat.metadata.chatDisplayRegexId
     if (typeof regexId === 'string' && byId.get(regexId)?.type === RESOURCE_TYPE.REGEX)
       selectedIds.add(regexId)
+    const scriptId = chat.metadata.chatReadingScriptId
+    if (typeof scriptId === 'string' && byId.get(scriptId)?.type === RESOURCE_TYPE.SCRIPT)
+      selectedIds.add(scriptId)
   }
 }
 
@@ -705,3 +708,6 @@ export interface BackupRecord {
   encrypted?: boolean
   encryptionIv?: string
 }
+
+/** Display metadata; recovering an archive must load the selected BackupRecord by ID. */
+export type BackupRecordSummary = Omit<BackupRecord, 'blob'>

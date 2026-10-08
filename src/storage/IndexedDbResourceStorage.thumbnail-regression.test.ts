@@ -1,6 +1,10 @@
 import 'fake-indexeddb/auto'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('../utils/createImageThumbnail', () => ({
+  createImageThumbnail: vi.fn(async () => new Blob(['generated-thumb'], { type: 'image/webp' })),
+}))
 
 import { AppDatabase } from '../database/AppDatabase'
 import { VaultService } from '../services/VaultService'
@@ -11,6 +15,7 @@ import {
   type Resource,
 } from '../types/Resource'
 import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
+import { createImageThumbnail } from '../utils/createImageThumbnail'
 
 function createResource(index: number): Resource {
   const original = new Uint8Array(64 * 1024)
@@ -162,6 +167,133 @@ describe('IndexedDbResourceStorage thumbnail regression', () => {
     await expect(
       (await storage.get(current.id))?.thumbnailBlob?.arrayBuffer(),
     ).resolves.toHaveProperty('byteLength', 128)
+
+    database.close()
+    await database.delete()
+  })
+
+  it('backfills missing previews for already-imported PNG character cards', async () => {
+    const database = new AppDatabase(`thumbnail-v27-repair-${crypto.randomUUID()}`)
+    const resource = createResource(4)
+    resource.thumbnailBlob = undefined
+    await database.resources.put(resource)
+    await database.resourceSummaries.put(toResourceSummary(resource))
+    await database.resourceListSummaries.put(toResourceListSummary(resource))
+    await database.settings.put({
+      id: 'repair.resourceThumbnails.missingPng.v26',
+      value: { version: 26, status: 'complete', checkpoint: resource.id, repaired: 0 },
+      updatedAt: Date.now(),
+    })
+
+    const vault = new VaultService(database)
+    await vault.initialize()
+    const storage = new IndexedDbResourceStorage(database, vault)
+    vi.mocked(createImageThumbnail).mockClear()
+    await storage.repairMissingPngCharacterCardThumbnails()
+    expect(await storage.repairMissingPngCharacterCardThumbnails()).toBe(0)
+
+    const stored = await database.resources.get(resource.id)
+    const summary = await database.resourceSummaries.get(resource.id)
+    const listSummary = await database.resourceListSummaries.get(resource.id)
+    const assetId = stored && !('encrypted' in stored) ? stored.thumbnailAssetId : undefined
+
+    expect(createImageThumbnail).toHaveBeenCalledWith(resource.originalBlob, {
+      maxEdge: 640,
+      allowImageElement: true,
+    })
+    expect(createImageThumbnail).toHaveBeenCalledOnce()
+    expect(assetId).toMatch(/^asset-/u)
+    expect(summary).toMatchObject({ thumbnailAssetId: assetId })
+    expect(listSummary).toMatchObject({ thumbnailAssetId: assetId })
+    expect((await storage.listResourceListSummaries())[0]?.thumbnailAssetId).toBe(assetId)
+    await expect((await storage.get(resource.id))?.thumbnailBlob?.text()).resolves.toBe(
+      'generated-thumb',
+    )
+    await expect(
+      database.settings.get('repair.resourceThumbnails.missingPng.v28'),
+    ).resolves.toMatchObject({ value: { version: 28, status: 'complete', repaired: 1 } })
+
+    const later = createResource(1) // Its ID is below the completed scan's checkpoint.
+    later.thumbnailBlob = undefined
+    await database.resources.put(later)
+    await database.resourceSummaries.put(toResourceSummary(later))
+    await database.resourceListSummaries.put(toResourceListSummary(later))
+    expect(await storage.repairMissingPngCharacterCardThumbnails()).toBe(0)
+    expect(await storage.repairMissingPngCharacterCardThumbnails({ restart: true })).toBe(1)
+    expect(createImageThumbnail).toHaveBeenCalledTimes(2)
+    expect((await storage.listResourceListSummaries()).every((item) => item.thumbnailAssetId)).toBe(
+      true,
+    )
+    expect(await database.resources.get(resource.id)).toMatchObject({ thumbnailAssetId: assetId })
+
+    database.close()
+    await database.delete()
+  })
+
+  it('keeps startup thumbnail maintenance from scanning old PNG originals', async () => {
+    const database = new AppDatabase(`thumbnail-manual-only-${crypto.randomUUID()}`)
+    const resource = createResource(5)
+    resource.thumbnailBlob = undefined
+    await database.resources.put(resource)
+    await database.resourceSummaries.put(toResourceSummary(resource))
+    await database.resourceListSummaries.put(toResourceListSummary(resource))
+    await database.settings.put({
+      id: 'repair.resourceThumbnails.missingPng.v27',
+      value: { version: 27, status: 'complete', checkpoint: resource.id, repaired: 1 },
+      updatedAt: Date.now(),
+    })
+
+    const vault = new VaultService(database)
+    await vault.initialize()
+    const storage = new IndexedDbResourceStorage(database, vault)
+    vi.mocked(createImageThumbnail).mockClear()
+    await storage.repairThumbnailAssets()
+
+    expect(createImageThumbnail).not.toHaveBeenCalled()
+    expect(await database.settings.get('repair.resourceThumbnails.missingPng.v28')).toBeUndefined()
+    expect(await storage.getMissingPngThumbnailRepairStatus()).toEqual({
+      status: 'not-started',
+      repaired: 0,
+    })
+
+    database.close()
+    await database.delete()
+  })
+
+  it('resumes a v27 interrupted scan from its saved checkpoint', async () => {
+    const database = new AppDatabase(`thumbnail-resume-v27-${crypto.randomUUID()}`)
+    const checkpoint = createResource(6)
+    const pending = createResource(7)
+    checkpoint.thumbnailBlob = undefined
+    pending.thumbnailBlob = undefined
+    for (const resource of [checkpoint, pending]) {
+      await database.resources.put(resource)
+      await database.resourceSummaries.put(toResourceSummary(resource))
+      await database.resourceListSummaries.put(toResourceListSummary(resource))
+    }
+    await database.settings.put({
+      id: 'repair.resourceThumbnails.missingPng.v27',
+      value: {
+        version: 27,
+        status: 'running',
+        checkpoint: checkpoint.id,
+        repaired: 2,
+      },
+      updatedAt: Date.now(),
+    })
+
+    const vault = new VaultService(database)
+    await vault.initialize()
+    const storage = new IndexedDbResourceStorage(database, vault)
+    vi.mocked(createImageThumbnail).mockClear()
+    expect(await storage.repairMissingPngCharacterCardThumbnails()).toBe(3)
+
+    expect(createImageThumbnail).toHaveBeenCalledOnce()
+    expect(await database.settings.get('repair.resourceThumbnails.missingPng.v28')).toMatchObject({
+      value: { status: 'complete', repaired: 3 },
+    })
+    expect((await storage.get(checkpoint.id))?.thumbnailAssetId).toBeUndefined()
+    expect((await storage.get(pending.id))?.thumbnailAssetId).toMatch(/^asset-/u)
 
     database.close()
     await database.delete()

@@ -46,7 +46,7 @@ export interface ImportFailure {
 }
 
 export interface ImportVersionCandidate {
-  onResolved?: (committedHash?: string) => Promise<void>
+  onResolved?: (committedHash?: string, resourceId?: string) => Promise<void>
   sourceContentHash?: string
   status: 'versionCandidate'
   fileName: string

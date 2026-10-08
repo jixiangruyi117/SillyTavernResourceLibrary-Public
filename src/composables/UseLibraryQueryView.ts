@@ -65,11 +65,22 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
 
   const manuallyBoundIds = computed(() => {
     const ids = new Set<string>()
+    const characterIds = new Set(
+      managedResources.value
+        .filter((resource) => resource.type === RESOURCE_TYPE.CHARACTER_CARD)
+        .map((resource) => resource.id),
+    )
     for (const resource of managedResources.value) {
       const targets = resource.metadata.manuallyBoundResourceIds
       if (!Array.isArray(targets)) continue
       const related = new Set(getRelatedResourceIds(resource))
-      for (const id of targets) if (typeof id === 'string' && related.has(id)) ids.add(id)
+      for (const id of targets) {
+        if (typeof id !== 'string' || !related.has(id)) continue
+        // Chat ownership is a reading relationship, not a subordinate hidden attachment.
+        // Older imports wrote this relationship into the generic manual-binding list.
+        if (resource.type === RESOURCE_TYPE.CHAT && characterIds.has(id)) continue
+        ids.add(id)
+      }
     }
     return ids
   })
@@ -155,15 +166,13 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
     })
   }
 
-  const filteredResources = computed(() => {
+  const matchingResources = computed(() => {
     const keyword = context.searchQuery.value.trim().toLocaleLowerCase()
-    return resourceQueryEngine.query(scopedLibraryResources.value, {
+    return resourceQueryEngine.match(scopedLibraryResources.value, {
       filter: context.activeFilter.value,
       categoryId: context.activeCategoryId.value,
       tag: context.activeTag.value,
       keyword,
-      sort: context.sortValue.value,
-      nameCollator: context.resourceNameCollator,
       matchesSearch: (resource, search) =>
         context.searchScope.value === 'name'
           ? Boolean(context.nameSearchIndexById.value.get(resource.id)?.includes(search))
@@ -174,16 +183,30 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
                 (context.contentSearchQuery.value === search &&
                   context.contentSearchMatchIds.value.has(resource.id)),
               ),
-    }).items
+    })
   })
+
+  const filteredResourceCount = computed(() => matchingResources.value.length)
+  const filteredResources = computed(
+    () =>
+      resourceQueryEngine.page(matchingResources.value, {
+        sort: context.sortValue.value,
+        nameCollator: context.resourceNameCollator,
+      }).items,
+  )
 
   const paginatedResources = computed(() => {
     const start = (context.currentPage.value - 1) * context.pageSize.value
-    return filteredResources.value.slice(start, start + context.pageSize.value)
+    return resourceQueryEngine.page(matchingResources.value, {
+      sort: context.sortValue.value,
+      nameCollator: context.resourceNameCollator,
+      offset: start,
+      limit: context.pageSize.value,
+    }).items
   })
 
   const totalPages = computed(() =>
-    Math.max(1, Math.ceil(filteredResources.value.length / context.pageSize.value)),
+    Math.max(1, Math.ceil(filteredResourceCount.value / context.pageSize.value)),
   )
 
   const tagFilters = computed(() => {
@@ -302,6 +325,7 @@ export function useLibraryQueryView(context: LibraryQueryViewContext) {
     resourceFilterCounts,
     categoriesForResource,
     filteredResources,
+    filteredResourceCount,
     paginatedResources,
     totalPages,
     tagFilters,

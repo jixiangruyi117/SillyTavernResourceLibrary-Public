@@ -1,4 +1,11 @@
-import type { Resource, ResourceListSummary, ResourceSummary } from '../types/Resource'
+import type {
+  Resource,
+  ResourceListSummary,
+  ResourceSummary,
+  ResourceType,
+} from '../types/Resource'
+import type { ResourceReadSource } from '../types/ResourceReadSource'
+import type { MissingPngThumbnailRepairStatus } from './ResourceThumbnailMaintenance'
 
 export type ResourceMetadataPatch = Partial<
   Omit<
@@ -13,13 +20,20 @@ export interface ResourceVersionMatchFingerprintCache {
   versions: Record<string, { signature: string; full: string; core: string }>
 }
 
+export interface ResourceListSummaryFilter {
+  types?: readonly ResourceType[]
+  ids?: readonly string[]
+}
+
 export interface ResourceStorageAdapter {
   getVersionMatchFingerprintCache?(): Promise<ResourceVersionMatchFingerprintCache | undefined>
   setVersionMatchFingerprintCache?(cache: ResourceVersionMatchFingerprintCache): Promise<void>
   clearVersionMatchFingerprintCache?(): Promise<void>
   list(): Promise<Resource[]>
   listSummaries(): Promise<ResourceSummary[]>
-  listResourceListSummaries?(): Promise<ResourceListSummary[]>
+  listResourceListSummaries?(filter?: ResourceListSummaryFilter): Promise<ResourceListSummary[]>
+  /** Targeted lightweight reads for settling a completed logical import batch. */
+  getResourceListSummary?(id: string): Promise<ResourceListSummary | undefined>
   /** Bounded newest-first character-card summaries for inbox auto-binding only. */
   listRecentCharacterCardSummaries?(limit?: number): Promise<ResourceListSummary[]>
   /** Current gallery images; same-type scope also supplies shared category candidates. */
@@ -28,8 +42,11 @@ export interface ResourceStorageAdapter {
     includeSameType?: boolean,
   ): Promise<ResourceListSummary[]>
   repairThumbnailAssets?(): Promise<number>
+  getMissingPngThumbnailRepairStatus?(): Promise<MissingPngThumbnailRepairStatus>
+  repairMissingPngCharacterCardThumbnails?(options?: { restart?: boolean }): Promise<number>
   get(id: string): Promise<Resource | undefined>
-  getSummary?(id: string): Promise<ResourceSummary | undefined>
+  getReadSource?(id: string): Promise<ResourceReadSource | undefined>
+  getSummary?(id: string, historical?: boolean): Promise<ResourceSummary | undefined>
   findGalleryImage?(ownerId: string, contentHash: string): Promise<ResourceSummary | undefined>
   updateMetadata?(
     id: string,
@@ -52,6 +69,7 @@ export interface ResourceStorageAdapter {
   listVersions(resourceId: string): Promise<Resource[]>
   listAllVersions(): Promise<Resource[]>
   listVersionListSummaries?(): Promise<ResourceListSummary[]>
+  listVersionListSummariesForResources?(ids: string[]): Promise<ResourceListSummary[]>
   listVersionSummaries(): Promise<ResourceSummary[]>
   saveVersionSummary(summary: ResourceSummary): Promise<void>
   saveVersion(version: Resource): Promise<void>

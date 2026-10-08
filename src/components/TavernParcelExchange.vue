@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { tavernHttpFetch } from '../services/TavernHttpTransport'
-import { resourceService } from '../core/AppContainer'
+import { browserStorageService, exportService, resourceService } from '../core/AppContainer'
+import type { TavernSendContent } from '../types/BrowserPreferences'
 import { confirmAction } from '../composables/UseConfirmDialog'
+import { disableChatArchiveReadingScripts } from '../services/TavernChatArchiveCodec.mjs'
 import { prepareChatReturn } from '../services/TavernChatReturn'
 import {
   createParcel,
@@ -15,7 +17,15 @@ import { bridgeKindOfResource } from '../utils/TavernBridgeDiff'
 import { publicWorkerEndpoint } from '../services/PublicWorkerSettingsService'
 import type { ResourceSummary } from '../types/Resource'
 
-const props = defineProps<{ resources: ResourceSummary[]; initialIds?: string[] }>()
+const props = withDefaults(
+  defineProps<{
+    resources: ResourceSummary[]
+    initialIds?: string[]
+    includeChatScripts?: boolean
+    sendContent?: TavernSendContent
+  }>(),
+  { sendContent: 'modified', includeChatScripts: true, initialIds: undefined },
+)
 const emit = defineEmits<{ 'import-files': [files: File[], onComplete?: () => void] }>()
 const selected = ref<string[]>(props.initialIds ?? [])
 const includeChatRegex = ref(false)
@@ -60,6 +70,8 @@ async function run(action: () => Promise<void>) {
   }
 }
 async function send() {
+  const content = props.sendContent
+  const options = { syncCharacterTags: browserStorageService.getModifiedResourceSyncTags() }
   // SRL-PUBLIC-SYNC: BEGIN REPLACE id=parcel-send-worker-setup
   await run(async () => {
     // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=parcel-send-worker-base
@@ -79,10 +91,17 @@ async function send() {
           ? await prepareChatReturn(resource, resourceService, undefined, includeChatRegex.value)
           : undefined
       if (chatPlan) chatTargets.push(`${resource.name} → ${chatPlan.targetLabel}`)
-      bytes += resource.originalBlob.size
+      const file = await exportService.createTavernTransferFile(
+        resource,
+        content,
+        resourceService,
+        undefined,
+        options,
+      )
+      bytes += file.size
       if (bytes > 16 * 1024 * 1024) throw new Error('所选内容超过 16 MiB，请分批暂存或使用实时互传')
       payload.push({
-        file: new File([resource.originalBlob], resource.fileName, { type: resource.mimeType }),
+        file,
         kind,
         displayName: resource.name,
         targetName: chatPlan
@@ -172,13 +191,22 @@ async function remove() {
   })
   // SRL-PUBLIC-SYNC: END REPLACE id=parcel-remove-worker-setup
 }
-function importReceived() {
-  emit(
-    'import-files',
-    files.value.map((item) => item.file),
-  )
-  files.value = []
-  progress.value = '文件已交给资源库导入；请查看导入结果通知。暂存将在到期后删除。'
+async function importReceived() {
+  const includeScripts = props.includeChatScripts
+  await run(async () => {
+    const received: File[] = []
+    for (const item of files.value) {
+      operation?.signal.throwIfAborted()
+      received.push(
+        !includeScripts && item.file.name.toLowerCase().endsWith('.srlchat')
+          ? await disableChatArchiveReadingScripts(item.file)
+          : item.file,
+      )
+    }
+    emit('import-files', received)
+    files.value = []
+    progress.value = '文件已交给资源库导入；请查看导入结果通知。暂存将在到期后删除。'
+  })
 }
 </script>
 
@@ -218,7 +246,7 @@ function importReceived() {
           >提取口令<textarea
             v-model="incoming"
             rows="3"
-            placeholder="粘贴 SRL1 开头的完整口令"
+            placeholder="粘贴 SRL1 或 SRL2 开头的完整口令"
             autocomplete="off"
             autocapitalize="off"
             spellcheck="false"

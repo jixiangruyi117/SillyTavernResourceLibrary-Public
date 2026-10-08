@@ -32,6 +32,7 @@ import {
   acknowledgeDiscordHandoff,
   acknowledgeDiscordInboxJob,
   clearDiscordInboxPairing,
+  clearDiscordInboxCloudHistory,
   listDiscordInboxJobs,
   pairDiscordInbox,
   readDiscordInboxStatus,
@@ -40,6 +41,7 @@ import {
   acknowledgeDiscordInboxSourceBound,
   listDiscordInboxWaitingSources,
 } from './DiscordHandoffService'
+import { readDiscordResourceJob } from './DiscordResourceInboxService'
 
 const capture = {
   channelId: '22222',
@@ -168,6 +170,15 @@ describe('Discord inbox transport', () => {
     await expect(receiveDiscordInboxJob('job-1')).rejects.toThrow('目标不匹配')
   })
 
+  it('identifies a missing inbox job-list route from the Worker', async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: 'not_found' }, { status: 404 }))
+
+    await expect(listDiscordInboxJobs()).rejects.toThrow(
+      '当前 Worker 未提供收件箱任务列表接口（GET /inbox/jobs，HTTP 404）',
+    )
+    expect(fetchMock.mock.lastCall?.[0]).toBe('https://worker.example/inbox/jobs')
+  })
+
   it('reads the matching queue job and retries an idempotent acknowledgment after network failure', async () => {
     fetchMock.mockResolvedValue(Response.json({ capture, delivery }))
     expect((await receiveDiscordInboxJob('job-1')).delivery?.id).toBe('job-1')
@@ -188,6 +199,47 @@ describe('Discord inbox transport', () => {
     expect((await readDiscordInboxStatus()).paired).toBe(true)
     await expect(pairDiscordInbox('新资源库')).rejects.toThrow('先解除')
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('explains a missing scoped-cleanup route without claiming cloud tasks expired', async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: 'not_found' }, { status: 404 }))
+
+    await expect(clearDiscordInboxCloudHistory('posts')).rejects.toThrow(
+      'Worker 未提供分类清理接口（DELETE /inbox/cleanup-scoped，HTTP 404），本次没有删除记录',
+    )
+    expect(fetchMock.mock.lastCall?.[0]).toBe('https://worker.example/inbox/cleanup-scoped')
+    expect(fetchMock.mock.lastCall?.[1]).toMatchObject({
+      method: 'DELETE',
+      body: JSON.stringify({ scope: 'posts' }),
+    })
+  })
+
+  it('uses the backwards-compatible cleanup route when clearing both cloud inboxes', async () => {
+    fetchMock.mockResolvedValue(Response.json({ ok: true, posts: 2, resources: 3 }))
+
+    await expect(clearDiscordInboxCloudHistory('both')).resolves.toEqual({ posts: 2, resources: 3 })
+    expect(fetchMock.mock.lastCall?.[0]).toBe('https://worker.example/inbox/cleanup')
+    expect(fetchMock.mock.lastCall?.[1]).toMatchObject({ method: 'DELETE' })
+    expect(fetchMock.mock.lastCall?.[1]).not.toHaveProperty('body')
+  })
+
+  it('reports expired task responses only when the Worker identifies an expired task', async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({ error: 'resource_task_not_found_or_expired' }, { status: 404 }),
+    )
+
+    await expect(receiveDiscordInboxJob('job-1')).rejects.toThrow('云端任务已过期或已不存在')
+  })
+
+  it('shows the exact method and route rejected by a Worker with HTTP 405', async () => {
+    fetchMock.mockResolvedValue(Response.json({ error: 'method_not_allowed' }, { status: 405 }))
+
+    await expect(
+      readDiscordResourceJob('12345678-1234-1234-1234-123456789abc', {
+        workerUrl: 'https://worker.example',
+        libraryId: 'library-1',
+      }),
+    ).rejects.toThrow('请求：GET /inbox/resources/:id。')
   })
 
   it('saves a new pairing through the protected settings owner, never in a URL', async () => {

@@ -5,8 +5,11 @@ import {
   type MainApiTokenUsage,
 } from './MainApiService'
 import { RESOURCE_TYPE_LABELS, type Resource } from '../types/Resource'
+import { withAbort } from '../utils/Abortable'
 
 export const AI_TAGGING_DEFAULT_BATCH_SIZE = 4
+export const AI_TAGGING_DEFAULT_CONCURRENCY = 2
+export const AI_TAGGING_MAX_CONCURRENCY = 4
 export const AI_TAGGING_RESOURCE_CHAR_BUDGET = 8_000
 const AI_TAGGING_MAX_CUSTOM_PROMPT = 4_000
 export const AI_TAGGING_MAX_SYSTEM_PROMPT = 12_000
@@ -78,7 +81,7 @@ export interface AiTaggingProgress {
   batch: number
   batchCount: number
   resourceNames?: string[]
-  phase?: 'request' | 'completed'
+  phase?: 'prepare' | 'request' | 'completed'
 }
 
 export interface AiTaggingRunResult {
@@ -92,12 +95,14 @@ export interface AiTaggingRunResult {
 export interface AiTaggingRunOptions {
   resourceIds: string[]
   batchSize?: number
+  concurrency?: number
   customPrompt?: string
   systemPrompt?: string
   taxonomyTemplateId?: string
   mergeAliases?: boolean
   apiOverride?: Partial<MainApiConfig>
   onProgress?: (progress: AiTaggingProgress) => void
+  onBatchResult?: (result: Pick<AiTaggingRunResult, 'suggestions' | 'failures' | 'usage'>) => void
   shouldContinue?: () => boolean
   signal?: AbortSignal
 }
@@ -110,7 +115,7 @@ interface AiTaggingApi {
   completeWithUsage(
     messages: MainApiMessage[],
     override?: Partial<MainApiConfig>,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; cancellableNative?: boolean },
   ): Promise<MainApiCompletionResult>
 }
 
@@ -129,6 +134,13 @@ interface AiResponseTag {
 export function normalizeAiTaggingBatchSize(value: unknown): number {
   const size = Number(value)
   return Number.isSafeInteger(size) && size > 0 ? size : AI_TAGGING_DEFAULT_BATCH_SIZE
+}
+
+export function normalizeAiTaggingConcurrency(value: unknown): number {
+  const count = Number(value)
+  return Number.isSafeInteger(count) && count >= 1 && count <= AI_TAGGING_MAX_CONCURRENCY
+    ? count
+    : AI_TAGGING_DEFAULT_CONCURRENCY
 }
 
 function normalizeTag(value: unknown): string {
@@ -226,7 +238,47 @@ function canReadOriginalAsText(resource: Resource): boolean {
   )
 }
 
-async function resourceEvidence(resource: Resource, charBudget: number): Promise<string> {
+async function readTextPrefix(
+  blob: Blob,
+  charBudget: number,
+  signal: AbortSignal,
+): Promise<string> {
+  // UTF-8 needs at most four bytes per character. One extra character ensures
+  // the existing serialized-context truncation still detects a longer original.
+  const prefix = blob.slice(0, (charBudget + 1) * 4)
+  if (typeof prefix.stream !== 'function') return withAbort(prefix.text(), signal)
+  const reader = prefix.stream().getReader()
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined)
+  }
+  signal.addEventListener('abort', cancel, { once: true })
+  const decoder = new TextDecoder()
+  let text = ''
+  try {
+    while (text.length <= charBudget) {
+      signal.throwIfAborted()
+      const chunk = await withAbort(reader.read(), signal)
+      if (chunk.done) {
+        text += decoder.decode()
+        break
+      }
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+    signal.throwIfAborted()
+    return text.slice(0, charBudget + 1)
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    cancel()
+    reader.releaseLock()
+  }
+}
+
+async function resourceEvidence(
+  resource: Resource,
+  charBudget: number,
+  signal: AbortSignal,
+): Promise<string> {
+  signal.throwIfAborted()
   const identity = {
     id: resource.id,
     type: RESOURCE_TYPE_LABELS[resource.type],
@@ -238,7 +290,7 @@ async function resourceEvidence(resource: Resource, charBudget: number): Promise
   const card = readCardEvidence(resource.metadata)
   if (card) return truncate(JSON.stringify({ ...identity, content: card }), charBudget)
   if (canReadOriginalAsText(resource)) {
-    const text = await resource.originalBlob.text()
+    const text = await readTextPrefix(resource.originalBlob, charBudget, signal)
     return truncate(JSON.stringify({ ...identity, content: text }), charBudget)
   }
   return truncate(JSON.stringify({ ...identity, metadata: resource.metadata }), charBudget)
@@ -258,7 +310,7 @@ function extractJson(text: string): Record<string, unknown> {
 
 function parseSuggestions(
   text: string,
-  resources: Resource[],
+  resources: Pick<Resource, 'id' | 'tags'>[],
   aliases: Record<string, string>,
 ): AiTaggingSuggestion[] {
   const parsed = extractJson(text)
@@ -345,6 +397,15 @@ export class AiTaggingService {
       normalizeAiTaggingBatchSize(options.batchSize),
       resourceIds.length || 1,
     )
+    if (
+      options.concurrency !== undefined &&
+      (!Number.isSafeInteger(options.concurrency) ||
+        options.concurrency < 1 ||
+        options.concurrency > AI_TAGGING_MAX_CONCURRENCY)
+    )
+      throw new Error(`同时请求数必须是 1–${AI_TAGGING_MAX_CONCURRENCY} 的整数`)
+    // Keep direct callers serial unless they explicitly choose parallel requests.
+    const concurrency = options.concurrency ?? 1
     const customPrompt = String(options.customPrompt ?? '').trim()
     if (customPrompt.length > AI_TAGGING_MAX_CUSTOM_PROMPT)
       throw new Error(`自定义提示词最多 ${AI_TAGGING_MAX_CUSTOM_PROMPT} 字`)
@@ -355,83 +416,168 @@ export class AiTaggingService {
     const batchCount = Math.ceil(resourceIds.length / batchSize)
     const template = taxonomyTemplate(options.taxonomyTemplateId)
     const aliases = options.mergeAliases ? template.aliases : {}
-    const suggestions: AiTaggingSuggestion[] = []
-    const failures: AiTaggingFailure[] = []
-    const errors: string[] = []
+    const batches = new Map<
+      number,
+      { suggestions: AiTaggingSuggestion[]; failures: AiTaggingFailure[]; errors: string[] }
+    >()
     let usage = emptyUsage()
     let completed = 0
     let stopped = false
-
-    for (let start = 0; start < resourceIds.length; start += batchSize) {
-      if (options.shouldContinue && !options.shouldContinue()) {
-        stopped = true
-        break
-      }
-      const batch = Math.floor(start / batchSize) + 1
-      const ids = resourceIds.slice(start, start + batchSize)
-      const loaded = await Promise.all(ids.map((id) => this.resources.get(id)))
-      const resources = loaded.filter((resource): resource is Resource => resource !== undefined)
+    let nextStart = 0
+    const controller = new AbortController()
+    const cancel = () => {
+      stopped = true
+      controller.abort()
+    }
+    if (options.signal?.aborted) cancel()
+    else options.signal?.addEventListener('abort', cancel, { once: true })
+    const assertRunning = () => {
+      if (options.shouldContinue && !options.shouldContinue()) cancel()
+      controller.signal.throwIfAborted()
+    }
+    const activeNames = new Map<number, string[]>()
+    const notify = (batch: number, phase: AiTaggingProgress['phase']) =>
       options.onProgress?.({
         completed,
         total: resourceIds.length,
         batch,
         batchCount,
-        resourceNames: resources.map((resource) => resource.name),
-        phase: 'request',
+        phase,
+        ...(phase === 'request' ? { resourceNames: Array.from(activeNames.values()).flat() } : {}),
       })
-      const missing = ids.filter((id) => !resources.some((resource) => resource.id === id))
-      if (missing.length) {
-        const message = `第 ${batch} 批有 ${missing.length} 项资源已不存在，已跳过。`
-        errors.push(message)
-        failures.push({ batch, resourceIds: missing, message, retryable: false })
+
+    const processBatch = async (start: number) => {
+      const batch = Math.floor(start / batchSize) + 1
+      const ids = resourceIds.slice(start, start + batchSize)
+      const output = {
+        suggestions: [] as AiTaggingSuggestion[],
+        failures: [] as AiTaggingFailure[],
+        errors: [] as string[],
       }
-      if (resources.length) {
-        try {
-          const evidence = await Promise.all(
-            resources.map((resource) =>
-              resourceEvidence(resource, AI_TAGGING_RESOURCE_CHAR_BUDGET),
-            ),
+      const prepared = new Array<
+        { resource: Pick<Resource, 'id' | 'tags'>; name: string; evidence: string } | undefined
+      >(ids.length)
+      let nextRead = 0
+      try {
+        assertRunning()
+        const prepare = async () => {
+          while (nextRead < ids.length) {
+            assertRunning()
+            const index = nextRead++
+            const resource = await withAbort(this.resources.get(ids[index]!), controller.signal)
+            assertRunning()
+            if (resource)
+              prepared[index] = {
+                resource: { id: resource.id, tags: resource.tags },
+                name: resource.name,
+                evidence: await resourceEvidence(
+                  resource,
+                  AI_TAGGING_RESOURCE_CHAR_BUDGET,
+                  controller.signal,
+                ),
+              }
+          }
+        }
+        // Original resources/Blobs are released after preparing each excerpt.
+        await Promise.all(Array.from({ length: Math.min(4, ids.length) }, prepare))
+        assertRunning()
+        const available = prepared.filter(
+          (entry): entry is NonNullable<typeof entry> => entry !== undefined,
+        )
+        const resources = available.map((entry) => entry.resource)
+        const missing = ids.filter((_id, index) => !prepared[index])
+        if (missing.length) {
+          const message = `第 ${batch} 批有 ${missing.length} 项资源已不存在，已跳过。`
+          output.errors.push(message)
+          output.failures.push({ batch, resourceIds: missing, message, retryable: false })
+        }
+        if (resources.length) {
+          activeNames.set(
+            batch,
+            available.map((entry) => entry.name),
           )
+          notify(batch, 'request')
+          assertRunning()
           const messages: MainApiMessage[] = [
             { role: 'system', content: prompt },
-            { role: 'user', content: userPrompt(evidence, customPrompt) },
-          ]
-          const result = await this.api.completeWithUsage(
-            messages,
             {
-              temperature: 0.2,
-              stream: false,
-              ...options.apiOverride,
+              role: 'user',
+              content: userPrompt(
+                available.map((entry) => entry.evidence),
+                customPrompt,
+              ),
             },
-            { signal: options.signal },
+          ]
+          const result = await withAbort(
+            this.api.completeWithUsage(
+              messages,
+              {
+                temperature: 0.2,
+                ...options.apiOverride,
+                stream: false,
+              },
+              { signal: controller.signal, cancellableNative: true },
+            ),
+            controller.signal,
           )
-          suggestions.push(...parseSuggestions(result.text, resources, aliases))
+          assertRunning()
+          output.suggestions.push(...parseSuggestions(result.text, resources, aliases))
           usage = addUsage(usage, result.usage)
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            stopped = true
-            break
-          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          cancel()
+          return
+        } else {
           const message = `第 ${batch}/${batchCount} 批失败：${error instanceof Error ? error.message : '未知错误'}`
-          errors.push(message)
-          failures.push({
+          output.errors.push(message)
+          output.failures.push({
             batch,
-            resourceIds: resources.map((resource) => resource.id),
+            resourceIds: ids.filter(
+              (id) => !output.failures.some((failure) => failure.resourceIds.includes(id)),
+            ),
             message,
             retryable: true,
           })
         }
       }
+      if (controller.signal.aborted) return
+      activeNames.delete(batch)
+      batches.set(batch, output)
       completed += ids.length
-      options.onProgress?.({
-        completed,
-        total: resourceIds.length,
-        batch,
-        batchCount,
-        phase: 'completed',
+      options.onBatchResult?.({
+        suggestions: output.suggestions,
+        failures: output.failures,
+        usage: { ...usage },
       })
+      notify(batch, 'completed')
     }
-
-    return { suggestions, failures, errors, stopped, usage }
+    const run = async () => {
+      while (nextStart < resourceIds.length && !controller.signal.aborted) {
+        const start = nextStart
+        nextStart += batchSize
+        await processBatch(start)
+      }
+    }
+    try {
+      await withAbort(
+        Promise.all(Array.from({ length: Math.min(concurrency, batchCount) }, run)),
+        controller.signal,
+      )
+    } catch (error) {
+      if (!controller.signal.aborted) throw error
+    } finally {
+      options.signal?.removeEventListener('abort', cancel)
+    }
+    const ordered = Array.from(batches)
+      .sort(([left], [right]) => left - right)
+      .map(([, result]) => result)
+    return {
+      suggestions: ordered.flatMap((batch) => batch.suggestions),
+      failures: ordered.flatMap((batch) => batch.failures),
+      errors: ordered.flatMap((batch) => batch.errors),
+      stopped,
+      usage,
+    }
   }
 }

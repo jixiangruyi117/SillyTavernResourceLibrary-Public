@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLibraryImport } from './UseLibraryImport'
 import * as personalImport from '../services/PersonalResourceImport'
 import { hashBlob } from '../services/HashService'
+import { taskCenter } from '../core/TaskCenter'
 
 const {
   inspectArchive,
@@ -12,7 +13,7 @@ const {
   stopKeepAlive,
   suspendKeepAlive,
   confirmImportAction,
-  autoBindIncomingCardMock,
+  autoBindIncomingCardBatchMock,
   communitySourceService,
   resourceService,
   automationSettingsService,
@@ -25,7 +26,7 @@ const {
   stopKeepAlive: vi.fn(),
   suspendKeepAlive: vi.fn(),
   confirmImportAction: vi.fn(),
-  autoBindIncomingCardMock: vi.fn(),
+  autoBindIncomingCardBatchMock: vi.fn(),
   communitySourceService: {},
   resourceService: {
     get: vi.fn(),
@@ -56,7 +57,7 @@ vi.mock('../core/LibraryContainer', () => ({
 }))
 
 vi.mock('../services/DiscordInboxAutoBinding', () => ({
-  autoBindIncomingCard: autoBindIncomingCardMock,
+  autoBindIncomingCardBatch: autoBindIncomingCardBatchMock,
 }))
 
 vi.mock('../services/CharacterCardMigrationReview', () => ({
@@ -96,7 +97,7 @@ describe('shared backup route handoff', () => {
     resourceService.getVersion.mockReset()
     resourceService.importAsVersion.mockReset().mockResolvedValue({ id: 'resource-1' })
     resourceService.importFiles.mockReset()
-    autoBindIncomingCardMock.mockReset()
+    autoBindIncomingCardBatchMock.mockReset()
     automationSettingsService.load.mockReset().mockResolvedValue({
       bindSameName: false,
       bindSameAuthor: false,
@@ -158,16 +159,88 @@ describe('shared backup route handoff', () => {
     const scope = effectScope()
     const importer = scope.run(() => useLibraryImport(() => context as never))!
 
+    context.isNativeApk = true
+    const taskOperationId = 'discord-resource-cloud-auto-binding'
+    taskCenter.start({
+      operationId: taskOperationId,
+      name: '云端资源',
+      phase: '已下载，等待解析导入',
+    })
+    const startTask = vi.spyOn(taskCenter, 'start')
     await importer.handleSharedImportChoice([file], 'resource', {
       files: [file],
       automaticCloud: true,
+      taskOperationId,
       recoveryId: 'cloud-auto-binding',
       acknowledge: vi.fn().mockResolvedValue(undefined),
     })
 
-    expect(autoBindIncomingCardMock).toHaveBeenCalledWith(
+    expect(autoBindIncomingCardBatchMock).toHaveBeenCalledWith(
       communitySourceService,
-      importedResource,
+      [importedResource],
+      expect.objectContaining({ bindForeground: true }),
+    )
+    expect(startTask).toHaveBeenCalledOnce()
+    expect(startTask.mock.calls[0]?.[0].operationId).toBe(taskOperationId)
+    expect(taskCenter.list().find((task) => task.operationId === taskOperationId)).toBeUndefined()
+    expect(context.showNotice).not.toHaveBeenCalled()
+    scope.stop()
+  })
+
+  it('runs foreground auto-binding when an incoming cloud card is already present locally', async () => {
+    const file = new File(['{}'], 'card.png', { type: 'image/png' })
+    const existingResource = {
+      id: 'card-existing',
+      type: 'characterCard',
+      name: '阿青',
+      fileName: file.name,
+      metadata: {},
+    }
+    automationSettingsService.load.mockResolvedValue({
+      bindSameName: true,
+      bindSameAuthor: false,
+      bindNextPng: false,
+      bindForeground: true,
+      preferPngContainer: false,
+    })
+    resourceService.importFiles.mockImplementationOnce(async (_files, options) => {
+      await options.onItemComplete({
+        status: 'duplicate',
+        fileName: file.name,
+        message: 'already present',
+        resource: existingResource,
+        reclassified: false,
+      })
+      return []
+    })
+    const context = {
+      isBusy: ref(false),
+      isNativeApk: false,
+      pendingBackupImport: ref<File>(),
+      pendingVersionImports: ref([]),
+      extractCharacterAssets: ref(false),
+      persistResourceVersionMatchCache: ref(false),
+      skipVersionComparisonOnImport: ref(false),
+      hideCharacterAssets: ref(true),
+      LARGE_IMPORT_BYTES: 1024,
+      backupRecommended: ref(false),
+      loadResources: vi.fn().mockResolvedValue(undefined),
+      refreshStorageHealth: vi.fn().mockResolvedValue(undefined),
+      showNotice: vi.fn(),
+    }
+    const scope = effectScope()
+    const importer = scope.run(() => useLibraryImport(() => context as never))!
+
+    await importer.handleSharedImportChoice([file], 'resource', {
+      files: [file],
+      automaticCloud: true,
+      recoveryId: 'cloud-duplicate-auto-binding',
+      acknowledge: vi.fn().mockResolvedValue(undefined),
+    })
+
+    expect(autoBindIncomingCardBatchMock).toHaveBeenCalledWith(
+      communitySourceService,
+      [],
       expect.objectContaining({ bindForeground: true }),
     )
     scope.stop()
@@ -263,18 +336,23 @@ describe('shared backup route handoff', () => {
       await importer.handleSharedImportChoice([file], 'resource', {
         files: [file],
         recoveryId: 'cloud-version-test',
+        taskOperationId: 'discord-resource-cloud-version-test',
+        automaticCloud: true,
         acknowledge: vi.fn(),
         onItemComplete: resultObserver,
         onVersionResolved: resolved,
       }),
     ).toBe('consumed')
     expect(resultObserver).toHaveBeenCalledWith(candidate)
+    expect(
+      taskCenter.list().find((task) => task.operationId === 'discord-resource-cloud-version-test'),
+    ).toMatchObject({ status: 'running', phase: '等待确认历史版本' })
     expect(resolved).not.toHaveBeenCalled()
     resourceService.importFiles.mockResolvedValueOnce([
-      { status: 'imported', resource: { contentHash: 'c'.repeat(64) } },
+      { status: 'imported', resource: { id: 'independent-card', contentHash: 'c'.repeat(64) } },
     ])
     await importer.handleVersionImportDecision({ action: 'independent' })
-    expect(resolved).toHaveBeenCalledWith('c'.repeat(64))
+    expect(resolved).toHaveBeenCalledWith('c'.repeat(64), 'independent-card')
     expect(pending.value).toHaveLength(0)
     scope.stop()
   })

@@ -12,6 +12,7 @@ import {
   type ResourceBundleTemplate,
   type PresetStitchDraft,
   type ProjectNoticeStoragePlugin,
+  type TavernSendContent,
 } from '../types/BrowserPreferences'
 
 import * as operationsBrowserPreferenceNormalization from './BrowserPreferenceNormalization'
@@ -28,6 +29,10 @@ export interface BridgeTransferDraft {
     status: 'pending' | 'active' | 'done' | 'failed'
     detail: string
     operationId?: string
+    content?: TavernSendContent
+    syncCharacterTags?: boolean
+    readingScriptIds?: string[]
+    carryReadingScripts?: boolean
   }>
 }
 
@@ -117,6 +122,53 @@ export function getBridgeTransferLog(): string[] {
   }
 }
 
+export function getTavernChatCarryScripts(): boolean {
+  try {
+    return localStorage.getItem('srl.tavern.chatCarryScripts') !== 'false'
+  } catch {
+    return true
+  }
+}
+export function setTavernChatCarryScripts(enabled: boolean): void {
+  try {
+    localStorage.setItem('srl.tavern.chatCarryScripts', String(enabled))
+  } catch {
+    /* Keep this session's choice. */
+  }
+}
+
+export function getTavernSendContent(): TavernSendContent {
+  try {
+    return localStorage.getItem('srl.tavern.sendContent') === 'original' ? 'original' : 'modified'
+  } catch {
+    return 'modified'
+  }
+}
+
+export function getModifiedResourceSyncTags(): boolean {
+  try {
+    return localStorage.getItem('srl.modifiedResource.syncTags') === 'true'
+  } catch {
+    return false
+  }
+}
+
+export function setModifiedResourceSyncTags(enabled: boolean): void {
+  try {
+    localStorage.setItem('srl.modifiedResource.syncTags', String(enabled === true))
+  } catch {
+    // An unavailable preference store must not prevent this session's transfer.
+  }
+}
+
+export function setTavernSendContent(content: TavernSendContent): void {
+  try {
+    localStorage.setItem('srl.tavern.sendContent', content === 'original' ? 'original' : 'modified')
+  } catch {
+    // An unavailable preference store must not prevent this session's transfer.
+  }
+}
+
 export function appendBridgeTransferLog(entries: string[]): string[] {
   const next = [...entries, ...getBridgeTransferLog()].slice(0, 20)
   try {
@@ -152,6 +204,18 @@ export function getBridgeTransferDraft(): BridgeTransferDraft | undefined {
           typeof item.label !== 'string' ||
           typeof item.detail !== 'string' ||
           !['pending', 'active', 'done', 'failed'].includes(item.status) ||
+          (item.carryReadingScripts !== undefined &&
+            typeof item.carryReadingScripts !== 'boolean') ||
+          (item.content !== undefined && !['original', 'modified'].includes(item.content)) ||
+          (item.readingScriptIds !== undefined &&
+            (!Array.isArray(item.readingScriptIds) ||
+              item.readingScriptIds.length > 8 ||
+              item.readingScriptIds.some(
+                (id) =>
+                  typeof id !== 'string' ||
+                  id.length > 512 ||
+                  !/^(scriptGlobal|scriptPreset):.+$/.test(id),
+              ))) ||
           (item.operationId !== undefined &&
             (typeof item.operationId !== 'string' || !/^[\w-]{16,80}$/.test(item.operationId))),
       )

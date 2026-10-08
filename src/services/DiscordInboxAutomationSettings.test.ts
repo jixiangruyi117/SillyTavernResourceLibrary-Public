@@ -19,6 +19,7 @@ describe('Discord inbox automation settings', () => {
         bindNextPng: true,
         bindForeground: true,
         preferPngContainer: true,
+        downloadPostMedia: true,
       })
       const loaded = await service.load()
       expect(loaded).toEqual({
@@ -27,9 +28,13 @@ describe('Discord inbox automation settings', () => {
         bindNextPng: true,
         bindForeground: true,
         preferPngContainer: true,
+        downloadPostMedia: true,
       })
       loaded.bindSameName = false
       expect(await service.load()).toMatchObject({ bindSameName: true })
+      expect(await new DiscordInboxAutomationSettingsService(database).load()).toMatchObject({
+        downloadPostMedia: true,
+      })
     } finally {
       database.close()
       await database.delete()

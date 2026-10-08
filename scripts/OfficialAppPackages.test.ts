@@ -1,5 +1,6 @@
 /** @vitest-environment node */
 import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { build, type Plugin } from 'vite'
@@ -82,6 +83,9 @@ describe('official APP renderer build identity', () => {
     extraHostApis: boolean,
     changedVue = false,
     productDependency = false,
+    publicDirectory: string | false = false,
+    hostLazyTool = false,
+    requiredCompiler = false,
   ) {
     const fixture: Plugin = {
       name: 'official-app-consumer-fixture',
@@ -90,13 +94,32 @@ describe('official APP renderer build identity', () => {
         if (id === 'fixture:host') return '\0' + id
         if (id === 'fixture:gate') return resolve('src/components/OfficialAppGate.vue')
         if (id === 'fixture:product') return '\0' + id
+        if (id === 'fixture:source-compiler')
+          return resolve('src/services/FrontendWorkshopBrowserSourceCompilerService.ts')
+        if (id === 'fixture:source-engine') return '\0' + id
+        if (id === 'fixture:service' || id === 'fixture:host-tool' || id === 'fixture:app-tool')
+          return '\0' + id
       },
       load(id) {
         if (productDependency && id === '\0virtual:srl-official-app-runtime')
           return "export * from 'vue'; export {productValue} from 'fixture:product';"
         if (id === '\0fixture:product') return 'export const productValue=42;'
+        if (id === '\0fixture:source-engine')
+          return 'export const compiler="required-source-engine";'
+        if (
+          id
+            .replaceAll('\\', '/')
+            .endsWith('/services/FrontendWorkshopBrowserSourceCompilerService.ts')
+        )
+          return "export const compile=()=>import('fixture:source-engine');"
+        if (id === '\0fixture:host-tool') return 'export const compiler="host-only-heavy-compiler";'
+        if (id === '\0fixture:app-tool') return 'export const tool="app-owned-lazy-tool";'
+        if (id === '\0fixture:service')
+          return "export const label='shared service'; export const compile=()=>import('fixture:host-tool');"
         if (id === '\0fixture:host')
           return `import {createApp,h${extraHostApis ? ',useTemplateRef,onActivated,watchPostEffect' : ''}} from 'vue';
+            ${hostLazyTool ? "import {compile} from 'fixture:service'; globalThis.compile=compile;" : ''}
+            ${requiredCompiler ? "globalThis.sourceCompiler=()=>import('fixture:source-compiler');" : ''}
             import {gate} from 'fixture:gate';
             import {entries,runtimeEntry} from 'virtual:srl-official-app-entries';
             globalThis.fixture={createApp,h,gate,entries,runtimeEntry,version:${JSON.stringify(version)}${extraHostApis ? ',useTemplateRef,onActivated,watchPostEffect' : ''}};`
@@ -104,7 +127,8 @@ describe('official APP renderer build identity', () => {
           return "import {h} from 'vue'; export const gate=()=>h('main');"
         if (id.replaceAll('\\', '/').includes('/src/components/') && id.endsWith('.vue'))
           return `import {defineComponent,h,renderSlot} from 'vue';
-            export default defineComponent({render(){return h('article',[renderSlot(this.$slots,'default')])}});`
+            ${hostLazyTool ? "import {label} from 'fixture:service';" : ''}
+            export default defineComponent({render(){return h('article',${hostLazyTool ? "{onClick:()=>import('fixture:app-tool')}," : ''}[${hostLazyTool ? 'label,' : ''}renderSlot(this.$slots,'default')])}});`
       },
       transform(code, id) {
         if (changedVue && id.replaceAll('\\', '/').includes('/@vue/runtime-core/'))
@@ -113,7 +137,7 @@ describe('official APP renderer build identity', () => {
     }
     const result = await build({
       configFile: false,
-      publicDir: false,
+      publicDir: publicDirectory,
       logLevel: 'silent',
       plugins: [fixture, officialAppPackagesPlugin(version)],
       build: { write: false, rolldownOptions: { input: 'fixture:host' } },
@@ -138,8 +162,13 @@ describe('official APP renderer build identity', () => {
     const before = await sample('shell-before', false)
     const after = await sample('shell-after', true)
     expect(after.app.runtimeEntry).toBe(before.app.runtimeEntry)
-    expect(after.app.hostFiles).toEqual(before.app.hostFiles)
-    for (const file of after.app.hostFiles as Array<{ path: string }>) {
+    const renderer = (files: unknown[]) =>
+      (files as Array<{ path: string }>).filter((file) => file.path === before.app.runtimeEntry)
+    expect(renderer(after.app.hostFiles)).toHaveLength(1)
+    expect(renderer(after.app.hostFiles)).toEqual(renderer(before.app.hostFiles))
+    // Product host chunks can change while Vue stays identical; their new hashes still matter.
+    expect(after.app.hostFiles).not.toEqual(before.app.hostFiles)
+    for (const file of renderer(after.app.hostFiles)) {
       const path = file.path.slice(1)
       expect(after.packageFiles[path]).toEqual(before.packageFiles[path])
       expect(after.output.find((chunk) => chunk.fileName === path)?.type).toBe('chunk')
@@ -151,6 +180,112 @@ describe('official APP renderer build identity', () => {
     const after = await sample('shell-after', false, true)
     expect(after.app.runtimeEntry).not.toBe(before.app.runtimeEntry)
     expect(after.app.hostFiles).not.toEqual(before.app.hostFiles)
+  }, 20000)
+
+  it('keeps a host-only lazy compiler in the shell without copying it into every APP', async () => {
+    const result = await sample('shell-lazy-owner', false, false, false, false, true)
+    const compiler = result.output.find(
+      (file) => file.type === 'chunk' && file.code.includes('host-only-heavy-compiler'),
+    )
+    expect(compiler).toBeDefined()
+    expect(result.packageFiles[compiler!.fileName]).toBeUndefined()
+    const ownLazy = result.output.find(
+      (file) => file.type === 'chunk' && file.code.includes('app-owned-lazy-tool'),
+    )
+    expect(ownLazy).toBeDefined()
+    expect(result.packageFiles[ownLazy!.fileName]).toBeDefined()
+    const inventory = result.output.find(
+      (file) => file.type === 'asset' && file.fileName === 'official-app-assets.json',
+    )!
+    const manifest = JSON.parse(String(inventory.type === 'asset' ? inventory.source : ''))
+    expect(
+      manifest.shellFiles.some((file: { path: string }) => file.path === '/' + compiler!.fileName),
+    ).toBe(true)
+    expect(manifest.files).not.toContain(compiler!.fileName)
+  }, 20000)
+
+  it('retains the frontend source compiler capability while excluding it from ordinary APPs', async () => {
+    const result = await sample('shell-required-compiler', false, false, false, false, false, true)
+    const engine = result.output.find(
+      (file) => file.type === 'chunk' && file.code.includes('required-source-engine'),
+    )!
+    expect(engine).toBeDefined()
+    expect(result.packageFiles[engine.fileName]).toBeUndefined()
+    const catalogAsset = result.output.find(
+      (file) =>
+        file.type === 'asset' &&
+        file.fileName === 'official-apps/shell-required-compiler/catalog.json',
+    )!
+    const catalog = JSON.parse(String(catalogAsset.type === 'asset' ? catalogAsset.source : ''))
+    const archive = result.output.find(
+      (file) => file.type === 'asset' && '/' + file.fileName === catalog.apps.frontendWorkshop.url,
+    )!
+    if (archive.type !== 'asset') throw new Error('Expected frontend package')
+    const bytes = typeof archive.source === 'string' ? strToU8(archive.source) : archive.source
+    expect(unzipSync(bytes)[engine.fileName]).toBeDefined()
+  }, 20000)
+
+  it('keeps an API 1 catalog for released APKs when the current host moves to API 2', async () => {
+    const temporary = mkdtempSync(resolve('.codex-tmp/official-app-legacy-'))
+    const publicDirectory = resolve(temporary, 'public')
+    const packages = resolve(publicDirectory, 'official-apps')
+    const retained = resolve(packages, 'srl-0.0.150-v310')
+    mkdirSync(retained, { recursive: true })
+    const manifest = {
+      id: 'draw',
+      shellVersion: 'srl-0.0.150-v310',
+      hostApiVersion: 1,
+      appContentHash: 'b'.repeat(64),
+      appContentRevision: 1,
+      files: [],
+    }
+    const original = zipSync({ 'manifest.json': strToU8(JSON.stringify(manifest)) })
+    const name = 'draw-' + 'a'.repeat(16) + '.srlapp'
+    const packagePath = resolve(retained, name)
+    const catalogPath = resolve(retained, 'catalog.json')
+    const url = '/official-apps/srl-0.0.150-v310/' + name
+    writeFileSync(packagePath, original)
+    writeFileSync(
+      catalogPath,
+      JSON.stringify({
+        apps: {
+          draw: {
+            url,
+            sha256: createHash('sha256').update(original).digest('hex'),
+            downloadBytes: original.length,
+          },
+        },
+      }),
+    )
+    try {
+      const result = await sample('current-shell', false, false, false, publicDirectory)
+      const catalog = (version: number) => {
+        const output = result.output.find(
+          (file) =>
+            file.type === 'asset' && file.fileName === `official-apps/api-${version}/catalog.json`,
+        )
+        if (!output || output.type !== 'asset') throw new Error(`Missing API ${version} catalog`)
+        return JSON.parse(String(output.source))
+      }
+      expect(catalog(1)).toMatchObject({
+        schemaVersion: 1,
+        hostApiVersion: 1,
+        apps: { draw: [expect.objectContaining({ url, hostApiVersion: 1 })] },
+      })
+      expect(
+        catalog(2).apps.draw.every((item: { hostApiVersion: number }) => item.hostApiVersion === 2),
+      ).toBe(true)
+      const inventory = result.output.find(
+        (file) => file.type === 'asset' && file.fileName === 'official-app-assets.json',
+      )
+      if (!inventory || inventory.type !== 'asset') throw new Error('Missing fixture inventory')
+      expect(JSON.parse(String(inventory.source)).compatibleHostApiVersions).toEqual([1, 2])
+      expect(readFileSync(packagePath)).toEqual(Buffer.from(original))
+    } finally {
+      unlinkSync(packagePath)
+      unlinkSync(catalogPath)
+      for (const directory of [retained, packages, publicDirectory, temporary]) rmdirSync(directory)
+    }
   }, 20000)
 
   it('refuses product dependencies in the shared renderer graph', async () => {

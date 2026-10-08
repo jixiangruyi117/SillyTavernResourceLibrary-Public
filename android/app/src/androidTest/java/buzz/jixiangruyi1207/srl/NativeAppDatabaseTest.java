@@ -21,6 +21,361 @@ import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
 public final class NativeAppDatabaseTest {
+    @Test public void retiredTranslationCleanupKeepsSiblingDataAndRejectsLinks() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File parent = new File(context.getCacheDir(), "retired-model-test-" + UUID.randomUUID());
+        assertTrue(parent.mkdirs());
+        File models = new File(parent, "com.google.mlkit.translate.models");
+        File sibling = new File(parent, "keep-data");
+        try {
+            assertTrue(models.mkdir());
+            try (FileOutputStream output = new FileOutputStream(sibling)) { output.write(new byte[7]); }
+            File model = new File(models, "model.bin");
+            try (FileOutputStream output = new FileOutputStream(model)) { output.write(new byte[13]); }
+            File link = new File(models, "link");
+            android.system.Os.symlink(sibling.getAbsolutePath(), link.getAbsolutePath());
+            assertThrows(java.io.IOException.class, () -> NativeLibraryPlugin.clearRetiredTranslationModels(parent));
+            assertTrue(model.exists());
+            assertEquals(7, sibling.length());
+            assertTrue(link.delete());
+            assertEquals(13, NativeLibraryPlugin.clearRetiredTranslationModels(parent));
+            assertFalse(models.exists());
+            assertEquals(7, sibling.length());
+            assertEquals(0, NativeLibraryPlugin.clearRetiredTranslationModels(parent));
+        } finally {
+            new File(models, "link").delete();
+            new File(models, "model.bin").delete();
+            models.delete();
+            sibling.delete();
+            parent.delete();
+        }
+    }
+    @Test public void compactionReclaimsPagesWithoutChangingAuthoritativeRows() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-compaction-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        JSONObject original = new JSONObject().put("id", "keep").put("content", "完整原件");
+        try {
+            database.putRecords("resources", new JSONArray().put(new JSONObject().put("key", "\"keep\"").put("value", original)));
+            String repeated = new String(new char[256 * 1024]).replace('\0', 'x');
+            database.putRecords("resourceSummaries", new JSONArray().put(new JSONObject().put("key", "\"keep\"").put("value", new JSONObject().put("id", "keep").put("content", repeated))));
+            database.putRecords("resourceSummaries", new JSONArray().put(new JSONObject().put("key", "\"keep\"").put("value", new JSONObject().put("id", "keep"))));
+            JSONObject report = database.compact();
+            assertTrue(report.getLong("afterBytes") < report.getLong("beforeBytes"));
+            assertEquals(1, database.countRecords("resources"));
+            assertEquals(original.toString(), database.getRecord("resources", "\"keep\"").toString());
+            assertEquals(1, database.countRecords("resourceSummaries"));
+        } finally { database.close(); context.deleteDatabase(name); }
+    }
+    @Test public void storageUsageIsReadOnlyAndCountsUtf8AndSharedBlobReferences() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-size-diagnostic-" + UUID.randomUUID();
+        File file = context.getDatabasePath(name);
+        assertNull(NativeAppDatabase.storageUsage(file));
+        assertFalse(file.exists());
+        NativeAppDatabase helper = new NativeAppDatabase(context, name);
+        String payload = "{\"private\":\"私密内容🔒\"}";
+        try {
+            android.database.sqlite.SQLiteDatabase database = helper.getWritableDatabase();
+            database.execSQL("INSERT INTO app_records(store_name,record_key,payload_json,updated_at) VALUES(?,?,?,?)",
+                new Object[] {"resources", "private-id", payload, 1});
+            database.execSQL("INSERT INTO app_blobs VALUES(?,?,?,?,?,?)",
+                new Object[] {"resources", "private-id", "file", "image/png", 100, "shared-hash"});
+            database.execSQL("INSERT INTO app_blobs VALUES(?,?,?,?,?,?)",
+                new Object[] {"assetFiles", "private-asset-id", "file", "image/png", 100, "shared-hash"});
+            int version = database.getVersion();
+            JSONObject usage = NativeAppDatabase.storageUsage(file);
+            assertEquals(version, database.getVersion());
+            assertEquals(1, helper.countRecords("resources"));
+            assertEquals(100, usage.getLong("uniqueReferencedBlobBytes"));
+            assertEquals(0, usage.getLong("pendingBlobCount"));
+            JSONArray stores = usage.getJSONArray("stores");
+            assertEquals(2, stores.length());
+            JSONObject resources = stores.getJSONObject(0);
+            assertEquals("resources", resources.getString("store"));
+            assertEquals(1, resources.getLong("records"));
+            assertEquals(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, resources.getLong("jsonBytes"));
+            assertEquals(100, resources.getLong("blobReferenceBytes"));
+            assertTrue(usage.getLong("pageBytes") > 0);
+            assertFalse(usage.toString().contains("private-id"));
+            assertFalse(usage.toString().contains("私密内容"));
+            try (android.database.Cursor cursor = database.rawQuery("SELECT payload_json FROM app_records", null)) {
+                assertTrue(cursor.moveToFirst()); assertEquals(payload, cursor.getString(0));
+            }
+        } finally { helper.close(); context.deleteDatabase(name); }
+    }
+
+    private static void recreatePreV5KeyTables(android.database.sqlite.SQLiteDatabase database) {
+        database.execSQL("ALTER TABLE app_records RENAME TO test_records_v5");
+        database.execSQL("CREATE TABLE app_records (store_name TEXT NOT NULL, record_key TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(store_name, record_key))");
+        database.execSQL("INSERT INTO app_records SELECT store_name, record_key, payload_json, updated_at FROM test_records_v5");
+        database.execSQL("DROP TABLE test_records_v5");
+        database.execSQL("CREATE INDEX app_records_store_updated ON app_records(store_name, updated_at, record_key)");
+        database.execSQL("ALTER TABLE app_record_indexes RENAME TO test_indexes_v5");
+        database.execSQL("CREATE TABLE app_record_indexes (store_name TEXT NOT NULL, index_name TEXT NOT NULL, index_key TEXT NOT NULL, record_key TEXT NOT NULL, PRIMARY KEY(store_name, index_name, index_key, record_key))");
+        database.execSQL("INSERT INTO app_record_indexes SELECT store_name, index_name, index_key, record_key FROM test_indexes_v5");
+        database.execSQL("DROP TABLE test_indexes_v5");
+        database.execSQL("CREATE INDEX app_record_indexes_lookup ON app_record_indexes(store_name, index_name, index_key, record_key)");
+    }
+
+    @Test public void upgradesV4KeyOrderingAndKeepsPayloadsWithBoundedPages() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-key-order-upgrade-" + UUID.randomUUID();
+        NativeAppDatabase before = new NativeAppDatabase(context, name);
+        JSONArray rows = new JSONArray();
+        for (int value : new int[] {10, 2, -1}) rows.put(new JSONObject().put("key", Integer.toString(value))
+            .put("value", new JSONObject().put("id", value).put("note", "保留内容"))
+            .put("indexes", new JSONArray().put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put(Integer.toString(value))))));
+        before.putRecords("settings", rows);
+        String revision = before.getState("revision:appdb:v1:settings");
+        recreatePreV5KeyTables(before.getWritableDatabase());
+        before.getWritableDatabase().setVersion(4);
+        before.close();
+        NativeAppDatabase after = new NativeAppDatabase(context, name);
+        try {
+            assertEquals(5, after.getWritableDatabase().getVersion());
+            assertEquals(revision, after.getState("revision:appdb:v1:settings"));
+            assertEquals("保留内容", after.getRecord("settings", "2").getString("note"));
+            JSONArray page = after.queryKeyPage("settings", new JSONObject().put("limit", 2)).getJSONArray("rows");
+            assertEquals(2, page.length()); assertEquals("-1", page.getJSONObject(0).getString("primaryKey"));
+            assertEquals("2", page.getJSONObject(1).getString("primaryKey"));
+            JSONObject request = new JSONObject().put("indexName", "updatedAt").put("lower", "2")
+                .put("lowerOpen", true).put("upper", "10").put("reverse", true).put("limit", 1).put("revision", revision);
+            assertEquals("10", after.queryKeyPage("settings", request).getJSONArray("rows").getJSONObject(0).getString("primaryKey"));
+            assertEquals(2, after.queryKeyPage("settings", new JSONObject().put("lower", "2").put("countOnly", true)).getLong("count"));
+            after.putRecords("settings", new JSONArray().put(new JSONObject().put("key", "11").put("value", new JSONObject().put("id", 11))));
+            assertThrows(IllegalStateException.class, () -> after.queryKeyPage("settings", request));
+        } finally { after.close(); context.deleteDatabase(name); }
+    }
+
+    @Test public void comparesActualKeySetsInsteadOfOnlyTheirCounts() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-key-set-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        JSONObject first = new JSONObject().put("key", "\"a\"").put("value", new JSONObject().put("id", "a"));
+        JSONObject stale = new JSONObject().put("key", "\"stale\"").put("value", new JSONObject().put("id", "stale"));
+        try {
+            assertTrue(database.haveSameRecordKeys("resources", "resourceListSummaries"));
+            database.putRecords("resources", new JSONArray().put(first));
+            assertFalse(database.haveSameRecordKeys("resources", "resourceListSummaries"));
+            database.putRecords("resourceListSummaries", new JSONArray().put(stale));
+            assertFalse(database.haveSameRecordKeys("resources", "resourceListSummaries"));
+            database.clearStore("resourceListSummaries");
+            database.putRecords("resourceListSummaries", new JSONArray().put(first));
+            assertTrue(database.haveSameRecordKeys("resources", "resourceListSummaries"));
+            database.close(); database = new NativeAppDatabase(context, name);
+            assertTrue(database.haveSameRecordKeys("resources", "resourceListSummaries"));
+        } finally { database.close(); context.deleteDatabase(name); }
+    }
+    @Test public void checksForegroundRevisionsInsideTheAtomicCommit() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-foreground-cas-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        String key = JSONObject.quote("editing");
+        try {
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "editing").put("value", "before"))));
+            JSONObject expected = new JSONObject().put("settings", Long.parseLong(database.getState("revision:appdb:v1:settings")));
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "editing").put("value", "background update"))));
+            JSONArray operations = new JSONArray().put(new JSONObject().put("type", "put").put("store", "resources").put("rows", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "editing")))));
+            assertThrows(IllegalStateException.class, () -> database.applyBatch(operations, false, expected));
+            assertEquals(0, database.countRecords("resources"));
+            assertEquals("background update", database.getRecord("settings", key).getString("value"));
+        } finally { database.close(); context.deleteDatabase(name); }
+    }
+
+    @Test public void rollsBackRevisionCountersAndReadGuardsWithFailedBatches() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-cas-rollback-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        String key = JSONObject.quote("editing");
+        try {
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "editing").put("value", "before"))));
+            database.withReadGuard(() -> {
+                JSONObject value = database.getRecord("settings", key); value.put("value", "after");
+                JSONObject valid = new JSONObject().put("type", "put").put("store", "settings").put("rows", new JSONArray().put(new JSONObject().put("key", key).put("value", value)));
+                assertThrows(IllegalArgumentException.class, () -> database.applyBatch(new JSONArray().put(valid).put(new JSONObject().put("type", "clear").put("store", "not-a-store"))));
+                assertEquals("before", database.getRecord("settings", key).getString("value"));
+                database.applyBatch(new JSONArray().put(valid));
+                return value;
+            });
+            assertEquals("after", database.getRecord("settings", key).getString("value"));
+        } finally { database.close(); context.deleteDatabase(name); }
+    }
+    @Test public void rejectsStaleBackgroundWritesAfterAnotherConnectionChangesReadData() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-concurrent-test-" + UUID.randomUUID();
+        NativeAppDatabase background = new NativeAppDatabase(context, name);
+        NativeAppDatabase foreground = new NativeAppDatabase(context, name);
+        String key = JSONObject.quote("edited");
+        try {
+            background.putRecords("settings", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "edited").put("value", "before"))));
+            assertThrows(IllegalStateException.class, () -> background.withReadGuard(() -> {
+                JSONObject stale = background.getRecord("settings", key);
+                foreground.putRecords("settings", new JSONArray().put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "edited").put("value", "foreground edit"))));
+                background.applyBatch(new JSONArray().put(new JSONObject().put("type", "put").put("store", "settings").put("rows", new JSONArray().put(new JSONObject().put("key", key).put("value", stale)))));
+                return stale;
+            }));
+            assertEquals("foreground edit", foreground.getRecord("settings", key).getString("value"));
+        } finally { background.close(); foreground.close(); context.deleteDatabase(name); }
+    }
+    @Test public void readsWritesIndexesAndReopensAllMigrationStores() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-all-stores-test-" + UUID.randomUUID();
+        String[] stores = { "resources", "resourceSummaries", "resourceListSummaries", "resourceVersions", "resourceVersionSummaries", "categories", "settings", "backupRecords", "externalApps", "externalAppRuntimes", "externalAppData", "externalAppDrafts", "frontendWorkshopProjects", "frontendWorkshopProjectLastGood", "frontendWorkshopSourceDocuments", "frontendWorkshopSourceDocumentLastGood", "frontendWorkshopSourceComponents", "generatedImages", "generatedImageFiles", "restoreStaging", "restoreStagingChunks", "assets", "assetFiles", "communitySources", "communitySourceMessages", "resourceSourceBindings", "cloudBackupJobs", "cloudBackupOrphans" };
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        try {
+            for (String store : stores) {
+                String key = JSONObject.quote(store + "-中文");
+                JSONObject value = new JSONObject().put("id", store + "-中文").put("updatedAt", 2).put("content", "内容未改变");
+                JSONArray indexes = new JSONArray().put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put("2")));
+                database.putRecords(store, new JSONArray().put(new JSONObject().put("key", key).put("value", value).put("indexes", indexes)));
+                assertEquals(1, database.countRecords(store));
+                assertEquals(key, database.getRecordKeys(store, null, 10).getString(0));
+                assertEquals("内容未改变", database.getRecordsByKeys(store, new JSONArray().put(key)).getJSONObject(0).getJSONObject("value").getString("content"));
+                assertEquals(1, database.getIndexEntries(store, "updatedAt", "2").length());
+                assertEquals(1, database.verifyStore(store).getInt("records"));
+            }
+            database.close(); database = new NativeAppDatabase(context, name);
+            for (String store : stores) assertEquals("内容未改变", database.getRecord(store, JSONObject.quote(store + "-中文")).getString("content"));
+        } finally { database.close(); context.deleteDatabase(name); }
+    }
+    private static String sourceHash(byte[] bytes) throws Exception {
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder result = new StringBuilder();
+        for (byte value : digest) result.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        return result.toString();
+    }
+
+    @Test public void resumesOnlyTheSameBlobSourceAndRejectsChangedBytes() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-source-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        byte[] first = "abcdef".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] second = "UVWXYZ".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            NativeAppDatabase.BlobTransfer initial = database.beginBlob("assetFiles", "source", "$/blob", first.length, "text/plain", sourceHash(first));
+            database.appendBlob(initial.token, 0, java.util.Arrays.copyOf(first, 3));
+            NativeAppDatabase.BlobTransfer changed = database.beginBlob("assetFiles", "source", "$/blob", second.length, "text/plain", sourceHash(second));
+            assertEquals(0, changed.offset);
+            assertFalse(initial.token.equals(changed.token));
+            database.appendBlob(changed.token, 0, java.util.Arrays.copyOf(second, 2));
+            NativeAppDatabase.BlobTransfer same = database.beginBlob("assetFiles", "source", "$/blob", second.length, "text/plain", sourceHash(second));
+            assertEquals(changed.token, same.token);
+            assertEquals(2, same.offset);
+            database.appendBlob(same.token, 2, java.util.Arrays.copyOfRange(second, 2, second.length));
+            assertEquals(sourceHash(second), database.completeBlob(same.token).getString("sha256"));
+            NativeAppDatabase.BlobTransfer wrong = database.beginBlob("assetFiles", "source", "$/blob", first.length, "text/plain", sourceHash(first));
+            database.appendBlob(wrong.token, 0, second);
+            assertThrows(IllegalStateException.class, () -> database.completeBlob(wrong.token));
+            assertEquals(sourceHash(second), database.readBlobChunk("assetFiles", "source", "$/blob", 0, 16).getString("sha256"));
+        } finally { database.clearStore("assetFiles"); database.close(); context.deleteDatabase(name); }
+    }
+
+    @Test public void upgradesV3WithoutChangingRecordsOrDroppingOldPendingTransfers() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-upgrade-test-" + UUID.randomUUID();
+        NativeAppDatabase initial = new NativeAppDatabase(context, name);
+        initial.putRecords("settings", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("kept")).put("value", new JSONObject().put("id", "kept").put("value", "保留内容"))));
+        NativeAppDatabase.BlobTransfer pending = initial.beginBlob("assetFiles", "legacy", "blob", 3, "text/plain");
+        initial.appendBlob(pending.token, 0, new byte[] {97});
+        android.database.sqlite.SQLiteDatabase sql = initial.getWritableDatabase();
+        sql.execSQL("ALTER TABLE app_blob_pending RENAME TO test_pending_v4");
+        sql.execSQL("CREATE TABLE app_blob_pending (token TEXT PRIMARY KEY NOT NULL, store_name TEXT NOT NULL, record_key TEXT NOT NULL, field_path TEXT NOT NULL, mime_type TEXT NOT NULL, expected_size INTEGER NOT NULL, relative_path TEXT NOT NULL, UNIQUE(store_name, record_key, field_path))");
+        sql.execSQL("INSERT INTO app_blob_pending SELECT token, store_name, record_key, field_path, mime_type, expected_size, relative_path FROM test_pending_v4");
+        sql.execSQL("DROP TABLE test_pending_v4");
+        recreatePreV5KeyTables(sql);
+        sql.setVersion(3);
+        initial.close();
+        NativeAppDatabase upgraded = new NativeAppDatabase(context, name);
+        try {
+            assertEquals(5, upgraded.getWritableDatabase().getVersion());
+            assertEquals("保留内容", upgraded.getRecord("settings", JSONObject.quote("kept")).getString("value"));
+            NativeAppDatabase.BlobTransfer preserved = upgraded.beginBlob("assetFiles", "legacy", "blob", 3, "text/plain");
+            assertEquals(pending.token, preserved.token);
+            assertEquals(1, preserved.offset);
+            NativeAppDatabase.BlobTransfer transfer = upgraded.beginBlob("assetFiles", "after", "blob", 0, "", sourceHash(new byte[0]));
+            assertEquals(sourceHash(new byte[0]), upgraded.completeBlob(transfer.token).getString("sha256"));
+        } finally { upgraded.clearStore("assetFiles"); upgraded.close(); context.deleteDatabase(name); }
+    }
+
+    @Test public void enumeratesKeysWithoutPayloadsAndAuditsBeforeOldCopyCleanup() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-data-cleanup-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        String key = JSONObject.quote("cleanup-a");
+        String path = "$/originalBlob";
+        byte[] content = ("cleanup-audit-" + UUID.randomUUID()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        NativeAppDatabase.BlobTransfer transfer = database.beginBlob("resources", key, path, content.length, "image/png");
+        database.appendBlob(transfer.token, 0L, content);
+        JSONObject metadata = database.completeBlob(transfer.token);
+        JSONObject reference = new JSONObject().put("__srlAppDatabaseValueV1", "blob")
+            .put("fieldPath", path).put("sha256", metadata.getString("sha256"))
+            .put("size", content.length).put("mimeType", "image/png").put("blobOwnerKey", key);
+        database.putRecords("resources", new JSONArray()
+            .put(new JSONObject().put("key", key).put("value", new JSONObject().put("id", "cleanup-a").put("originalBlob", reference)))
+            .put(new JSONObject().put("key", JSONObject.quote("cleanup-b")).put("value", new JSONObject().put("id", "cleanup-b"))));
+        JSONArray first = database.getRecordKeys("resources", null, 1);
+        assertEquals(key, first.getString(0));
+        assertEquals(JSONObject.quote("cleanup-b"), database.getRecordKeys("resources", key, 1).getString(0));
+        JSONObject audit = database.verifyStore("resources");
+        assertEquals(2, audit.getInt("records"));
+        assertEquals(1, audit.getInt("files"));
+        assertEquals(content.length, audit.getLong("bytes"));
+        assertFalse(database.getRecord("resources", key).getJSONObject("originalBlob").has("blobOwnerKey"));
+        // Recreate an already-published background import's payload without rewriting
+        // its committed attachment. Compatibility must still verify the actual bytes.
+        JSONObject legacy = database.getRecord("resources", key);
+        legacy.getJSONObject("originalBlob").put("blobOwnerKey", key);
+        android.content.ContentValues values = new android.content.ContentValues();
+        values.put("payload_json", legacy.toString());
+        database.getWritableDatabase().update("app_records", values,
+            "store_name = ? AND record_key = ?", new String[] {"resources", key});
+        assertEquals(content.length, database.verifyStore("resources").getLong("bytes"));
+        legacy.getJSONObject("originalBlob").put("blobOwnerKey", JSONObject.quote("uncommitted-owner"));
+        values.put("payload_json", legacy.toString());
+        database.getWritableDatabase().update("app_records", values,
+            "store_name = ? AND record_key = ?", new String[] {"resources", key});
+        assertThrows(IllegalStateException.class, () -> database.verifyStore("resources"));
+        legacy.getJSONObject("originalBlob").put("blobOwnerKey", key);
+        values.put("payload_json", legacy.toString());
+        database.getWritableDatabase().update("app_records", values,
+            "store_name = ? AND record_key = ?", new String[] {"resources", key});
+        String hash = metadata.getString("sha256");
+        File blob = new File(context.getFilesDir(), "srl-app-data/blobs/" + hash.substring(0, 2) + "/" + hash + ".bin");
+        // Same size, different bytes: size-only checks must never unlock old-copy deletion.
+        try (FileOutputStream output = new FileOutputStream(blob)) { output.write(new byte[content.length]); }
+        assertThrows(IllegalStateException.class, () -> database.verifyStore("resources"));
+        assertNotNull(database.getRecord("resources", key));
+        database.clearStore("resources");
+        database.close(); context.deleteDatabase(name);
+    }
+
+    @Test public void auditProtectsNativeOriginalReferencesAndUsesIndexCounts() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-data-native-original-audit-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        byte[] content = ("native-original-audit-" + UUID.randomUUID()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(content);
+        StringBuilder hex = new StringBuilder();
+        for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+        String hash = hex.toString();
+        File original = NativeLibraryPlugin.objectFile(context, hash);
+        assertTrue(original.getParentFile().isDirectory() || original.getParentFile().mkdirs());
+        try (FileOutputStream output = new FileOutputStream(original)) { output.write(content); }
+        JSONObject value = new JSONObject().put("id", "native-original").put("nativeOriginal",
+            new JSONObject().put("version", 1).put("contentHash", hash).put("size", content.length));
+        database.putRecords("resources", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("native-original"))
+            .put("value", value).put("indexes", new JSONArray().put(new JSONObject().put("name", "type")
+                .put("keys", new JSONArray().put(JSONObject.quote("characterCard")))))));
+        assertEquals(1L, database.countIndexEntries("resources", "type", JSONObject.quote("characterCard")));
+        assertEquals(0L, database.countIndexEntries("resources", "type", JSONObject.quote("chat")));
+        assertEquals(content.length, database.verifyStore("resources").getLong("bytes"));
+        assertTrue(original.delete());
+        assertThrows(IllegalStateException.class, () -> database.verifyStore("resources"));
+        assertNotNull(database.getRecord("resources", JSONObject.quote("native-original")));
+        database.clearStore("resources"); database.close(); context.deleteDatabase(name);
+    }
+
     @Test public void persistsPagedRowsAndDeletesOnlyRequestedKeys() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String name = "srl-app-data-test-" + UUID.randomUUID();
@@ -47,6 +402,34 @@ public final class NativeAppDatabaseTest {
         assertEquals(1L, database.countRecords("settings"));
         assertNull(database.getRecord("settings", "a"));
         assertTrue(database.getRecord("settings", "b") != null);
+        database.close();
+        context.deleteDatabase(name);
+    }
+
+    @Test public void readsOnlyRecentUnboundCommunitySourcesThroughIndexes() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-data-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        for (int index = 1; index <= 3; index++) {
+            String id = "source-" + index;
+            JSONObject value = new JSONObject().put("id", id).put("title", id).put("updatedAt", index * 100L);
+            JSONArray indexes = new JSONArray()
+                .put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put(String.valueOf(index * 100L))));
+            if (index == 2)
+                indexes.put(new JSONObject().put("name", "id").put("keys", new JSONArray().put(JSONObject.quote(id))));
+            database.putRecords("communitySources", new JSONArray().put(new JSONObject()
+                .put("key", JSONObject.quote(id)).put("value", value).put("indexes", indexes)));
+        }
+        database.putRecords("resourceSourceBindings", new JSONArray().put(new JSONObject()
+            .put("key", JSONObject.quote("binding-2"))
+            .put("value", new JSONObject().put("id", "binding-2").put("sourceId", "source-2"))
+            .put("indexes", new JSONArray().put(new JSONObject().put("name", "sourceId")
+                .put("keys", new JSONArray().put(JSONObject.quote("source-2")))))));
+
+        JSONArray recent = database.getRecentRecordsByIndex("communitySources", "updatedAt", 2);
+        assertEquals(2, recent.length());
+        assertEquals("source-3", recent.getJSONObject(0).getJSONObject("value").getString("id"));
+        assertEquals("source-1", recent.getJSONObject(1).getJSONObject("value").getString("id"));
         database.close();
         context.deleteDatabase(name);
     }
@@ -267,6 +650,12 @@ public final class NativeAppDatabaseTest {
         JSONObject chunk = database.readBlobChunk("assetFiles", "asset-1", "blob", 0L, 11);
         assertEquals("hello world", new String(Base64.decode(chunk.getString("data"), Base64.NO_WRAP), java.nio.charset.StandardCharsets.UTF_8));
         assertTrue(chunk.getBoolean("eof"));
+        JSONObject direct = database.getBlobPath("assetFiles", "asset-1", "blob");
+        assertEquals(11L, direct.getLong("size"));
+        assertEquals(metadata.getString("sha256"), direct.getString("sha256"));
+        File directFile = new File(android.net.Uri.parse(direct.getString("path")).getPath());
+        assertEquals("hello world", new String(java.nio.file.Files.readAllBytes(directFile.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(direct.has("data"));
         database.putRecords("assetFiles", new JSONArray().put(new JSONObject().put("key", "asset-1")
             .put("value", new JSONObject().put("assetId", "asset-1").put("blob", new JSONObject()
                 .put("__srlAppDatabaseValueV1", "blob").put("fieldPath", "blob")
@@ -274,9 +663,29 @@ public final class NativeAppDatabaseTest {
         database.putRecords("assetFiles", new JSONArray().put(new JSONObject()
             .put("key", "asset-1").put("value", new JSONObject().put("assetId", "asset-1"))));
         assertNull(database.readBlobChunk("assetFiles", "asset-1", "blob", 0L, 11));
+        assertNull(database.getBlobPath("assetFiles", "asset-1", "blob"));
         database.deleteRecords("assetFiles", new JSONArray().put("asset-1"));
         assertEquals(0L, database.countRecords("assetFiles"));
         assertNull(database.readBlobChunk("assetFiles", "asset-1", "blob", 0L, 11));
+        database.close();
+        context.deleteDatabase(name);
+    }
+
+    @Test public void acceptsOneMegabyteBlobChunks() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-app-data-test-" + UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(context, name);
+        byte[] chunk = new byte[NativeAppDatabase.MAX_BLOB_CHUNK_BYTES];
+        java.util.Arrays.fill(chunk, (byte) 0x5a);
+        NativeAppDatabase.BlobTransfer transfer = database.beginBlob(
+            "assetFiles", "asset-1", "blob", chunk.length + 1L, "application/octet-stream");
+        assertEquals((long) chunk.length,
+            database.appendBlob(transfer.token, 0L, chunk));
+        assertEquals(chunk.length + 1L,
+            database.appendBlob(transfer.token, chunk.length, new byte[] {0x2a}));
+        JSONObject metadata = database.completeBlob(transfer.token);
+        assertEquals(chunk.length + 1L, metadata.getLong("size"));
+        database.deleteBlob("assetFiles", "asset-1", "blob");
         database.close();
         context.deleteDatabase(name);
     }

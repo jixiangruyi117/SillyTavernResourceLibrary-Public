@@ -34,6 +34,13 @@ export function remapReaderPortableData(
           : {}),
       }
     }
+    if (match?.[1] === 'chat:' && isRecord(value) && Array.isArray(value.scriptSources))
+      value = {
+        ...value,
+        scriptSources: value.scriptSources.map((id) =>
+          typeof id === 'string' ? (ids.get(id) ?? id) : id,
+        ),
+      }
     // Import recalculates the composite row ID through externalAppDataId.
     return { ...record, key, value }
   }

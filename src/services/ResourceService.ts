@@ -1,8 +1,12 @@
 import * as versionOperations from './ResourceVersionOperations'
 import { JSON_RESOURCE_PARSER_VERSION } from '../parser/JsonResourceParser'
 import type { ResourceParserRegistry } from '../parser/ResourceParser'
-import type { ResourceStorageAdapter } from '../storage/ResourceStorageAdapter'
+import type {
+  ResourceListSummaryFilter,
+  ResourceStorageAdapter,
+} from '../storage/ResourceStorageAdapter'
 import type { ResourceVersionMatchFingerprintCache } from '../storage/ResourceStorageAdapter'
+import type { MissingPngThumbnailRepairStatus } from '../storage/ResourceThumbnailMaintenance'
 import type { ImportResult, ParsedResource } from '../types/Import'
 import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import {
@@ -27,6 +31,8 @@ import {
   computeCardFingerprints,
 } from '../utils/CharacterCardFingerprint'
 import { hashFile } from './HashService'
+import { createStructuredContentDraft } from '../utils/StructuredResourceContent'
+import { stableCharacterContentJson } from '../utils/CharacterCardContentEdits'
 import { importPipeline, type ImportFileContext } from './ImportPipeline'
 import { inspectGitHubResource, type GitHubResourceInspector } from './GitHubResourceInspector'
 import {
@@ -185,11 +191,24 @@ export class ResourceService {
     return this.storage.listSummaries()
   }
 
-  async listResourceListSummaries(): Promise<ResourceListSummary[]> {
-    if (this.storage.listResourceListSummaries) {
-      return this.storage.listResourceListSummaries()
-    }
-    return (await this.storage.listSummaries()).map(toResourceListSummary)
+  async listResourceListSummaries(
+    filter?: ResourceListSummaryFilter,
+  ): Promise<ResourceListSummary[]> {
+    const summaries = this.storage.listResourceListSummaries
+      ? await this.storage.listResourceListSummaries(filter)
+      : (await this.storage.listSummaries()).map(toResourceListSummary)
+    if (!filter?.ids && !filter?.types) return summaries
+    const ids = filter?.ids ? new Set(filter.ids) : undefined
+    const types = filter?.types ? new Set(filter.types) : undefined
+    return summaries.filter(
+      (resource) => (!ids || ids.has(resource.id)) && (!types || types.has(resource.type)),
+    )
+  }
+
+  async getResourceListSummary(id: string): Promise<ResourceListSummary | undefined> {
+    if (this.storage.getResourceListSummary) return this.storage.getResourceListSummary(id)
+    const summary = await (this.storage.getSummary?.(id) ?? this.storage.get(id))
+    return summary ? toResourceListSummary(summary) : undefined
   }
 
   listRecentCharacterCards(limit = 100): Promise<ResourceListSummary[]> {
@@ -206,6 +225,17 @@ export class ResourceService {
     return this.storage.repairThumbnailAssets?.() ?? Promise.resolve(0)
   }
 
+  getMissingPngThumbnailRepairStatus(): Promise<MissingPngThumbnailRepairStatus> {
+    return (
+      this.storage.getMissingPngThumbnailRepairStatus?.() ??
+      Promise.resolve({ status: 'not-started', repaired: 0 })
+    )
+  }
+
+  repairMissingPngCharacterCardThumbnails(options?: { restart?: boolean }): Promise<number> {
+    return this.storage.repairMissingPngCharacterCardThumbnails?.(options) ?? Promise.resolve(0)
+  }
+
   listAllVersions(): Promise<Resource[]> {
     return this.storage.listAllVersions()
   }
@@ -216,8 +246,30 @@ export class ResourceService {
       : this.storage.listVersionSummaries()
   }
 
+  async listVersionSummariesForResources(ids: string[]): Promise<ResourceSummary[]> {
+    return this.storage.listVersionListSummariesForResources
+      ? this.storage.listVersionListSummariesForResources(ids)
+      : (await this.listVersionSummaries(true)).filter((version) =>
+          ids.includes(version.versionGroupId ?? ''),
+        )
+  }
+
   get(id: string): Promise<Resource | undefined> {
     return this.storage.get(id)
+  }
+
+  async getSummary(id: string, historical = false): Promise<ResourceSummary | undefined> {
+    if (this.storage.getSummary) return this.storage.getSummary(id, historical)
+    const resource = historical ? await this.getVersion(id) : await this.get(id)
+    return resource ? toResourceSummary(resource) : undefined
+  }
+
+  async getReadSource(id: string) {
+    if (this.storage.getReadSource) return this.storage.getReadSource(id)
+    const resource = await this.get(id)
+    return resource
+      ? { ...toResourceSummary(resource), originalSource: resource.originalBlob }
+      : undefined
   }
 
   async getVersion(id: string): Promise<Resource | undefined> {
@@ -498,6 +550,47 @@ export class ResourceService {
     return imported
   }
 
+  /** Save native WI/regex JSON through the same resource/version storage owner. */
+  async saveStructuredContent(
+    resourceId: string,
+    expectedHash: string,
+    edits: CharacterCardContentEdit[],
+    newRegexGroup = 'global',
+  ): Promise<Resource> {
+    const current = await this.storage.get(resourceId)
+    if (!current || current.contentHash !== expectedHash)
+      throw new Error('资源版本已变化，请重新打开详情后编辑。')
+    const source: unknown = JSON.parse(await current.originalBlob.text())
+    const content = createStructuredContentDraft(source, current.type).build(edits, newRegexGroup)
+    if (stableCharacterContentJson(content) === stableCharacterContentJson(source)) return current
+    const file = new File([JSON.stringify(content, null, 2)], current.fileName, {
+      type: 'application/json',
+    })
+    const prepared = await this.createImportedResource(file)
+    if (prepared.type !== current.type)
+      throw new Error('编辑后的文件无法识别为原资源类型，请至少保留一个有效条目。')
+    if ((await this.storage.get(resourceId))?.contentHash !== expectedHash)
+      throw new Error('资源版本已变化，请重新打开详情后编辑。')
+    const saved = await versionOperations.importAsVersion(
+      this.storage,
+      async () => ({
+        ...prepared,
+        name: current.name,
+        description: current.description,
+        metadata: { ...current.metadata, ...prepared.metadata },
+      }),
+      file,
+      resourceId,
+      true,
+      '资源内容编辑',
+      undefined,
+      {},
+      true,
+    )
+    this.recognizedFileHashes.invalidate()
+    return saved
+  }
+
   async replaceHistoricalVersion(
     file: File,
     resourceId: string,
@@ -717,7 +810,10 @@ export class ResourceService {
       ) {
         await this.storage.update(summary.id, {
           name: legacyGlobalRegexName,
-          metadata: { ...summary.metadata, legacyGlobalRegexNameRepaired: true },
+          metadata: {
+            ...(await this.storage.get(summary.id))?.metadata,
+            legacyGlobalRegexNameRepaired: true,
+          },
         })
         upgradedCount += 1
         continue
@@ -735,6 +831,11 @@ export class ResourceService {
 
   backfillCardFingerprints(checkpoint?: () => Promise<void>): Promise<number> {
     return versionOperations.backfillCardFingerprints(this.storage, checkpoint)
+  }
+  loadVersionRecognitionSnapshot(
+    checkpoint?: () => Promise<void>,
+  ): Promise<versionOperations.VersionRecognitionSnapshot> {
+    return versionOperations.loadVersionRecognitionSnapshot(this.storage, checkpoint)
   }
   private extractEmbeddedAssets(source: Resource) {
     return this.assetOperations.extractEmbeddedAssets(source)
@@ -986,7 +1087,7 @@ export class ResourceService {
   async deleteMany(
     ids: string[],
     onProgress?: (progress: { completed: number; total: number }) => void,
-  ): Promise<void> {
+  ): Promise<ResourceListSummary[] | undefined> {
     return operationsResourceOrganizationOperations.deleteMany(this.storage, ids, onProgress)
   }
 }

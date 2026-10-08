@@ -42,6 +42,10 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
   async save(app: InstalledOfficialApp): Promise<void> {
     await this.database.settings.put({ id: PREFIX + app.id, value: app, updatedAt: Date.now() })
   }
+  async get(id: OfficialAppId): Promise<InstalledOfficialApp | undefined> {
+    const row = await this.database.settings.get(PREFIX + id)
+    return row?.value as InstalledOfficialApp | undefined
+  }
   async remove(id: OfficialAppId): Promise<void> {
     await this.database.settings.delete(PREFIX + id)
   }
@@ -106,13 +110,14 @@ export class InstalledOfficialAppStorage implements OfficialAppPackageStorage {
     if (!files.length) return true
     if (isCapacitorApp()) {
       try {
-        return (
-          (
-            await nativeFiles.hasOfficialAppFiles({
-              files: files.map(({ path, size }) => ({ path, size })),
-            })
-          ).ready === true
-        )
+        // NativeFileAccess accepts at most 100 paths; valid APP packages may contain 128.
+        for (let offset = 0; offset < files.length; offset += 100) {
+          const result = await nativeFiles.hasOfficialAppFiles({
+            files: files.slice(offset, offset + 100).map(({ path, size }) => ({ path, size })),
+          })
+          if (result.ready !== true) return false
+        }
+        return true
       } catch (error) {
         if ((error as { code?: string }).code !== 'UNIMPLEMENTED') return false
       }

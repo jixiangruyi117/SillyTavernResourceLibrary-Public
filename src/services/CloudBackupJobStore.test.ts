@@ -9,6 +9,90 @@ describe('CloudBackupJobStore orphan grace', () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
   })
 
+  it('rejects a blocked schema upgrade and permits retry after the old page closes', async () => {
+    const legacy = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('srl-cloud-jobs-v3', 3)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('jobs', { keyPath: 'id' })
+        request.result.createObjectStore('orphans', { keyPath: 'id' })
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const oldJob = {
+      id: 'github:old-plan',
+      provider: 'github',
+      planHash: 'old-plan',
+      status: 'completed',
+      objects: { original: 'verified' },
+      manifestName: 'old-manifest',
+      updatedAt: 1,
+    }
+    await new Promise<void>((resolve, reject) => {
+      const transaction = legacy.transaction('jobs', 'readwrite')
+      transaction.objectStore('jobs').put(oldJob)
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error)
+    })
+    let blocked = false
+    const open = indexedDB.open.bind(indexedDB)
+    vi.spyOn(indexedDB, 'open').mockImplementation((name, version) => {
+      const request = open(name, version)
+      request.addEventListener('blocked', () => (blocked = true))
+      return request
+    })
+    const store = new CloudBackupJobStore({ isAndroid: false })
+    let failure: unknown
+    let settled = false
+    const operation = store.begin('github', 'new-plan', ['new-object']).then(
+      () => (settled = true),
+      (error) => {
+        failure = error
+        settled = true
+      },
+    )
+    try {
+      await vi.waitFor(() => expect(blocked).toBe(true))
+      expect(settled).toBe(true)
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toContain('关闭其他资源库页面')
+    } finally {
+      legacy.close()
+      await operation
+    }
+    await expect(store.begin('github', 'new-plan', ['new-object'])).resolves.toMatchObject({
+      status: 'running',
+      objects: { 'new-object': 'pending' },
+    })
+    expect(await store.read('github', 'old-plan')).toEqual(oldJob)
+  })
+
+  it('releases its connection when a newer page requests a schema upgrade', async () => {
+    const open = vi.spyOn(indexedDB, 'open')
+    const store = new CloudBackupJobStore({ isAndroid: false })
+    await store.begin('github', 'existing', ['object'])
+    const connection = (open.mock.results[0]!.value as IDBOpenDBRequest).result
+    let blocked = false
+    let upgraded: IDBDatabase | undefined
+    const request = indexedDB.open('srl-cloud-jobs-v3', 5)
+    request.onblocked = () => (blocked = true)
+    const operation = new Promise<void>((resolve, reject) => {
+      request.onsuccess = () => {
+        upgraded = request.result
+        resolve()
+      }
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      await vi.waitFor(() => expect(blocked || upgraded !== undefined).toBe(true))
+      expect(blocked).toBe(false)
+    } finally {
+      connection.close()
+      await operation
+      upgraded?.close()
+    }
+  })
+
   it('starts grace when an object first becomes orphan and forgets it when referenced again', async () => {
     const store = new CloudBackupJobStore()
     const day = 24 * 60 * 60 * 1000
@@ -112,7 +196,9 @@ describe('CloudBackupJobStore orphan grace', () => {
       },
     }
 
-    const legacy = new CloudBackupJobStore()
+    const legacy = new CloudBackupJobStore({ isAndroid: false })
+    const upload = await legacy.begin('github', 'checkpoint-plan', ['content'])
+    await legacy.markObject(upload, 'content', 'verified')
     const restore = {
       item: { id: 'snapshot', objectKey: 'snapshot.json', size: 3, createdAt: 1 },
       target: {
@@ -139,6 +225,7 @@ describe('CloudBackupJobStore orphan grace', () => {
     ])
     await expect(android.pendingOrphans('scope')).resolves.toEqual(['asset-1'])
     expect(states.get('migration:cloud-backup-jobs:v1')).toBe('verified-v1')
+    expect((await android.read('github', 'checkpoint-plan'))?.objects.content).toBe('verified')
 
     await android.begin('github', 'next-plan', ['file.json'])
     await expect(legacy.read('github', 'next-plan')).resolves.toMatchObject({
@@ -146,5 +233,40 @@ describe('CloudBackupJobStore orphan grace', () => {
       objects: { 'file.json': 'pending' },
     })
     expect(records.get('cloudBackupJobs')?.has(JSON.stringify('github:next-plan'))).toBe(true)
+  })
+})
+
+describe('cloud object checkpoint scaling', () => {
+  it('initializes 10,000 verified objects once and persists only small changed-object deltas', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const store = new CloudBackupJobStore({ isAndroid: false })
+    const names = Array.from({ length: 10_000 }, (_, index) => `object-${index}`)
+    const job = await store.begin('github', 'large-plan', names, names.slice(0, -2))
+    await store.markObject(job, names.at(-2)!, 'verified')
+    await store.markObject(job, names.at(-1)!, 'failed')
+    const reopened = new CloudBackupJobStore({ isAndroid: false })
+    const saved = await reopened.read('github', 'large-plan')
+    expect(saved?.objects[names.at(-2)!]).toBe('verified')
+    expect(saved?.objects[names.at(-1)!]).toBe('failed')
+    expect(Object.values(saved!.objects).filter((state) => state === 'verified')).toHaveLength(
+      9_999,
+    )
+    const database = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open('srl-cloud-jobs-v3')
+      request.onsuccess = () => resolve(request.result)
+    })
+    const entries = await new Promise<Array<Record<string, unknown>>>((resolve) => {
+      const request = database.transaction('objectStates').objectStore('objectStates').getAll()
+      request.onsuccess = () => resolve(request.result)
+    })
+    expect(entries).toHaveLength(2)
+    expect(JSON.stringify(entries).length).toBeLessThan(500)
+    await store.markObject(job, names.at(-1)!, 'verified')
+    await store.complete(job, 'manifest')
+    expect((await reopened.read('github', 'large-plan'))?.status).toBe('completed')
+    // Fresh remote inventory is authoritative if an object was removed after a past success.
+    const rebuilt = await reopened.begin('github', 'large-plan', names, names.slice(0, -1))
+    expect(rebuilt.objects[names.at(-1)!]).toBe('pending')
+    database.close()
   })
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
+import StorageUsageChart, { type StorageUsageSlice } from './StorageUsageChart.vue'
 
 import { BUILD_INFO } from '../core/BuildInfo'
 import { domainEvents } from '../core/DomainEvents'
@@ -9,23 +10,69 @@ import { confirmAction } from '../composables/UseConfirmDialog'
 import { getPlatformInfo } from '../core/PlatformService'
 import { isSafeModeActive } from '../core/SafeStartup'
 import { taskCenter } from '../core/TaskCenter'
-import { nativeResourceRecoveryService } from '../core/AppContainer'
+import {
+  browserStorageService,
+  communitySourceService,
+  nativeResourceRecoveryService,
+} from '../core/AppContainer'
 import { RESOURCE_TYPE_LABELS } from '../types/Resource'
 import type {
   NativeRecoveryPreview,
   NativeRecoveryReport,
 } from '../services/NativeResourceRecoveryService'
 import {
+  clearNativeTemporaryCaches,
   getNativeResourceStorageInfo,
   type NativeRecoveryCandidate,
 } from '../storage/NativeResourceFileMirror'
 
 const emit = defineEmits<{ 'library-changed': [] }>()
+const storageLabels: Record<string, string> = {
+  'srl-app-data': '原生数据库附件',
+  'official-apps': '内置 APP 程序文件',
+  'srl-shared-intake': '接收暂存（可能含历史残留）',
+  'srl-cloud-jobs': '云传输暂存',
+  'srl-export-jobs': '导出暂存',
+  'srl-archive-jobs': '导入暂存',
+  'srl-archive-tasks': '归档任务暂存',
+  'srl-character-card-parser': '角色卡解析暂存',
+  other: '其他内部文件',
+  resources: '当前资源',
+  resourceVersions: '历史版本',
+  resourceSummaries: '资源摘要',
+  resourceListSummaries: '列表摘要',
+  resourceVersionSummaries: '历史摘要',
+  categories: '分类',
+  settings: '设置',
+  backupRecords: '回收站与恢复副本',
+  externalApps: 'APP 安装记录',
+  externalAppRuntimes: 'APP 程序',
+  externalAppData: 'APP 使用数据（含读了么、收藏柜）',
+  externalAppDrafts: 'APP 草稿',
+  frontendWorkshopProjects: '前端了么项目',
+  frontendWorkshopProjectLastGood: '前端了么项目恢复点',
+  frontendWorkshopSourceDocuments: '前端了么源码',
+  frontendWorkshopSourceDocumentLastGood: '前端了么源码恢复点',
+  frontendWorkshopSourceComponents: '前端了么组件',
+  generatedImages: '生成图片记录',
+  generatedImageFiles: '生成图片文件',
+  restoreStaging: '恢复暂存记录',
+  restoreStagingChunks: '恢复分块',
+  assets: '素材记录（含缩略图）',
+  assetFiles: '素材文件（含缩略图）',
+  communitySources: '资源来源',
+  communitySourceMessages: '来源消息',
+  resourceSourceBindings: '资源来源关联',
+  cloudBackupJobs: '云备份任务',
+  cloudBackupOrphans: '云备份待处理记录',
+}
 const issues = ref<HealthIssue[]>([])
 const scanning = ref(false)
 const repairing = ref(false)
 const scanned = ref(false)
 const nativeStorage = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
+const browserStorage = ref<Awaited<ReturnType<typeof browserStorageService.getHealth>>>()
+const inspectionError = ref('')
 const storageMeasuredAt = ref(0)
 let storageRequest = 0
 onUnmounted(
@@ -48,13 +95,180 @@ const recoveryNextCursor = ref<string>()
 const selectedRecoveryHashes = ref<string[]>([])
 const recovering = ref(false)
 const reclaimingMirrors = ref(false)
+const clearingRetiredModels = ref(false)
+const clearingAppCaches = ref(false)
+const optimizingSummaries = ref(false)
+const clearingPostMedia = ref(false)
+const postMedia = ref<{ count: number; bytes: number }>()
+const postMediaError = ref('')
+const cleanupBusy = computed(
+  () =>
+    optimizingSummaries.value ||
+    clearingPostMedia.value ||
+    reclaimingMirrors.value ||
+    clearingRetiredModels.value ||
+    clearingAppCaches.value ||
+    recovering.value ||
+    recoveryScanBusy.value,
+)
+const retiredModel = computed(() =>
+  nativeStorage.value?.supportsRetiredTranslationModelCleanup
+    ? nativeStorage.value.internalBreakdown?.noBackupBreakdown?.otherEntries?.find(
+        (item) =>
+          item.name === 'com.google.mlkit.translate.models' && item.directory && item.bytes > 0,
+      )
+    : undefined,
+)
+const summaryBytes = computed(() =>
+  nativeStorage.value?.nativeDatabase?.stores
+    .filter(
+      (item) => item.store === 'resourceSummaries' || item.store === 'resourceVersionSummaries',
+    )
+    .reduce((total, item) => total + item.jsonBytes, 0),
+)
+const storageSlices = computed<StorageUsageSlice[]>(() => {
+  const info = nativeStorage.value
+  if (!info)
+    return browserStorage.value?.usage
+      ? [
+          {
+            id: 'browser',
+            label: '浏览器本机存储',
+            bytes: browserStorage.value.usage,
+            color: '#407e79',
+          },
+        ]
+      : []
+  const groups = info.internalBreakdown?.fileGroups
+  const values = [
+    {
+      id: 'originals',
+      label: '资源原件与恢复目录',
+      bytes: info.libraryBytes ?? info.objectBytes,
+      color: '#407e79',
+    },
+    {
+      id: 'database',
+      label: '文字、设置与查询记录',
+      bytes: info.internalBreakdown?.databaseBytes ?? info.nativeDatabase?.fileBytes ?? 0,
+      color: '#b1794a',
+    },
+    {
+      id: 'assets',
+      label: '图片等素材文件',
+      bytes: groups?.['srl-app-data'] ?? 0,
+      color: '#7a719e',
+    },
+    { id: 'apps', label: '内置 APP 程序', bytes: groups?.['official-apps'] ?? 0, color: '#b15966' },
+    {
+      id: 'intake',
+      label: '接收暂存文件',
+      bytes: groups?.['srl-shared-intake'] ?? 0,
+      color: '#759052',
+    },
+    { id: 'webview', label: '网页容器', bytes: info.webViewBytes ?? 0, color: '#557fa6' },
+    { id: 'cache', label: '临时缓存', bytes: info.cacheBytes ?? 0, color: '#b8943e' },
+    { id: 'models', label: '旧翻译模型', bytes: retiredModel.value?.bytes ?? 0, color: '#956b82' },
+  ]
+  const known = values.reduce((sum, item) => sum + item.bytes, 0)
+  return [
+    ...values,
+    {
+      id: 'other',
+      label: '其他应用数据',
+      bytes: Math.max(0, (info.totalBytes ?? known) - known),
+      color: '#7f8a88',
+    },
+  ].filter((item) => item.bytes > 0)
+})
+
+async function showStoragePart(id: string): Promise<void> {
+  const part = storageSlices.value.find((item) => item.id === id)
+  if (!part) return
+  const details: Record<string, { text: string; action?: () => Promise<void> }> = {
+    originals: {
+      text: `这里是导入资源的完整文件、历史版本的原件，以及找回或恢复所需的文件。它们不是缓存。\n\n${mirrorDuplication.value?.reclaimableBytes ? '已发现另一处存放的重复副本，可以先比较文件内容再释放副本；这里的原件会保留。' : '想减少这部分：到资源列表删除不需要的资源，确认不再需要恢复后再清空回收站。此处不会整批删除原件。'}`,
+      action: mirrorDuplication.value?.reclaimableBytes ? reclaimNativeMirrors : undefined,
+    },
+    database: {
+      text: '存放资源名字、标签、解析出的正文、版本记录和 APP 设置；其中查询记录可能重复存了一份正文。\n\n可以精简这份重复文字。完整角色卡、聊天内容、历史版本，以及读了么和收藏柜的使用数据会保留。',
+      action: optimizeSummaries,
+    },
+    browser: {
+      text: '这是浏览器报告的本站总占用，目前无法准确拆成互不重叠的文件分项。\n\n可以精简重复查询文字，保留完整资源、历史和 APP 数据。浏览器会自行回收空闲空间。',
+      action: optimizeSummaries,
+    },
+    assets: {
+      text: `这里包含封面小图、图库素材和下载到本机的帖子媒体。\n\n已下载的帖子媒体：${postMedia.value?.count ?? 0} 个，约 ${formatBytes(postMedia.value?.bytes ?? 0)}。清理仅处理帖子图片、音频和视频；正文和链接保留，其他内容共用的文件也保留。清理后这些帖子媒体需要联网查看，链接过期时可能无法重新下载。`,
+      action: postMedia.value?.count ? clearPostMedia : undefined,
+    },
+    apps: {
+      text: '这里是内置 APP 的程序文件，用来离线打开读了么、收藏柜等 APP，不是你的角色或收藏数据。\n\n删掉程序会影响离线打开 APP，因此这里保留它们。',
+    },
+    intake: {
+      text: '其他应用分享进来或后台下载后，文件会先放在这里，等保存进资源库后再交给接收流程清理。也可能有以前未清理成功的残留。\n\n还没有逐项确认哪些已完成入库，所以这里先保留，避免丢掉正在接收的资源。',
+    },
+    webview: {
+      text: '这是 APK 的页面运行环境，包括页面自己的存储、网络缓存和临时文件。\n\n它不全是缓存，直接清空可能丢失页面设置或尚未迁移的数据，因此这里不会整批清空。',
+    },
+    cache: {
+      text: '保存可重新生成的临时文件和程序运行缓存。\n\n可以清理；你的资源、角色、收藏和设置会保留。之后首次打开某些页面或 APP，可能需要多等一会儿。',
+      action: clearAppCaches,
+    },
+    models: {
+      text: '这是已停用的离线翻译功能下载的语言模型。\n\n可以删除，不影响当前资源库、读了么或收藏柜。',
+      action: clearRetiredModels,
+    },
+    other: {
+      text: '包含后台任务记录、应用偏好设置以及尚未单独归类的文件。用途尚未逐项确认，不能把它们都当成垃圾。\n\n详细数字可在下方“查看占用分项”中查看；此处保留这些文件。',
+    },
+  }
+  const detail = details[id]
+  if (!detail) return
+  const confirmed = await confirmAction({
+    title: `${part.label} · ${formatBytes(part.bytes)}`,
+    message: detail.text,
+    confirmLabel: detail.action ? '查看清理内容' : '知道了',
+    cancelLabel: '关闭',
+  })
+  if (confirmed && detail.action) await detail.action()
+}
+
+async function clearAppCaches(): Promise<void> {
+  if (
+    cleanupBusy.value ||
+    !(await confirmAction({
+      title: '清理临时缓存',
+      message:
+        '会删除：APK 的临时文件和程序运行缓存。\n\n会保留：资源原件、角色内容、收藏、APP 使用数据、设置和网页容器。\n\n可能影响：首次重新打开部分页面或 APP 时，缓存需要重新生成，可能稍慢。',
+      confirmLabel: '清理缓存',
+      cancelLabel: '取消',
+      danger: true,
+    }))
+  )
+    return
+  clearingAppCaches.value = true
+  try {
+    const bytes = await clearNativeTemporaryCaches()
+    const storage = await getNativeResourceStorageInfo({ includeDetails: true })
+    domainEvents.emit('NativeTemporaryCachesCleared', { storage, measuredAt: Date.now() })
+    noticeCenter.push({ type: 'success', message: `已清理临时缓存 ${formatBytes(bytes)}。` })
+  } catch (error) {
+    noticeCenter.push({
+      type: 'error',
+      message: error instanceof Error ? error.message : '缓存清理失败',
+    })
+  } finally {
+    clearingAppCaches.value = false
+  }
+}
 const recoveryCandidateByHash = computed(
   () => new Map(recoveryCandidates.value.map((item) => [item.contentHash, item])),
 )
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)))
   return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
 }
@@ -62,19 +276,39 @@ function formatBytes(value: number): string {
 async function scanNativeRecovery(reset = true, includeAccounting = false): Promise<void> {
   if (recoveryScanBusy.value) return
   recoveryScanBusy.value = true
+  inspectionError.value = ''
   try {
     const cursor = reset ? undefined : recoveryNextCursor.value
     if (!reset && !cursor) return
     const request = ++storageRequest
-    const info = await getNativeResourceStorageInfo()
+    if (includeAccounting) postMediaError.value = ''
+    const [info, media] = await Promise.all([
+      getNativeResourceStorageInfo({ includeDetails: includeAccounting }),
+      includeAccounting
+        ? communitySourceService.downloadedMediaUsage().catch((error: unknown) => {
+            postMediaError.value =
+              error instanceof Error ? error.message : '帖子媒体统计失败，请解锁保险库后重新检查'
+            return undefined
+          })
+        : Promise.resolve(postMedia.value),
+    ])
+    if (includeAccounting) postMedia.value = media
     if (request === storageRequest) {
       nativeStorage.value = info
       storageMeasuredAt.value = info ? Date.now() : 0
     }
-    const page = await nativeResourceRecoveryService.listCandidates(cursor, 100)
-    if (!page || !info) {
+    if (!info) {
+      // Web/PWA originals live in the browser database, not the Android object directory.
+      browserStorage.value = await browserStorageService.getHealth()
+      storageMeasuredAt.value = Date.now()
+      if (includeAccounting) {
+        accounting.value = await nativeResourceRecoveryService.storageAccounting()
+        accountingStale.value = false
+      }
       return
     }
+    const page = await nativeResourceRecoveryService.listCandidates(cursor, 100)
+    if (!page) throw new Error('Android 未提供原件检查结果，未修改或清理文件')
     const previews: typeof recoveryCandidates.value = []
     for (const candidate of page.candidates) {
       const preview = info.recoveryMetadataVersion
@@ -96,12 +330,109 @@ async function scanNativeRecovery(reset = true, includeAccounting = false): Prom
       accountingStale.value = false
     }
   } catch (error) {
+    inspectionError.value =
+      error instanceof Error ? error.message : '原件检查失败，未修改或清理文件'
     noticeCenter.push({
       type: 'error',
-      message: error instanceof Error ? error.message : '原件检查失败，未修改或清理文件',
+      message: inspectionError.value,
     })
   } finally {
     recoveryScanBusy.value = false
+  }
+}
+
+async function clearRetiredModels(): Promise<void> {
+  if (clearingRetiredModels.value) return
+  clearingRetiredModels.value = true
+  try {
+    if (
+      !(await confirmAction({
+        title: '删除已停用的离线翻译模型',
+        message:
+          '会删除：已停用的离线翻译功能下载的语言模型。\n\n会保留：资源原件、角色、图片素材、APP 使用数据和其他缓存。\n\n可能影响：旧离线翻译模型将不再保留；当前版本已停用此功能，不影响读了么和收藏柜。',
+        confirmLabel: '删除旧模型',
+        cancelLabel: '取消',
+        danger: true,
+      }))
+    )
+      return
+    const clearedBytes = await clearNativeTemporaryCaches({ scope: 'retiredTranslationModels' })
+    const storage = await getNativeResourceStorageInfo({ includeDetails: true })
+    domainEvents.emit('NativeTemporaryCachesCleared', { storage, measuredAt: Date.now() })
+    noticeCenter.push({
+      type: 'success',
+      message: `已删除旧翻译模型，释放 ${formatBytes(clearedBytes)}。`,
+    })
+  } catch (error) {
+    noticeCenter.push({
+      type: 'error',
+      message: error instanceof Error ? error.message : '旧翻译模型清理失败，请重新检查占用',
+    })
+  } finally {
+    clearingRetiredModels.value = false
+  }
+}
+
+async function optimizeSummaries(): Promise<void> {
+  if (
+    cleanupBusy.value ||
+    !(await confirmAction({
+      title: '精简重复摘要',
+      message:
+        '会处理：查询记录里重复存的一份角色内容和列表文字，以及数据库留下的空闲空间。\n\n会保留：完整角色卡、聊天正文、资源原件、历史版本、收藏柜和读了么的使用数据。\n\n可能影响：处理期间操作可能稍慢，请暂时不要导入或编辑资源；完成后无需重新导入。',
+      confirmLabel: '精简并回收',
+      cancelLabel: '取消',
+    }))
+  )
+    return
+  optimizingSummaries.value = true
+  try {
+    const report = await browserStorageService.optimizeDerivedSummaries()
+    noticeCenter.push({
+      type: 'success',
+      message: report
+        ? `摘要已精简，数据库释放 ${formatBytes(Math.max(0, report.beforeBytes - report.afterBytes))}。`
+        : '摘要已精简；浏览器会自行回收数据库空间。',
+    })
+    await scanNativeRecovery(true, true)
+  } catch (error) {
+    noticeCenter.push({
+      type: 'error',
+      message: error instanceof Error ? error.message : '摘要精简或空间回收失败，请重新检查占用',
+    })
+  } finally {
+    optimizingSummaries.value = false
+  }
+}
+
+async function clearPostMedia(): Promise<void> {
+  if (
+    cleanupBusy.value ||
+    !postMedia.value?.count ||
+    !(await confirmAction({
+      title: '清理已下载的帖子媒体',
+      message: `会处理：当前帖子及历史快照保存的图片、音频和视频，共 ${postMedia.value.count} 个文件，约 ${formatBytes(postMedia.value.bytes)}。只删除没有被封面、图库等其他内容共用的文件。\n\n会保留：完整正文、原始图片链接、角色卡和其他资源。\n\n可能影响：清理后这些帖子媒体需要联网查看；Discord 链接过期时可能无法重新下载。请暂时不要导入或编辑资源。`,
+      confirmLabel: '清理帖子媒体',
+      cancelLabel: '取消',
+      danger: true,
+    }))
+  )
+    return
+  clearingPostMedia.value = true
+  try {
+    const report = await communitySourceService.clearDownloadedMedia()
+    noticeCenter.push({
+      type: 'success',
+      message: `已清理 ${report.count} 个独占媒体，约 ${formatBytes(report.bytes)}；保留 ${report.retainedCount} 个共用或用途未确认的文件。正文和链接已保留。`,
+    })
+    await scanNativeRecovery(true, true)
+  } catch (error) {
+    noticeCenter.push({
+      type: 'error',
+      message: error instanceof Error ? error.message : '帖子媒体清理失败，未提交修改',
+    })
+  } finally {
+    clearingPostMedia.value = false
   }
 }
 
@@ -110,7 +441,7 @@ async function reclaimNativeMirrors(): Promise<void> {
   if (!preview?.reclaimableBytes || reclaimingMirrors.value) return
   const confirmed = await confirmAction({
     title: '释放已验证的重复原件',
-    message: `将逐项校验 Android 原件索引、大小和 SHA-256。仅在全部一致时，才删除 IndexedDB 中的镜像副本；资源不会消失。\n\n预计释放 ${formatBytes(preview.reclaimableBytes)}（当前 ${preview.currentCount} 项，历史 ${preview.versionCount} 项）。系统实际占用的回落可能由 WebView 延后完成。`,
+    message: `会删除：已经在另一处完整保存、且文件内容完全相同的重复原件副本。先逐项检查文件是否完好，再比较内容。\n\n会保留：本机原件、当前 ${preview.currentCount} 项与历史 ${preview.versionCount} 项资源记录、正文和使用数据。\n\n可能影响：不再保留第二份重复文件，资源仍可正常打开；预计减少 ${formatBytes(preview.reclaimableBytes)}，系统可能稍后才显示空间回落。`,
     confirmLabel: '校验并释放',
     cancelLabel: '取消',
     danger: true,
@@ -233,7 +564,7 @@ async function repairSafe(): Promise<void> {
 async function exportDiagnostics(): Promise<void> {
   const platform = await getPlatformInfo().catch(() => undefined)
   const storage = await navigator.storage?.estimate?.().catch(() => undefined)
-  const native = await getNativeResourceStorageInfo().catch(() => null)
+  const native = await getNativeResourceStorageInfo({ includeDetails: true }).catch(() => null)
   const payload = {
     generatedAt: new Date().toISOString(),
     location: window.location.origin,
@@ -301,7 +632,7 @@ async function exportDiagnostics(): Promise<void> {
         :disabled="scanning || recovering || recoveryScanBusy"
         @click="scanNativeRecovery(true, true)"
       >
-        检查原件与空间
+        {{ recoveryScanBusy ? '正在检查…' : '检查原件与空间' }}
       </button>
       <button
         class="button button--quiet"
@@ -312,6 +643,27 @@ async function exportDiagnostics(): Promise<void> {
         扫描
       </button>
     </div>
+    <p v-if="inspectionError" role="alert">{{ inspectionError }}</p>
+
+    <section v-if="browserStorage && !nativeStorage" class="resource-health__native">
+      <div class="resource-health__native-head">
+        <span>
+          <strong>网页本机存储</strong>
+          <small v-if="browserStorage.supported && browserStorage.quota > 0">
+            站点已用 {{ formatBytes(browserStorage.usage) }} · 浏览器配额
+            {{ formatBytes(browserStorage.quota) }}（估算值）
+          </small>
+          <small v-else>当前浏览器未提供占用总量，仍可查看数据库载荷分项。</small>
+          <small v-if="storageMeasuredAt">
+            检查于 {{ new Date(storageMeasuredAt).toLocaleTimeString('zh-CN') }}，非实时值
+          </small>
+        </span>
+      </div>
+      <p class="resource-health__recovery-note">
+        原件保存在当前浏览器数据库中；下方核对已登记载荷大小，不逐文件校验内容。Android
+        孤立文件找回与镜像清理不适用于网页。
+      </p>
+    </section>
 
     <section v-if="nativeStorage" class="resource-health__native">
       <div class="resource-health__native-head">
@@ -379,19 +731,6 @@ async function exportDiagnostics(): Promise<void> {
       </p>
       <div class="resource-health__actions">
         <button
-          v-if="mirrorDuplication?.reclaimableBytes"
-          class="button button--quiet"
-          type="button"
-          :disabled="recovering || recoveryScanBusy || reclaimingMirrors"
-          @click="reclaimNativeMirrors"
-        >
-          {{
-            reclaimingMirrors
-              ? '正在校验并释放'
-              : `释放重复镜像（约 ${formatBytes(mirrorDuplication.reclaimableBytes)}）`
-          }}
-        </button>
-        <button
           v-if="
             accounting &&
             (accounting.recoveredPlaceholderCount || accounting.pendingNativeLinkCount)
@@ -407,11 +746,132 @@ async function exportDiagnostics(): Promise<void> {
           导出只读占用报告
         </button>
       </div>
-      <details v-if="accounting" class="resource-health__accounting">
-        <summary>查看占用分项（不删除文件）</summary>
+    </section>
+    <StorageUsageChart
+      v-if="accounting && storageSlices.length"
+      :slices="storageSlices"
+      :total-label="`本次盘点 ${formatBytes(storageSlices.reduce((sum, item) => sum + item.bytes, 0))}`"
+      @select="showStoragePart"
+    />
+    <section v-if="accounting" class="resource-health__cleanup" aria-label="数据清理">
+      <header><strong>数据清理</strong><small>只处理可精简或可确认的副本</small></header>
+      <div class="resource-health__cleanup-row">
+        <span
+          ><strong>查询摘要</strong
+          ><small
+            >{{
+              summaryBytes === undefined
+                ? '可精简重复文字'
+                : `当前摘要文字 ${formatBytes(summaryBytes)}`
+            }}
+            · 保留完整资源与历史</small
+          ></span
+        >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="cleanupBusy"
+          @click="optimizeSummaries"
+        >
+          {{ optimizingSummaries ? '正在精简…' : '精简摘要' }}
+        </button>
+      </div>
+      <div class="resource-health__cleanup-row">
+        <span
+          ><strong>帖子媒体</strong
+          ><small
+            >{{
+              postMedia
+                ? `${postMedia.count} 个文件 · ${formatBytes(postMedia.bytes)}`
+                : postMediaError || '尚未统计'
+            }}
+            · 共用素材保留</small
+          ></span
+        >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="cleanupBusy || !postMedia?.count"
+          @click="clearPostMedia"
+        >
+          {{ clearingPostMedia ? '正在清理…' : '清理帖子媒体' }}
+        </button>
+      </div>
+      <div v-if="mirrorDuplication?.reclaimableBytes" class="resource-health__cleanup-row">
+        <span
+          ><strong>重复原件镜像</strong
+          ><small
+            >约 {{ formatBytes(mirrorDuplication.reclaimableBytes) }} ·
+            校验后保留原生唯一副本</small
+          ></span
+        >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="cleanupBusy"
+          @click="reclaimNativeMirrors"
+        >
+          {{ reclaimingMirrors ? '正在校验…' : '释放重复镜像' }}
+        </button>
+      </div>
+      <div v-if="retiredModel" class="resource-health__cleanup-row">
+        <span
+          ><strong>停用的翻译模型</strong><small>{{ formatBytes(retiredModel.bytes) }}</small></span
+        >
+        <button
+          class="button button--quiet"
+          type="button"
+          :disabled="cleanupBusy"
+          @click="clearRetiredModels"
+        >
+          {{ clearingRetiredModels ? '正在删除旧模型' : '删除已停用翻译模型' }}
+        </button>
+      </div>
+      <p>帖子媒体清理保留正文与链接。资源原件、历史版本和恢复副本不属于此处清理范围。</p>
+    </section>
+    <details v-if="accounting" class="resource-health__accounting">
+      <summary>查看占用分项（不删除文件）</summary>
+      <dl class="resource-health__sizes">
+        <template v-if="nativeStorage">
+          <dt>当前与历史的去重原件</dt>
+          <dd>{{ formatBytes(nativeStorage.objectBytes) }}</dd>
+          <dt>数据库文字、索引等</dt>
+          <dd>
+            {{
+              formatBytes(
+                nativeStorage.internalBreakdown?.databaseBytes ??
+                  nativeStorage.nativeDatabase?.fileBytes ??
+                  0,
+              )
+            }}
+          </dd>
+          <dt>素材等数据库附件</dt>
+          <dd>{{ formatBytes(nativeStorage.internalBreakdown?.blobFilesBytes ?? 0) }}</dd>
+          <dt>网页容器</dt>
+          <dd>{{ formatBytes(nativeStorage.webViewBytes ?? 0) }}</dd>
+          <template
+            v-for="(bytes, name) in nativeStorage.internalBreakdown?.fileGroups"
+            :key="name"
+          >
+            <template v-if="bytes && name !== 'srl-app-data'"
+              ><dt>{{ storageLabels[name] ?? '其他内部文件' }}</dt>
+              <dd>{{ formatBytes(bytes) }}</dd></template
+            >
+          </template>
+        </template>
+        <dt>素材库逻辑大小</dt>
+        <dd>{{ formatBytes(accounting.assetBytes) }}</dd>
+        <dt>其中缩略图</dt>
+        <dd>{{ formatBytes(accounting.thumbnailAssetBytes) }}</dd>
+        <dt>本地恢复副本逻辑大小</dt>
+        <dd>{{ formatBytes(accounting.localSnapshotBytes) }}</dd>
+      </dl>
+      <small>分项可能有包含关系，不能直接相加。磁盘占用与运行内存不同。</small>
+      <details class="resource-health__technical">
+        <summary>技术明细与恢复信息</summary>
         <p v-if="accountingStale">资源已经变化；此处是上次盘点值，可用“检查原件与空间”刷新。</p>
-        <p>以下原生分项是应用总量的子集，不能与总量相加。</p>
-        <p v-if="nativeStorage.webViewBytes !== undefined">
+        <p v-if="nativeStorage">以下原生分项是应用总量的子集，不能与总量相加。</p>
+        <p v-if="nativeStorage && nativeStorage.webViewBytes !== undefined">
           网页容器 {{ formatBytes(nativeStorage.webViewBytes) }}；应用缓存
           {{ formatBytes(nativeStorage.cacheBytes ?? 0) }}
           <template v-if="nativeStorage.appCacheBytes !== undefined">
@@ -423,7 +883,7 @@ async function exportDiagnostics(): Promise<void> {
           {{ formatBytes(nativeStorage.objectBytes) }}，恢复暂存
           {{ formatBytes(nativeStorage.restoreTemporaryBytes ?? 0) }}）。
         </p>
-        <p v-if="nativeStorage.webViewBreakdown">
+        <p v-if="nativeStorage?.webViewBreakdown">
           网页容器内：数据库与站点存储
           {{ formatBytes(nativeStorage.webViewBreakdown.siteDataBytes) }}；网络与代码缓存
           {{ formatBytes(nativeStorage.webViewBreakdown.cacheBytes) }}；临时 Blob
@@ -431,18 +891,90 @@ async function exportDiagnostics(): Promise<void> {
           {{ formatBytes(nativeStorage.webViewBreakdown.otherBytes) }}。
           按目录分类，均包含在网页容器总量中；临时 Blob 不包含数据库保存的附件。
         </p>
-        <p v-else-if="nativeStorage.webViewBytes !== undefined">
+        <p v-else-if="nativeStorage && nativeStorage.webViewBytes !== undefined">
           当前 APK 未提供网页容器内部明细，不能把这部分全部当作缓存。
         </p>
-        <p>
+        <p v-if="nativeStorage">
           “清理缓存”仅清理 APK 临时缓存与代码缓存，不会清空网页容器。
           数据库空间与临时文件可能由系统延后回收；这些数字是磁盘占用，不是运行内存。
         </p>
+        <template v-if="nativeStorage?.internalBreakdown">
+          <p>
+            内部文件 {{ formatBytes(nativeStorage.internalBreakdown.filesBytes) }}；数据库目录
+            {{ formatBytes(nativeStorage.internalBreakdown.databaseBytes) }}；偏好设置
+            {{
+              formatBytes(nativeStorage.internalBreakdown.preferencesBytes)
+            }}；不参与系统备份的数据
+            {{ formatBytes(nativeStorage.internalBreakdown.noBackupBytes) }}；其他内部数据
+            {{ formatBytes(nativeStorage.internalBreakdown.otherBytes) }}。
+          </p>
+          <p v-if="nativeStorage.internalBreakdown.noBackupBreakdown">
+            其中后台任务数据库
+            {{
+              formatBytes(nativeStorage.internalBreakdown.noBackupBreakdown.databaseBytes)
+            }}，写入日志
+            {{ formatBytes(nativeStorage.internalBreakdown.noBackupBreakdown.walBytes) }}，共享索引
+            {{ formatBytes(nativeStorage.internalBreakdown.noBackupBreakdown.shmBytes) }}，其他
+            {{ formatBytes(nativeStorage.internalBreakdown.noBackupBreakdown.otherBytes) }}。
+          </p>
+          <p
+            v-for="item in nativeStorage.internalBreakdown.noBackupBreakdown?.otherEntries"
+            :key="item.name"
+          >
+            该目录其他{{ item.directory ? '目录' : '文件' }}：{{ item.name }}，
+            {{ formatBytes(item.bytes) }}（已包含在上面的总量中）。
+          </p>
+          <details>
+            <summary>内部文件明细（已包含在内部文件总量中）</summary>
+            <template
+              v-for="(bytes, name) in nativeStorage.internalBreakdown.fileGroups"
+              :key="name"
+            >
+              <p v-if="bytes">{{ storageLabels[name] ?? '其他数据' }}：{{ formatBytes(bytes) }}</p>
+            </template>
+            <p>
+              其中附件文件 {{ formatBytes(nativeStorage.internalBreakdown.blobFilesBytes) }}，
+              未完成附件 {{ formatBytes(nativeStorage.internalBreakdown.pendingBlobFilesBytes) }}。
+            </p>
+          </details>
+        </template>
+        <details v-if="nativeStorage?.nativeDatabase">
+          <summary>原生数据库明细（只读统计）</summary>
+          <p>
+            数据库文件 {{ formatBytes(nativeStorage.nativeDatabase.fileBytes) }}；写入日志
+            {{ formatBytes(nativeStorage.nativeDatabase.walBytes) }}；共享索引
+            {{ formatBytes(nativeStorage.nativeDatabase.shmBytes) }}。数据库逻辑页
+            {{ formatBytes(nativeStorage.nativeDatabase.pageBytes) }}，其中可复用空闲页
+            {{ formatBytes(nativeStorage.nativeDatabase.freePageBytes) }}（未压缩或删除）。
+          </p>
+          <p>
+            已引用附件去重后
+            {{ formatBytes(nativeStorage.nativeDatabase.uniqueReferencedBlobBytes) }}； 未完成附件
+            {{ nativeStorage.nativeDatabase.pendingBlobCount }} 项。
+          </p>
+          <p v-for="item in nativeStorage.nativeDatabase.stores" :key="item.store">
+            {{ storageLabels[item.store] ?? '其他数据' }}：{{ item.records }} 条，文字记录
+            {{ formatBytes(item.jsonBytes) }}，附件引用 {{ formatBytes(item.blobReferenceBytes) }}。
+          </p>
+          <p>
+            文字与附件引用是逻辑载荷；共享附件可能被多表引用，不能将这些数值与磁盘总量相加。
+            统计期间写入会让各项略有变化，不读取或导出记录正文。
+          </p>
+        </details>
+        <p v-if="nativeStorage?.nativeDatabaseUnavailable">
+          本次未能读取原生数据库明细，不能将其视为零占用。
+        </p>
         <p>
-          数据库逻辑载荷：当前原件 {{ formatBytes(accounting.currentOriginalBytes) }}；历史原件
+          数据库内原件载荷（不含原生文件引用）：当前原件
+          {{ formatBytes(accounting.currentOriginalBytes) }}；历史原件
           {{ formatBytes(accounting.versionOriginalBytes) }}；本地恢复副本
           {{ formatBytes(accounting.localSnapshotBytes) }}；恢复暂存
           {{ formatBytes(accounting.restoreStagingBytes) }}。
+        </p>
+        <p v-if="accounting.nativeReferenceBytes">
+          已关联原生原件的逻辑大小（当前与历史合计）
+          {{ formatBytes(accounting.nativeReferenceBytes) }}。同一文件可能被多条记录引用，
+          此数值不是去重后的磁盘占用，不能与原生库总量相加。
         </p>
         <p v-if="mirrorDuplication?.reclaimableBytes">
           已发现可校验的网页镜像：当前 {{ mirrorDuplication.currentCount }} 项、历史
@@ -460,10 +992,10 @@ async function exportDiagnostics(): Promise<void> {
           {{ formatBytes(accounting.recoveredPlaceholderBytes) }}。这是引用量，不与磁盘总量相加。
         </p>
         <p>
-          逻辑载荷不等于磁盘文件大小，也不应与原生总量相加。旧本地恢复副本不会作为重复原件自动清理。
+          逻辑载荷不等于磁盘文件大小，也不应与占用总量相加。旧本地恢复副本不会作为重复原件自动清理。
         </p>
       </details>
-    </section>
+    </details>
 
     <div v-if="issues.length" class="resource-health__issues">
       <article v-for="issue in issues" :key="issue.id" :class="`is-${issue.severity}`">
@@ -616,6 +1148,75 @@ async function exportDiagnostics(): Promise<void> {
 .resource-health__candidates strong,
 .resource-health__accounting {
   overflow-wrap: anywhere;
+}
+
+.resource-health__cleanup {
+  border-top: 1px solid var(--color-line);
+  padding-top: 0.75rem;
+}
+.resource-health__cleanup > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+.resource-health__cleanup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--color-line);
+}
+.resource-health__cleanup-row > span {
+  min-width: 0;
+}
+.resource-health__cleanup-row strong,
+.resource-health__cleanup-row small {
+  display: block;
+}
+.resource-health__cleanup-row strong {
+  font-size: 0.84rem;
+}
+.resource-health__cleanup small,
+.resource-health__cleanup p {
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: var(--color-ink-soft);
+}
+.resource-health__cleanup-row .button {
+  flex-shrink: 0;
+  min-height: 2.75rem;
+}
+.resource-health__sizes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem 0.75rem;
+  margin: 0.85rem 0;
+  align-items: baseline;
+}
+.resource-health__sizes dt {
+  overflow-wrap: anywhere;
+}
+.resource-health__sizes dd {
+  margin: 0;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.resource-health__technical {
+  margin-top: 0.8rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--color-line);
+}
+@media (max-width: 22rem) {
+  .resource-health__cleanup-row {
+    flex-wrap: wrap;
+  }
+  .resource-health__cleanup-row .button {
+    margin-left: auto;
+  }
 }
 
 .resource-health__accounting {

@@ -12,13 +12,27 @@ const runtime = vi.hoisted(() => ({
   cleanupHistory: vi.fn(),
   clearAutoBindings: vi.fn(async () => 0),
   listAutoBindings: vi.fn(async (): Promise<unknown[]> => []),
+  countPendingSources: vi.fn(async () => 0),
   getAutoBindingView: vi.fn(async (): Promise<unknown> => undefined),
   confirmAutoBinding: vi.fn(async () => undefined),
   replaceAutoBinding: vi.fn(async () => undefined),
   unbindSource: vi.fn(async () => undefined),
   resourceSummaries: vi.fn(async (): Promise<unknown[]> => []),
-  getAutomation: vi.fn(async () => undefined),
+  getAutomation: vi.fn(async (): Promise<unknown> => undefined),
   putAutomation: vi.fn(async () => undefined),
+  backfillLateAutoBinding: vi.fn(
+    async (
+      _community?: unknown,
+      _resource?: unknown,
+      _settings?: unknown,
+    ): Promise<
+      Array<{
+        sourceId: string
+        resourceId: string
+        rule: 'same-name' | 'same-author' | 'next-png'
+      }>
+    > => [],
+  ),
   connection: vi.fn(() => ({ workerUrl: 'https://worker.example', libraryId: 'library-1' })),
   confirm: vi.fn(async () => true),
 }))
@@ -29,6 +43,8 @@ vi.mock('../core/LibraryContainer', () => ({
   },
   communitySourceService: {
     listRecentAutoBindings: runtime.listAutoBindings,
+    listAutoBindReviews: vi.fn(async () => []),
+    countPendingSources: runtime.countPendingSources,
     clearRecentAutoBindings: runtime.clearAutoBindings,
     getForResource: runtime.getAutoBindingView,
     confirmAutoBinding: runtime.confirmAutoBinding,
@@ -37,7 +53,13 @@ vi.mock('../core/LibraryContainer', () => ({
   },
 }))
 vi.mock('../core/AppContainer', () => ({
-  resourceService: { listResourceListSummaries: runtime.resourceSummaries },
+  resourceService: {
+    listResourceListSummaries: runtime.resourceSummaries,
+    listRecentCharacterCards: vi.fn(async () => []),
+  },
+}))
+vi.mock('../services/DiscordInboxAutoBinding', () => ({
+  autoBindPendingPostsToRecentCards: runtime.backfillLateAutoBinding,
 }))
 vi.mock('../services/DiscordSourceSettingsService', () => ({
   loadDiscordSourceConnectionSettings: runtime.settings,
@@ -111,6 +133,84 @@ describe('DiscordInboxPanel', () => {
       )
     } finally {
       wrapper.unmount()
+    }
+  })
+
+  it('backfills recent cards when foreground auto-binding is enabled late', async () => {
+    runtime.settings.mockReturnValue(settings)
+    runtime.getAutomation.mockResolvedValue({ bindSameName: true, bindSameAuthor: true })
+    runtime.backfillLateAutoBinding.mockResolvedValue([
+      { sourceId: 'post-1', resourceId: 'card-1', rule: 'same-name' },
+    ])
+    const wrapper = mount(DiscordInboxPanel)
+    try {
+      await flushPromises()
+      wrapper.vm.openAutomationSettings()
+      await flushPromises()
+      const toggles = Array.from(
+        document.querySelectorAll('.discord-inbox__automation input[type="checkbox"]'),
+      ) as HTMLInputElement[]
+      toggles.at(-1)!.click()
+      await flushPromises()
+      expect(runtime.backfillLateAutoBinding).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        expect.objectContaining({
+          bindSameName: true,
+          bindSameAuthor: true,
+          bindForeground: true,
+        }),
+      )
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('highlights and scrolls to the text that caused an automatic name match', async () => {
+    runtime.settings.mockReturnValue(settings)
+    runtime.listAutoBindings.mockResolvedValue([
+      {
+        source: { title: '角色 A 的帖子' },
+        binding: {
+          resourceId: 'card-1',
+          sourceId: 'post-1',
+          autoBindingRule: 'same-name',
+        },
+      },
+    ])
+    runtime.getAutoBindingView.mockResolvedValue({
+      source: { title: '角色 A 的帖子' },
+      messages: [{ id: 'message-1', authorName: '作者', content: '这里写着 角色 A 的详细介绍' }],
+    })
+    runtime.resourceSummaries.mockResolvedValue([
+      {
+        id: 'card-1',
+        name: '角色 A',
+        fileName: 'card.png',
+        type: 'characterCard',
+        metadata: {},
+      },
+    ])
+    const scrollIntoView = vi.fn()
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const wrapper = mount(DiscordInboxPanel, {
+      props: { view: 'review' },
+      attachTo: document.body,
+    })
+    try {
+      await flushPromises()
+      const inspectButton = wrapper.findAll('button').find((button) => button.text() === '查看核对')
+      expect(inspectButton).toBeDefined()
+      await inspectButton!.trigger('click')
+      await flushPromises()
+      expect(wrapper.find('mark').text()).toBe('角色 A')
+      expect(wrapper.find('[data-auto-binding-target="title"]').exists()).toBe(true)
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+      expect(wrapper.find('.discord-inbox__history').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView
     }
   })
 
@@ -272,10 +372,10 @@ describe('DiscordInboxPanel', () => {
       binding: binding.binding,
     })
     runtime.resourceSummaries.mockResolvedValue([card])
-    const wrapper = mount(DiscordInboxPanel)
+    const wrapper = mount(DiscordInboxPanel, { props: { view: 'review' } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('待确认的自动关联（1）')
+    expect(wrapper.text()).toContain('1 条待核对')
     await wrapper
       .findAll('button')
       .find((button) => button.text() === '查看核对')!
@@ -295,7 +395,7 @@ describe('DiscordInboxPanel', () => {
       .trigger('click')
     await flushPromises()
     expect(runtime.confirmAutoBinding).toHaveBeenCalledWith('card-1', 'post-1')
-    expect(wrapper.text()).not.toContain('待确认的自动关联')
+    expect(wrapper.text()).not.toContain('1 条待核对')
     wrapper.unmount()
   })
 
@@ -323,7 +423,7 @@ describe('DiscordInboxPanel', () => {
       .mockResolvedValueOnce([autoBinding])
       .mockResolvedValueOnce([])
     runtime.resourceSummaries.mockResolvedValue([card('card-1', '原卡'), card('card-2', '替换卡')])
-    const wrapper = mount(DiscordInboxPanel)
+    const wrapper = mount(DiscordInboxPanel, { props: { view: 'review' } })
     await flushPromises()
 
     await wrapper
@@ -338,7 +438,7 @@ describe('DiscordInboxPanel', () => {
       .trigger('click')
     await flushPromises()
     expect(runtime.replaceAutoBinding).toHaveBeenCalledWith('card-1', 'card-2', 'post-2')
-    expect(wrapper.text()).not.toContain('待确认的自动关联')
+    expect(wrapper.text()).not.toContain('1 条待核对')
     wrapper.unmount()
   })
 
@@ -352,7 +452,7 @@ describe('DiscordInboxPanel', () => {
         },
       ])
       .mockResolvedValueOnce([])
-    const wrapper = mount(DiscordInboxPanel)
+    const wrapper = mount(DiscordInboxPanel, { props: { view: 'review' } })
     await flushPromises()
     await wrapper
       .findAll('button')

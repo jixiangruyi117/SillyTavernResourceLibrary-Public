@@ -25,6 +25,23 @@ beforeEach(() => {
 })
 
 describe('Discord tutorial screenshot previews', () => {
+  it('shows the D1 UUID column reference in the GitHub deploy guide', () => {
+    const wrapper = mount(DiscordSetupGuideDrawer, {
+      props: { ...props, deploymentMode: 'github' },
+      global: { stubs: { teleport: true } },
+    })
+    const screenshot = wrapper
+      .findAll('figure.discord-guide-screenshot')
+      .find((figure) =>
+        figure.get('img').attributes('src')?.includes('d1-database-uuid-column.jpg'),
+      )
+
+    expect(screenshot).toBeDefined()
+    expect(screenshot?.get('img').attributes('alt')).toContain('UUID 列')
+    expect(screenshot?.text()).toContain('复制完整 Database ID')
+    wrapper.unmount()
+  })
+
   it.each([
     ['GitHub setup guide', DiscordSetupGuideDrawer],
     ['manual deploy guide', DiscordManualDeployDrawer],

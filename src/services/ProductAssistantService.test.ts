@@ -193,6 +193,11 @@ describe('mode loading and recalled context', () => {
         'src/components/TavernBridgeCenter.vue',
         'src/composables/UseTavernBridgeCenter.ts',
         'src/services/TavernBridgeTransferOperations.ts',
+        'src/composables/UseTavernTransferActions.ts',
+        'src/composables/UseTavernPersonaSendPlans.ts',
+        'src/components/TavernParcelExchange.vue',
+        'src/services/ExportService.ts',
+        'src/services/BrowserDevicePreferences.ts',
       ])
       expect(help.sourceRepositories?.[0].url).toBe(
         canUseNetwork ? ASSISTANT_FEATURE_SOURCE_REPOSITORY : undefined,

@@ -30,6 +30,9 @@ export type TavernConflictPolicy = 'copy' | 'overwrite' | 'skip'
 
 export interface TavernResourceItem {
   id: string
+  /** Explicitly selected sources attached only to a chat export. */
+  readingScriptIds?: string[]
+  carryReadingScripts?: boolean
   kind: TavernResourceKind
   name: string
   fileName: string

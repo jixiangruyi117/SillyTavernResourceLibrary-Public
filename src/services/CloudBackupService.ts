@@ -3,6 +3,8 @@ import {
   referencedPartIdentities,
   prune,
   createStructuredFingerprint,
+  readStructuredBackupIndex,
+  type StructuredBackupIndex,
   reuseUnchangedStructuredBackup,
   buildStructuredBackup,
   buildNativeRestorePlan,
@@ -400,7 +402,10 @@ export class CloudBackupService extends CloudBackupTransport {
         typeof this.resourceService.listVersions === 'function'
       ) {
         onProgress?.('正在读取轻量索引，检查本机内容是否变化…')
-        const currentResourceCount = (await this.resourceService.listSummaries()).length
+        const index = await metrics.measure('prepareMs', () =>
+          readStructuredBackupIndex(this.snapshotContext(), contentSelection.personalResources),
+        )
+        const currentResourceCount = index.resourceCount
         const previousHealth = this.getSnapshot().status
         const suspiciousDrop =
           previousHealth.lastHealthyResourceCount !== undefined &&
@@ -413,7 +418,7 @@ export class CloudBackupService extends CloudBackupTransport {
           )
         }
         const contentFingerprint = await metrics.measure('hashMs', () =>
-          this.createStructuredFingerprint(resolved, portableData),
+          this.createStructuredFingerprint(resolved, portableData, index),
         )
         const previousStatus = this.getSnapshot().status
         if (
@@ -452,7 +457,12 @@ export class CloudBackupService extends CloudBackupTransport {
           onProgress?.('远端上次清单缺失或不完整，正在重新构建对象快照…')
         }
         const structured = await metrics.measure('objectBuildMs', () =>
-          this.buildStructuredBackup(portableData, onProgress, contentSelection.personalResources),
+          this.buildStructuredBackup(
+            portableData,
+            onProgress,
+            contentSelection.personalResources,
+            index,
+          ),
         )
         if (structured.descriptorUpdates?.length) {
           onProgress?.('正在保存可复用的分块描述，下次差量备份将跳过未变大文件扫描…')
@@ -487,7 +497,10 @@ export class CloudBackupService extends CloudBackupTransport {
             maintenanceWarning =
               '检测到资源数量异常下降：新快照已作为事故现场保留，未执行任何云端清理。'
           } else {
-            const removed = await this.prune(resolved, credential, item.objectKey)
+            onProgress?.('备份已提交成功，正在按保留份数检查旧快照…')
+            const removed = await metrics.measure('maintenanceMs', () =>
+              this.prune(resolved, credential, item.objectKey, false, structured.snapshot),
+            )
             if (removed > 0) maintenanceWarning = `已按保留份数自动清理 ${removed} 份旧云端快照。`
           }
         } catch (error) {
@@ -848,8 +861,9 @@ export class CloudBackupService extends CloudBackupTransport {
   private async createStructuredFingerprint(
     config: CloudBackupConfig,
     portableData: ArchivePortableData,
+    index?: StructuredBackupIndex,
   ): Promise<string> {
-    return createStructuredFingerprint(this.snapshotContext(), config, portableData)
+    return createStructuredFingerprint(this.snapshotContext(), config, portableData, index)
   }
 
   private async reuseUnchangedStructuredBackup(
@@ -864,12 +878,14 @@ export class CloudBackupService extends CloudBackupTransport {
     portableData: ArchivePortableData,
     onProgress?: CloudBackupProgressCallback,
     personalResources?: PersonalResourceSelection,
+    index?: StructuredBackupIndex,
   ): Promise<CreatedStructuredSnapshot> {
     return buildStructuredBackup(
       this.snapshotContext(),
       portableData,
       onProgress,
       personalResources,
+      index,
     )
   }
 
@@ -891,8 +907,16 @@ export class CloudBackupService extends CloudBackupTransport {
     secret: string,
     protectedObjectKey?: string,
     deep = false,
+    committedSnapshot?: StructuredSnapshot,
   ): Promise<number> {
-    return prune(this.snapshotContext(), config, secret, protectedObjectKey, deep)
+    return prune(
+      this.snapshotContext(),
+      config,
+      secret,
+      protectedObjectKey,
+      deep,
+      committedSnapshot,
+    )
   }
 
   private snapshotContext(): CloudBackupSnapshotOperationsContext {

@@ -59,6 +59,7 @@ export interface CloudObjectPlan {
 export interface StructuredResourceCandidate {
   summary: ResourceSummary
   summaryIsPartial?: boolean
+  loadSummary?: () => Promise<ResourceSummary>
   load: () => Promise<Resource>
 }
 
@@ -223,7 +224,7 @@ async function addResource(
   const candidate = 'summary' in input ? (input as StructuredResourceCandidate) : undefined
   let resource: ResourceReference = candidate ? candidate.summary : (input as Resource)
   if (candidate?.summaryIsPartial) {
-    const full = await candidate.load()
+    const full = await (candidate.loadSummary?.() ?? candidate.load())
     if (
       full.id !== resource.id ||
       full.contentHash !== resource.contentHash ||
@@ -269,7 +270,16 @@ async function addResource(
     }
     return 0
   }
-  if (candidate && !candidate.summaryIsPartial) resource = await candidate.load()
+  if (candidate && !('originalBlob' in resource)) {
+    const full = await candidate.load()
+    if (
+      full.id !== resource.id ||
+      full.contentHash !== resource.contentHash ||
+      full.updatedAt !== resource.updatedAt
+    )
+      throw new Error(`云备份期间资源发生变化：${resource.fileName}`)
+    resource = full
+  }
   const hydrated = resource as Resource
   if (hydrated.originalBlob.size <= SMALL_OBJECT_LIMIT) {
     const actualHash = await hashCloudBlob(hydrated.originalBlob)

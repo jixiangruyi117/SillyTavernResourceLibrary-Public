@@ -6,6 +6,11 @@ import { AppDatabase } from '../database/AppDatabase'
 import type { Resource } from '../types/Resource'
 import { IndexedDbResourceHealthStorage } from './IndexedDbResourceHealthStorage'
 import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
+import { nativeAppDatabase } from './NativeAppDatabaseBridge'
+import {
+  activateAndroidNativeAppDatabase,
+  deactivateAndroidNativeAppDatabase,
+} from './AndroidNativeDexieCore'
 
 function resource(id: string, body = '{"ok":true}'): Resource {
   return {
@@ -46,8 +51,50 @@ describe('IndexedDbResourceHealthStorage', () => {
   })
 
   afterEach(async () => {
+    deactivateAndroidNativeAppDatabase()
+    vi.restoreAllMocks()
     await database.delete()
     vi.unstubAllGlobals()
+  })
+
+  it('audits 3000 native originals and measures their sizes without reading binary payloads', async () => {
+    const rows = Array.from({ length: 3000 }, (_, index) => ({
+      key: JSON.stringify(`native-${index.toString().padStart(4, '0')}`),
+      value: {
+        ...resource(`native-${index.toString().padStart(4, '0')}`),
+        contentHash: 'a'.repeat(64),
+        fileName: 'card.png',
+        mimeType: 'image/png',
+        fileSize: 1024 * 1024,
+        originalBlob: {
+          __srlAppDatabaseValueV1: 'blob',
+          fieldPath: '$/originalBlob',
+          size: 1024 * 1024,
+          sha256: 'a'.repeat(64),
+          mimeType: 'image/png',
+        },
+      },
+    }))
+    const getRecords = vi
+      .spyOn(nativeAppDatabase, 'getRecords')
+      .mockImplementation(async (store, after, limit = 250) => {
+        const pending =
+          store === 'resources' ? rows.filter((row) => after === undefined || row.key > after) : []
+        const page = pending.slice(0, limit)
+        return { rows: page, nextKey: pending.length > limit ? page.at(-1)!.key : undefined }
+      })
+    const binary = vi
+      .spyOn(nativeAppDatabase, 'readBlob')
+      .mockRejectedValue(new Error('Health metadata must not read originals'))
+    activateAndroidNativeAppDatabase()
+    const audit = await health.audit()
+    expect(audit.currentSummaryDrift).toHaveLength(3000)
+    expect((await health.storageAccounting()).currentOriginalBytes).toBe(3000 * 1024 * 1024)
+    expect((await health.nativeMirrorDuplicationSummary()).reclaimableBytes).toBe(
+      3000 * 1024 * 1024,
+    )
+    expect(binary).not.toHaveBeenCalled()
+    expect(getRecords.mock.calls.every((call) => call[2] === 100)).toBe(true)
   })
 
   it('clears only the confirmed whole-library history, preserving recycler, cloud records and resource versions', async () => {

@@ -2,11 +2,11 @@
 import '../FeatureStyles.css'
 import { computed, ref, watch } from 'vue'
 
-import type { BackupRecord } from '../types/Resource'
+import type { BackupRecordSummary } from '../types/Resource'
 import FeatureBackButton from './FeatureBackButton.vue'
 
 const props = defineProps<{
-  records: BackupRecord[]
+  records: BackupRecordSummary[]
   busy: boolean
 }>()
 const emit = defineEmits<{

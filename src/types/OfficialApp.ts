@@ -8,6 +8,7 @@ export const OFFICIAL_APP_IDS = [
   'userPersona',
   'resourceBundle',
   'tavernBridge',
+  'assistant',
 ] as const
 export type OfficialAppId = (typeof OFFICIAL_APP_IDS)[number]
 export function isOfficialAppId(value: string): value is OfficialAppId {
@@ -77,6 +78,19 @@ export interface OfficialAppUpdateInfo {
   requiresHostUpdate: boolean
   requiresAssetRepair?: boolean
 }
+export interface OfficialAppInstallProgress {
+  id: OfficialAppId
+  stage: 'queued' | 'downloading' | 'checking' | 'waiting' | 'installing' | 'done' | 'failed'
+  downloadedBytes?: number
+  totalBytes?: number
+  completedFiles?: number
+  totalFiles?: number
+  message?: string
+}
+export interface OfficialAppInstallResult {
+  id: OfficialAppId
+  error?: Error
+}
 export const OFFICIAL_APP_ASSET_CACHE = 'srl-official-app-assets-v1'
 
 export const OFFICIAL_APP_DATA_DESCRIPTION: Record<OfficialAppId, string> = {
@@ -90,4 +104,6 @@ export const OFFICIAL_APP_DATA_DESCRIPTION: Record<OfficialAppId, string> = {
   userPersona: '人设模板；资源库中的人设文件保留',
   resourceBundle: '已保存的配套套装；资源库中的各项原始资源保留',
   tavernBridge: '当前互传会话随页面关闭结束；已归档的资源和酒馆原件保留',
+  assistant:
+    '本机助手对话、记忆、偏好、独立 APP 项目与任务模板；共用 API 配置和助手 CSS 单独选择是否清理',
 }

@@ -1,6 +1,9 @@
 package buzz.jixiangruyi1207.srl;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.util.Base64;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -8,18 +11,199 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.zip.CRC32;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(AndroidJUnit4.class)
 public class NativeBackgroundPngPreferenceTest {
+    @Test public void standaloneWorldBookImportsInBackgroundAndSurvivesReopenWithoutBindingOrDuplicate() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-world-book-" + java.util.UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(app, name);
+        File directory = new File(app.getCacheDir(), name);
+        assertTrue(directory.mkdir());
+        try {
+            database.putState("migration:appdb:v1:active", "{\"version\":1,\"mode\":\"active\"}");
+            database.putState("migration:appdb:indexes:v1:active", "verified-v1");
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("discordInbox.automation.v1"))
+                .put("value", new JSONObject().put("id", "discordInbox.automation.v1").put("value", new JSONObject().put("bindNextPng", true)))));
+            JSONObject original = new JSONObject().put("name", "后台世界书")
+                .put("entries", new JSONObject().put("0", new JSONObject().put("content", "完整世界设定").put("unknownExtension", true)));
+            File payload = new File(directory, "world.json");
+            byte[] bytes = original.toString().getBytes(StandardCharsets.UTF_8);
+            try (FileOutputStream output = new FileOutputStream(payload)) { output.write(bytes); }
+            File parsedFile = new File(directory, "world.character-card.json");
+            assertEquals("not_character_card", NativeCharacterCardProcessor.parseOnly(payload, payload.getName(), parsedFile).getString("state"));
+            assertFalse(parsedFile.exists());
+            JSONObject processed = NativeCharacterCardProcessor.parseBackgroundResource(payload, payload.getName(), parsedFile);
+            assertEquals("parsed", processed.getString("state"));
+            assertEquals("worldBook", processed.getString("resourceType"));
+            JSONObject result = NativeBackgroundResourceImporter.importIfSafe(app, database, payload, parsedFile, payload.getName(), "application/json");
+            assertEquals("imported", result.getString("state"));
+            assertEquals("worldBook", result.getString("resourceType"));
+            String key = JSONObject.quote(result.getString("resourceId"));
+            database.close();
+            database = new NativeAppDatabase(app, name);
+            JSONObject resource = database.getRecord("resources", key);
+            assertEquals("worldBook", resource.getString("type"));
+            assertEquals(1, resource.getJSONObject("metadata").getInt("itemCount"));
+            assertEquals("worldBook", database.getRecord("resourceSummaries", key).getString("type"));
+            assertEquals("worldBook", database.getRecord("resourceListSummaries", key).getString("type"));
+            JSONObject stored = database.readBlobChunk("resources", key, "$/originalBlob", 0L, bytes.length);
+            org.junit.Assert.assertArrayEquals(bytes, Base64.decode(stored.getString("data"), Base64.DEFAULT));
+            JSONObject repeated = NativeBackgroundResourceImporter.importIfSafe(app, database, payload, parsedFile, payload.getName(), "application/json");
+            assertEquals("duplicate_file", repeated.getString("state"));
+            assertEquals(result.getString("resourceId"), repeated.getString("resourceId"));
+            assertEquals(1L, database.countRecords("resources"));
+            assertEquals(0L, database.countRecords("resourceSourceBindings"));
+        } finally {
+            database.close(); app.deleteDatabase(name);
+            File[] children = directory.listFiles();
+            if (children != null) for (File child : children) child.delete();
+            directory.delete();
+        }
+    }
+    @Test public void twoPostsBindSequentiallyAndSecondAuthorMatchIgnoresCommittedFirstPost() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String name = "srl-two-posts-" + java.util.UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(app, name);
+        File directory = new File(app.getCacheDir(), name);
+        assertTrue(directory.mkdir());
+        android.app.NotificationManager manager = (android.app.NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+        java.util.Set<String> bindingTags = new java.util.HashSet<>();
+        try {
+            database.putState("migration:appdb:v1:active", "{\"version\":1,\"mode\":\"active\"}");
+            database.putState("migration:appdb:indexes:v1:active", "verified-v1");
+            database.putRecords("settings", new JSONArray().put(new JSONObject().put("key", JSONObject.quote("discordInbox.automation.v1"))
+                .put("value", new JSONObject().put("id", "discordInbox.automation.v1").put("value", new JSONObject().put("bindSameName", true).put("bindSameAuthor", true)))));
+            for (String id : new String[] {"post-a", "post-b"}) {
+                JSONObject source = new JSONObject().put("id", id).put("title", "post-a".equals(id) ? "PNG Preference Fixture 的帖子" : "第二篇故事")
+                    .put("createdAt", 1L).put("updatedAt", 10L).put("autoBindScan", new JSONObject().put("version", 1).put("status", "scanning"));
+                database.putRecords("communitySources", new JSONArray().put(new JSONObject().put("key", JSONObject.quote(id)).put("value", source)
+                    .put("indexes", new JSONArray().put(new JSONObject().put("name", "updatedAt").put("keys", new JSONArray().put("10"))))));
+                database.putRecords("communitySourceMessages", new JSONArray().put(new JSONObject().put("key", JSONObject.quote(id + "-starter"))
+                    .put("value", new JSONObject().put("content", "作者：作者乙"))
+                    .put("indexes", new JSONArray().put(new JSONObject().put("name", "[sourceId+kind]").put("keys", new JSONArray().put(new JSONArray().put(id).put("starter").toString()))))));
+            }
+            for (int index = 0; index < 2; index++) {
+                JSONObject payloadCard = card();
+                payloadCard.getJSONObject("data").put("creator", "作者乙");
+                if (index == 1) payloadCard.getJSONObject("data").put("name", "另一张角色卡");
+                File payload = new File(directory, "card-" + index + ".png");
+                writeCard(payload, true, payloadCard, false);
+                File parsedFile = new File(directory, "card-" + index + ".json");
+                try (FileOutputStream output = new FileOutputStream(parsedFile)) { output.write(parse(payload, payload.getName(), directory).toString().getBytes(StandardCharsets.UTF_8)); }
+                JSONObject result = NativeBackgroundResourceImporter.importIfSafe(app, database, payload, parsedFile, payload.getName(), "image/png");
+                String expected = index == 0 ? "post-a" : "post-b";
+                assertEquals(expected, result.getString("autoBoundSourceId"));
+                assertEquals(1L, database.countIndexEntries("resourceSourceBindings", "sourceId", JSONObject.quote(expected)));
+                assertFalse(database.getRecord("communitySources", JSONObject.quote(expected)).has("autoBindScan"));
+                String bindingTag = NativeDiscordInboxService.autoBindingNotificationTag(new JSONObject()
+                    .put("sourceId", expected).put("resourceId", result.getString("resourceId")));
+                bindingTags.add(bindingTag);
+                boolean notified = false;
+                for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications())
+                    if (bindingTag.equals(active.getTag())) notified = active.getNotification().extras.getString(android.app.Notification.EXTRA_TEXT).contains(index == 0 ? "PNG Preference Fixture 的帖子" : "第二篇故事");
+                assertTrue("Each committed automatic binding must immediately publish its system result", notified);
+            }
+            assertEquals(2L, database.countRecords("resourceSourceBindings"));
+            java.util.Set<String> visibleTags = new java.util.HashSet<>();
+            for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications())
+                visibleTags.add(active.getTag());
+            assertTrue("The second binding must not replace the first system result", visibleTags.containsAll(bindingTags));
+        } finally {
+            for (String tag : bindingTags) manager.cancel(tag, 2133);
+            database.close(); app.deleteDatabase(name);
+            File[] children = directory.listFiles();
+            if (children != null) for (File child : children) child.delete();
+            directory.delete();
+        }
+    }
+    @Test public void newPngAndDuplicateRepairUseCanonicalAssetsAndPublishStandaloneBindingNotification() throws Exception {
+        Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String databaseName = "srl-png-asset-" + java.util.UUID.randomUUID();
+        NativeAppDatabase database = new NativeAppDatabase(app, databaseName);
+        File directory = new File(app.getCacheDir(), databaseName);
+        assertTrue(directory.mkdir());
+        android.app.NotificationManager manager = (android.app.NotificationManager)
+            app.getSystemService(Context.NOTIFICATION_SERVICE);
+        String bindingTag = null;
+        try {
+            database.putState("migration:appdb:v1:active", "{\"version\":1,\"mode\":\"active\"}");
+            database.putState("migration:appdb:indexes:v1:active", "verified-v1");
+            database.putRecords("settings", new JSONArray().put(new JSONObject()
+                .put("key", JSONObject.quote("discordInbox.automation.v1"))
+                .put("value", new JSONObject().put("id", "discordInbox.automation.v1")
+                    .put("value", new JSONObject().put("bindNextPng", true).put("preferPngContainer", true)))));
+            String sourceKey = JSONObject.quote("thumbnail-post");
+            database.putRecords("communitySources", new JSONArray().put(new JSONObject()
+                .put("key", sourceKey).put("value", new JSONObject().put("id", "thumbnail-post")
+                    .put("title", "Thumbnail Fixture Post").put("updatedAt", 10L).put("autoBindPendingPng", true))
+                .put("indexes", new JSONArray().put(new JSONObject().put("name", "updatedAt")
+                    .put("keys", new JSONArray().put("10"))))));
+            File payload = new File(directory, "new.png");
+            writeCard(payload, true, card(), false);
+            JSONObject parsed = parse(payload, "new.png", directory);
+            File parsedFile = new File(directory, "new.parsed.json");
+            try (FileOutputStream output = new FileOutputStream(parsedFile)) {
+                output.write(parsed.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            JSONObject result = NativeBackgroundResourceImporter.importIfSafe(app, database,
+                payload, parsedFile, "new.png", "image/png");
+            assertEquals("imported", result.getString("state"));
+            String key = JSONObject.quote(result.getString("resourceId"));
+            JSONObject resource = database.getRecord("resources", key);
+            String assetId = resource.getString("thumbnailAssetId");
+            assertEquals(assetId, database.getRecord("resourceSummaries", key).getString("thumbnailAssetId"));
+            assertEquals(assetId, database.getRecord("resourceListSummaries", key).getString("thumbnailAssetId"));
+            assertFalse(database.getRecord("resourceListSummaries", key).has("thumbnailBlob"));
+            assertEquals(1, database.verifyStore("assetFiles").getInt("files"));
+            assertEquals(1, database.verifyStore("resources").getInt("files"));
+            assertEquals("thumbnail-post", result.getString("autoBoundSourceId"));
+            bindingTag = NativeDiscordInboxService.autoBindingNotificationTag(new JSONObject()
+                .put("sourceId", "thumbnail-post").put("resourceId", result.getString("resourceId")));
+            android.service.notification.StatusBarNotification bindingNotification = null;
+            for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications())
+                if (bindingTag.equals(active.getTag())) bindingNotification = active;
+            assertNotNull("Committed background binding must publish an OS notification", bindingNotification);
+            assertNull(bindingNotification.getNotification().getGroup());
+            assertEquals("srl_auto_binding", bindingNotification.getNotification().getChannelId());
+            assertTrue(bindingNotification.getNotification().extras.getString(android.app.Notification.EXTRA_TEXT)
+                .contains("Thumbnail Fixture Post"));
+
+            // Emulate old imports whose preview was absent from resources/summaries.
+            resource.remove("thumbnailAssetId");
+            String assetKey = JSONObject.quote(assetId);
+            JSONObject existingAsset = database.getRecord("assets", assetKey);
+            existingAsset.put("vaultProtected", false);
+            database.putRecords("assets", new JSONArray().put(new JSONObject().put("key", assetKey).put("value", existingAsset)));
+            database.putRecords("resources", new JSONArray().put(new JSONObject().put("key", key).put("value", resource)));
+            JSONObject duplicate = NativeBackgroundResourceImporter.importIfSafe(app, database,
+                payload, parsedFile, "new.png", "image/png");
+            assertEquals("duplicate_file", duplicate.getString("state"));
+            assertEquals(assetId, database.getRecord("resources", key).getString("thumbnailAssetId"));
+            assertEquals(assetId, database.getRecord("resourceListSummaries", key).getString("thumbnailAssetId"));
+            assertEquals(1L, database.countRecords("assets"));
+            assertTrue(database.getRecord("assets", assetKey).getBoolean("vaultProtected"));
+        } finally {
+            if (bindingTag != null) manager.cancel(bindingTag, 2133);
+            for (String store : new String[] {"resources", "resourceSummaries", "resourceListSummaries",
+                "assets", "assetFiles", "communitySources", "resourceSourceBindings", "settings"}) database.clearStore(store);
+            database.close(); app.deleteDatabase(databaseName);
+            File[] children = directory.listFiles();
+            if (children != null) for (File child : children) child.delete();
+            directory.delete();
+        }
+    }
     private final Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
 
     @Test public void incomingPngBecomesCurrentAndKeepsPreviousJsonAsContainer() throws Exception {
@@ -179,6 +363,28 @@ public class NativeBackgroundPngPreferenceTest {
             assertTrue(active.getBoolean("favorite"));
             if (incomingPng)
                 assertEquals("container", active.getJSONObject("metadata").getString("versionVariantKind"));
+            if (incomingPng) {
+                JSONObject list = database.getRecord("resourceListSummaries", currentKey);
+                String assetId = list.getString("thumbnailAssetId");
+                assertEquals(assetId, active.getString("thumbnailAssetId"));
+                assertEquals(assetId, database.getRecord("resourceSummaries", currentKey).getString("thumbnailAssetId"));
+                assertFalse(list.has("thumbnailBlob"));
+                String assetKey = JSONObject.quote(assetId);
+                assertEquals("thumbnail", database.getRecord("assets", assetKey).getString("source"));
+                JSONObject thumbnail = database.getRecord("assetFiles", assetKey).getJSONObject("blob");
+                assertEquals("$/blob", thumbnail.getString("fieldPath"));
+                assertEquals("image/jpeg", thumbnail.getString("mimeType"));
+                assertFalse(thumbnail.has("blobOwnerKey"));
+                JSONObject thumbnailBytes = database.readBlobChunk("assetFiles", assetKey,
+                    "$/blob", 0L, (int) thumbnail.getLong("size"));
+                byte[] decodedThumbnail = Base64.decode(thumbnailBytes.getString("data"), Base64.NO_WRAP);
+                assertTrue(decodedThumbnail.length > 4);
+                assertEquals((byte) 0xff, decodedThumbnail[0]);
+                assertEquals((byte) 0xd8, decodedThumbnail[1]);
+                assertEquals(1L, database.countIndexEntries("assets", "contentHash",
+                    JSONObject.quote(assetId.substring("asset-".length()))));
+                assertEquals(1, database.verifyStore("assetFiles").getInt("files"));
+            }
 
             JSONArray versions = database.getRecords("resourceVersions", null, 20);
             assertEquals(1, versions.length());
@@ -222,18 +428,41 @@ public class NativeBackgroundPngPreferenceTest {
         String json = alternateWhitespace ? card.toString(2) : card.toString();
         try (FileOutputStream file = new FileOutputStream(output)) {
             if (png) {
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                try (DataOutputStream data = new DataOutputStream(bytes)) {
-                    data.write(new byte[] {(byte) 137, 80, 78, 71, 13, 10, 26, 10});
+                Bitmap bitmap = Bitmap.createBitmap(48, 32, Bitmap.Config.ARGB_8888);
+                try {
+                    new Canvas(bitmap).drawColor(Color.rgb(74, 156, 168));
+                    ByteArrayOutputStream image = new ByteArrayOutputStream();
+                    assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, image));
+                    byte[] encoded = image.toByteArray();
                     String payload = "chara\0" + Base64.encodeToString(
                         json.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
                     byte[] text = payload.getBytes(StandardCharsets.ISO_8859_1);
-                    data.writeInt(text.length); data.writeBytes("tEXt"); data.write(text); data.writeInt(0);
-                    data.writeInt(0); data.writeBytes("IEND"); data.writeInt(0);
-                }
-                file.write(bytes.toByteArray());
+                    int iend = findChunk(encoded, "IEND");
+                    ByteArrayOutputStream result = new ByteArrayOutputStream(encoded.length + text.length + 16);
+                    result.write(encoded, 0, iend);
+                    try (DataOutputStream data = new DataOutputStream(result)) {
+                        data.writeInt(text.length); data.writeBytes("tEXt"); data.write(text);
+                        CRC32 crc = new CRC32();
+                        crc.update("tEXt".getBytes(StandardCharsets.US_ASCII)); crc.update(text);
+                        data.writeInt((int) crc.getValue());
+                        data.write(encoded, iend, encoded.length - iend);
+                    }
+                    file.write(result.toByteArray());
+                } finally { bitmap.recycle(); }
             } else file.write(json.getBytes(StandardCharsets.UTF_8));
         }
+    }
+
+    private int findChunk(byte[] png, String target) {
+        int offset = 8;
+        while (offset + 12 <= png.length) {
+            int length = ((png[offset] & 0xff) << 24) | ((png[offset + 1] & 0xff) << 16)
+                | ((png[offset + 2] & 0xff) << 8) | (png[offset + 3] & 0xff);
+            String type = new String(png, offset + 4, 4, StandardCharsets.US_ASCII);
+            if (target.equals(type)) return offset;
+            offset += length + 12;
+        }
+        throw new AssertionError("PNG chunk not found: " + target);
     }
 
     private JSONObject parse(File payload, String fileName, File directory) throws Exception {

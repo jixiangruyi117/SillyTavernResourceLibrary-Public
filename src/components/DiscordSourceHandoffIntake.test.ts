@@ -4,7 +4,7 @@ import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-u
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const runtime = vi.hoisted(() => ({
-  bindSource: vi.fn(async () => undefined),
+  bindSource: vi.fn(async (_resourceId?: string, _sourceId?: string) => undefined),
   clearHandoff: vi.fn(),
   parseHandoffLink: vi.fn((value: string) =>
     value === 'https://worker.example/open/pasted-token'
@@ -33,7 +33,10 @@ const runtime = vi.hoisted(() => ({
   })),
   receiveInboxJob: vi.fn(),
   notifyInboxResult: vi.fn(),
-  acknowledgeInboxJob: vi.fn(async () => undefined),
+  notifyAutoBinding: vi.fn(async () => undefined),
+  recentCards: vi.fn(async () => [] as unknown[]),
+  unboundResources: vi.fn(async (resources: readonly unknown[]) => [...resources]),
+  acknowledgeInboxJob: vi.fn(async (_id?: string, _state?: string, _target?: unknown) => undefined),
   settings: vi.fn((): { workerBaseUrl: string; inboxLibraryId?: string; inboxSecret?: string } => ({
     workerBaseUrl: 'https://worker.example',
   })),
@@ -87,7 +90,13 @@ const runtime = vi.hoisted(() => ({
       createdAt: 1,
     },
   })),
-  automationSettings: vi.fn(async () => ({ bindNextPng: false })),
+  automationSettings: vi.fn(async () => ({
+    bindNextPng: false,
+    bindSameName: false,
+    bindSameAuthor: false,
+    bindForeground: false,
+    preferPngContainer: false,
+  })),
   markPendingPng: vi.fn(async () => undefined),
   getSourceForAutomation: vi.fn(async () => undefined),
 }))
@@ -97,6 +106,7 @@ vi.mock('../core/LibraryContainer', () => ({
   resourceService: {
     importLinks: vi.fn(),
     listResourceListSummaries: runtime.listResources,
+    listRecentCharacterCards: runtime.recentCards,
   },
   discordInboxAutomationSettingsService: { load: runtime.automationSettings },
   vaultService: {
@@ -107,6 +117,7 @@ vi.mock('../core/LibraryContainer', () => ({
 vi.mock('../core/CommunitySourceRuntime', () => ({
   communitySourceService: {
     bindSource: runtime.bindSource,
+    listUnboundResources: runtime.unboundResources,
     getSourceUsage: runtime.getSourceUsage,
     saveDiscordCapture: runtime.saveDiscordCapture,
     localizeSavedMessageAttachments: runtime.localize,
@@ -131,6 +142,7 @@ vi.mock('../services/DiscordHandoffService', () => ({
 
 vi.mock('../services/NativeDiscordInboxService', () => ({
   notifyNativeDiscordInboxResult: runtime.notifyInboxResult,
+  notifyNativeDiscordAutoBinding: runtime.notifyAutoBinding,
 }))
 
 vi.mock('../services/DiscordSourceSettingsService', () => ({
@@ -497,6 +509,111 @@ describe('DiscordSourceHandoffIntake', () => {
     expect(runtime.receiveHandoff).toHaveBeenCalledTimes(2)
     expect(runtime.saveDiscordCapture).toHaveBeenCalledTimes(2)
     wrapper.unmount()
+  })
+
+  it('receives A and B from one automatic queue and sends both binding notifications before acknowledgement', async () => {
+    configureInbox()
+    runtime.listInboxJobs.mockResolvedValueOnce({
+      jobs: [
+        { id: 'job-1', state: 'pending', createdAt: 1 },
+        { id: 'job-2', state: 'pending', createdAt: 2 },
+      ],
+      recent: [],
+      hasMore: false,
+    })
+    const bindings = new Map<string, string>()
+    runtime.automationSettings
+      .mockResolvedValueOnce({
+        bindSameName: true,
+        bindSameAuthor: true,
+        bindForeground: true,
+        bindNextPng: false,
+        preferPngContainer: false,
+      })
+      .mockResolvedValueOnce({
+        bindSameName: true,
+        bindSameAuthor: true,
+        bindForeground: true,
+        bindNextPng: false,
+        preferPngContainer: false,
+      })
+    const cards = [
+      {
+        id: 'card-a',
+        name: '青龙',
+        type: 'characterCard',
+        fileName: 'a.png',
+        createdAt: 1,
+        metadata: { creator: '作者乙' },
+      },
+      {
+        id: 'card-b',
+        name: '白虎',
+        type: 'characterCard',
+        fileName: 'b.png',
+        createdAt: 2,
+        metadata: { creator: '作者乙' },
+      },
+    ]
+    runtime.recentCards.mockResolvedValueOnce(cards).mockResolvedValueOnce(cards)
+    runtime.unboundResources
+      .mockImplementationOnce(async (resources) => [...resources])
+      .mockImplementationOnce(async (resources) =>
+        resources.filter(
+          (resource) => ![...bindings.values()].includes((resource as { id: string }).id),
+        ),
+      )
+    const originalSave = runtime.saveDiscordCapture.getMockImplementation()!
+    for (const [id, title] of [
+      ['post-a', '青龙的故事'],
+      ['post-b', '另一篇故事'],
+    ])
+      runtime.saveDiscordCapture.mockImplementationOnce(async (capture) => {
+        const saved = await originalSave(capture)
+        return {
+          ...saved,
+          source: { ...saved.source, id: id!, title: title! },
+          messages: saved.messages.map((message) => ({
+            ...message,
+            kind: 'starter',
+            content: '作者：作者乙',
+          })),
+        }
+      })
+    runtime.bindSource
+      .mockImplementationOnce(async (resourceId, sourceId) => {
+        bindings.set(sourceId!, resourceId!)
+      })
+      .mockImplementationOnce(async (resourceId, sourceId) => {
+        bindings.set(sourceId!, resourceId!)
+      })
+    runtime.getSourceUsage.mockImplementation(async (sourceId: string) =>
+      bindings.has(sourceId) ? [{ resourceId: bindings.get(sourceId) }] : [],
+    )
+    const wrapper = mount(DiscordSourceHandoffIntake, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      expect([...bindings]).toEqual([
+        ['post-a', 'card-a'],
+        ['post-b', 'card-b'],
+      ])
+      expect(runtime.receiveInboxJob).toHaveBeenCalledTimes(2)
+      expect(runtime.acknowledgeInboxJob.mock.calls.map((call) => call[1])).toEqual([
+        'saved',
+        'saved',
+      ])
+      expect(runtime.notifyAutoBinding.mock.calls).toEqual([
+        ['青龙的故事', '青龙', { sourceId: 'post-a', resourceId: 'card-a' }],
+        ['另一篇故事', '白虎', { sourceId: 'post-b', resourceId: 'card-b' }],
+      ])
+      for (let index = 0; index < 2; index++)
+        expect(runtime.notifyAutoBinding.mock.invocationCallOrder[index]).toBeLessThan(
+          runtime.acknowledgeInboxJob.mock.invocationCallOrder[index]!,
+        )
+    } finally {
+      wrapper.unmount()
+      runtime.getSourceUsage.mockResolvedValue([])
+    }
   })
 
   it('saves cloud jobs quietly, marking unbound posts for centralized binding and bound posts as saved', async () => {

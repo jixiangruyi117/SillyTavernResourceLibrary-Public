@@ -49,6 +49,7 @@ export interface ExternalAppResourceListResult {
   items: ExternalAppResourceSnapshot[]
   total: number
   nextOffset: number | null
+  cursor?: string
 }
 
 export interface ExternalAppResourceUpdateRequest {
@@ -185,6 +186,22 @@ function toSnapshot(
 export class ExternalAppSdkService {
   private readonly externalApps: ExternalAppService
   private readonly resources: ResourceService
+  // One directory operation per runtime session; released after the final page or close.
+  private readonly listSessions = new Map<
+    string,
+    {
+      appId: string
+      scope: string
+      cursor: string
+      items: ExternalAppResourceSnapshot[]
+      nextOffset: number
+      bytes: number
+    }
+  >()
+
+  releaseListSession(session: string): void {
+    this.listSessions.delete(session)
+  }
 
   constructor(externalApps: ExternalAppService, resources: ResourceService) {
     this.externalApps = externalApps
@@ -199,7 +216,7 @@ export class ExternalAppSdkService {
     permissions: ExternalAppPermission[]
     permissionLevel: string
   }> {
-    const app = await this.externalApps.get(appId)
+    const app = await this.externalApps.getSummary(appId)
     if (!app?.enabled) throw new Error('APP 已被禁用')
     const permissions = getGrantedExternalAppPermissions(app).filter(
       (permission) => !scope || scope.includes(permission),
@@ -211,21 +228,85 @@ export class ExternalAppSdkService {
     }
   }
 
-  async list(appId: string, payload: unknown): Promise<ExternalAppResourceListResult> {
+  async list(
+    appId: string,
+    payload: unknown,
+    session = appId,
+  ): Promise<ExternalAppResourceListResult> {
     await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ)
     const options =
       payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const types = normalizeTypes(options.types)
+    const ids = normalizeOptionalStrings(options.ids, 'ID 列表', MAX_PAGE_SIZE)?.map(
+      normalizeResourceId,
+    )
+    const selectedIds = ids ? new Set(ids) : undefined
     const offset = normalizedInteger(options.offset, 0, 100_000)
     const limit = normalizedInteger(options.limit, 25, MAX_PAGE_SIZE)
-    const matches = (await this.resources.listResourceListSummaries()).filter(
-      (resource) => !types || types.includes(resource.type),
+    const scope = JSON.stringify([types, ids])
+    if (options.cursor !== undefined) {
+      const snapshot = this.listSessions.get(session)
+      if (
+        !snapshot ||
+        snapshot.appId !== appId ||
+        snapshot.scope !== scope ||
+        snapshot.cursor !== options.cursor ||
+        snapshot.nextOffset !== offset
+      )
+        throw new Error('资源目录分页已结束或范围已变化，请重新读取')
+      const items = snapshot.items.slice(offset, offset + limit)
+      const nextOffset =
+        offset + items.length < snapshot.items.length ? offset + items.length : null
+      if (nextOffset === null) this.listSessions.delete(session)
+      else snapshot.nextOffset = nextOffset
+      return {
+        items,
+        total: snapshot.items.length,
+        nextOffset,
+        ...(nextOffset !== null ? { cursor: snapshot.cursor } : {}),
+      }
+    }
+    this.listSessions.delete(session)
+    const matches = (await this.resources.listResourceListSummaries({ types, ids })).filter(
+      (resource) =>
+        (!types || types.includes(resource.type)) && (!selectedIds || selectedIds.has(resource.id)),
     )
     const items = matches.slice(offset, offset + limit).map((resource) => toSnapshot(resource))
+    const nextOffset = offset + items.length < matches.length ? offset + items.length : null
+    let cursor: string | undefined
+    if (options.snapshot === true && nextOffset !== null && matches.length <= 10_000) {
+      const snapshots: ExternalAppResourceSnapshot[] = []
+      let bytes = 0
+      // Account for UTF-16 strings and per-item overhead without serializing one giant array.
+      for (const resource of matches) {
+        const snapshot = toSnapshot(resource)
+        bytes += JSON.stringify(snapshot).length * 2 + 256
+        if (bytes > 8 * 1024 * 1024) break
+        snapshots.push(snapshot)
+      }
+      if (snapshots.length === matches.length) {
+        cursor = crypto.randomUUID()
+        while (
+          this.listSessions.size >= 4 ||
+          [...this.listSessions.values()].reduce((total, item) => total + item.bytes, bytes) >
+            8 * 1024 * 1024
+        )
+          this.listSessions.delete(this.listSessions.keys().next().value!)
+        this.listSessions.set(session, {
+          appId,
+          scope,
+          cursor,
+          items: snapshots,
+          nextOffset,
+          bytes,
+        })
+      }
+    }
     return {
       items,
       total: matches.length,
-      nextOffset: offset + items.length < matches.length ? offset + items.length : null,
+      nextOffset,
+      ...(cursor ? { cursor } : {}),
     }
   }
 
@@ -245,23 +326,23 @@ export class ExternalAppSdkService {
     if (
       !textOnly &&
       input.interactive === true &&
-      (await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible'
+      (await this.externalApps.getSummary(appId))?.runtimeMode !== 'trustedCompatible'
     )
       throw new Error('交互状态栏需要信任兼容模式')
     if (!textOnly && input.remote === true) {
       await this.requirePermission(appId, EXTERNAL_APP_PERMISSION.NETWORK_HTTPS)
-      if ((await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible')
+      if ((await this.externalApps.getSummary(appId))?.runtimeMode !== 'trustedCompatible')
         throw new Error('远程资源需要信任兼容模式')
     }
     const reader = new ChatReaderService(this.resources)
     const id = normalizeResourceId(input.id)
-    const page = await reader.read(
-      id,
-      normalizedInteger(input.offset, 0, 10_000_000),
-      normalizedInteger(input.limit, 20, 50),
-      { hideUser: input.hideUser === true, backward: input.backward === true },
-    )
-    const chat = await reader.getChat(id)
+    const offset = normalizedInteger(input.offset, 0, 10_000_000)
+    const limit = normalizedInteger(input.limit, 20, 50)
+    const chat = await reader.getReadChat(id)
+    const page = await reader.readResource(chat, offset, limit, {
+      hideUser: input.hideUser === true,
+      backward: input.backward === true,
+    })
     const character = await resolveChatCharacter(chat, this.resources)
     const card = character.card
     const names = Array.isArray(chat.metadata.chatUserNames) ? chat.metadata.chatUserNames : []
@@ -278,15 +359,18 @@ export class ExternalAppSdkService {
       chatRegexProfileRules,
       archivedChatSnapshot,
       interactiveChatFrontend,
+      chatReaderScripts,
+      interactiveChatWithScripts,
+      chatReaderCss,
       selectChatReply,
     } = await import('./ChatReaderRendering')
     let extraRules: unknown[] = []
     let presetRules: unknown[] = []
     const sourceErrors: string[] = []
     if (typeof chat.metadata.chatDisplayRegexId === 'string') {
-      const regex = await this.resources.get(chat.metadata.chatDisplayRegexId)
-      if (regex?.type === RESOURCE_TYPE.REGEX && regex.originalBlob.size <= 2 * 1024 * 1024) {
-        const data: unknown = JSON.parse(await regex.originalBlob.text())
+      const regex = await this.resources.getReadSource(chat.metadata.chatDisplayRegexId)
+      if (regex?.type === RESOURCE_TYPE.REGEX && regex.originalSource.size <= 2 * 1024 * 1024) {
+        const data: unknown = JSON.parse(await regex.originalSource.text())
         if (isRecord(data)) {
           if (Array.isArray(data.global)) extraRules = data.global
           if (Array.isArray(data.preset)) presetRules = data.preset
@@ -316,7 +400,9 @@ export class ExternalAppSdkService {
     if (isRecord(input.regexSources)) {
       for (const scope of ['global', 'preset', 'character'] as const) {
         if (!input.regexSources[scope]) continue
-        const resource = await this.resources.get(normalizeResourceId(input.regexSources[scope]))
+        const resource = await this.resources.getReadSource(
+          normalizeResourceId(input.regexSources[scope]),
+        )
         if (!resource) throw new Error('所选正则来源已不存在，请在显示正则中恢复随附来源')
         const expectedType =
           scope === 'preset'
@@ -348,6 +434,51 @@ export class ExternalAppSdkService {
       regexRules.map((rule) => [rule.key, rule.enabled]),
     )
     const replyOverrides = isRecord(input.replyOverrides) ? input.replyOverrides : {}
+    let scriptRules: Awaited<ReturnType<typeof chatReaderScripts>>['rules'] = []
+    let activeScripts: Awaited<ReturnType<typeof chatReaderScripts>>['active'] = []
+    const scriptErrors: string[] = []
+    if (input.scriptList === true || (!textOnly && input.scripts === true)) {
+      try {
+        const ids = Array.isArray(input.scriptSources) ? [...new Set(input.scriptSources)] : []
+        if (ids.length > 8) throw new Error('最多选择 8 份脚本来源')
+        const attachedId =
+          typeof chat.metadata.chatReadingScriptId === 'string'
+            ? chat.metadata.chatReadingScriptId
+            : undefined
+        if (attachedId && !ids.includes(attachedId)) ids.unshift(attachedId)
+        const sources = []
+        for (const sourceId of ids) {
+          const resource = await this.resources.getReadSource(normalizeResourceId(sourceId))
+          if (
+            sourceId === attachedId &&
+            (!resource ||
+              resource.type !== RESOURCE_TYPE.SCRIPT ||
+              resource.metadata.variant === 'stscript')
+          ) {
+            scriptErrors.push(
+              '聊天随附脚本已丢失或变更，请恢复配套资源或重新互传；其它脚本仍可选择',
+            )
+            continue
+          }
+          if (!resource) throw new Error('所选脚本来源已不存在，请在脚本选择中移除')
+          sources.push(resource)
+        }
+        const scripts = await chatReaderScripts(
+          card,
+          sources,
+          isRecord(input.scriptOverrides) ? input.scriptOverrides : {},
+        )
+        scriptRules = scripts.rules
+        if (!textOnly && input.scripts === true) activeScripts = scripts.active
+      } catch (error) {
+        if (input.scriptList === true) throw error
+        scriptErrors.push(error instanceof Error ? error.message : '脚本来源无法加载')
+      }
+    }
+    const readerCss =
+      activeScripts.length && typeof input.readerCss === 'string'
+        ? chatReaderCss(input.readerCss)
+        : ''
     const selectedMessages = page.messages.map((entry) =>
       selectChatReply(entry, replyOverrides[String(entry.index)]),
     )
@@ -379,7 +510,25 @@ export class ExternalAppSdkService {
       )
       const snapshot = archivedChatSnapshot(entry, page.total)
       const interactiveFrontends: string[] = []
-      if (!textOnly && input.interactive === true)
+      let interactiveDocument: string | undefined
+      if (!textOnly && input.interactive === true && activeScripts.length)
+        interactiveDocument = await interactiveChatWithScripts(
+          source,
+          rendered.formatted,
+          activeScripts,
+          snapshot,
+          input.remote === true,
+          input.theme === 'night' ? 'dark' : 'light',
+          readerCss,
+          panelColor.color ||
+            (input.blendPanels === false
+              ? undefined
+              : input.theme === 'night'
+                ? '#d0d3c6'
+                : '#26382f'),
+          panelTheme,
+        )
+      else if (!textOnly && input.interactive === true)
         for (const frontend of rendered.formatted.frontendBlocks)
           interactiveFrontends.push(
             await interactiveChatFrontend(
@@ -407,6 +556,9 @@ export class ExternalAppSdkService {
         html: rendered.html,
         frontends: rendered.frontends,
         interactiveFrontends,
+        interactiveDocument,
+        scriptCount: activeScripts.length,
+        scriptErrors,
         snapshot,
         frontendCount: rendered.frontendCount,
         errors: [...sourceErrors, ...(inputs[index]?.diagnostics || []), ...result.errors],
@@ -424,7 +576,7 @@ export class ExternalAppSdkService {
     // Warm only the next adjacent floor's pure regex projection. No media/script documents are built.
     if (input.prefetch === true && page.nextOffset !== null) {
       void reader
-        .read(id, page.nextOffset, 1, { hideUser: input.hideUser === true })
+        .readResource(chat, page.nextOffset, 1, { hideUser: input.hideUser === true })
         .then((neighbor) =>
           transformChatInputs(
             neighbor.messages.map((entry) =>
@@ -473,6 +625,8 @@ export class ExternalAppSdkService {
       messages,
       regexRules,
       regexSources,
+      scriptRules,
+      scriptErrors,
       replyDiff,
       presetName: regexContext.presetName,
       previewDocumentUrl: OPAQUE_PREVIEW_DOCUMENT_URL,
@@ -521,15 +675,15 @@ export class ExternalAppSdkService {
     if (
       input.fonts === true &&
       input.remote === true &&
-      (await this.externalApps.get(appId))?.runtimeMode !== 'trustedCompatible'
+      (await this.externalApps.getSummary(appId))?.runtimeMode !== 'trustedCompatible'
     )
       throw new Error('请先使用兼容模式，再加载外部字体')
-    const resource = await this.resources.get(normalizeResourceId(input.id))
+    const resource = await this.resources.getReadSource(normalizeResourceId(input.id))
     if (!resource || resource.type !== RESOURCE_TYPE.BEAUTIFICATION)
       throw new Error('请选择资源库中的美化')
-    if (resource.originalBlob.size > 256 * 1024)
+    if (resource.originalSource.size > 256 * 1024)
       throw new Error('美化文件超过 256 KiB，请先提取聊天区域的 CSS')
-    const source = await resource.originalBlob.text()
+    const source = await resource.originalSource.text()
     let css = source
     let theme: Record<string, unknown> = {}
     if (resource.metadata.format !== 'css' && resource.metadata.format !== 'text') {

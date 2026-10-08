@@ -10,6 +10,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { buildDiscordManualWorkerSource } from './scripts/DiscordManualWorkerSource.ts'
 import { officialAppPackagesPlugin } from './scripts/OfficialAppPackages.js'
+import { isOfficialAppId } from './src/types/OfficialApp.js'
 
 import vue from '@vitejs/plugin-vue'
 import { build } from 'esbuild'
@@ -238,8 +239,14 @@ function offlineAssetManifestPlugin(): Plugin {
 }
 
 // https://vite.dev/config/
+const preinstalledOfficialAppIds =
+  process.env.SRL_ANDROID_PREINSTALL_OFFICIAL_APP_IDS?.split(',').filter(Boolean) ?? null
+if (preinstalledOfficialAppIds?.some((id) => !isOfficialAppId(id) || id === 'assistant')) {
+  throw new Error('Selected APP preinstallation contains an unsupported APP ID.')
+}
 export default defineConfig({
   define: {
+    __SRL_PREINSTALL_OFFICIAL_APP_IDS__: JSON.stringify(preinstalledOfficialAppIds),
     __SRL_PREINSTALL_OFFICIAL_APPS__: JSON.stringify(
       process.env.SRL_ANDROID_PREINSTALL_OFFICIAL_APPS === '1',
     ),
@@ -267,7 +274,7 @@ export default defineConfig({
     },
     appearanceStarterCssSourcePlugin(),
     // SRL-PUBLIC-SYNC: BEGIN REPLACE id=official-app-package-build
-    officialAppPackagesPlugin(buildInfo.buildId, false),
+    officialAppPackagesPlugin(buildInfo.buildId),
     // SRL-PUBLIC-SYNC: END REPLACE id=official-app-package-build
     previewVendorGlobalsSourcePlugin(),
     {

@@ -13,6 +13,7 @@ import {
   EXTERNAL_APP_PERMISSION_LABELS,
   type ExternalAppPermission,
   type InstalledExternalApp,
+  type InstalledExternalAppSummary,
   type ExternalAppToolDescriptor,
 } from '../types/ExternalApp'
 import FeatureAppHeader from './FeatureAppHeader.vue'
@@ -42,6 +43,7 @@ const emit = defineEmits<{ back: [] }>()
 const isBuiltinReader = computed(
   () => props.official === true && props.appId === CHAT_READER_APP_ID,
 )
+let builtinReaderVerified = false
 async function readerUiCss() {
   if (!isBuiltinReader.value) return ''
   const { readAppliedAppFrameCss } = await import('../services/AppearanceScopeService')
@@ -59,6 +61,7 @@ async function syncReaderUiCss() {
   })
 }
 const readerPage = ref<'roles' | 'chats' | 'reader'>('roles')
+const readerReady = ref(false)
 const readerCover = ref(false)
 const readerColors = ref<Record<string, string>>({})
 const readerAppearance = computed(() => ({
@@ -176,6 +179,7 @@ const filteredPickableResources = computed(() => {
 })
 
 async function load(): Promise<void> {
+  readerReady.value = false
   errorMessage.value = ''
   notice.value = ''
   const next = await externalAppService.get(props.appId)
@@ -201,9 +205,10 @@ async function load(): Promise<void> {
     return
   }
   app.value = next
+  builtinReaderVerified = isBuiltinReader.value && externalAppService.isBuiltinReader(next)
   diagnostics.value = []
   hostTitle.value = ''
-  loadingLabel.value = '正在启动 APP…'
+  loadingLabel.value = isBuiltinReader.value ? '正在打开读了么…' : '正在启动 APP…'
   setFullscreen(!props.assistantTool && next.manifest.immersive === true)
   if (next.manifest.orientation && next.manifest.orientation !== 'auto') {
     void screen.orientation?.lock(next.manifest.orientation).catch(() => {
@@ -262,9 +267,16 @@ async function handleRequest(event: MessageEvent): Promise<void> {
   )
     return
   lastRequestSequence = request.sequence
-  const current = app.value ? await externalAppService.get(app.value.id) : undefined
+  const current = app.value ? await externalAppService.getSummary(app.value.id) : undefined
   if (!current?.enabled) {
     await reply(request.id, false, undefined, 'APP 已被禁用')
+    return
+  }
+  if (
+    current.packageFingerprint !== app.value?.packageFingerprint ||
+    current.runtimeMode !== app.value?.runtimeMode
+  ) {
+    await reply(request.id, false, undefined, 'APP 版本或运行模式已变化，请重新打开')
     return
   }
   try {
@@ -328,7 +340,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           await reply(
             request.id,
             true,
-            await externalAppSdkService.list(current.id, request.payload),
+            await externalAppSdkService.list(current.id, request.payload, sessionNonce),
           )
           return
         case 'resources.get':
@@ -518,6 +530,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             typeof request.payload?.label === 'string' ? request.payload.label.trim() : ''
           if (label.length > 120) throw new Error('加载提示不能超过 120 个字符')
           loadingLabel.value = label
+          if (isBuiltinReader.value && !label) readerReady.value = true
           await reply(request.id, true, null)
           return
         }
@@ -645,7 +658,7 @@ function completeFilePick(event: Event): void {
 }
 
 async function ensurePermission(
-  current: InstalledExternalApp,
+  current: InstalledExternalAppSummary,
   permission: ExternalAppPermission,
   method: string,
   summary: string,
@@ -655,6 +668,17 @@ async function ensurePermission(
   }
   if (props.assistantTool && !props.assistantTool.permissions.includes(permission))
     throw new Error('该权限超出当前工具声明的范围')
+  // A build-shipped, byte-matched reader uses the host's ordinary read permissions.
+  // Remote reads still require its remote-resources switch and the declared network grant.
+  if (
+    isBuiltinReader.value &&
+    builtinReaderVerified &&
+    !props.assistantTool &&
+    (permission === EXTERNAL_APP_PERMISSION.RESOURCES_LIBRARY_READ ||
+      permission === EXTERNAL_APP_PERMISSION.RESOURCES_CONTENT_READ ||
+      permission === EXTERNAL_APP_PERMISSION.NETWORK_HTTPS)
+  )
+    return
   if (await externalAppService.hasPersistentPermission(current.id, permission)) return
   await new Promise<void>((resolve, reject) => {
     permissionRequest.value = {
@@ -775,13 +799,17 @@ function connect(): void {
     app.value?.runtimeMode === 'trustedCompatible' &&
     frame.value &&
     seedOpaquePreviewDocument(frame.value, app.value.runtimeHtml)
-  )
+  ) {
+    readerReady.value = false
+    if (isBuiltinReader.value) loadingLabel.value = '正在打开读了么…'
     return
+  }
   port?.close()
   const target = frame.value?.contentWindow
   if (!target) return
   const channel = new MessageChannel()
   port = channel.port1
+  externalAppSdkService.releaseListSession(sessionNonce)
   sessionNonce = crypto.randomUUID()
   toolSession.connect(port, sessionNonce)
   lastRequestSequence = 0
@@ -840,7 +868,7 @@ function connect(): void {
   target.postMessage({ type: 'srl:fullscreen', enabled: isFullscreen.value }, '*')
   if (startupTimer !== undefined) window.clearTimeout(startupTimer)
   startupTimer = undefined
-  loadingLabel.value = ''
+  if (!isBuiltinReader.value) loadingLabel.value = ''
   if (app.value) void externalAppService.recordHealthyLaunch(app.value.id)
 }
 
@@ -923,6 +951,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  externalAppSdkService.releaseListSession(sessionNonce)
   toolSession.close()
   window.removeEventListener(APPLIED_CSS_CHANGED_EVENT, syncReaderUiCss)
   document.body.classList.remove('external-app-fullscreen')
@@ -952,8 +981,8 @@ onBeforeUnmount(() => {
     class="external-app-host"
   >
     <FeatureAppHeader
-      v-if="!isFullscreen"
-      :title="hostTitle || app?.manifest.name || '第三方 APP'"
+      v-if="!isFullscreen && (!isBuiltinReader || errorMessage)"
+      :title="hostTitle || app?.manifest.name || (isBuiltinReader ? '读了么' : '第三方 APP')"
       :back-label="
         assistantTool ? '停止工具并返回聊天' : official ? '返回功能桌面' : '返回扩展管理'
       "
@@ -997,13 +1026,15 @@ onBeforeUnmount(() => {
         :class="{
           'external-app-host__workspace--immersive': isFullscreen,
           'external-app-host__workspace--builtin-reader': isBuiltinReader,
+          'external-app-host__workspace--starting': isBuiltinReader && !readerReady,
         }"
         :style="{
           '--external-app-splash': app.manifest.splashColor || '#237f87',
-          ...(isBuiltinReader ? readerAppearance : {}),
+          ...(isBuiltinReader && readerReady ? readerAppearance : {}),
         }"
         :aria-label="official ? '读了么阅读工作区' : '第三方 APP 独立工作区'"
         :data-reader-page="isBuiltinReader ? readerPage : undefined"
+        :aria-busy="isBuiltinReader && !readerReady"
       >
         <FeatureAppHeader
           v-if="isBuiltinReader && readerPage !== 'reader'"
@@ -1046,6 +1077,7 @@ onBeforeUnmount(() => {
           v-if="previewEnabled"
           ref="frame"
           class="external-app-host__frame"
+          :inert="isBuiltinReader && !readerReady"
           :srcdoc="app.runtimeMode === 'trustedCompatible' ? undefined : app.runtimeHtml"
           :src="compatibleDocumentUrl"
           :sandbox="
@@ -1060,7 +1092,7 @@ onBeforeUnmount(() => {
         <p v-else class="external-app-host__loading" role="status">
           APP 已暂停，回到当前页面后自动恢复
         </p>
-        <p v-if="loadingLabel" class="external-app-host__loading" role="status">
+        <p v-if="loadingLabel && !errorMessage" class="external-app-host__loading" role="status">
           {{ loadingLabel }}
         </p>
         <p v-if="isFullscreen && immersiveHint" class="external-app-host__immersive-hint">

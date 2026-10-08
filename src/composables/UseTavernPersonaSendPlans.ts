@@ -5,7 +5,7 @@ import { chooseAction, confirmAction } from '../composables/UseConfirmDialog'
 
 import { parseSillyTavernPersonaBackup } from '../parser/SillyTavernPersonaBackup'
 
-import { resourceService } from '../core/AppContainer'
+import { exportService, resourceService } from '../core/AppContainer'
 
 import { hashBlob } from '../services/HashService'
 
@@ -34,7 +34,12 @@ export async function preparePersonaSendPlans(
     personaSummaries.map(async (summary) => {
       const resource = await resourceService.get(summary.id)
       if (!resource) throw new Error(`人设“${summary.name}”已不存在`)
-      const local = parseSillyTavernPersonaBackup(JSON.parse(await resource.originalBlob.text()))
+      const file = await exportService.createTavernTransferFile(
+        resource,
+        operations.sendContent.value,
+        resourceService,
+      )
+      const local = parseSillyTavernPersonaBackup(JSON.parse(await file.text()))
       return { summary, resource, local }
     }),
   )
@@ -200,6 +205,7 @@ export async function preparePersonaSendPlans(
           avatarId: sourceAvatar,
           name: identityLabel,
           file: characterFile,
+          resourceId: characterFile ? localCharacterSummary?.id : undefined,
         })
       }
     }

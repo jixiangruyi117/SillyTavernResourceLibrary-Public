@@ -65,6 +65,56 @@ function setup(resources: ResourceSummary[], categories: Category[] = []) {
 }
 
 describe('UseLibraryQueryView folder counts', () => {
+  it('keeps a chat-bound character visible even when legacy imports marked the link as manual', () => {
+    const { context, view } = setup([
+      resource('card'),
+      resource('chat', {
+        type: RESOURCE_TYPE.CHAT,
+        relatedResourceIds: ['card', 'regex'],
+        metadata: { manuallyBoundResourceIds: ['card', 'regex'] },
+      }),
+      resource('regex', { type: RESOURCE_TYPE.REGEX }),
+    ])
+    context.showManuallyBoundResources.value = false
+    expect(view.filteredResources.value.map((resource) => resource.id)).toContain('card')
+    expect(view.filteredResources.value.map((resource) => resource.id)).not.toContain('regex')
+    expect(view.resourceFilterCounts.value.get(RESOURCE_TYPE.CHARACTER_CARD)).toBe(1)
+  })
+  it('counts and renders a Chinese sorted page without eagerly sorting the complete bulk-selection list', () => {
+    const resources = Array.from({ length: 10000 }, (_, index) =>
+      resource(`r-${index}`, {
+        name: `角色${(index * 157) % 997}`,
+        favorite: index % 3 === 0,
+        categoryIds: index % 2 ? ['folder'] : [],
+      }),
+    )
+    const { context, view } = setup(resources)
+    const originalCompare = context.resourceNameCollator.compare
+    const compare = vi.fn(originalCompare)
+    Object.defineProperty(context.resourceNameCollator, 'compare', { value: compare })
+    context.sortValue.value = 'name'
+    context.currentPage.value = 2
+    expect(view.filteredResourceCount.value).toBe(10000)
+    expect(view.totalPages.value).toBe(500)
+    expect(compare).not.toHaveBeenCalled()
+    const expected = resources.slice().sort((a, b) => originalCompare(a.name, b.name))
+    expect(view.paginatedResources.value.map((item) => item.id)).toEqual(
+      expected.slice(20, 40).map((item) => item.id),
+    )
+    expect(compare.mock.calls.length).toBeLessThan(30000)
+    compare.mockClear()
+    expect(view.filteredResources.value.map((item) => item.id)).toEqual(
+      expected.map((item) => item.id),
+    )
+    expect(compare.mock.calls.length).toBeGreaterThan(30000)
+    context.activeFilter.value = 'favorites'
+    context.activeCategoryId.value = 'folder'
+    expect(view.filteredResourceCount.value).toBe(
+      resources.filter((item) => item.favorite && item.categoryIds?.includes('folder')).length,
+    )
+    expect(view.resourceFilterCounts.value.get('all')).toBe(5000)
+  })
+
   it('counts each resource once per folder and preserves all, favorites and type filters', () => {
     const { context, view } = setup([
       resource('multi', {

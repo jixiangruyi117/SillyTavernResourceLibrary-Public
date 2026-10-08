@@ -1,3 +1,10 @@
+<script lang="ts">
+import type { ExternalAppPreview } from '../types/ExternalApp'
+
+// Only the immutable build-shipped package is shared across component entries.
+let shippedPreview: Promise<ExternalAppPreview> | undefined
+</script>
+
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { externalAppService } from '../core/AppContainer'
@@ -17,15 +24,27 @@ onMounted(async () => {
   try {
     // Only build-shipped bytes enter this path. Reuse the runtime and original data;
     // never promote a restored/user-supplied package merely because its ID matches.
-    const files = Object.entries({
-      'manifest.json': JSON.stringify(manifest),
-      'index.html': document,
-      'app.js': script,
-      'reader.css': styles,
-      'icon.svg': icon,
-    }).map(([name, text]) => new File([text], name))
-    const preview = await externalAppService.inspect(files)
-    const previous = await externalAppService.get(CHAT_READER_APP_ID)
+    shippedPreview ??= externalAppService
+      .inspect(
+        Object.entries({
+          'manifest.json': JSON.stringify(manifest),
+          'index.html': document.replace(
+            '<html lang="zh-CN"',
+            '<html lang="zh-CN" class="builtin-shell"',
+          ),
+          'app.js': script,
+          'reader.css': styles,
+          'icon.svg': icon,
+        }).map(([name, text]) => new File([text], name)),
+      )
+      .catch((reason) => {
+        shippedPreview = undefined
+        throw reason
+      })
+    const preview = await shippedPreview
+    externalAppService.registerBuiltinReader(preview)
+    // Read live metadata on every entry without loading the installed runtime twice.
+    const previous = await externalAppService.getSummary(CHAT_READER_APP_ID)
     if (
       !previous?.enabled ||
       previous.packageFingerprint !== preview.packageFingerprint ||

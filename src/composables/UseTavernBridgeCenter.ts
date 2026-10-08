@@ -45,6 +45,7 @@ import type { EmitFn } from 'vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 
 import { browserStorageService } from '../core/AppContainer'
+import type { TavernSendContent } from '../types/BrowserPreferences'
 
 import { tavernConnectionStore, type TavernConnectionSnapshot } from '../core/TavernConnectionStore'
 
@@ -88,6 +89,49 @@ export function useTavernBridgeCenter(
   const tavernItems = ref<TavernResourceItem[]>([])
 
   const selectedTavernIds = ref(new Set<string>())
+  const selectedChatScriptIds = ref(new Set<string>())
+  const chatScriptItems = ref<TavernResourceItem[]>([])
+  const chatScriptSearch = ref('')
+  const chatScriptLimit = ref(50)
+  const matchingChatScripts = computed(() =>
+    chatScriptItems.value.filter((item) =>
+      item.name.toLocaleLowerCase().includes(chatScriptSearch.value.toLocaleLowerCase()),
+    ),
+  )
+  const visibleChatScripts = computed(() =>
+    matchingChatScripts.value.slice(0, chatScriptLimit.value),
+  )
+  watch(
+    () => state.value.tavernOrigin,
+    () => {
+      selectedChatScriptIds.value = new Set()
+      chatScriptItems.value = []
+      chatScriptSearch.value = ''
+    },
+  )
+  async function loadChatScriptSources(): Promise<void> {
+    if (busy.value) return
+    const origin = state.value.tavernOrigin
+    busy.value = true
+    error.value = ''
+    try {
+      const items = await tavernBridgeService.listResources()
+      if (disposed || state.value.tavernOrigin !== origin) return
+      chatScriptItems.value = items.filter(
+        (item) => item.kind === 'scriptGlobal' || item.kind === 'scriptPreset',
+      )
+      selectedChatScriptIds.value = new Set(
+        [...selectedChatScriptIds.value].filter((id) =>
+          chatScriptItems.value.some((item) => item.id === id),
+        ),
+      )
+      chatScriptLimit.value = 50
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '无法读取可附带脚本'
+    } finally {
+      busy.value = false
+    }
+  }
 
   const selectedLocalIds = ref(new Set<string>())
 
@@ -110,6 +154,19 @@ export function useTavernBridgeCenter(
   )
 
   const busy = ref(false)
+  const sendContent = ref<TavernSendContent>(browserStorageService.getTavernSendContent())
+  const transferSettingsDialog = ref<HTMLDialogElement>()
+  const includeChatScripts = ref(browserStorageService.getTavernChatCarryScripts())
+  function openTransferSettings(): void {
+    if (!busy.value) transferSettingsDialog.value?.showModal()
+  }
+  function setSendContent(content: TavernSendContent): void {
+    sendContent.value = content
+    browserStorageService.setTavernSendContent(content)
+  }
+  function saveChatCarryScripts(): void {
+    browserStorageService.setTavernChatCarryScripts(includeChatScripts.value)
+  }
   const canCancelTransfer = ref(false)
   const activeAbortController = shallowRef<AbortController | null>(null)
   function beginTransfer(): AbortSignal {
@@ -767,6 +824,13 @@ export function useTavernBridgeCenter(
     tavernPageCount,
     selectAllTavern,
     selectedTavernIds,
+    selectedChatScriptIds,
+    chatScriptItems,
+    chatScriptSearch,
+    matchingChatScripts,
+    visibleChatScripts,
+    chatScriptLimit,
+    loadChatScriptSources,
     showOnlySelectedTavern,
     toggleSelection,
     tavernResourceLabel,
@@ -793,6 +857,12 @@ export function useTavernBridgeCenter(
     resourceExistsInTavern,
     conflictPolicy,
     personaAvatarMode,
+    sendContent,
+    setSendContent,
+    includeChatScripts,
+    saveChatCarryScripts,
+    transferSettingsDialog,
+    openTransferSettings,
     selectedPersonaCount,
     canCheckPersonaAvatars,
     sendConflictCount,
@@ -825,6 +895,8 @@ export function useTavernBridgeCenter(
       localDirectEnabled,
       deviceCode,
       selectedTavernIds,
+      selectedChatScriptIds,
+      includeChatScripts,
       tavernReceiveFilter,
       tavernReceiveFilters,
       get lastTransferDirection(): UseTavernTransferActionsContext['lastTransferDirection'] {
@@ -863,6 +935,7 @@ export function useTavernBridgeCenter(
       conflictPolicy,
       props,
       personaAvatarMode,
+      sendContent,
       canCheckPersonaAvatars,
       bridgeKind,
     }

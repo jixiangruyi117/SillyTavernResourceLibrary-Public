@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AppDatabase } from '../database/AppDatabase'
 import { ResourceParserRegistry } from '../parser/ResourceParser'
 import { ResourceService } from '../services/ResourceService'
+import { VaultService } from '../services/VaultService'
 import { findHistoricalDuplicateGroups } from '../services/ResourceVersionMatcher'
 import {
   RESOURCE_LINK_TYPE,
@@ -41,6 +42,133 @@ function createResource(index: number): Resource {
 }
 
 describe('IndexedDbResourceStorage', () => {
+  it('compacts old current/history summaries atomically while retaining full content and metadata edits', async () => {
+    const database = new AppDatabase(`compact-summaries-${crypto.randomUUID()}`)
+    try {
+      const storage = new IndexedDbResourceStorage(database)
+      const current = createResource(900)
+      current.metadata = {
+        card: { data: { description: '正文'.repeat(100_000) } },
+        personalDocument: { pages: ['完整文档'] },
+        creator: '作者',
+      }
+      const history = { ...current, id: 'history-900', versionGroupId: current.id }
+      await storage.save(current)
+      await storage.saveVersion(history)
+      await database.resourceSummaries.put(toResourceSummary(current))
+      await database.resourceVersionSummaries.put(toResourceSummary(history))
+      await storage.repairDerivedIndexes()
+      for (const table of [database.resourceSummaries, database.resourceVersionSummaries]) {
+        const rows = await table.toArray()
+        expect(JSON.stringify(rows).length).toBeLessThan(3000)
+        expect(rows).toHaveLength(1)
+      }
+      expect((await storage.getSummary(current.id))?.metadata).toEqual(current.metadata)
+      expect((await storage.getVersion(history.id))?.metadata).toEqual(current.metadata)
+      await storage.updateMetadata(current.id, { metadata: { edited: true }, favorite: true })
+      expect((await storage.get(current.id))?.metadata).toEqual({
+        ...current.metadata,
+        edited: true,
+      })
+      expect((await storage.get(current.id))?.originalBlob.size).toBe(current.originalBlob.size)
+      const put = vi
+        .spyOn(database.resourceVersionSummaries, 'put')
+        .mockRejectedValueOnce(new Error('write failed'))
+      await expect(storage.repairDerivedIndexes()).rejects.toThrow('write failed')
+      put.mockRestore()
+      expect(await database.resourceSummaries.count()).toBe(1)
+      expect(await database.resourceVersionSummaries.count()).toBe(1)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('keeps encrypted chat and targeted card summaries visible without exposing a plaintext type index', async () => {
+    const database = new AppDatabase(`encrypted-reader-list-${crypto.randomUUID()}`)
+    try {
+      const vault = new VaultService(database)
+      await vault.initialize()
+      await vault.enable('test-password')
+      const storage = new IndexedDbResourceStorage(database, vault)
+      const chat = { ...createResource(2), type: RESOURCE_TYPE.CHAT }
+      await storage.saveMany([createResource(1), chat])
+      expect(
+        (await storage.listResourceListSummaries({ types: [RESOURCE_TYPE.CHAT] })).map((r) => r.id),
+      ).toEqual([chat.id])
+      expect(
+        (
+          await storage.listResourceListSummaries({
+            types: [RESOURCE_TYPE.CHARACTER_CARD],
+            ids: ['resource-1'],
+          })
+        ).map((r) => r.id),
+      ).toEqual(['resource-1'])
+      expect(await database.resourceListSummaries.get(chat.id)).not.toHaveProperty('type')
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it('reads only matching list rows for chat and bound-card queries with 200 unrelated cards', async () => {
+    const database = new AppDatabase(`scoped-reader-list-${crypto.randomUUID()}`)
+    try {
+      const storage = new IndexedDbResourceStorage(database)
+      const chat = { ...createResource(201), type: RESOURCE_TYPE.CHAT }
+      await storage.saveMany([...Array.from({ length: 200 }, (_, i) => createResource(i)), chat])
+      await storage.listResourceListSummaries()
+      const bulkGet = vi.spyOn(database.resourceListSummaries, 'bulkGet')
+      const getOriginal = vi.spyOn(database.resources, 'get')
+      expect(
+        (await storage.listResourceListSummaries({ types: [RESOURCE_TYPE.CHAT] })).map((r) => r.id),
+      ).toEqual([chat.id])
+      expect(bulkGet).toHaveBeenCalledExactlyOnceWith([chat.id])
+      bulkGet.mockClear()
+      expect(
+        (
+          await storage.listResourceListSummaries({
+            types: [RESOURCE_TYPE.CHARACTER_CARD],
+            ids: ['resource-8', chat.id, 'resource-8', 'missing'],
+          })
+        ).map((r) => r.id),
+      ).toEqual(['resource-8'])
+      expect(bulkGet).toHaveBeenCalledExactlyOnceWith(['missing', chat.id, 'resource-8'])
+      expect(getOriginal).not.toHaveBeenCalled()
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+  it.each([0, 1000])(
+    'reads only the selected history original with %s unrelated history records',
+    async (unrelatedCount) => {
+      const database = new AppDatabase(`scoped-history-${crypto.randomUUID()}`)
+      try {
+        const base = { ...createResource(1), originalBlob: new Blob(['abc']), fileSize: 3 }
+        const selected = { ...base, id: 'selected-version', versionGroupId: 'selected' }
+        await database.resourceVersions.bulkPut([
+          selected,
+          ...Array.from({ length: unrelatedCount }, (_, i) => ({
+            ...base,
+            id: `unrelated-${i}`,
+            versionGroupId: `other-${i}`,
+          })),
+        ])
+        const allOriginals = vi
+          .spyOn(database.resourceVersions, 'toArray')
+          .mockRejectedValue(new Error('unrelated originals must not be loaded'))
+        const getOriginal = vi.spyOn(database.resourceVersions, 'get')
+        const storage = new IndexedDbResourceStorage(database)
+        expect(
+          (await storage.listVersionListSummariesForResources(['selected'])).map((row) => row.id),
+        ).toEqual(['selected-version'])
+        expect(allOriginals).not.toHaveBeenCalled()
+        expect(getOriginal).toHaveBeenCalledExactlyOnceWith('selected-version')
+      } finally {
+        database.close()
+        await database.delete()
+      }
+    },
+  )
   it('rebuilds a missing list-summary row from the authoritative resource without treating it as an empty library', async () => {
     const database = new AppDatabase(`resource-list-index-${crypto.randomUUID()}`)
     const storage = new IndexedDbResourceStorage(database)
@@ -215,8 +343,8 @@ describe('IndexedDbResourceStorage', () => {
     })
     expect(migratedSummary).toMatchObject({
       thumbnailAssetId,
-      thumbnailBlob: undefined,
     })
+    expect(migratedSummary).not.toHaveProperty('thumbnailBlob')
     expect(summaries[0]?.thumbnailBlob).toBeUndefined()
     await expect(
       (await storage.get(resource.id))?.thumbnailBlob?.arrayBuffer(),
@@ -271,7 +399,10 @@ describe('IndexedDbResourceStorage', () => {
     expect(list[0]?.metadata).toEqual({ creator: '测试作者', characterVersion: '2.0' })
     expect(storedList && 'originalBlob' in storedList).toBe(false)
     expect(storedList && 'card' in (storedList as Resource).metadata).toBe(false)
-    expect(fullSummary && 'card' in (fullSummary as Resource).metadata).toBe(true)
+    expect(fullSummary && 'card' in (fullSummary as Resource).metadata).toBe(false)
+    expect((await storage.getSummary(resource.id))?.metadata.card).toEqual(resource.metadata.card)
+    await storage.update(resource.id, { tags: ['新标签'] })
+    expect((await storage.get(resource.id))?.metadata.card).toEqual(resource.metadata.card)
 
     database.close()
     await database.delete()
@@ -522,5 +653,41 @@ describe('IndexedDbResourceStorage', () => {
 
     database.close()
     await database.delete()
+  })
+})
+
+describe('backup metadata reads', () => {
+  it('reads current and historical native metadata without fetching a 1 GiB original', async () => {
+    const database = new AppDatabase(`backup-metadata-${crypto.randomUUID()}`)
+    const storage = new IndexedDbResourceStorage(database)
+    const original = createResource(81)
+    const { originalBlob: _originalBlob, ...metadata } = original
+    const native = {
+      ...metadata,
+      fileSize: 1024 ** 3,
+      metadata: { nested: { important: true } },
+      nativeOriginal: { version: 1 as const, contentHash: original.contentHash, size: 1024 ** 3 },
+    }
+    await database.resources.put(native)
+    await database.resourceVersions.put({ ...native, id: 'history', versionGroupId: original.id })
+    const read = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('must not read original'))
+    try {
+      expect(await storage.getSummary(original.id)).toMatchObject({
+        fileSize: 1024 ** 3,
+        metadata: native.metadata,
+      })
+      expect(await storage.getSummary('history', true)).toMatchObject({
+        id: 'history',
+        versionGroupId: original.id,
+        metadata: native.metadata,
+      })
+      expect(read).not.toHaveBeenCalled()
+    } finally {
+      read.mockRestore()
+      database.close()
+      await database.delete()
+    }
   })
 })

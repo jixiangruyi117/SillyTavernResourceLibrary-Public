@@ -116,6 +116,7 @@ public final class NativeDiscordInboxService extends Service {
     }
     private void check() {
         if (stopped) return;
+        String autoReceiveWindow = Long.toString(System.currentTimeMillis());
         try {
             JSONObject status = request("/status");
             if (!library.equals(status.optString("libraryId")) || !status.optBoolean("paired") || !status.optBoolean("isDefault", true)) {
@@ -128,7 +129,7 @@ public final class NativeDiscordInboxService extends Service {
             if (jobs.length() > 20) throw new java.io.IOException("队列无效");
             for (int i = 0; i < jobs.length() && !stopped; i++) {
                 JSONObject job = jobs.getJSONObject(i);
-                if (!downloadable(job, library)) continue;
+                if (!library.equals(job.optString("libraryId")) || !job.optString("id").matches("[a-f0-9-]{36}")) continue;
                 String id = job.getString("id"), token = "discord-url-" + id;
                 File source = new File(getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER + "/" + token + ".json");
                 File ready = new File(getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER + "/" + NativeShareImportService.stagedToken(token, 0) + ".json");
@@ -138,13 +139,21 @@ public final class NativeDiscordInboxService extends Service {
                     String result = outcome == null ? "" : outcome.optString("state");
                     if ("true".equals(staged.optString("nativeAckPending"))
                         && ("imported".equals(result) || "duplicate_file".equals(result) || "duplicate_card".equals(result))) {
-                        if (acknowledgeResource(this, id, "imported", "")) {
+                        if (acknowledgeResourceBestEffort(this, id, "imported", "")) {
                             staged.put("nativeAckPending", false);
                             NativeShareImportService.writeMetadata(ready.getParentFile(), NativeShareImportService.stagedToken(token, 0), staged);
                         }
                     }
+                    if ("waiting_version".equals(result)) acknowledgeResourceBestEffort(this, id, "waiting_version", "需要在前台确认历史版本");
+                    else if ("parse_failed".equals(result) || "failed".equals(result))
+                        acknowledgeResourceBestEffort(this, id, "failed", outcome == null ? "原生解析或导入失败" : outcome.optString("message", "原生解析或导入失败"));
                 }
-                if (source.isFile() && NativeShareImportService.readMetadata(source).has("error")) continue;
+                if (source.isFile() && NativeShareImportService.readMetadata(source).has("error")) {
+                    JSONObject failed = NativeShareImportService.readMetadata(source);
+                    acknowledgeResourceBestEffort(this, id, "failed", failed.optString("error", "下载失败"));
+                    continue;
+                }
+                if (!downloadable(job, library)) continue;
                 if (NativeDiscordDownloadWorker.isActiveToken(this, token)) continue;
                 // Completed staging is retained for the importer, not downloaded again.
                 if (new File(getFilesDir(), ShareReceiverPlugin.CACHE_FOLDER + "/" + token + ".done").isFile()) continue;
@@ -152,7 +161,7 @@ public final class NativeDiscordInboxService extends Service {
                     JSONObject detail = request("/resources/" + id);
                     if ("resource_already_imported".equals(detail.optString("error")) && "imported".equals(detail.optString("state"))) continue;
                     if (!id.equals(detail.optString("id")) || !library.equals(detail.optString("libraryId"))) throw new java.io.IOException("任务目标不匹配");
-                    if (!stopped) ShareReceiverPlugin.stageCloudResource(this, id, library, worker, detail.getString("url"));
+                    if (!stopped) ShareReceiverPlugin.stageCloudResource(this, id, library, worker, detail.getString("url"), true, autoReceiveWindow);
                 } catch (Exception error) { attention("资源领取未完成", "请回到收件箱检查任务或重新复制有效直链。"); }
             }
             if (!resources.optBoolean("hasMore") || jobs.length() == 0) { resourceCursor = ""; break; }
@@ -161,6 +170,16 @@ public final class NativeDiscordInboxService extends Service {
             if (!next.matches("[0-9]{1,13}:[a-f0-9-]{36}")) throw new java.io.IOException("分页无效");
             if (next.equals(resourceCursor)) { resourceCursor = ""; break; }
             resourceCursor = next;
+            }
+            JSONArray windows = NativeBackgroundResourceImporter.pendingAutoReceiveWindows(this);
+            for (int windowIndex = 0; windowIndex < windows.length(); windowIndex++) {
+                JSONArray reconciled = NativeBackgroundResourceImporter.reconcileAutoReceiveCycle(this, windows.optString(windowIndex, ""));
+                for (int i = 0; i < reconciled.length(); i++) {
+                    String token = reconciled.optString(i, "");
+                    if (!token.isBlank()) ShareReceiverPlugin.notifyDiscordDownloadCompleted(token, "", true);
+                }
+                // Preserve chronological scan progress when a slow download leaves an older cycle open.
+                if (NativeBackgroundResourceImporter.hasPendingAutoReceiveWindow(this, windows.optString(windowIndex, ""))) break;
             }
             JSONObject posts = request("/jobs");
             String pending = posts.getJSONArray("jobs").toString();
@@ -208,6 +227,57 @@ public final class NativeDiscordInboxService extends Service {
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(ATTENTION, new NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_more).setContentTitle(title).setContentText(text)
             .setContentIntent(openInbox()).setAutoCancel(true).build());
+    }
+    private static boolean acknowledgeResourceBestEffort(Context context, String id, String state, String message) {
+        try { return acknowledgeResource(context, id, state, message); }
+        catch (Exception ignored) { return false; } // Leave the receipt for the existing next check; continue other jobs.
+    }
+    static void notifyAutoBindings(Context context, JSONArray bindings) {
+        notifyAutoBindings(context, bindings, true);
+    }
+    static String autoBindingNotificationTag(JSONObject binding) throws Exception {
+        String source = binding.optString("sourceId", "");
+        String resource = binding.optString("resourceId", "");
+        String identity = !source.isBlank() && !resource.isBlank()
+            ? "id\n" + source + "\n" + resource
+            : "label\n" + binding.optString("sourceTitle", "") + "\n" + binding.optString("resourceName", "");
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder tag = new StringBuilder("srl-auto-binding-");
+        for (byte value : digest) tag.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        return tag.toString();
+    }
+    static void notifyAutoBindings(Context context, JSONArray bindings, boolean publishCommit) {
+        if (bindings == null || bindings.length() == 0) return;
+        if (publishCommit) ShareReceiverPlugin.notifyAutoBindingsCommitted(bindings);
+        try {
+            NotificationManager manager = (NotificationManager) context.getSystemService(NOTIFICATION_SERVICE);
+            String bindingChannel = "srl_auto_binding";
+            if (Build.VERSION.SDK_INT >= 26)
+                manager.createNotificationChannel(new NotificationChannel(bindingChannel, "帖子自动绑定结果", NotificationManager.IMPORTANCE_DEFAULT));
+            PendingIntent open = PendingIntent.getActivity(context, ATTENTION + 2,
+                new Intent(context, MainActivity.class).setAction(Intent.ACTION_VIEW).setData(Uri.parse("srl://inbox"))
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            for (int index = 0; index < bindings.length(); index++) {
+                JSONObject binding = bindings.optJSONObject(index);
+                if (binding == null) continue;
+                String line = "帖子“" + safeLabel(binding.optString("sourceTitle"), "未命名帖子")
+                    + "”已绑定角色卡“" + safeLabel(binding.optString("resourceName"), "未命名角色卡") + "”";
+                // Repeated reports of one binding update it; different bindings remain visible.
+                manager.notify(autoBindingNotificationTag(binding), ATTENTION + 2,
+                    new NotificationCompat.Builder(context, bindingChannel).setSmallIcon(android.R.drawable.stat_notify_more)
+                        .setContentTitle("帖子自动绑定成功").setContentText(line)
+                        .setStyle(new NotificationCompat.BigTextStyle().bigText(line))
+                        .setContentIntent(open).setAutoCancel(true).build());
+            }
+            NativeInboxNotificationGroup.refresh(context);
+        } catch (Exception ignored) { /* Notification delivery must not roll back a committed binding. */ }
+    }
+    private static String safeLabel(String value, String fallback) {
+        String clean = value == null ? "" : value.replaceAll("[\\r\\n\\p{Cntrl}]", " ").trim();
+        if (clean.isEmpty()) clean = fallback;
+        return clean.length() > 80 ? clean.substring(0, 80) : clean;
     }
     static void notifyResult(Context context, String kind, String id, String worker, String library, String name, String state) throws Exception {
         if (!id.matches("[a-f0-9-]{36}") || !library.matches("[A-Za-z0-9_-]{8,100}"))

@@ -19,6 +19,12 @@ import {
 } from '../types/Vault'
 import type { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
 import { storedResourceBinarySize } from './ResourceStorageClone'
+import { decodeAppDatabaseValue } from './AndroidAppDatabaseMigration'
+import {
+  compactAndroidNativeAppDatabase,
+  isAndroidNativeAppDatabaseActive,
+} from './AndroidNativeDexieCore'
+import { nativeAppDatabase, type NativeAppDatabaseStore } from './NativeAppDatabaseBridge'
 
 export interface NativeRecoveryInput {
   contentHash: string
@@ -76,7 +82,8 @@ export interface ResourceHealthAudit {
   unreachableExternalLinks: Array<{ resourceId: string; linkId: string; location: string }>
 }
 
-function indexDrift(sources: StoredResource[], summaries: StoredResourceSummary[]): string[] {
+type IndexIdentity = Pick<StoredResource, 'id' | 'contentHash' | 'updatedAt' | 'versionGroupId'>
+function indexDrift(sources: IndexIdentity[], summaries: StoredResourceSummary[]): string[] {
   const sourceById = new Map(sources.map((source) => [source.id, source]))
   const summaryById = new Map(summaries.map((summary) => [summary.id, summary]))
   const drift = sources
@@ -157,6 +164,57 @@ export class IndexedDbResourceHealthStorage {
     this.resourceStorage = resourceStorage
   }
 
+  private async *metadataRecords(
+    store: NativeAppDatabaseStore,
+    fields: readonly string[],
+  ): AsyncGenerator<Record<string, unknown>> {
+    const project = (record: Record<string, unknown>) =>
+      Object.fromEntries(
+        fields.map((field) => [
+          field,
+          field === 'metadata'
+            ? {
+                recoveredFromNativeObject: (record.metadata as Record<string, unknown> | undefined)
+                  ?.recoveredFromNativeObject,
+              }
+            : record[field],
+        ]),
+      )
+    if (isAndroidNativeAppDatabaseActive()) {
+      let after: string | undefined
+      do {
+        const page = await nativeAppDatabase.getRecords(store, after, 100)
+        for (const row of page.rows)
+          yield (await decodeAppDatabaseValue(
+            project(row.value),
+            store,
+            row.key,
+            nativeAppDatabase,
+            false,
+          )) as Record<string, unknown>
+        after = page.nextKey ?? undefined
+      } while (after !== undefined)
+      return
+    }
+    const table = this.database.table(store)
+    const keys = await table.toCollection().primaryKeys()
+    for (let offset = 0; offset < keys.length; offset += 100)
+      for (const record of await table.bulkGet(keys.slice(offset, offset + 100)))
+        if (record) yield project(record)
+  }
+
+  private async indexIdentities(store: 'resources' | 'resourceVersions'): Promise<IndexIdentity[]> {
+    const identities: IndexIdentity[] = []
+    for await (const row of this.metadataRecords(store, [
+      'id',
+      'contentHash',
+      'updatedAt',
+      'versionGroupId',
+    ]))
+      identities.push(row as IndexIdentity)
+    return identities
+  }
+
   async audit(): Promise<ResourceHealthAudit> {
     const [
       rawResources,
@@ -168,10 +226,10 @@ export class IndexedDbResourceHealthStorage {
       generatedFileIds,
       summariesDecoded,
     ] = await Promise.all([
-      this.database.resources.toArray(),
+      this.indexIdentities('resources'),
       this.database.resourceSummaries.toArray(),
       this.database.resourceListSummaries.toArray(),
-      this.database.resourceVersions.toArray(),
+      this.indexIdentities('resourceVersions'),
       this.database.resourceVersionSummaries.toArray(),
       this.database.generatedImages.toCollection().primaryKeys(),
       this.database.generatedImageFiles.toCollection().primaryKeys(),
@@ -311,11 +369,19 @@ export class IndexedDbResourceHealthStorage {
       versionCount: 0,
       reclaimableBytes: 0,
     }
-    for (const [table, countKey] of [
-      [this.database.resources, 'currentCount'],
-      [this.database.resourceVersions, 'versionCount'],
+    for (const [store, countKey] of [
+      ['resources', 'currentCount'],
+      ['resourceVersions', 'versionCount'],
     ] as const) {
-      await table.toCollection().each((record) => {
+      for await (const row of this.metadataRecords(store, [
+        'encrypted',
+        'original',
+        'originalBlob',
+        'nativeOriginal',
+        'fileSize',
+        'contentHash',
+      ])) {
+        const record = row as unknown as StoredResource
         if (
           !isEncryptedResource(record) &&
           !isNativeBackedResource(record) &&
@@ -325,7 +391,7 @@ export class IndexedDbResourceHealthStorage {
           result[countKey]++
           result.reclaimableBytes += storedResourceBinarySize(record)
         }
-      })
+      }
     }
     return result
   }
@@ -673,11 +739,19 @@ export class IndexedDbResourceHealthStorage {
       recoveredPlaceholderBytes: 0,
       pendingNativeLinkCount: 0,
     }
-    for (const [table, key] of [
-      [this.database.resources, 'currentOriginalBytes'],
-      [this.database.resourceVersions, 'versionOriginalBytes'],
+    for (const [store, key] of [
+      ['resources', 'currentOriginalBytes'],
+      ['resourceVersions', 'versionOriginalBytes'],
     ] as const) {
-      await table.toCollection().each((record) => {
+      for await (const row of this.metadataRecords(store, [
+        'encrypted',
+        'original',
+        'originalBlob',
+        'nativeOriginal',
+        'type',
+        'metadata',
+      ])) {
+        const record = row as unknown as StoredResource
         if (isEncryptedResource(record)) result[key] += record.original.data.size
         else if (isNativeBackedResource(record))
           result.nativeReferenceBytes += record.nativeOriginal.size
@@ -686,21 +760,23 @@ export class IndexedDbResourceHealthStorage {
           key === 'currentOriginalBytes' &&
           !isEncryptedResource(record) &&
           record.type === RESOURCE_TYPE.OTHER &&
-          record.metadata.recoveredFromNativeObject === true
+          record.metadata?.recoveredFromNativeObject === true
         ) {
           result.recoveredPlaceholderCount++
           result.recoveredPlaceholderBytes += isNativeBackedResource(record)
             ? record.nativeOriginal.size
             : storedResourceBinarySize(record)
         }
-      })
+      }
     }
-    await this.database.backupRecords.toCollection().each((record) => {
-      result.localSnapshotBytes += record.blob?.size ?? 0
-    })
-    await this.database.restoreStagingChunks.toCollection().each((record) => {
-      result.restoreStagingBytes += record.data?.byteLength ?? record.blob?.size ?? 0
-    })
+    for await (const record of this.metadataRecords('backupRecords', ['blob']))
+      result.localSnapshotBytes += (record.blob as { size?: number } | undefined)?.size ?? 0
+    for await (const record of this.metadataRecords('restoreStagingChunks', ['data', 'blob']))
+      result.restoreStagingBytes +=
+        (record.data as { byteLength?: number; size?: number } | undefined)?.byteLength ??
+        (record.data as { size?: number } | undefined)?.size ??
+        (record.blob as { size?: number } | undefined)?.size ??
+        0
     await this.database.assets.toCollection().each((record) => {
       result.assetBytes += record.size
       result.assetCount++
@@ -718,6 +794,11 @@ export class IndexedDbResourceHealthStorage {
 
   repairDerivedIndexes(): Promise<void> {
     return this.resourceStorage.repairDerivedIndexes()
+  }
+
+  async optimizeDerivedSummaries() {
+    await this.resourceStorage.repairDerivedIndexes()
+    return compactAndroidNativeAppDatabase()
   }
 
   private isJsonResource(resource: Pick<ResourceSummary, 'mimeType' | 'fileName'>): boolean {

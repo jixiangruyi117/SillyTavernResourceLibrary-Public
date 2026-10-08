@@ -8,7 +8,7 @@ const runtime = vi.hoisted(() => ({
   acquireOfficialAppUse: vi.fn(),
   loadOfficialApp: vi.fn(),
   release: vi.fn(),
-  officialAppService: { list: vi.fn(), ready: vi.fn(), install: vi.fn() },
+  officialAppService: { list: vi.fn(), getInstalled: vi.fn(), ready: vi.fn(), install: vi.fn() },
 }))
 vi.mock('../core/OfficialAppRuntime', () => runtime)
 let wrapper: ReturnType<typeof mount>
@@ -17,6 +17,7 @@ beforeEach(() => {
   runtime.ensurePreinstalledOfficialApps.mockResolvedValue(undefined)
   runtime.acquireOfficialAppUse.mockResolvedValue(runtime.release)
   runtime.officialAppService.list.mockResolvedValue([{ id: 'draw' }])
+  runtime.officialAppService.getInstalled.mockResolvedValue({ id: 'draw' })
   runtime.officialAppService.install.mockResolvedValue(undefined)
 })
 afterEach(() => wrapper?.unmount())
@@ -35,6 +36,8 @@ it('loads through the single readiness owner while holding the APP use lease', a
   await flushPromises()
   expect(runtime.loadOfficialApp).toHaveBeenCalledExactlyOnceWith('draw', expect.any(Function))
   expect(runtime.officialAppService.ready).not.toHaveBeenCalled()
+  expect(runtime.officialAppService.list).not.toHaveBeenCalled()
+  expect(runtime.officialAppService.getInstalled).not.toHaveBeenCalled()
   expect(wrapper.text()).toContain('抽了么就绪')
   wrapper.unmount()
   expect(runtime.release).toHaveBeenCalledTimes(1)

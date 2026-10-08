@@ -5,6 +5,7 @@ import type {
 } from './AiTaggingService'
 import type { MainApiConfig } from './MainApiService'
 import { AI_TAGGING_MAX_SYSTEM_PROMPT, normalizeAiTaggingBatchSize } from './AiTaggingService'
+import { normalizeAiTaggingConcurrency } from './AiTaggingService'
 
 export interface AiTaggingDraftReviewItem {
   resourceId: string
@@ -24,6 +25,7 @@ export interface AiTaggingDraft {
   tagQuery: string
   selectedIds: string[]
   batchSize: number
+  concurrency?: number
   customPrompt: string
   systemPrompt?: string
   taxonomyTemplateId: string
@@ -155,6 +157,9 @@ function parseDraft(value: unknown): AiTaggingDraft | undefined {
     tagQuery: text(draft.tagQuery, 40),
     selectedIds,
     batchSize: normalizeAiTaggingBatchSize(draft.batchSize),
+    ...(draft.concurrency !== undefined
+      ? { concurrency: normalizeAiTaggingConcurrency(draft.concurrency) }
+      : {}),
     customPrompt: text(draft.customPrompt, 4_000),
     ...(typeof draft.systemPrompt === 'string'
       ? { systemPrompt: text(draft.systemPrompt, AI_TAGGING_MAX_SYSTEM_PROMPT) }

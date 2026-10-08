@@ -560,6 +560,7 @@ export async function importFilesSerial(
   options: ImportOptions,
 ): Promise<ImportResult[]> {
   options.signal?.throwIfAborted()
+  const chatBatch: import('./TavernChatImport').TavernChatImportBatch = {}
   const results: ImportResult[] = []
   const completedContentHashes = new Set(
     options.completedContentHashes?.map((hash) => hash.toLowerCase()) ?? [],
@@ -659,16 +660,24 @@ export async function importFilesSerial(
       }
       if (/\.srlchat$/i.test(file.name)) {
         const { importTavernChat } = await import('./TavernChatImport')
-        results.push(
-          await importTavernChat(
-            file,
-            operations.resourceService,
-            operations.parserRegistry,
-            options,
-          ),
-        )
+        try {
+          results.push(
+            await importTavernChat(
+              file,
+              operations.resourceService,
+              operations.parserRegistry,
+              options,
+              chatBatch,
+            ),
+          )
+        } catch (error) {
+          chatBatch.summaries = undefined
+          throw error
+        }
         continue
       }
+      // Mixed imports can change the same summaries before the next chat.
+      chatBatch.summaries = undefined
       reportProgress('正在读取并计算校验值')
       let importFile = file
       let context: ImportFileContext<ParsedResource> | undefined

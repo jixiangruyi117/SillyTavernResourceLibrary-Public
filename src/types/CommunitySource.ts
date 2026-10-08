@@ -99,6 +99,23 @@ export interface CommunitySourceRevision {
   messages: CommunitySourceMessage[]
 }
 
+export interface CommunitySourceAutoBindCandidate {
+  resourceId: string
+  resourceName: string
+  rule: 'same-name' | 'same-author'
+  reason: string
+}
+
+export interface CommunitySourceAutoBindScan {
+  version: 1
+  status: 'scanning' | 'exhausted' | 'review'
+  /** Logical current resource IDs already inspected, including the five-card initial window. */
+  scannedResourceIds: string[]
+  /** At most five new logical resources inspected after the post was saved. */
+  futureResourceIds: string[]
+  reviewCandidates?: CommunitySourceAutoBindCandidate[]
+}
+
 export interface CommunitySource {
   /** 本机随机 ID；不包含 Discord guild/thread/message 标识。 */
   id: string
@@ -141,6 +158,8 @@ export interface CommunitySource {
   metadataCapturedAt?: number
   /** Inbox-only marker consumed by the next imported character-card PNG. */
   autoBindPendingPng?: boolean
+  /** Bounded, resumable scan state for post-first automatic resource matching. */
+  autoBindScan?: CommunitySourceAutoBindScan
   createdAt: number
   updatedAt: number
 }

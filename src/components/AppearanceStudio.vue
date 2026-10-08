@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-vue-lifecycle-imports
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 // SRL-PUBLIC-SYNC: END REPLACE id=appearance-vue-lifecycle-imports
 import { nextTick, onBeforeUnmount } from 'vue'
 import {
@@ -9,6 +9,9 @@ import {
   parseAppearancePreset,
   type AppearanceScope,
 } from '../core/AppearanceScopes'
+// SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=appearance-official-scope-import
+import { isOfficialAppId } from '../types/OfficialApp'
+// SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=appearance-official-scope-import
 import { createAsyncPanel } from '../core/AsyncPanel'
 import { validateAssistantCss } from '../services/ProductAssistantService'
 import type {
@@ -97,7 +100,7 @@ const emit = defineEmits<{
 
 const storage = new BrowserStorageService()
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-assistant-layout-state
-const ProductAssistant = createAsyncPanel('AI 助手', () => import('./ProductAssistant.vue'))
+const ProductAssistant = createAsyncPanel('AI 助手', () => import('./OfficialAssistantGate.vue'))
 const assistantOpen = ref(Boolean(props.assistantOnly))
 const assistantVisited = ref(assistantOpen.value)
 watch(
@@ -271,10 +274,29 @@ const activeScopedCss = computed({
   },
 })
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-official-scope-availability
-const installationsLoaded = ref(true)
+const installedIds = ref(new Set<string>())
+const installationsLoaded = ref(false)
 const installationError = ref('')
-function available(_scope: AppearanceScope): boolean {
-  return true
+async function refreshInstalledIds(): Promise<void> {
+  installationsLoaded.value = false
+  installationError.value = ''
+  try {
+    const { officialAppService } = await import('../core/OfficialAppRuntime')
+    installedIds.value = new Set((await officialAppService.list()).map((app) => app.id))
+    installationsLoaded.value = true
+  } catch {
+    installationError.value = '暂时无法读取安装状态；已有样式仍保留。'
+  }
+}
+onMounted(() => void refreshInstalledIds())
+watch(
+  () => props.active,
+  (active, previous) => {
+    if (active && previous === false) void refreshInstalledIds()
+  },
+)
+function available(scope: AppearanceScope): boolean {
+  return !scope.appId || !isOfficialAppId(scope.appId) || installedIds.value.has(scope.appId)
 }
 // SRL-PUBLIC-SYNC: END REPLACE id=appearance-official-scope-availability
 const activeScopes = computed(() => scopes.filter(available))

@@ -9,6 +9,8 @@ it('remaps reader bookmarks, appearance and resume index when merge restore chan
     value: {
       marks: [{ floor: 7, reply: 2 }],
       regexSources: { preset: 'old-preset', character: 'kept' },
+      scriptSources: ['old-script', 'kept-script'],
+      scriptOverrides: { signature: true },
     },
   }
   const data = remapReaderPortableData(
@@ -24,6 +26,7 @@ it('remaps reader bookmarks, appearance and resume index when merge restore chan
       ['old-chat', 'new-chat'],
       ['old-card', 'new-card'],
       ['old-preset', 'new-preset'],
+      ['old-script', 'new-script'],
     ]),
   )!
   expect(data.chatReader?.map((item) => item.key)).toEqual([
@@ -34,7 +37,9 @@ it('remaps reader bookmarks, appearance and resume index when merge restore chan
   expect(data.chatReader?.[0]?.value).toEqual({
     ...record.value,
     regexSources: { preset: 'new-preset', character: 'kept' },
+    scriptSources: ['new-script', 'kept-script'],
   })
   expect(record.value.regexSources.preset).toBe('old-preset')
+  expect(record.value.scriptSources).toEqual(['old-script', 'kept-script'])
   expect(data.chatReader?.[2]?.value).toEqual({ lastChat: 'new-chat' })
 })

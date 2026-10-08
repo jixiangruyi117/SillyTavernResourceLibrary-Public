@@ -18,7 +18,7 @@ import {
 
 import type { ImportVersionCandidate } from '../types/Import'
 
-import { RESOURCE_TYPE } from '../types/Resource'
+import { RESOURCE_TYPE, type ResourceListSummary } from '../types/Resource'
 
 import { summarizeFileNames, summarizeResourceTypes } from '../utils/LibraryFormatting'
 
@@ -39,7 +39,7 @@ import { materializeNativeFile, nativeFileSize } from '../core/NativeFileSource'
 import { markSharedImportItemCompleted, type SharedFileBatch } from '../utils/ShareTargetIntake'
 
 import { hashBlob } from '../services/HashService'
-import { autoBindIncomingCard } from '../services/DiscordInboxAutoBinding'
+import { autoBindIncomingCardBatch } from '../services/DiscordInboxAutoBinding'
 import { DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS } from '../services/DiscordInboxAutomationSettings'
 
 export interface UseLibraryFileImportContext {
@@ -127,6 +127,7 @@ export async function importResourceFiles(
       protectedFiles.push(protectedFile)
       if (sourceHash) originalContentHashes.set(protectedFile, sourceHash)
     }
+    const autoBindingResources: ResourceListSummary[] = []
     const results = await resourceService.importFiles(protectedFiles, {
       ...chatOptions,
       extractCharacterAssets: context.extractCharacterAssets.value,
@@ -176,21 +177,12 @@ export async function importResourceFiles(
         await shareBatch?.onItemComplete?.(result)
         if (
           shareBatch?.automaticCloud &&
+          !shareBatch.deferAutomaticBinding &&
           automationSettings.bindForeground &&
-          result.status === 'imported'
-        ) {
-          const binding = await autoBindIncomingCard(
-            communitySourceService,
-            result.resource,
-            automationSettings,
-          )
-          if (binding)
-            window.dispatchEvent(
-              new CustomEvent('srl:community-sources-changed', {
-                detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
-              }),
-            )
-        }
+          result.status === 'imported' &&
+          result.resource.type === RESOURCE_TYPE.CHARACTER_CARD
+        )
+          autoBindingResources.push(result.resource)
       },
       onProgress: ({ completed, total, fileName, phase }) => {
         operations.updateImportTask(taskId, {
@@ -200,6 +192,27 @@ export async function importResourceFiles(
         })
       },
     })
+    if (
+      shareBatch?.automaticCloud &&
+      !shareBatch.deferAutomaticBinding &&
+      automationSettings.bindForeground
+    ) {
+      try {
+        const bindings = await autoBindIncomingCardBatch(
+          communitySourceService,
+          autoBindingResources,
+          automationSettings,
+        )
+        for (const binding of bindings)
+          window.dispatchEvent(
+            new CustomEvent('srl:community-sources-changed', {
+              detail: { origin: 'discord-auto-binding', sourceId: binding.sourceId },
+            }),
+          )
+      } catch {
+        // Binding is best effort; it must not turn a committed resource import into a failure.
+      }
+    }
     resultsReceived = true
     if (totals && !shareBatch) {
       totals.imported += results.filter((result) => result.status === 'imported').length
@@ -443,7 +456,7 @@ export async function handleVersionImportDecision(
         committedHash,
         pending.sourceContentHash,
       )
-    await pending.onResolved?.(committedHash)
+    await pending.onResolved?.(committedHash, resolvedResourceId)
     const nextPending = context.pendingVersionImports.value[1]
     if (nextPending && resolvedResourceId) {
       const candidates = nextPending.candidates.filter(

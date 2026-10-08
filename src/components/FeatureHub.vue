@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, toRef } from 'vue'
-import { ref, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import FeatureAppIcon from './FeatureAppIcon.vue'
 import ActionSheet from './ActionSheet.vue'
 import FeatureShell from './FeatureShell.vue'
@@ -96,14 +95,17 @@ watch(
 )
 watch(assistantVisible, (visible) => emit('assistant-visibility', visible), { immediate: true })
 watch(assistantBusy, (busy) => emit('assistant-activity', busy), { immediate: true })
-const featureHubClass = computed(() => ({
-  'feature-hub--app': activePage.value !== 'home',
-  'feature-hub--assistant': assistantVisible.value,
-}))
 </script>
 
 <template>
-  <main class="feature-hub" :class="featureHubClass" :data-feature-page="activePage">
+  <main
+    class="feature-hub"
+    :class="{
+      'feature-hub--app': activePage !== 'home',
+      'feature-hub--assistant': assistantVisible,
+    }"
+    :data-feature-page="activePage"
+  >
     <template v-if="active">
       <template v-if="activePage === 'home'">
         <FeatureShell title="功能" back-label="返回资源库" @back="emit('close')">
@@ -215,7 +217,9 @@ const featureHubClass = computed(() => ({
         @back="activePage = 'home'"
         @open-resource="emit('openResource', $event)"
       />
+      <!-- SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=official-app-manager-route -->
       <OfficialAppManager v-else-if="activePage === 'officialApps'" @back="activePage = 'home'" />
+      <!-- SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=official-app-manager-route -->
       <DrawApp
         v-else-if="activePage === 'draw'"
         v-bind="props"
@@ -307,7 +311,6 @@ const featureHubClass = computed(() => ({
         @library-changed="emit('library-changed')"
       />
     </template>
-    <!-- SRL-PUBLIC-SYNC: BEGIN REPLACE id=feature-hub-appearance-view -->
     <AppearanceStudio
       v-for="assistantPage in assistantPages"
       v-show="active !== false && activePage === assistantPage"
@@ -316,14 +319,14 @@ const featureHubClass = computed(() => ({
       :assistant-only="assistantPage === 'assistant'"
       :navigation-targets="assistantNavigationTargets"
       :navigate="navigateAssistant"
-      :theme="props.theme"
-      :layout-mode="props.layoutMode"
-      :mobile-card-orientation="props.mobileCardOrientation"
-      :mobile-card-fit-mode="props.mobileCardFitMode"
-      :resource-card-height-mode="props.resourceCardHeightMode"
-      :no-image-resource-cover-mode="props.noImageResourceCoverMode"
-      :ui-font-scale="props.uiFontScale"
-      :custom-css="props.customCss"
+      :theme="theme"
+      :layout-mode="layoutMode"
+      :mobile-card-orientation="mobileCardOrientation"
+      :mobile-card-fit-mode="mobileCardFitMode"
+      :resource-card-height-mode="resourceCardHeightMode"
+      :no-image-resource-cover-mode="noImageResourceCoverMode"
+      :ui-font-scale="uiFontScale"
+      :custom-css="customCss"
       @back="activePage = 'home'"
       @update:theme="emit('update:theme', $event)"
       @update:layout-mode="emit('update:layoutMode', $event)"
@@ -337,7 +340,6 @@ const featureHubClass = computed(() => ({
       @assistant-visibility="setAssistantVisible($event, assistantPage)"
       @assistant-activity="setAssistantActivity($event, assistantPage)"
     />
-    <!-- SRL-PUBLIC-SYNC: END REPLACE id=feature-hub-appearance-view -->
   </main>
 </template>
 

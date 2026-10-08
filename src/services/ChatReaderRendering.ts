@@ -19,22 +19,29 @@ import type { ArchivedMessageSnapshot } from '../utils/RenderCompatibilityRuntim
 import {
   buildArchivedChatFrontendDocument,
   archivedPanelThemeCss,
+  buildRichContentPreview,
+  type PreviewRuntimeScript,
 } from '../utils/RichContentPreview'
+import {
+  extractTavernHelperScripts,
+  readTavernHelperScriptBlob,
+} from '../utils/TavernHelperScriptParser'
 import { detectVendorLibNeeds, loadPreviewVendorLibs } from '../utils/PreviewVendorLibs'
 import { RESOURCE_TYPE, type Resource } from '../types/Resource'
+import type { ResourceReadSource } from '../types/ResourceReadSource'
 import { isEmbeddedRegex } from './ResourceEmbeddedAssets'
 
 /** Read only the selected resource; replacing rules must never rebind or rewrite a chat. */
 export async function readChatRegexSource(
-  resource: Resource,
+  resource: Resource | ResourceReadSource,
   scope: 'global' | 'preset' | 'character',
 ): Promise<unknown[]> {
   let data: unknown
   if (resource.type === RESOURCE_TYPE.CHARACTER_CARD) data = resource.metadata.card
   else {
-    if (resource.originalBlob.size > 2 * 1024 * 1024)
-      throw new Error('正则来源超过 2 MiB，请先提取需要的正则')
-    data = JSON.parse(await resource.originalBlob.text())
+    const source = 'originalSource' in resource ? resource.originalSource : resource.originalBlob
+    if (source.size > 2 * 1024 * 1024) throw new Error('正则来源超过 2 MiB，请先提取需要的正则')
+    data = JSON.parse(await source.text())
   }
   let rules: unknown = data
   if (isRecord(data)) {
@@ -238,6 +245,97 @@ export async function interactiveChatFrontend(
     colorScheme,
     panelTheme,
   )
+}
+
+/** Script selection is opt-in, content-addressed, and shares the existing helper parser. */
+export async function chatReaderScripts(
+  card: unknown,
+  sources: Array<Resource | ResourceReadSource>,
+  overrides: Record<string, unknown>,
+) {
+  const { hashBytes } = await import('./HashService')
+  const groups = [
+    {
+      id: 'character',
+      name: '角色卡',
+      scripts: extractTavernHelperScripts(
+        isRecord(card) && isRecord(card.data) ? card.data : card,
+        { source: 'character' },
+      ),
+    },
+  ]
+  for (const resource of sources) {
+    if (resource.type !== RESOURCE_TYPE.SCRIPT || resource.metadata.variant === 'stscript')
+      throw new Error('请选择 JavaScript 或 TavernHelper 脚本；不支持 STscript、APK 或链接')
+    const source = 'originalSource' in resource ? resource.originalSource : resource.originalBlob
+    if (source.size > 2 * 1024 * 1024) throw new Error('脚本来源超过 2 MiB，请先提取需要的脚本')
+    const scripts = await readTavernHelperScriptBlob(source, resource.fileName || resource.name, {
+      source: 'bound',
+      fallbackName: resource.name,
+    })
+    if (!scripts.length) throw new Error('这份资源没有可识别的 TavernHelper 脚本')
+    groups.push({ id: resource.id, name: resource.name, scripts })
+  }
+  const rules = []
+  const active: PreviewRuntimeScript[] = []
+  const seen = new Set<string>()
+  let bytes = 0
+  for (const group of groups)
+    for (const script of group.scripts) {
+      const encoded = new TextEncoder().encode(
+        JSON.stringify({ id: script.id, content: script.content, data: script.data }),
+      )
+      bytes += encoded.length
+      if (rules.length >= 64 || bytes > 2 * 1024 * 1024)
+        throw new Error('所选来源合计超过 64 个脚本或 2 MiB，请减少来源')
+      const key = await hashBytes(encoded)
+      if (seen.has(key)) continue
+      seen.add(key)
+      const enabled = overrides[key] === true
+      rules.push({
+        key,
+        name: script.name,
+        folder: script.folder,
+        sourceId: group.id,
+        sourceName: group.name,
+        enabled,
+      })
+      if (enabled) active.push({ ...script, id: key })
+    }
+  return { rules, active }
+}
+
+/** One floor host owns all panels and companion scripts, using only that saved reply. */
+export async function interactiveChatWithScripts(
+  source: string,
+  formatted: ReturnType<typeof formatChatResult>['formatted'],
+  scripts: PreviewRuntimeScript[],
+  snapshot: ArchivedMessageSnapshot,
+  remote: boolean,
+  theme: 'light' | 'dark',
+  readerCss: string,
+  blendColor?: string,
+  panelTheme?: 'paper' | 'green' | 'night',
+) {
+  const libs = await loadPreviewVendorLibs(
+    detectVendorLibNeeds(source + '\n' + scripts.map((script) => script.content).join('\n')),
+  )
+  return buildRichContentPreview(
+    source,
+    snapshot.name,
+    { allowScripts: true, allowRemoteResources: remote },
+    scripts,
+    {
+      vendorLibs: libs,
+      renderShell: 'content',
+      contentTheme: theme,
+      previewSessionContext: {},
+      archivedMessage: snapshot,
+      archivedReaderCss: readerCss,
+      archivedPanelAppearance: { blendColor, panelTheme, colorScheme: theme },
+      preparedMessage: { source, previewSource: source, substitutedSource: source, formatted },
+    },
+  ).document
 }
 
 export interface ChatRenderOptions {

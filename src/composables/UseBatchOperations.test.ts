@@ -144,7 +144,7 @@ describe('useBatchOperations', () => {
 
   it('批量删除移入回收站，用户取消则什么都不做', async () => {
     const all = [item('a')]
-    const { batch, moveToRecycleBin } = setup(all)
+    const { batch, moveToRecycleBin, loadResources } = setup(all)
     batch.toggleResourceSelection(all[0])
 
     confirmMock.mockResolvedValueOnce(false)
@@ -154,6 +154,19 @@ describe('useBatchOperations', () => {
     confirmMock.mockResolvedValueOnce(true)
     await batch.handleBatchDelete()
     expect(moveToRecycleBin).toHaveBeenCalledWith(['a'])
+    expect(loadResources).not.toHaveBeenCalled()
+    expect(batch.selectedResourceIds.value.size).toBe(0)
+    expect(batch.isBatchBusy.value).toBe(false)
+  })
+
+  it('keeps selection and skips extra refresh if moving to recycle bin fails', async () => {
+    const { batch, moveToRecycleBin, loadResources } = setup([item('a')])
+    batch.toggleResourceSelection(item('a'))
+    moveToRecycleBin.mockRejectedValueOnce(new Error('archive failed'))
+    await batch.handleBatchDelete()
+    expect(loadResources).not.toHaveBeenCalled()
+    expect(batch.selectedResourceIds.value.has('a')).toBe(true)
+    expect(batch.isBatchBusy.value).toBe(false)
   })
 
   it('服务层报错时给出提示并解除忙碌状态', async () => {

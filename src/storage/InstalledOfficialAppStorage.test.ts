@@ -15,6 +15,46 @@ vi.mock('@capacitor/core', () => ({
 }))
 
 describe('installed official APP storage', () => {
+  it('reads only the target APP installation record', async () => {
+    const get = vi.fn().mockResolvedValue({ value: { id: 'draw' } })
+    const storage = new InstalledOfficialAppStorage({ settings: { get } } as unknown as AppDatabase)
+    expect(await storage.get('draw')).toEqual({ id: 'draw' })
+    expect(get).toHaveBeenCalledExactlyOnceWith('official-app:draw')
+  })
+  it('checks a 127-file APK package in batches within the native 100-file limit', async () => {
+    vi.stubGlobal('window', { Capacitor: { isNativePlatform: () => true } })
+    nativeFiles.hasOfficialAppFiles.mockImplementation(async ({ files }) => {
+      if (files.length > 100) throw new Error('APP 文件清单无效')
+      return { ready: true }
+    })
+    const storage = new InstalledOfficialAppStorage({} as AppDatabase)
+    const files = Array.from({ length: 127 }, (_, index) => ({
+      path: `/assets/app-${index}.js`,
+      size: 1,
+    }))
+    expect(await storage.hasFiles(files)).toBe(true)
+    expect(
+      nativeFiles.hasOfficialAppFiles.mock.calls.map(([options]) => options.files.length),
+    ).toEqual([100, 27])
+    expect(filesystem.stat).not.toHaveBeenCalled()
+    nativeFiles.hasOfficialAppFiles.mockClear()
+    nativeFiles.hasOfficialAppFiles
+      .mockResolvedValueOnce({ ready: true })
+      .mockResolvedValueOnce({ ready: false })
+    expect(await storage.hasFiles(files)).toBe(false)
+    expect(nativeFiles.hasOfficialAppFiles).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads one APP record by primary key without scanning settings', async () => {
+    const get = vi.fn().mockResolvedValue({ value: { id: 'draw' } })
+    const where = vi.fn()
+    const storage = new InstalledOfficialAppStorage({
+      settings: { get, where },
+    } as unknown as AppDatabase)
+    expect(await storage.get('draw')).toEqual({ id: 'draw' })
+    expect(get).toHaveBeenCalledExactlyOnceWith('official-app:draw')
+    expect(where).not.toHaveBeenCalled()
+  })
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.resetAllMocks()

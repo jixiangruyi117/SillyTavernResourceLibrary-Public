@@ -261,6 +261,12 @@ describe('VaultService', () => {
     const resourceStorage = new IndexedDbResourceStorage(database, vault)
     const categoryStorage = new IndexedDbCategoryStorage(database, vault)
     expect((await resourceStorage.list())[0]?.name).toBe('秘密角色')
+    const fullDecode = vi.spyOn(vault, 'decodeResource')
+    const roleSummary = await resourceStorage.getSummary('resource')
+    expect(roleSummary?.metadata).toEqual(createResource().metadata)
+    expect(roleSummary?.name).toBe('秘密角色')
+    expect(roleSummary).not.toHaveProperty('originalBlob')
+    expect(fullDecode).not.toHaveBeenCalled()
     expect((await resourceStorage.listSummaries())[0]?.name).toBe('秘密角色')
     expect((await resourceStorage.listVersionSummaries())[0]).toMatchObject({
       name: '秘密角色',
@@ -269,6 +275,7 @@ describe('VaultService', () => {
     expect((await categoryStorage.list())[0]?.name).toBe('秘密文件夹')
 
     vault.lock()
+    await expect(resourceStorage.getSummary('resource')).rejects.toThrow('已锁定')
     await expect(resourceStorage.list()).rejects.toThrow('已锁定')
     await expect(vault.unlock('wrong-password')).rejects.toThrow('密码不正确')
     await vault.unlock('correct-password')

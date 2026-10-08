@@ -5,11 +5,71 @@ import { describe, expect, it, vi } from 'vitest'
 import { AppDatabase } from '../database/AppDatabase'
 import { findHistoricalDuplicateGroups } from '../services/ResourceVersionMatcher'
 import { RESOURCE_TYPE, toResourceSummary, type Category, type Resource } from '../types/Resource'
-import { IndexedDbArchiveStorage } from './IndexedDbArchiveStorage'
+import {
+  IndexedDbArchiveStorage,
+  getBackupRecordSummary,
+  listBackupRecordSummaries,
+} from './IndexedDbArchiveStorage'
 import { IndexedDbResourceStorage } from './IndexedDbResourceStorage'
 import type { NativeBackedResourceRecord } from '../types/Vault'
 
 describe('IndexedDbArchiveStorage', () => {
+  it('lists only archive metadata and keeps legacy size fallback without changing stored blobs', async () => {
+    const database = new AppDatabase(`archive-metadata-${crypto.randomUUID()}`)
+    const blob = new Blob(['archive bytes'], { type: 'application/zip' })
+    try {
+      await database.backupRecords.bulkPut([
+        {
+          id: 'old',
+          adapter: 'local-recycle-bin',
+          objectKey: 'old.zip',
+          resourceCount: 1,
+          createdAt: 1,
+          blob,
+        },
+        {
+          id: 'sealed',
+          adapter: 'local-recycle-bin',
+          objectKey: 'sealed.zip',
+          resourceCount: 2,
+          createdAt: 2,
+          blob,
+          size: 99,
+          encrypted: true,
+          encryptionIv: 'iv',
+        },
+        {
+          id: 'other',
+          adapter: 'local-history',
+          objectKey: 'other.zip',
+          resourceCount: 3,
+          createdAt: 3,
+          blob,
+        },
+      ])
+      const records = await listBackupRecordSummaries(database, ['local-recycle-bin'])
+      expect(records).toHaveLength(2)
+      expect(records.find((record) => record.id === 'old')?.size).toBe(blob.size)
+      expect(records.find((record) => record.id === 'sealed')).toMatchObject({
+        size: 99,
+        encrypted: true,
+        encryptionIv: 'iv',
+      })
+      expect(records.every((record) => !('blob' in record))).toBe(true)
+      expect(await getBackupRecordSummary(database, 'old')).toMatchObject({
+        id: 'old',
+        size: blob.size,
+      })
+      expect(await getBackupRecordSummary(database, 'old')).not.toHaveProperty('blob')
+      expect(await getBackupRecordSummary(database, 'missing')).toBeUndefined()
+      expect(await (await database.backupRecords.get('old'))?.blob?.text()).toBe('archive bytes')
+      expect(await listBackupRecordSummaries(database, [])).toEqual([])
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+
   it('resumes completed staging and commits its marker atomically, without replaying replacement', async () => {
     const name = `checkpoint-${crypto.randomUUID()}`
     let database = new AppDatabase(name)

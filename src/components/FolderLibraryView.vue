@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import '../styles/FolderLibrary.css'
 import FeatureAppHeader from './FeatureAppHeader.vue'
 import {
   useFolderLibraryView,
@@ -717,3 +716,4 @@ const {
     </Teleport>
   </section>
 </template>
+<style src="../styles/FolderLibrary.css"></style>

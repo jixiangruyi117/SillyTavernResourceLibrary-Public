@@ -86,6 +86,7 @@ export class CloudBackupTransport {
       githubFetch: (...args) => this.githubFetch(...args),
       ensureGitHubInitialCommit: (...args) => this.ensureGitHubInitialCommit(...args),
       getGitHubRelease: (...args) => this.getGitHubRelease(...args),
+      listGitHubObjectContainers: (...args) => this.listGitHubObjectContainers(...args),
       listGitHubAssets: (...args) => this.listGitHubAssets(...args),
       materializeCloudObject: (...args) => this.materializeCloudObject(...args),
       uploadGitHubAsset: (...args) => this.uploadGitHubAsset(...args),
@@ -279,6 +280,17 @@ export class CloudBackupTransport {
       secret,
       uploaded,
       expectedSize,
+    )
+  }
+
+  protected listGitHubObjectContainers(
+    config: GitHubBackupConfig,
+    secret: string,
+  ): Promise<GitHubRelease[]> {
+    return CloudBackupGitHubTransport.listGitHubObjectContainers(
+      this.getTransportContext(),
+      config,
+      secret,
     )
   }
 

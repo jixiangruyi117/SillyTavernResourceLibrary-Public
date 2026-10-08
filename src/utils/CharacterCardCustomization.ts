@@ -299,13 +299,21 @@ export async function createModifiedCharacterResource(
   resource: Resource,
   relatedResources: Resource[],
   scriptChoice?: GreetingScriptChoice,
+  syncTags = false,
 ): Promise<Resource> {
   if (resource.type !== RESOURCE_TYPE.CHARACTER_CARD) return resource
   const overrides = readCharacterCardOverrides(resource.metadata)
   const sourceCard = isRecord(resource.metadata.card) ? resource.metadata.card : undefined
   if (!sourceCard) throw new Error(`“${resource.name}”缺少可修改的角色卡数据`)
   const contentEdits = readCharacterCardContentEdits(resource.metadata.characterContentEdits)
-  if (!hasCharacterCardOverrides(overrides) && !contentEdits.length) return resource
+  const name = resource.name.trim()
+  const sourceData = isRecord(sourceCard.data) ? sourceCard.data : sourceCard
+  const renamed =
+    name &&
+    (sourceData.name !== name ||
+      (sourceData !== sourceCard && 'name' in sourceCard && sourceCard.name !== name))
+  if (!hasCharacterCardOverrides(overrides) && !contentEdits.length && !renamed && !syncTags)
+    return resource
 
   const replacementContent: CharacterReplacementContent = {}
   if (overrides.worldBookResourceId) {
@@ -338,6 +346,17 @@ export async function createModifiedCharacterResource(
     overrides,
     replacementContent,
   )
+  // Tavern reads the embedded card name; organizing a resource leaves its original bytes intact.
+  if (name) {
+    const data = isRecord(modifiedCard.data) ? modifiedCard.data : modifiedCard
+    data.name = name
+    if (data !== modifiedCard && 'name' in modifiedCard) modifiedCard.name = name
+  }
+  if (syncTags) {
+    const data = isRecord(modifiedCard.data) ? modifiedCard.data : modifiedCard
+    data.tags = [...resource.tags]
+    if (data !== modifiedCard && 'tags' in modifiedCard) modifiedCard.tags = [...resource.tags]
+  }
   const isPng = resource.mimeType === 'image/png' || /\.png$/i.test(resource.fileName)
   const modifiedPngBytes = isPng
     ? await replacePngCharacterChunk(

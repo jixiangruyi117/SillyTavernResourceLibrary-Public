@@ -50,7 +50,7 @@ export function appearanceScopes(
         title: app.name,
         appId: app.id,
         // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-official-ready-selector
-        selector: `.feature-hub[data-feature-page="${app.page}"]`,
+        selector: `.feature-hub[data-feature-page="${app.page}"]${isOfficialAppId(app.id) ? `:has([data-official-app-ready="${app.id}"])` : ''}`,
         // SRL-PUBLIC-SYNC: END REPLACE id=appearance-official-ready-selector
         hint: app.description,
       })),

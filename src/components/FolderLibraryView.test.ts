@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,6 +11,7 @@ import {
   type ResourceType,
 } from '../types/Resource'
 import FolderLibraryView from './FolderLibraryView.vue'
+import { assetStore } from '../core/AppContainer'
 
 const categories: Category[] = [
   {
@@ -123,6 +124,122 @@ describe('FolderLibraryView', () => {
     expect(wrapper.find('.visual-folder__mosaic').exists()).toBe(true)
     expect(wrapper.get('.visual-folder__mosaic img').attributes('src')).toMatch(/^blob:/)
     expect(wrapper.find('.visual-folder__empty-art').exists()).toBe(false)
+  })
+
+  it('shows ready thumbnails before slow ones and does not preload a closed organizer', async () => {
+    const cards = Array.from({ length: 60 }, (_, index) => ({
+      ...resource(`card-${index}`, `卡片${index}`),
+      thumbnailAssetId: `asset-${index}`,
+    }))
+    const pending = new Map<string, (blob: Blob) => void>()
+    const getBlob = vi
+      .spyOn(assetStore, 'getBlob')
+      .mockImplementation((id) => new Promise<Blob>((resolve) => pending.set(id, resolve)))
+    const wrapper = render([], cards, ['card-0', 'card-1', 'card-2', 'card-3'])
+    try {
+      expect(getBlob).toHaveBeenCalledTimes(4)
+      pending.get('asset-0')!(new Blob(['first'], { type: 'image/png' }))
+      await flushPromises()
+      expect(wrapper.get('[data-cabinet-resource-id="card-0"] img').attributes('src')).toMatch(
+        /^blob:/,
+      )
+      expect(wrapper.find('[data-cabinet-resource-id="card-1"] img').exists()).toBe(false)
+      for (let index = 1; index < 4; index++) {
+        pending.get(`asset-${index}`)!(new Blob(['image'], { type: 'image/png' }))
+        await flushPromises()
+      }
+      expect(getBlob).toHaveBeenCalledTimes(4)
+      expect(getBlob).not.toHaveBeenCalledWith('asset-4')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+  it.each([1000, 5000, 10000])(
+    'does not rescan %i folder entries when visible images finish loading',
+    async (size) => {
+      let inspected = 0
+      const emptyImages = Array.from({ length: size }, (_, index) => {
+        const item = resource(`empty-${index}`, '无图片', ['folder-b'])
+        Object.defineProperty(item, 'thumbnailAssetId', {
+          enumerable: true,
+          get: () => {
+            inspected++
+            return undefined
+          },
+        })
+        return item
+      })
+      const pending = new Map<string, (blob: Blob) => void>()
+      const getBlob = vi
+        .spyOn(assetStore, 'getBlob')
+        .mockImplementation((id) => new Promise<Blob>((resolve) => pending.set(id, resolve)))
+      const images = Array.from({ length: 4 }, (_, index) => ({
+        ...resource(`image-${index}`, '封面', ['folder-a']),
+        thumbnailAssetId: `asset-${index}`,
+      }))
+      const wrapper = render(
+        [...categories, { ...categories[0]!, id: 'folder-b', name: '无图文件夹' }],
+        [...images, ...emptyImages],
+      )
+      try {
+        expect(getBlob).toHaveBeenCalledTimes(4)
+        expect(inspected).toBeGreaterThanOrEqual(size)
+        inspected = 0
+        for (const resolve of pending.values()) {
+          resolve(new Blob(['image'], { type: 'image/png' }))
+          await flushPromises()
+        }
+        expect(wrapper.findAll('.visual-folder__mosaic img')).toHaveLength(4)
+        expect(inspected).toBe(0)
+        expect(getBlob).toHaveBeenCalledTimes(4)
+      } finally {
+        wrapper.unmount()
+      }
+    },
+  )
+
+  it('discards late thumbnail reads after leaving the cabinet', async () => {
+    let resolve!: (blob: Blob) => void
+    vi.spyOn(assetStore, 'getBlob').mockImplementation(
+      () =>
+        new Promise<Blob>((done) => {
+          resolve = done
+        }),
+    )
+    const create = vi.spyOn(URL, 'createObjectURL')
+    const wrapper = render(
+      [],
+      [{ ...resource('card', '卡片'), thumbnailAssetId: 'asset' }],
+      ['card'],
+    )
+    wrapper.unmount()
+    resolve(new Blob(['late']))
+    await flushPromises()
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('keeps loading other images when one asset is unavailable and reads again on reentry', async () => {
+    const getBlob = vi.spyOn(assetStore, 'getBlob').mockImplementation(async (id) => {
+      if (id === 'missing') throw new Error('missing thumbnail')
+      return new Blob(['image'], { type: 'image/png' })
+    })
+    const cards = [
+      { ...resource('a', '缺失'), thumbnailAssetId: 'missing' },
+      { ...resource('b', '正常'), thumbnailAssetId: 'ready' },
+    ]
+    for (let entry = 0; entry < 2; entry++) {
+      const wrapper = render([], cards, ['a', 'b'])
+      try {
+        await flushPromises()
+        expect(wrapper.get('[data-cabinet-resource-id="b"] img').attributes('src')).toMatch(
+          /^blob:/,
+        )
+        expect(wrapper.find('[data-cabinet-resource-id="a"] img').exists()).toBe(false)
+      } finally {
+        wrapper.unmount()
+      }
+    }
+    expect(getBlob).toHaveBeenCalledTimes(4)
   })
 
   it('opens a visual folder inside the cabinet and returns without leaving it', async () => {
@@ -1017,4 +1134,73 @@ it('retains unchanged image URLs and releases only replaced or removed thumbnail
   wrapper.unmount()
   expect(revoke).toHaveBeenCalledWith('blob:c')
   vi.unstubAllGlobals()
+})
+
+it('shows completed covers before slow covers and ignores results after leaving', async () => {
+  const resolvers = new Map<string, (blob: Blob) => void>()
+  const getBlob = vi
+    .spyOn(assetStore, 'getBlob')
+    .mockImplementation((id) => new Promise((resolve) => resolvers.set(id, resolve)))
+  const create = vi.fn().mockReturnValue('blob:ready-cover')
+  const revoke = vi.fn()
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }))
+  const cards = ['a', 'b', 'c', 'd'].map((id) => ({
+    ...resource(id, id, ['folder-a']),
+    thumbnailAssetId: id,
+  }))
+  const wrapper = render(categories, cards)
+  try {
+    await flushPromises()
+    expect(getBlob).toHaveBeenCalledTimes(4)
+    resolvers.get('b')!(new Blob(['ready']))
+    await flushPromises()
+    expect(wrapper.find('img[src="blob:ready-cover"]').exists()).toBe(true)
+    expect(create).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    expect(revoke).toHaveBeenCalledWith('blob:ready-cover')
+    for (const id of ['a', 'c', 'd']) resolvers.get(id)!(new Blob(['late']))
+    await flushPromises()
+    expect(create).toHaveBeenCalledTimes(1)
+  } finally {
+    wrapper.unmount()
+    getBlob.mockRestore()
+    vi.unstubAllGlobals()
+  }
+})
+
+it('limits cover reads to four even with a 10,000-resource library', async () => {
+  const resolvers = new Map<string, (blob: Blob) => void>()
+  let active = 0
+  let peak = 0
+  const getBlob = vi.spyOn(assetStore, 'getBlob').mockImplementation((id) => {
+    active++
+    peak = Math.max(peak, active)
+    return new Promise((resolve) =>
+      resolvers.set(id, (blob) => {
+        active--
+        resolve(blob)
+      }),
+    )
+  })
+  const cards = Array.from({ length: 10000 }, (_, index) => ({
+    ...resource(`r${index}`, `R${index}`),
+    thumbnailAssetId: `asset${index}`,
+  }))
+  const wrapper = render(
+    [],
+    cards,
+    cards.slice(0, 6).map((card) => card.id),
+  )
+  try {
+    await flushPromises()
+    expect(getBlob).toHaveBeenCalledTimes(4)
+    expect(peak).toBe(4)
+    wrapper.unmount()
+    for (const resolve of resolvers.values()) resolve(new Blob(['late']))
+    await flushPromises()
+    expect(getBlob).toHaveBeenCalledTimes(4)
+  } finally {
+    wrapper.unmount()
+    getBlob.mockRestore()
+  }
 })

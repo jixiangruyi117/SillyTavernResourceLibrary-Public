@@ -62,10 +62,17 @@ const resourceApi = {
   mergeExistingResourceAsVersion: vi.fn(async () => current),
 }
 const confirmApi = vi.fn(async (_options: unknown) => true)
+const loadVersionRecognitionSnapshot = vi.fn(async () => {
+  const [resources, versions] = await Promise.all([
+    resourceApi.listSummaries(),
+    resourceApi.listVersionSummaries(),
+  ])
+  return { resources, versions, backfilled: 0 }
+})
 
 vi.mock('../core/AppContainer', () => ({
   get resourceService() {
-    return resourceApi
+    return { ...resourceApi, loadVersionRecognitionSnapshot }
   },
 }))
 vi.mock('../composables/UseConfirmDialog', () => ({
@@ -80,6 +87,40 @@ describe('VersionRecognitionPanel', () => {
     resourceApi.listSummaries.mockResolvedValue([current])
     resourceApi.listVersionSummaries.mockResolvedValue([archived])
     confirmApi.mockResolvedValue(true)
+  })
+
+  it('大量历史项只渲染当前页，跨页勾选及全选仍覆盖完整范围', async () => {
+    const versions = Array.from({ length: 105 }, (_, index) =>
+      summary({
+        id: `h${index}`,
+        versionGroupId: current.id,
+        versionLabel: `版本${index}`,
+        fileName: `history-${index}.png`,
+        contentHash: `hash-${index}`,
+        versionImportedAt: index,
+      }),
+    )
+    resourceApi.listVersionSummaries.mockResolvedValue(versions)
+    const wrapper = mount(VersionRecognitionPanel, { props: { resources: [current] } })
+    await flushPromises()
+    expect(wrapper.findAll('.version-recognition__history-items input')).toHaveLength(40)
+    await wrapper.get('.version-recognition__history-items input').setValue(true)
+    await wrapper.get('nav[aria-label="历史版本分页"]').findAll('button')[1]!.trigger('click')
+    expect(wrapper.findAll('.version-recognition__history-items input')).toHaveLength(40)
+    await wrapper.get('.version-recognition__history-items input').setValue(true)
+    expect(wrapper.text()).toContain('已选 2 / 105 个历史版本')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '全选历史版本')!
+      .trigger('click')
+    expect(wrapper.text()).toContain('已选 105 / 105 个历史版本')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '删除选中的历史版本')!
+      .trigger('click')
+    await flushPromises()
+    expect(resourceApi.deleteVersions.mock.calls[0]![1]).toHaveLength(105)
+    wrapper.unmount()
   })
 
   it('同名弱候选需人工选择，合并确认明确其依据且支持搜索保留项', async () => {
@@ -192,7 +233,8 @@ describe('VersionRecognitionPanel', () => {
     await scanButton.trigger('click')
     await flushPromises()
 
-    expect(resourceApi.backfillCardFingerprints).toHaveBeenCalledTimes(2)
+    expect(loadVersionRecognitionSnapshot).toHaveBeenCalledTimes(2)
+    expect(resourceApi.backfillCardFingerprints).not.toHaveBeenCalled()
     expect(resourceApi.listSummaries).toHaveBeenCalledTimes(2)
     expect(resourceApi.listVersionSummaries).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('1 项')

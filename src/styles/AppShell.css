@@ -266,10 +266,16 @@
 
 .library__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: clamp(1.5rem, 3vw, 2rem);
   min-height: var(--layout-hero-height);
+}
+
+.library__header > div:first-child {
+  flex: 1 1 24rem;
+  min-width: 0;
 }
 
 .library__title {
@@ -294,7 +300,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-control);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .feature-hub-trigger,

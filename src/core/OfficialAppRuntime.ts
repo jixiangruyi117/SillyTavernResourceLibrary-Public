@@ -16,8 +16,7 @@ import { getOfficialAppShellFiles } from '../utils/OfficialAppBuildCatalog'
 
 export const fetchOfficialAppAsset: typeof fetch = (input, init) => {
   const nativeFetch = (window as Window & { CapacitorWebFetch?: typeof fetch }).CapacitorWebFetch
-  if (isCapacitorApp() && !nativeFetch) throw new Error('原生下载通道不可用，请更新 APK')
-  return (nativeFetch ?? window.fetch).call(window, input, init)
+  return (typeof nativeFetch === 'function' ? nativeFetch : window.fetch).call(window, input, init)
 }
 const shellManifestUrl = new URL('/official-app-assets.json', location.origin)
 let shellFiles: Promise<Record<string, { size: number; sha256: string }>> | undefined
@@ -78,12 +77,18 @@ export const officialAppService = new OfficialAppService(
 )
 
 let preinstalledApps: Promise<void> | undefined
+const OPTIONAL_DOWNLOAD_ONLY_APP_IDS = new Set<OfficialAppId>(['assistant'])
 export function ensurePreinstalledOfficialApps(): Promise<void> {
   if (!__SRL_PREINSTALL_OFFICIAL_APPS__ || !isCapacitorApp()) return Promise.resolve()
   const marker = `srl.officialApps.preinstalled.${BUILD_INFO.buildId}`
   if (localStorage.getItem(marker) === 'done') return Promise.resolve()
   preinstalledApps ??= (async () => {
-    for (const id of OFFICIAL_APP_IDS) await officialAppService.install(id)
+    for (const id of OFFICIAL_APP_IDS)
+      if (
+        !OPTIONAL_DOWNLOAD_ONLY_APP_IDS.has(id) &&
+        (!__SRL_PREINSTALL_OFFICIAL_APP_IDS__ || __SRL_PREINSTALL_OFFICIAL_APP_IDS__.includes(id))
+      )
+        if (!(await officialAppService.ready(id))) await officialAppService.install(id)
     localStorage.setItem(marker, 'done')
   })().catch((error: unknown) => {
     preinstalledApps = undefined

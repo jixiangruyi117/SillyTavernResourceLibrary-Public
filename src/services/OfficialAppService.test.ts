@@ -7,6 +7,59 @@ import type { OfficialAppPackageStorage } from '../storage/OfficialAppPackageSto
 import type { InstalledOfficialApp, OfficialAppId, OfficialAppPackage } from '../types/OfficialApp'
 
 describe('official APP package lifecycle', () => {
+  it('retains the installed directory across entries and publishes real installation changes', async () => {
+    const { service } = await fixture()
+    const list = vi.spyOn(storage, 'list')
+    const changes = vi.fn()
+    const stop = service.subscribeInstalled(changes)
+    await Promise.all([service.loadInstalled(), service.loadInstalled()])
+    expect(list).toHaveBeenCalledOnce()
+    await service.loadInstalled()
+    expect(list).toHaveBeenCalledOnce()
+    await service.install('draw')
+    expect(service.installedSnapshot.map((app) => app.id)).toEqual(['draw'])
+    await service.uninstall('draw', false)
+    expect(service.installedSnapshot).toEqual([])
+    expect(changes).toHaveBeenLastCalledWith([])
+    stop()
+  })
+
+  it('opens without checking package files and detects same-sized corruption on an explicit status check', async () => {
+    const { service } = await fixture()
+    await service.install('draw')
+    const hasFile = vi.spyOn(storage, 'hasFile')
+    const hash = vi.spyOn(storage, 'hasFileHash')
+    await service.getReadyPackage('draw')
+    await service.getReadyPackage('draw')
+    expect(hasFile).not.toHaveBeenCalled()
+    expect(hash).not.toHaveBeenCalled()
+    files.set('/assets/draw-123.js', new Uint8Array(files.get('/assets/draw-123.js')!.length))
+    expect(await service.checkInstalledStatus()).toEqual([{ id: 'draw', ready: false }])
+    expect(await service.ready('draw')).toBe(false)
+    expect(await service.getReadyPackage('draw')).toBeUndefined()
+    await service.install('draw')
+    expect(await service.getReadyPackage('draw')).toMatchObject({ id: 'draw' })
+    expect(await service.checkInstalledStatus()).toEqual([{ id: 'draw', ready: true }])
+  })
+  it('opens an installed APP with a targeted settings read and no full installation scan', async () => {
+    const { service } = await fixture()
+    await service.install('draw')
+    storage.get = vi.fn(async (id) => records.get(id))
+    const list = vi
+      .spyOn(storage, 'list')
+      .mockRejectedValue(new Error('must not scan all APP settings'))
+    expect(await service.getReadyPackage('draw')).toMatchObject({ id: 'draw' })
+    expect(storage.get).toHaveBeenCalledExactlyOnceWith('draw')
+    expect(list).not.toHaveBeenCalled()
+  })
+  it('does not commit or report a successful installation when final readiness fails', async () => {
+    const { service } = await fixture()
+    storage.hasFiles = async () => false
+    await expect(service.install('draw')).rejects.toThrow('可启动')
+    expect(records.has('draw')).toBe(false)
+    expect(files.size).toBe(0)
+  })
+
   let records: Map<OfficialAppId, InstalledOfficialApp>
   let files: Map<string, Uint8Array>
   let storage: OfficialAppPackageStorage
@@ -110,6 +163,146 @@ describe('official APP package lifecycle', () => {
     )
     return { service, fetcher, app, bytes }
   }
+  async function batchFixture(ids: OfficialAppId[]) {
+    const packages = await Promise.all(ids.map((id) => fixture(id)))
+    const apps = Object.assign(
+      {},
+      ...(await Promise.all(
+        packages.map(
+          async ({ fetcher }) =>
+            (await (await fetcher('https://library.test/official-apps/catalog.json')).json()).apps,
+        ),
+      )),
+    )
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input).endsWith('catalog.json'))
+        return new Response(JSON.stringify({ schemaVersion: 1, hostApiVersion: 1, apps }))
+      const pkg = packages.find(({ app }) => String(input).endsWith(`/${app.id}.srlapp`))!
+      return new Response(new Uint8Array(pkg.bytes).buffer)
+    })
+    const service = new OfficialAppService(
+      storage,
+      'test-shell',
+      fetcher,
+      'https://library.test',
+      clearData,
+      clearStyles,
+      1,
+    )
+    return { service, fetcher, packages }
+  }
+
+  it('downloads at most two packages together and commits files one APP at a time', async () => {
+    const { service, fetcher, packages } = await batchFixture(['draw', 'stitch', 'chatReader'])
+    const release = new Map<string, () => void>()
+    const originalFetch = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, options) => {
+      if (!String(input).endsWith('catalog.json')) {
+        await new Promise<void>((resolve) => release.set(String(input), resolve))
+      }
+      return originalFetch(input, options)
+    })
+    let writing = 0
+    let maximumWriting = 0
+    const originalWrite = storage.writeFile
+    storage.writeFile = async (...args) => {
+      writing++
+      maximumWriting = Math.max(maximumWriting, writing)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      await originalWrite(...args)
+      writing--
+    }
+    const installing = service.installMany(['draw', 'stitch', 'chatReader'])
+    await vi.waitFor(() => expect(release.size).toBe(2))
+    expect(records.size).toBe(0)
+    release.get('https://library.test/official-apps/test-shell/draw.srlapp')!()
+    await vi.waitFor(() => expect(release.size).toBe(3))
+    for (const resolve of release.values()) resolve()
+    expect(await installing).toEqual(packages.map(({ app }) => ({ id: app.id })))
+    expect(maximumWriting).toBe(1)
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('catalog.json'))).toHaveLength(
+      1,
+    )
+    expect(records.size).toBe(3)
+  })
+
+  it('reuses only shared file hashes proved within the batch and deduplicates selected APPs', async () => {
+    const { service } = await batchFixture(['draw', 'stitch'])
+    storage.hasFileHash = vi.fn(storage.hasFileHash)
+    expect(await service.installMany(['draw', 'draw', 'stitch'])).toEqual([
+      { id: 'draw' },
+      { id: 'stitch' },
+    ])
+    expect(
+      vi
+        .mocked(storage.hasFileHash)
+        .mock.calls.filter(([path]) => path === '/assets/shared-123.js'),
+    ).toHaveLength(2)
+    vi.mocked(storage.hasFileHash).mockClear()
+    await service.installMany(['draw', 'stitch'])
+    expect(
+      vi
+        .mocked(storage.hasFileHash)
+        .mock.calls.filter(([path]) => path === '/assets/shared-123.js'),
+    ).toHaveLength(1)
+  })
+
+  it('rolls back one failed installation, invalidates shared proof, and finishes other selected APPs', async () => {
+    const { service } = await batchFixture(['draw', 'stitch'])
+    const originalSave = storage.save
+    storage.save = async (app) => {
+      if (app.id === 'draw') throw new Error('quota')
+      await originalSave(app)
+    }
+    const result = await service.installMany(['draw', 'stitch'])
+    expect(result[0]?.error?.message).toBe('quota')
+    expect(result[1]).toEqual({ id: 'stitch' })
+    expect(records.has('draw')).toBe(false)
+    expect((await service.getReadyPackage('stitch'))?.id).toBe('stitch')
+    expect(files.has('/assets/draw-123.js')).toBe(false)
+    expect(files.has('/assets/shared-123.js')).toBe(true)
+  })
+  it('reports real download bytes and rejects an APP in use before its package is fetched', async () => {
+    const { service, fetcher, packages } = await batchFixture(['draw', 'stitch'])
+    const request = navigator.locks.request.bind(navigator.locks)
+    vi.spyOn(navigator.locks, 'request').mockImplementation(
+      async (name, optionsOrAction, action) => {
+        if (name === 'srl-official-app-use:draw') return action!(null as never)
+        return request(name, optionsOrAction as never, action as never)
+      },
+    )
+    const progress = vi.fn()
+    const results = await service.installMany(['draw', 'stitch'], progress)
+    expect(results[0]?.error?.message).toContain('其他页面正在使用')
+    expect(results[1]).toEqual({ id: 'stitch' })
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/draw.srlapp'))).toBe(false)
+    expect(progress).toHaveBeenCalledWith({
+      id: 'stitch',
+      stage: 'downloading',
+      downloadedBytes: packages[1]!.bytes.length,
+      totalBytes: packages[1]!.bytes.length,
+    })
+    expect(progress).toHaveBeenCalledWith({
+      id: 'stitch',
+      stage: 'installing',
+      completedFiles: 2,
+      totalFiles: 2,
+    })
+    expect(progress).toHaveBeenCalledWith({ id: 'stitch', stage: 'done' })
+    expect(
+      progress.mock.calls.some(([event]) => event.id === 'draw' && event.stage === 'done'),
+    ).toBe(false)
+  })
+  it('reads only the requested installation during readiness checks', async () => {
+    const { service } = await fixture()
+    await service.install('draw')
+    storage.get = vi.fn(async (id) => records.get(id))
+    const list = vi.spyOn(storage, 'list')
+    expect(await service.ready('draw')).toBe(true)
+    expect(storage.get).toHaveBeenCalledExactlyOnceWith('draw')
+    expect(list).not.toHaveBeenCalled()
+  })
+
   it('installs verified program bytes, retains user data on uninstall, then reinstalls', async () => {
     const { service, fetcher } = await fixture()
     await service.install('draw')
@@ -759,14 +952,14 @@ describe('official APP package lifecycle', () => {
     expect(clearStyles).not.toHaveBeenCalled()
   })
 
-  it('opens the matching Vue runtime offline without reading a newer shell manifest', async () => {
+  it('opens offline after validating shared services against the local shell manifest', async () => {
     const { app, fetcher } = await fixture('draw', (app) => {
       app.assetMode = 'self-contained'
       app.runtimeEntry = app.files[1]!.path
     })
-    const getShellFiles = vi.fn(async () => {
-      throw new Error('No network or newer shell manifest')
-    })
+    const getShellFiles = vi.fn(async () =>
+      Object.fromEntries(app.files.map((file) => [file.path, file])),
+    )
     const service = new OfficialAppService(
       storage,
       'rebuilt-shell',
@@ -781,7 +974,7 @@ describe('official APP package lifecycle', () => {
     await service.install('draw')
     fetcher.mockClear()
     await expect(service.ready('draw')).resolves.toBe(true)
-    expect(getShellFiles).not.toHaveBeenCalled()
+    expect(getShellFiles).toHaveBeenCalled()
     expect(fetcher).not.toHaveBeenCalled()
   })
 
@@ -798,7 +991,7 @@ describe('official APP package lifecycle', () => {
       clearData,
       clearStyles,
       1,
-      async () => ({}),
+      async () => Object.fromEntries(app.files.map((file) => [file.path, file])),
       app.runtimeEntry,
     )
     await oldShell.install('draw')
@@ -825,9 +1018,7 @@ describe('official APP package lifecycle', () => {
       clearData,
       clearStyles,
       1,
-      async () => {
-        throw new Error('No online shell manifest needed')
-      },
+      async () => Object.fromEntries(app.files.map((file) => [file.path, file])),
       app.runtimeEntry,
     )
     await expect(newShell.ready('draw')).resolves.toBe(true)
@@ -854,9 +1045,7 @@ describe('official APP package lifecycle', () => {
         clearData,
         clearStyles,
         1,
-        async () => {
-          throw new Error('Must not read latest manifest')
-        },
+        async () => Object.fromEntries(app.files.map((file) => [file.path, file])),
         app.runtimeEntry,
       )
       await service.install('draw')
@@ -909,12 +1098,38 @@ describe('official APP package lifecycle', () => {
       clearData,
       clearStyles,
       1,
-      async () => ({}),
+      async () => Object.fromEntries(app.files.map((file) => [file.path, file])),
       app.runtimeEntry,
     )
     await service.install('draw')
     expect(records.get('draw')!.appContentRevision).toBe(1)
     await expect(service.availableUpdates()).resolves.toEqual({})
+  })
+
+  it('rejects old database/service modules even when the Vue renderer is unchanged', async () => {
+    const { app, fetcher } = await fixture('draw', (candidate) => {
+      candidate.assetMode = 'self-contained'
+      candidate.runtimeEntry = candidate.files[1]!.path
+      candidate.hostFiles = candidate.files.map((file) => ({ ...file }))
+    })
+    const shellFiles = Object.fromEntries(app.files.map((file) => [file.path, { ...file }]))
+    const service = new OfficialAppService(
+      storage,
+      'current-shell',
+      fetcher,
+      'https://library.test',
+      clearData,
+      clearStyles,
+      1,
+      async () => shellFiles,
+      app.runtimeEntry,
+    )
+    await service.install('draw')
+    shellFiles[app.entry] = { ...shellFiles[app.entry]!, sha256: 'f'.repeat(64) }
+    await expect(service.ready('draw')).resolves.toBe(false)
+    expect(records.get('draw')).toBeDefined()
+    expect(clearData).not.toHaveBeenCalled()
+    await expect(service.install('draw')).rejects.toThrow()
   })
 
   it('reports a host incompatibility even when a newer content revision is also available', async () => {

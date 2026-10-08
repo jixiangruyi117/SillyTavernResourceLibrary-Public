@@ -3,7 +3,7 @@ import '../styles/ConfirmDialog.css'
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { defineAsyncComponent } from 'vue'
 
-import { useConfirmDialogState } from '../composables/UseConfirmDialog'
+import { useConfirmDialogState, type ConfirmDialogResponse } from '../composables/UseConfirmDialog'
 import { SRL_BACK_REQUEST_EVENT, type SrlBackRequestDetail } from '../composables/UseBackStack'
 import { triggerNativeHaptic } from '../core/NativeHaptics'
 
@@ -18,6 +18,23 @@ const tokenReview = ref<{ closeDetail: () => void }>()
 const detailsOpen = ref(false)
 // SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-dialog-state
 let returnFocus: HTMLElement | undefined
+
+function openModal(element: HTMLDialogElement | undefined): void {
+  if (!element || element.open) return
+  // Some embedded WebViews return successfully from showModal() without reliably
+  // placing the confirmation above their surrounding app sheet.
+  element.classList.add('confirm-dialog__overlay--safety-layer')
+  try {
+    if (typeof element.showModal === 'function') {
+      element.showModal()
+      if (element.open) return
+    }
+  } catch {
+    // Some embedded WebViews expose showModal but fail to enter the top layer.
+  }
+  element.classList.add('confirm-dialog__overlay--fallback')
+  element.setAttribute('open', '')
+}
 
 // 危险操作默认聚焦取消，避免回车误确认；普通操作聚焦确认。
 watch(
@@ -35,7 +52,7 @@ watch(
       returnFocus =
         document.activeElement instanceof HTMLElement ? document.activeElement : undefined
     await nextTick()
-    if (!modal.value?.open) modal.value?.showModal()
+    openModal(modal.value)
     ;(dialog.danger ? cancelButton.value : confirmButton.value)?.focus({ preventScroll: true })
   },
   { immediate: true },
@@ -77,7 +94,7 @@ function cancelOrReturn(): void {
   respond('cancel')
 }
 
-function respondWithHaptic(response: 'confirm' | 'cancel' | 'alternative'): void {
+function respondWithHaptic(response: ConfirmDialogResponse): void {
   if (response === 'confirm')
     triggerNativeHaptic(activeDialog.value?.danger ? 'warning' : 'confirm')
   respond(response)
@@ -96,7 +113,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown, true)
   window.removeEventListener(SRL_BACK_REQUEST_EVENT, handleBack, true)
-  modal.value?.close()
+  if (typeof modal.value?.close === 'function') modal.value.close()
 })
 </script>
 
@@ -128,7 +145,10 @@ onUnmounted(() => {
         />
         <p v-else>{{ activeDialog.message }}</p>
         <!-- SRL-PUBLIC-SYNC: END REPLACE id=assistant-token-review-dialog-content -->
-        <footer v-if="!detailsOpen">
+        <footer
+          v-if="!detailsOpen"
+          :class="{ 'confirm-dialog__choices': activeDialog.additionalLabel }"
+        >
           <button ref="cancelButton" type="button" @click="respondWithHaptic('cancel')">
             {{ activeDialog.cancelLabel }}
           </button>
@@ -138,6 +158,13 @@ onUnmounted(() => {
             @click="respondWithHaptic('alternative')"
           >
             {{ activeDialog.alternativeLabel }}
+          </button>
+          <button
+            v-if="activeDialog.additionalLabel"
+            type="button"
+            @click="respondWithHaptic('additional')"
+          >
+            {{ activeDialog.additionalLabel }}
           </button>
           <button
             ref="confirmButton"

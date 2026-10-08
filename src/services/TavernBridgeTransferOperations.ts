@@ -129,6 +129,7 @@ export interface IncomingTransfer {
   chunks: Array<ArrayBuffer | undefined>
   received: number
   file?: File
+  verifiedSha256?: string
   localDirectSession?: LocalTavernDirectSession
 }
 
@@ -187,12 +188,16 @@ export async function sendFiles(
     try {
       // 对端声明 gzip 能力时压缩 JSON 类资源；size/sha256 描述实际传输载荷，
       // 旧端的分块记账与完整性校验因此保持不变。
-      const useGzip =
+      let useGzip =
         context.peerCapabilities.includes('gzip') &&
         supportsBridgeGzip() &&
         isCompressibleKind(item.kind) &&
         item.file.size > BRIDGE_COMPRESS_MIN_BYTES
-      const payload = useGzip ? await gzipBlob(item.file) : item.file
+      let payload = useGzip ? await gzipBlob(item.file) : item.file
+      if (payload.size >= item.file.size) {
+        payload = item.file
+        useGzip = false
+      }
       throwIfAborted(options.signal)
       const sha256 = await bridgeSha256(payload)
       throwIfAborted(options.signal)
@@ -385,6 +390,7 @@ export async function handlePortMessage(
           chunks: [],
           received: direct.file.size,
           file: direct.file,
+          verifiedSha256: direct.sha256,
           localDirectSession,
         })
       } catch (error) {
@@ -475,15 +481,17 @@ export async function finishIncoming(
     })
   if (
     blob.size !== Number(transfer.meta.size) ||
-    (await bridgeSha256(blob)) !== transfer.meta.sha256
+    (transfer.verifiedSha256 ?? (await bridgeSha256(blob))) !== transfer.meta.sha256
   ) {
     throw new Error(`${String(transfer.meta.name)} 完整性校验失败`)
   }
   let content: Blob = blob
   if (transfer.meta.contentEncoding === 'gzip') {
-    content = await gunzipBlob(blob)
     const rawSize = Number(transfer.meta.rawSize)
-    if (Number.isFinite(rawSize) && rawSize > 0 && content.size !== rawSize) {
+    if (!Number.isSafeInteger(rawSize) || rawSize < 1 || rawSize > TAVERN_BRIDGE_MAX_FILE_SIZE)
+      throw new Error('压缩文件的原始大小无效')
+    content = await gunzipBlob(blob, rawSize)
+    if (content.size !== rawSize) {
       throw new Error(`${String(transfer.meta.name)} 解压后大小与声明不符`)
     }
   }

@@ -248,28 +248,6 @@ internal fun SettingsScreen(
         item {
             InfoCard("版本", "${BuildConfig.VERSION_NAME}\n本机资源：$resourceCount 项") {}
         }
-        // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=native-worker-settings
-        item {
-            InfoCard("SRL Worker 地址", "用于酒馆设备码中继等需要部署前 Worker 的功能。先 fork 并部署 SRL-Worker-Public，再填写 Worker 的 HTTPS 根地址；Discord Bridge 仍在其独立设置中配置。") {
-                OutlinedTextField(
-                    value = workerAddress,
-                    onValueChange = { workerAddress = it },
-                    label = { Text("Worker HTTPS 根地址") },
-                    placeholder = { Text("https://your-worker.workers.dev") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(
-                    onClick = {
-                        workerAddressMessage = runCatching { onSaveWorkerOrigin(workerAddress).also { workerAddress = it } }
-                            .fold({ "Worker 地址已保存" }, { it.message ?: "Worker 地址无效" })
-                    },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                ) { Text("保存 Worker 地址") }
-                if (workerAddressMessage.isNotBlank()) Text(workerAddressMessage, color = inkSoft)
-            }
-        }
-        // SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=native-worker-settings
         item {
             InfoCard("本地数据", "资源原件和 library-index.json 保存到手机的 SRL 本地目录；SQLite 仅作为查询索引。\n\n位置：$storagePath\n\n卸载或更换手机前，请先导出 ZIP 备份。") {
                 if (legacyLibraryHistory.files.isNotEmpty()) {

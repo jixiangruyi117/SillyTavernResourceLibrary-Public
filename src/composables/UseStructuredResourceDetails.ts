@@ -8,25 +8,15 @@ import {
   hasBlockedRegexPreviewContent,
 } from '../utils/RegexStaticPreview'
 import { isRecord } from '../utils/UnknownValue'
+import { readWorldBookEntries } from '../utils/WorldBookEntries'
 
 export type StructuredResourceDetailsProps = {
   resource: Resource
   relatedResources?: ResourceSummary[]
+  disabled?: boolean
 }
 
 export type PresetPage = 'overview' | 'prompts' | 'regex'
-
-export interface WorldEntryView {
-  id: string
-  title: string
-  primaryKeys: string[]
-  secondaryKeys: string[]
-  content: string
-  enabled: boolean
-  mode: string
-  position: string
-  probability: string
-}
 
 export interface RegexScriptView {
   id: string
@@ -64,23 +54,6 @@ export function useStructuredResourceDetails(props: Readonly<StructuredResourceD
   const rawContent = shallowRef<unknown>()
 
   const rawError = shallowRef('')
-
-  const worldQuery = ref('')
-
-  const worldFilter = ref<'all' | 'enabled' | 'constant' | 'disabled'>('all')
-
-  const worldPage = ref(1)
-
-  const selectedWorldEntryId = ref('')
-
-  const WORLD_PAGE_SIZE = 10
-
-  const WORLD_FILTERS = [
-    { id: 'all', label: '全部' },
-    { id: 'enabled', label: '已启用' },
-    { id: 'constant', label: '常驻' },
-    { id: 'disabled', label: '已停用' },
-  ] as const
 
   const regexQuery = ref('')
 
@@ -147,15 +120,12 @@ export function useStructuredResourceDetails(props: Readonly<StructuredResourceD
   }
 
   watch(
-    () => props.resource,
-    async (resource) => {
+    () => `${props.resource.id}:${props.resource.contentHash}`,
+    async () => {
+      const resource = props.resource
       const generation = ++loadGeneration
       rawContent.value = undefined
       rawError.value = ''
-      worldQuery.value = ''
-      worldFilter.value = 'all'
-      worldPage.value = 1
-      selectedWorldEntryId.value = ''
       regexQuery.value = ''
       regexFilter.value = 'all'
       regexPage.value = 1
@@ -179,99 +149,7 @@ export function useStructuredResourceDetails(props: Readonly<StructuredResourceD
 
   const rootRecord = computed(() => (isRecord(rawContent.value) ? rawContent.value : undefined))
 
-  const worldEntries = computed<WorldEntryView[]>(() => {
-    const entries = rootRecord.value?.entries
-    const values = Array.isArray(entries)
-      ? entries
-      : isRecord(entries)
-        ? Object.entries(entries).map(([id, value]) =>
-            isRecord(value) && value.uid == null ? { ...value, uid: id } : value,
-          )
-        : []
-
-    return values.filter(isRecord).map((entry, index) => {
-      const extensions = isRecord(entry.extensions) ? entry.extensions : {}
-      const isVectorized = entry.vectorized === true || extensions.vectorized === true
-      const probabilityValue = entry.probability ?? extensions.probability
-      const probability =
-        typeof probabilityValue === 'number'
-          ? `${probabilityValue <= 1 ? Math.round(probabilityValue * 100) : probabilityValue}%`
-          : '默认'
-      const primaryKeys = readStringArray(entry.keys ?? entry.key)
-      return {
-        id: readString(entry.uid ?? entry.id) || String(index + 1),
-        title: readString(entry.comment) || primaryKeys.join('、') || `条目 ${index + 1}`,
-        primaryKeys,
-        secondaryKeys: readStringArray(entry.secondary_keys ?? entry.keysecondary),
-        content: readString(entry.content),
-        enabled: entry.enabled !== false && entry.disable !== true,
-        mode: entry.constant === true ? '常驻' : isVectorized ? '向量化' : '关键词触发',
-        position: formatSimpleValue(entry.position ?? extensions.position),
-        probability,
-      }
-    })
-  })
-
-  const filteredWorldEntries = computed(() => {
-    const query = worldQuery.value.trim().toLocaleLowerCase()
-    return worldEntries.value.filter((entry) => {
-      const matchesFilter =
-        worldFilter.value === 'all' ||
-        (worldFilter.value === 'enabled' && entry.enabled) ||
-        (worldFilter.value === 'disabled' && !entry.enabled) ||
-        (worldFilter.value === 'constant' && entry.enabled && entry.mode === '常驻')
-      if (!matchesFilter) return false
-      if (!query) return true
-      return [entry.title, entry.content, ...entry.primaryKeys, ...entry.secondaryKeys]
-        .join('\n')
-        .toLocaleLowerCase()
-        .includes(query)
-    })
-  })
-
-  const worldPageCount = computed(() =>
-    Math.max(1, Math.ceil(filteredWorldEntries.value.length / WORLD_PAGE_SIZE)),
-  )
-
-  const pagedWorldEntries = computed(() => {
-    const start = (worldPage.value - 1) * WORLD_PAGE_SIZE
-    return filteredWorldEntries.value.slice(start, start + WORLD_PAGE_SIZE)
-  })
-
-  const selectedWorldEntry = computed(() =>
-    worldEntries.value.find((entry) => entry.id === selectedWorldEntryId.value),
-  )
-
-  const selectedWorldEntryStatus = computed(() => {
-    const entry = selectedWorldEntry.value
-    return entry ? `${entry.mode} · ${entry.enabled ? '已启用' : '已停用'}` : ''
-  })
-
-  const worldPageLabel = computed(
-    () =>
-      `第 ${worldPage.value} / ${worldPageCount.value} 页 · ${filteredWorldEntries.value.length} 条`,
-  )
-
-  watch([worldQuery, worldFilter], () => {
-    worldPage.value = 1
-    selectedWorldEntryId.value = ''
-  })
-
-  watch(worldPageCount, (count) => {
-    if (worldPage.value > count) worldPage.value = count
-  })
-
-  function selectWorldEntry(entry: WorldEntryView): void {
-    selectedWorldEntryId.value = entry.id
-  }
-
-  function closeWorldEntry(): void {
-    selectedWorldEntryId.value = ''
-  }
-
-  function changeWorldPage(offset: number): void {
-    worldPage.value = Math.min(worldPageCount.value, Math.max(1, worldPage.value + offset))
-  }
+  const worldEntries = computed(() => readWorldBookEntries(rootRecord.value?.entries))
 
   const REGEX_PLACEMENTS: Record<number, string> = {
     0: 'Markdown 显示（旧版）',
@@ -741,25 +619,12 @@ export function useStructuredResourceDetails(props: Readonly<StructuredResourceD
       regexScripts.value.length > 0,
   )
   return {
+    rawContent,
     RESOURCE_TYPE,
     presetPage,
     recordCountLabel,
     rawError,
-    selectedWorldEntry,
-    closeWorldEntry,
-    selectedWorldEntryStatus,
-    worldQuery,
-    WORLD_FILTERS,
-    worldFilter,
-    pagedWorldEntries,
-    selectWorldEntry,
-    worldPage,
-    WORLD_PAGE_SIZE,
     worldEntries,
-    filteredWorldEntries,
-    changeWorldPage,
-    worldPageLabel,
-    worldPageCount,
     selectedRegexScript,
     closeRegexScript,
     selectedRegexStatus,

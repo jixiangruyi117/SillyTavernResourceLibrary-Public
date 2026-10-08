@@ -78,7 +78,16 @@ export interface PreviewRuntimeScript {
 export type SillyTavernMessageAvatarMode = 'visible' | 'hidden'
 export type PreviewContentTheme = 'light' | 'dark'
 
+interface ArchivedPanelAppearance {
+  blendColor?: string
+  colorScheme?: 'light' | 'dark'
+  panelTheme?: 'paper' | 'green' | 'night'
+}
+
 export interface RichContentPreviewOptions {
+  archivedMessage?: ArchivedMessageSnapshot
+  archivedReaderCss?: string
+  archivedPanelAppearance?: ArchivedPanelAppearance
   previewSessionContext?: PreviewSessionContext
   vendorLibs?: PreviewVendorLibs
   charAvatarUrl?: string
@@ -413,6 +422,8 @@ function mountCompatibilityFramesAndScripts(
   policy: PreviewPolicy,
   libs: PreviewVendorLibs | undefined,
   avatarUrl: string,
+  messageId = 0,
+  archivedAppearance?: ArchivedPanelAppearance,
 ): {
   html: string
   companionHtml: string
@@ -439,13 +450,15 @@ function mountCompatibilityFramesAndScripts(
 
     wrapper.querySelectorAll(':scope > iframe').forEach((iframe) => iframe.remove())
     const iframe = document.createElement('iframe')
-    iframe.id = `TH-message--0--${index}`
+    iframe.id = `TH-message--${messageId}--${index}`
     iframe.name = iframe.id
     iframe.loading = 'lazy'
     iframe.className = 'w-full'
     iframe.setAttribute('frameborder', '0')
     if (policy.allowRemoteResources) iframe.setAttribute('allow', 'autoplay')
-    iframe.srcdoc = child.document
+    iframe.srcdoc = archivedAppearance
+      ? decorateArchivedFrontend(child.document, policy, archivedAppearance)
+      : child.document
     wrapper.append(iframe)
     Array.from(wrapper.children).forEach((childElement) => {
       if (childElement !== iframe) childElement.classList.add('hidden!')
@@ -621,6 +634,30 @@ for(const sheet of document.styleSheets){if(sheet.href)continue;visit(sheet.cssR
 })();</script>`
 }
 
+/** Share archived panel appearance and disclosure behavior with companion-script floors. */
+function decorateArchivedFrontend(
+  document: string,
+  policy: PreviewPolicy,
+  { blendColor, colorScheme, panelTheme }: ArchivedPanelAppearance,
+): string {
+  const childStyle =
+    (colorScheme ? `:root{color-scheme:${colorScheme}}` : '') +
+    (blendColor
+      ? `html,body{background:transparent!important}body{color:${blendColor}!important}`
+      : '') +
+    (panelTheme ? archivedPanelThemeCss(panelTheme, 'body', blendColor) : '')
+  const childDocument = document.replace(
+    '</body>',
+    `<style>${childStyle}</style>${policy.allowScripts ? buildArchivedDisclosureLayoutRuntime() : ''}</body>`,
+  )
+  return policy.allowRemoteResources
+    ? childDocument
+    : childDocument.replace(
+        '</head>',
+        '<style>img:not([src^="data:"]):not([src^="blob:"]){display:none}</style></head>',
+      )
+}
+
 /** Load this document via a data URL: an opaque outer origin, with same-origin TH children. */
 export function buildArchivedChatFrontendDocument(
   source: string,
@@ -632,26 +669,15 @@ export function buildArchivedChatFrontendDocument(
   panelTheme?: 'paper' | 'green' | 'night',
 ): string {
   const child = buildCompatibilityFrontendDocument(source, policy, libs, '')
-  const childStyle =
-    (colorScheme ? `:root{color-scheme:${colorScheme}}` : '') +
-    (blendColor
-      ? `html,body{background:transparent!important}body{color:${blendColor}!important}`
-      : '') +
-    (panelTheme ? archivedPanelThemeCss(panelTheme, 'body', blendColor) : '')
-  const childDocument = child.document.replace(
-    '</body>',
-    `<style>${childStyle}</style>${policy.allowScripts ? buildArchivedDisclosureLayoutRuntime() : ''}</body>`,
-  )
   const frame = document.createElement('iframe')
   frame.id = `TH-message--${snapshot.message_id}--0`
   frame.name = frame.id
   frame.title = '状态栏'
-  frame.srcdoc = policy.allowRemoteResources
-    ? childDocument
-    : childDocument.replace(
-        '</head>',
-        '<style>img:not([src^="data:"]):not([src^="blob:"]){display:none}</style></head>',
-      )
+  frame.srcdoc = decorateArchivedFrontend(child.document, policy, {
+    blendColor,
+    colorScheme,
+    panelTheme,
+  })
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${buildOuterPolicy(policy)}">
 <style>${colorScheme ? `:root{color-scheme:${colorScheme}}` : ''}html,body{margin:0;padding:0;background:transparent}div.TH-render>iframe{display:block;width:100%;height:0;border:0}</style>
 ${policy.allowScripts ? buildEphemeralStorageRuntime(false) : ''}
@@ -724,6 +750,8 @@ function buildMessageDocument(
   contentTheme: PreviewContentTheme,
   frontendWorkshopBehaviorRuntimeEnabled: boolean,
   companionHtml: string,
+  archivedMessage?: ArchivedMessageSnapshot,
+  archivedReaderCss = '',
 ): string {
   const contentColors =
     renderShell === 'content'
@@ -757,7 +785,9 @@ function buildMessageDocument(
   const safeAvatarUrl = sanitizeAvatarUrl(messageAvatarUrl)
   const content =
     renderShell === 'content'
-      ? `<div class="mes_text srl-preview-content__text" data-srl-preview-message-content>${html}</div>`
+      ? archivedMessage
+        ? `<div id="chat"><div class="mes" mesid="${archivedMessage.message_id}" is_user="${archivedMessage.role === 'user'}" ch_name="${escapeHtml(archivedMessage.name)}"><div class="mes_block"><div class="mes_text srl-preview-content__text" data-srl-preview-message-content>${html}</div></div></div></div>`
+        : `<div class="mes_text srl-preview-content__text" data-srl-preview-message-content>${html}</div>`
       : buildPreviewMessageMarkup(title, html, safeAvatarUrl)
   return `<!doctype html><html lang="zh-CN"><head>
 <meta charset="utf-8">
@@ -768,9 +798,12 @@ ${policy.allowScripts ? buildEphemeralStorageRuntime(false) : ''}
 <style>
 ${buildPreviewShellStyles(contentColors)}
 ${renderShell === 'content' ? `:root{color-scheme:${contentTheme}}` : ''}
+${archivedMessage ? `#chat>.mes{display:block;padding:0}#chat>.mes>.mes_block{padding:0;overflow:visible}#chat>.mes>.mes_block>.mes_text{padding:0;font-size:var(--reader-font,18px);line-height:var(--reader-leading,1.85)}` : ''}
+${archivedReaderCss.replace(/<\/style/gi, '<\\/style')}
 </style>
 ${helperRuntimeEnabled ? buildOuterVendorLibs(libs) : ''}
-${helperRuntimeEnabled ? buildRenderCompatibilityHostRuntime(helperContext, expectedIframeCount) : ''}
+${helperRuntimeEnabled ? buildRenderCompatibilityHostRuntime(helperContext, expectedIframeCount, archivedMessage) : ''}
+${archivedMessage ? `<script>window.addEventListener('message',event=>{if(event.source!==parent||event.data?.type!=='srl:reader-appearance')return;const {font,leading}=event.data;if(Number.isFinite(font)&&font>=14&&font<=30)document.documentElement.style.setProperty('--reader-font',font+'px');if(Number.isFinite(leading)&&leading>=1.5&&leading<=2.5)document.documentElement.style.setProperty('--reader-leading',leading)});</script>` : ''}
 ${helperRuntimeEnabled ? buildFrameHostRuntime() : ''}
 ${buildTrustedGreetingNavigationRuntime()}
 ${buildOuterHeightRuntime()}
@@ -891,6 +924,8 @@ export function buildRichContentPreview(
     policy,
     options.vendorLibs,
     avatarUrl,
+    options.archivedMessage?.message_id,
+    options.archivedMessage ? options.archivedPanelAppearance || {} : undefined,
   )
   const hasRichContent =
     formatted.frontendBlockCount > 0 ||
@@ -939,6 +974,8 @@ export function buildRichContentPreview(
         mounted.html.includes('data-srl-behavior-config'),
       ),
       mounted.companionHtml,
+      options.archivedMessage,
+      options.archivedReaderCss,
     ),
     hasRichContent,
     blockedScripts:

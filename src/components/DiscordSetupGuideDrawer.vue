@@ -223,8 +223,9 @@ async function copyText(value: string, message: string): Promise<void> {
                   保持默认自动选择，点 <strong>Create</strong>。
                 </li>
                 <li>
-                  创建后打开这个数据库的详情，复制 <strong>Database ID</strong>（一串
-                  UUID）并记下。稍后填入 Fork 配置；数据库名称和 Database ID 是不同的值。
+                  创建后在数据库列表找到 <strong>UUID</strong> 列，再打开对应数据库详情复制完整的
+                  <strong>Database ID</strong>。若列表中的 UUID
+                  被省略显示，请以详情页里的完整值为准；数据库名称和 Database ID 是不同的值。
                 </li>
               </ol>
               <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer">
@@ -262,6 +263,24 @@ async function copyText(value: string, message: string): Promise<void> {
                 />
                 <figcaption>
                   数据库名必须与配置中的名称完全一致；位置提示可保持自动选择。
+                </figcaption>
+              </figure>
+              <figure
+                class="discord-guide-screenshot"
+                role="button"
+                tabindex="0"
+                aria-label="放大查看教程截图"
+                @click="openScreenshot($event)"
+                @keydown.enter.prevent="openScreenshot"
+                @keydown.space.prevent="openScreenshot"
+              >
+                <img
+                  :src="'/tutorials/discord-github/d1-database-uuid-column.jpg'"
+                  alt="Cloudflare D1 数据库列表中 UUID 列的位置"
+                  loading="lazy"
+                />
+                <figcaption>
+                  创建后在列表中看 UUID 列；若值被截断，打开对应数据库详情复制完整 Database ID。
                 </figcaption>
               </figure>
               <p class="discord-guide-note discord-guide-note--soft">

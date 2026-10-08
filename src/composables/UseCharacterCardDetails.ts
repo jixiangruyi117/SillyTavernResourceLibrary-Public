@@ -31,6 +31,7 @@ import {
   readTavernHelperScriptBlob,
 } from '../utils/TavernHelperScriptParser'
 import { isRecord } from '../utils/UnknownValue'
+import { readWorldBookEntries } from '../utils/WorldBookEntries'
 import type { CharacterCardContentEdit } from '../types/CharacterCardContentEdit'
 import { applyCharacterCardContentEdits } from '../utils/CharacterCardContentEdits'
 
@@ -65,14 +66,6 @@ export interface GreetingView {
   description?: string
   group?: string
   theme?: string
-}
-
-export interface EmbeddedWorldEntry {
-  id: string
-  title: string
-  keys: string[]
-  content: string
-  enabled: boolean
 }
 
 export interface EmbeddedRegexScript {
@@ -123,15 +116,9 @@ export function useCharacterCardDetails(
 
   const greetingPreviewIndex = ref<number | null>(null)
 
-  const selectedWorldEntryId = ref('')
-
   const selectedRegexScriptId = ref('')
 
   const selectedHelperScriptId = ref('')
-
-  const embeddedWorldQuery = ref('')
-
-  const embeddedWorldPage = ref(1)
 
   const embeddedRegexQuery = ref('')
 
@@ -387,7 +374,6 @@ export function useCharacterCardDetails(
 
   function openPage(page: Exclude<CharacterPage, 'overview'>): void {
     activePage.value = page
-    selectedWorldEntryId.value = ''
     selectedRegexScriptId.value = ''
     selectedHelperScriptId.value = ''
     scrollToCharacterTop()
@@ -395,10 +381,6 @@ export function useCharacterCardDetails(
   }
 
   function closePage(): void {
-    if (selectedWorldEntryId.value) {
-      selectedWorldEntryId.value = ''
-      return
-    }
     if (selectedRegexScriptId.value) {
       selectedRegexScriptId.value = ''
       return
@@ -509,44 +491,8 @@ export function useCharacterCardDetails(
 
   const embeddedBookName = computed(() => readString(embeddedBook.value?.name) || '角色内嵌世界书')
 
-  const embeddedBookEntries = computed<EmbeddedWorldEntry[]>(() => {
-    const entries = embeddedBook.value?.entries
-    const values = Array.isArray(entries)
-      ? entries
-      : isRecord(entries)
-        ? Object.values(entries)
-        : []
-    return values.filter(isRecord).map((entry, index) => {
-      const keys = readStringArray(entry.keys ?? entry.key)
-      return {
-        id: readString(entry.uid ?? entry.id) || String(index),
-        title: readString(entry.comment) || keys.join('、') || `世界书条目 ${index + 1}`,
-        keys,
-        content: readString(entry.content),
-        enabled: entry.enabled !== false && entry.disable !== true,
-      }
-    })
-  })
-
-  const filteredEmbeddedBookEntries = computed(() => {
-    const query = embeddedWorldQuery.value.trim().toLocaleLowerCase()
-    if (!query) return embeddedBookEntries.value
-    return embeddedBookEntries.value.filter((entry) =>
-      [entry.title, entry.content, ...entry.keys].join('\n').toLocaleLowerCase().includes(query),
-    )
-  })
-
-  const embeddedWorldPageCount = computed(() =>
-    Math.max(1, Math.ceil(filteredEmbeddedBookEntries.value.length / PAGE_SIZE)),
-  )
-
-  const pagedEmbeddedBookEntries = computed(() => {
-    const start = (embeddedWorldPage.value - 1) * PAGE_SIZE
-    return filteredEmbeddedBookEntries.value.slice(start, start + PAGE_SIZE)
-  })
-
-  const selectedWorldEntry = computed(() =>
-    embeddedBookEntries.value.find((entry) => entry.id === selectedWorldEntryId.value),
+  const embeddedBookEntries = computed(() =>
+    readWorldBookEntries(embeddedBook.value?.entries, 'character'),
   )
 
   const embeddedRegexScripts = computed<EmbeddedRegexScript[]>(() => {
@@ -749,18 +695,9 @@ export function useCharacterCardDetails(
     ].filter((section) => section.content)
   })
 
-  watch(embeddedWorldQuery, () => {
-    embeddedWorldPage.value = 1
-    selectedWorldEntryId.value = ''
-  })
-
   watch(embeddedRegexQuery, () => {
     embeddedRegexPage.value = 1
     selectedRegexScriptId.value = ''
-  })
-
-  watch(embeddedWorldPageCount, (count) => {
-    if (embeddedWorldPage.value > count) embeddedWorldPage.value = count
   })
 
   watch(embeddedRegexPageCount, (count) => {
@@ -773,10 +710,8 @@ export function useCharacterCardDetails(
       greetingPreviewIndex.value = null
       activePage.value = 'overview'
       activeGreetingIndex.value = 0
-      selectedWorldEntryId.value = ''
       selectedRegexScriptId.value = ''
       selectedHelperScriptId.value = ''
-      embeddedWorldQuery.value = ''
       embeddedRegexQuery.value = ''
     },
   )
@@ -831,14 +766,7 @@ export function useCharacterCardDetails(
     hasRichPreviewContent,
     greetingExcerpt,
     scrollToGreeting,
-    selectedWorldEntry,
-    selectedWorldEntryId,
-    embeddedWorldQuery,
-    pagedEmbeddedBookEntries,
-    embeddedWorldPage,
     PAGE_SIZE,
-    filteredEmbeddedBookEntries,
-    embeddedWorldPageCount,
     selectedRegexScript,
     selectedRegexScriptId,
     setRegexEnabled,

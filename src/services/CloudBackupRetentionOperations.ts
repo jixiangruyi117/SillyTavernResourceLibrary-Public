@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from './CloudBackupHttp'
 import type { CloudBackupSnapshotOperationsContext } from './CloudBackupSnapshotOperations'
 import type { CloudBackupConfig, CloudBackupItem, CloudBackupProvider } from '../types/CloudBackup'
 
@@ -117,14 +118,17 @@ export async function referencedPartIdentities(
   config: CloudBackupConfig,
   secret: string,
   backups: CloudBackupItem[],
+  cached?: { objectKey: string; snapshot: import('./CloudStructuredSnapshot').StructuredSnapshot },
 ): Promise<Set<string>> {
   const referenced = new Set<string>()
-  for (const item of backups) {
+  await mapWithConcurrency(backups, 3, async (item) => {
     if (item.kind === 'githubSnapshot' || item.kind === 'webdavSnapshot') {
       const snapshot =
-        config.provider === 'github'
-          ? await context.readGitHubStructuredSnapshot(config, secret, item)
-          : await context.readWebDavStructuredSnapshot(config, secret, item.objectKey)
+        cached?.objectKey === item.objectKey
+          ? cached.snapshot
+          : config.provider === 'github'
+            ? await context.readGitHubStructuredSnapshot(config, secret, item)
+            : await context.readWebDavStructuredSnapshot(config, secret, item.objectKey)
       for (const part of structuredSnapshotParts(snapshot))
         referenced.add(
           config.provider === 'github'
@@ -141,7 +145,7 @@ export async function referencedPartIdentities(
           config.provider === 'github' ? `${LEGACY_RELEASE_TAG}\u0000${part.name}` : part.name,
         )
     }
-  }
+  })
   return referenced
 }
 
@@ -151,6 +155,7 @@ export async function prune(
   secret: string,
   protectedObjectKey?: string,
   deep = false,
+  committedSnapshot?: import('./CloudStructuredSnapshot').StructuredSnapshot,
 ): Promise<number> {
   const backups = await context.listRetentionBackups(config, secret)
   const normalKept = backups.slice(0, normalizeRetention(config.retention))
@@ -164,11 +169,22 @@ export async function prune(
   const keptIds = new Set(kept.map((item) => item.id))
   const removed = backups.filter((item) => !keptIds.has(item.id))
 
+  const orphanScope =
+    config.provider === 'github'
+      ? `github:${config.owner}/${config.repository}`
+      : `webdav:${config.baseUrl.replace(/\/+$/u, '')}/${normalizeFolder(config.folder)}`
+  const pending = await context.transportState.jobStore.pendingOrphans(orphanScope)
+  if (!deep && !removed.length && !pending.length) return 0
+  const cached =
+    protectedObjectKey && committedSnapshot
+      ? { objectKey: protectedObjectKey, snapshot: committedSnapshot }
+      : undefined
+
   // Only retained and about-to-expire manifests are read during normal automatic maintenance.
   // A malformed one aborts before its snapshot can be deleted.
   const [keptParts, retiredParts] = await Promise.all([
-    context.referencedPartIdentities(config, secret, kept),
-    context.referencedPartIdentities(config, secret, removed),
+    referencedPartIdentities(context, config, secret, kept, cached),
+    referencedPartIdentities(context, config, secret, removed, cached),
   ])
 
   // 先让超出 retention 的清单退出可见快照集合；只要任一清单删除失败，
@@ -181,13 +197,7 @@ export async function prune(
     }
   }
 
-  const orphanScope =
-    config.provider === 'github'
-      ? `github:${config.owner}/${config.repository}`
-      : `webdav:${config.baseUrl.replace(/\/+$/u, '')}/${normalizeFolder(config.folder)}`
   const now = Date.now()
-
-  const pending = await context.transportState.jobStore.pendingOrphans(orphanScope)
   const candidates = new Set(
     [...pending, ...retiredParts].filter(
       (part) => !keptParts.has(part) && isVerifiedChunkIdentity(config.provider, part),

@@ -15,12 +15,15 @@ import { getNativeResourceStorageInfo } from '../storage/NativeResourceFileMirro
 import type { NativeSecurityState } from '../core/NativeSecurity'
 import type { NativeSafBackupStatus } from '../core/NativeSafBackup'
 import { isNativeHapticsEnabled, setNativeHapticsEnabled } from '../core/NativeHaptics'
-import type { NativeSystemUiState } from '../core/NativeSystemUi'
-import { discordInboxAutomationSettingsService } from '../core/LibraryContainer'
+import {
+  browserStorageService,
+  discordInboxAutomationSettingsService,
+} from '../core/LibraryContainer'
 import {
   DEFAULT_DISCORD_INBOX_AUTOMATION_SETTINGS,
   type DiscordInboxAutomationSettings,
 } from '../services/DiscordInboxAutomationSettings'
+import type { NativeSystemUiState } from '../core/NativeSystemUi'
 // SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-import
 import {
   loadPublicWorkerBaseUrl,
@@ -31,9 +34,9 @@ import {
 import MainApiSettings from './MainApiSettings.vue'
 import SecretProtectionSettings from './SecretProtectionSettings.vue'
 import ResourceHealthCenter from './ResourceHealthCenter.vue'
+
 // SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-deploy-guide-import
 import PublicWorkerDeployGuidePage from './PublicWorkerDeployGuidePage.vue'
-
 defineProps<{
   vaultEnabled: boolean
   allowRemotePreviews: boolean
@@ -77,6 +80,11 @@ const emit = defineEmits<{
 }>()
 
 const updateCheckResult = ref('')
+const modifiedResourceSyncTags = ref(browserStorageService.getModifiedResourceSyncTags())
+function updateModifiedResourceSyncTags(event: Event): void {
+  modifiedResourceSyncTags.value = (event.target as HTMLInputElement).checked
+  browserStorageService.setModifiedResourceSyncTags(modifiedResourceSyncTags.value)
+}
 const isNativeApk = platform.update.isAndroidApk()
 const nativeStorageInfo = ref<Awaited<ReturnType<typeof getNativeResourceStorageInfo>>>(null)
 const nativeSecurityState = ref<NativeSecurityState | null>(null)
@@ -208,6 +216,15 @@ async function togglePreferPngContainer(event: Event): Promise<void> {
   inboxAutomationSettings.value = settings
 }
 
+async function toggleDownloadPostMedia(event: Event): Promise<void> {
+  const settings = {
+    ...inboxAutomationSettings.value,
+    downloadPostMedia: (event.target as HTMLInputElement).checked,
+  }
+  await discordInboxAutomationSettingsService.save(settings)
+  inboxAutomationSettings.value = settings
+}
+
 async function verifyDeviceOwner(): Promise<void> {
   try {
     nativeBiometricMessage.value = (await platform.security.verifyDeviceOwner())
@@ -320,6 +337,26 @@ async function clearOfflineResources(): Promise<void> {
       <div class="settings-sections">
         <SecretProtectionSettings />
         <MainApiSettings />
+        <section class="settings-section">
+          <header>
+            <div><h3>修改版导出与互传</h3></div>
+            <span>本机</span>
+          </header>
+          <label class="settings-switch-row">
+            <span>
+              <strong>修改版是否更改标签</strong>
+              <small
+                >关闭保留角色卡原标签；开启使用资源库已保存的标签，空标签会清空卡内标签。用于修改版下载和酒馆互传；其他类型无通用酒馆标签格式。备注作者不同步。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="modifiedResourceSyncTags"
+              @change="updateModifiedResourceSyncTags"
+            />
+            <i aria-hidden="true"></i>
+          </label>
+        </section>
         <!-- SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=worker-settings-ui -->
         <section class="settings-section">
           <header>
@@ -410,6 +447,28 @@ async function clearOfflineResources(): Promise<void> {
         <section class="settings-section">
           <header>
             <div>
+              <h3>Discord 帖子保存</h3>
+            </div>
+            <span>本机</span>
+          </header>
+          <label class="settings-switch-row">
+            <span>
+              <strong>保存帖子时下载素材图片</strong>
+              <small
+                >默认关闭：保存完整正文和附件链接，不自动下载图片等附件。已下载的帖子媒体可在本地数据清理中释放。</small
+              >
+            </span>
+            <input
+              type="checkbox"
+              :checked="inboxAutomationSettings.downloadPostMedia"
+              @change="toggleDownloadPostMedia"
+            />
+            <i aria-hidden="true"></i>
+          </label>
+        </section>
+        <section class="settings-section">
+          <header>
+            <div>
               <h3>导入与版本识别</h3>
             </div>
             <span>本机</span>
@@ -476,8 +535,9 @@ async function clearOfflineResources(): Promise<void> {
             <span>
               <strong>同内容角色卡优先使用 PNG 封装</strong>
               <small
-                >仅当 PNG 与 JSON 卡内数据完全相同且封装不同时归为同一卡；PNG 保持当前封装，JSON
-                存为另一封装。网页和 APK 前台自动整理；APK 原生后台遇到此类候选会转前台确认。</small
+                >仅当 PNG 与 JSON 卡内数据完全相同且封装不同才归为同一卡；PNG 保持当前封装，JSON
+                存为另一封装。网页和 APK 前台自动整理；APK
+                原生后台遇到这类候选仍会转前台确认。</small
               >
             </span>
             <input
@@ -937,6 +997,5 @@ async function clearOfflineResources(): Promise<void> {
     <!-- SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=worker-deploy-guide-page -->
   </div>
 </template>
-
 <!-- SRL-PUBLIC-SYNC: PUBLIC-ONLY id=worker-settings-css -->
 <style scoped src="../styles/PublicWorkerSettings.css"></style>

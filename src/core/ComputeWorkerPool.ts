@@ -8,6 +8,7 @@ export type ComputeTaskKind =
   | 'preset-similarity'
   | 'regex-safety'
   | 'css-analysis'
+  | 'version-recognition'
 
 interface QueuedTask<T> {
   kind: ComputeTaskKind

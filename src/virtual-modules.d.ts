@@ -1,4 +1,5 @@
 declare const __SRL_PREINSTALL_OFFICIAL_APPS__: boolean
+declare const __SRL_PREINSTALL_OFFICIAL_APP_IDS__: readonly string[] | null
 
 declare module 'virtual:srl-preview-vendor-globals-source' {
   const source: string

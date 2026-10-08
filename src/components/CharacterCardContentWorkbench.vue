@@ -13,6 +13,7 @@ const props = defineProps<{
   edits: CharacterCardContentEdit[]
   overriddenSections?: CharacterCardContentSection[]
   disabled?: boolean
+  standaloneSection?: 'worldBook' | 'regex'
 }>()
 
 const emit = defineEmits<{
@@ -92,49 +93,53 @@ function bindImportInput(element: unknown): void {
   <section
     class="card-content-workbench"
     :class="[`is-${tab}`, { 'is-editing': isEditorOpen }]"
-    aria-label="角色卡卡内内容编辑"
+    :aria-label="standaloneSection ? '资源内容编辑' : '角色卡卡内内容编辑'"
   >
     <header class="card-content-workbench__header">
-      <button
-        type="button"
-        class="is-text card-content-workbench__back"
-        aria-label="退出编辑"
-        @click="exitWorkbench"
-      >
-        ‹ 退出编辑
+      <button type="button" class="is-text" aria-label="退出编辑" @click="exitWorkbench">
+        退出编辑
       </button>
-      <div v-if="isEditorOpen" class="card-content-workbench__heading">
-        <strong>{{
-          isEditorOpen
-            ? tab === 'greeting'
-              ? '开场白'
-              : tab === 'worldBook'
-                ? '世界书条目'
-                : tab === 'regex'
-                  ? '正则规则'
-                  : '酒馆助手脚本'
-            : tabs.find((item) => item.id === tab)?.label
-        }}</strong>
-      </div>
-      <div v-if="isEditorOpen" class="card-content-workbench__actions">
-        <button type="button" class="is-text" @click="isEditorOpen = false">返回列表</button>
-      </div>
-      <div v-else class="card-content-workbench__actions">
+      <div class="card-content-workbench__actions">
         <button
+          v-if="!standaloneSection"
           type="button"
           class="is-secondary"
           :disabled="isImporting || disabled"
           @click="openImportPicker"
         >
-          <span aria-hidden="true">↥</span> 导入条目
+          导入
         </button>
         <button type="button" class="is-primary" :disabled="disabled" @click="openEditor()">
-          <span aria-hidden="true">＋</span> 新建条目
+          新建
         </button>
+        <slot name="save" />
       </div>
     </header>
+    <div v-if="isEditorOpen" class="card-content-workbench__editor-heading">
+      <button
+        type="button"
+        class="is-text card-content-workbench__back"
+        aria-label="返回列表"
+        @click="isEditorOpen = false"
+      >
+        返回列表
+      </button>
+      <strong>{{
+        tab === 'greeting'
+          ? '开场白'
+          : tab === 'worldBook'
+            ? '世界书条目'
+            : tab === 'regex'
+              ? '正则规则'
+              : '酒馆助手脚本'
+      }}</strong>
+    </div>
 
-    <nav v-if="!isEditorOpen" class="card-content-workbench__tabs" aria-label="编辑内容类型">
+    <nav
+      v-if="!isEditorOpen && !standaloneSection"
+      class="card-content-workbench__tabs"
+      aria-label="编辑内容类型"
+    >
       <button
         v-for="item in tabs"
         :key="item.id"
@@ -184,7 +189,9 @@ function bindImportInput(element: unknown): void {
         tab === 'greeting'
           ? '管理主开场白与备用开场白。导入后可选择替换主开场，或作为新备用开场。'
           : tab === 'regex'
-            ? '编辑角色卡专属正则规则；资源库只保存规则，不执行替换。'
+            ? standaloneSection
+              ? '编辑正则规则；保存修改会保留原版本。'
+              : '编辑角色卡专属正则规则；资源库只保存规则，不执行替换。'
             : '管理角色卡内的酒馆助手脚本；资源库只保存源码，不会运行脚本。'
       }}
     </p>
@@ -284,7 +291,7 @@ function bindImportInput(element: unknown): void {
       <input
         v-model="query"
         type="search"
-        aria-label="搜索卡内条目"
+        :aria-label="standaloneSection ? '搜索资源条目' : '搜索卡内条目'"
         placeholder="搜索名称、触发词或正文"
       />
       <span>{{ filteredEntries.length }} 项</span>
@@ -348,7 +355,7 @@ function bindImportInput(element: unknown): void {
       <template v-if="tab === 'greeting'">
         <label>
           <span>开场白正文</span>
-          <textarea v-model="editText" rows="8" placeholder="输入角色发给用户的第一段内容…" />
+          <textarea v-model="editText" rows="6" placeholder="输入角色发给用户的第一段内容…" />
         </label>
         <small class="card-content-workbench__field-hint"
           >支持多段文本；保存后作为主开场白或备用开场白进入卡内容。</small
@@ -361,12 +368,12 @@ function bindImportInput(element: unknown): void {
           <input v-model="editLabel" maxlength="120" placeholder="例如：旧城区的传闻" />
         </label>
         <label>
-          <span>触发词 <small>每行一个，逗号会保留在词内</small></span>
+          <span>触发词 <small>每行一词 · 保留逗号</small></span>
           <textarea v-model="editKeys" class="is-keys" rows="2" placeholder="旧城区&#10;黑市入口" />
         </label>
         <label>
           <span>条目正文</span>
-          <textarea v-model="editText" rows="7" placeholder="输入触发后注入对话的世界观内容…" />
+          <textarea v-model="editText" rows="5" placeholder="输入触发后注入对话的世界观内容…" />
         </label>
         <details class="card-content-workbench__advanced">
           <summary>更多世界书设置</summary>
@@ -379,7 +386,10 @@ function bindImportInput(element: unknown): void {
               placeholder="每行一个辅助触发词"
             />
           </label>
-          <div class="card-content-workbench__field-grid">
+          <div
+            class="card-content-workbench__field-grid"
+            :class="{ 'has-depth': editPosition === '4' }"
+          >
             <label>
               <span>注入位置</span>
               <select v-model="editPosition">
@@ -407,7 +417,13 @@ function bindImportInput(element: unknown): void {
           <div class="card-content-workbench__toggles">
             <label><input v-model="editEnabled" type="checkbox" />启用条目</label>
             <label><input v-model="editConstant" type="checkbox" />始终触发</label>
-            <label><input v-model="editSelective" type="checkbox" />需要次要触发词</label>
+            <label
+              ><input
+                v-model="editSelective"
+                type="checkbox"
+                aria-label="需要辅助触发词"
+              />需辅助词</label
+            >
           </div>
         </details>
       </template>
@@ -418,6 +434,7 @@ function bindImportInput(element: unknown): void {
           ><span>匹配正则</span
           ><input
             v-model="editFindRegex"
+            class="is-code"
             spellcheck="false"
             autocapitalize="off"
             autocorrect="off"
@@ -427,6 +444,7 @@ function bindImportInput(element: unknown): void {
           ><span>替换内容</span
           ><textarea
             v-model="editReplaceString"
+            class="is-code"
             spellcheck="false"
             autocapitalize="off"
             autocorrect="off"
@@ -457,7 +475,8 @@ function bindImportInput(element: unknown): void {
           ><span>脚本源码</span
           ><textarea
             v-model="editText"
-            rows="10"
+            class="is-code"
+            rows="8"
             spellcheck="false"
             autocapitalize="off"
             autocorrect="off"
@@ -470,7 +489,7 @@ function bindImportInput(element: unknown): void {
       </template>
 
       <p v-if="formError" class="card-content-workbench__error" role="alert">{{ formError }}</p>
-      <label class="card-content-workbench__migration"
+      <label v-if="!standaloneSection" class="card-content-workbench__migration"
         ><input v-model="trackMigration" type="checkbox" />随新版迁移这项修改</label
       >
       <footer>
@@ -481,7 +500,7 @@ function bindImportInput(element: unknown): void {
       </footer>
     </div>
     <details
-      v-if="edits.length && !isEditorOpen"
+      v-if="edits.length && !isEditorOpen && !standaloneSection"
       class="card-content-workbench__records"
       @toggle="showRecords = ($event.target as HTMLDetailsElement).open"
     >

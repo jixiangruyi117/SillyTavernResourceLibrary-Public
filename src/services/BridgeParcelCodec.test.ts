@@ -5,7 +5,10 @@ import { createChatArchive, readChatArchive } from './TavernChatArchiveCodec.mjs
 
 function mailbox() {
   const values = new Map<string, unknown>()
-  const parcels = new Map<string, { chunks: number; size: number; sealed: boolean }>()
+  const parcels = new Map<
+    string,
+    { chunks: number; size: number; sealed: boolean; received: number }
+  >()
   let nextCode = 0
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(input, init)
@@ -16,7 +19,9 @@ function mailbox() {
     const parcel = code ? parcels.get(code) : undefined
     if (action === 'create') {
       const id = (++nextCode).toString(16).padStart(64, '0')
-      parcels.set(id, { chunks: body.chunks, size: body.size, sealed: false })
+      const metadata = { chunks: body.chunks, size: body.size, sealed: false, received: 0 }
+      parcels.set(id, metadata)
+      values.set(`parcel:${id}:meta`, metadata)
       return Response.json({ code: id, expiresAt: Date.now() + 30 * 60 * 1000 })
     }
     if (action === 'remove' && code) {
@@ -28,6 +33,7 @@ function mailbox() {
     if (action === 'upload') {
       const index = Number(headers.get('x-srl-parcel-index'))
       values.set(`parcel:${code}:${index}`, await request.arrayBuffer())
+      parcel.received++
       return new Response(null, { status: 204 })
     }
     if (action === 'seal') {
@@ -50,6 +56,63 @@ afterEach(() => {
   vi.useRealTimers()
 })
 describe('encrypted deferred Tavern parcels', () => {
+  it('bounds authenticated compressed content by its declared original size', async () => {
+    const { values } = mailbox()
+    const parcel = await createParcel('https://srl.test', [
+      { file: new File(['chat '.repeat(180000)], 'chat.json'), kind: 'chat', displayName: 'chat' },
+    ])
+    const [, code, keyText] = parcel.ticket.split('.')
+    const key = await crypto.subtle.importKey(
+      'raw',
+      Uint8Array.from(atob(keyText!.replace(/-/g, '+').replace(/_/g, '/') + '='), (char) =>
+        char.charCodeAt(0),
+      ),
+      'AES-GCM',
+      false,
+      ['encrypt', 'decrypt'],
+    )
+    const storedKey = [...values.keys()].find((key) => /^parcel:[a-f0-9]+:0$/.test(key))!
+    const chunk = new Uint8Array(values.get(storedKey) as ArrayBuffer)
+    const algorithm = {
+      name: 'AES-GCM',
+      iv: chunk.slice(0, 12),
+      additionalData: new TextEncoder().encode(`${code}/0/1`),
+    }
+    const plain = new Uint8Array(await crypto.subtle.decrypt(algorithm, key, chunk.slice(12)))
+    const headerSize = new DataView(plain.buffer).getUint32(0)
+    const header = new TextDecoder().decode(plain.slice(4, 4 + headerSize))
+    const changed = new TextEncoder().encode(header.replace('"rawSize":900000', '"rawSize":100000'))
+    expect(changed.byteLength).toBe(headerSize)
+    plain.set(changed, 4)
+    const encrypted = await crypto.subtle.encrypt(algorithm, key, plain)
+    const modified = new Uint8Array(chunk.byteLength)
+    modified.set(chunk.slice(0, 12))
+    modified.set(new Uint8Array(encrypted), 12)
+    values.set(storedKey, modified.buffer)
+    await expect(readParcel('https://srl.test', parcel.ticket)).rejects.toThrow('超过声明大小')
+  })
+  it('compresses before encryption, reads old tickets and preserves 255-character filenames', async () => {
+    const { values } = mailbox()
+    const file = new File(['chat '.repeat(180000)], 'a'.repeat(250) + '.json')
+    const files = [{ file, kind: 'chat' as const, displayName: 'chat' }]
+    const compressed = await createParcel('https://srl.test', files)
+    expect(compressed.ticket.startsWith('SRL2.')).toBe(true)
+    const compressedMeta = [...values.values()].find(
+      (value) => typeof value === 'object' && value && 'chunks' in value && 'received' in value,
+    ) as { chunks: number }
+    expect(compressedMeta.chunks).toBe(1)
+    const [received] = await readParcel('https://srl.test', compressed.ticket)
+    expect(received!.file.name).toBe(file.name)
+    expect(await received!.file.text()).toBe(await file.text())
+    const old = await createParcel('https://srl.test', files, undefined, { compression: false })
+    expect(old.ticket.startsWith('SRL1.')).toBe(true)
+    expect(await (await readParcel('https://srl.test', old.ticket))[0]!.file.text()).toBe(
+      await file.text(),
+    )
+    await expect(
+      readParcel('https://srl.test', compressed.ticket.replace('SRL2.', 'SRL1.')),
+    ).rejects.toThrow('格式')
+  })
   it('retains the chat archive kind and both binary originals across encrypted deferred transfer', async () => {
     mailbox()
     const archive = createChatArchive(
@@ -105,6 +168,7 @@ describe('encrypted deferred Tavern parcels', () => {
     values.set(key, bytes.buffer)
     await expect(readParcel('https://srl.test', created.ticket)).rejects.toThrow('数据损坏')
   })
+  // Worker-side expiry and capacity are tested in the independent SRL-Worker-Public repository.
 })
 
 describe('parcel recovery and throughput', () => {
@@ -130,7 +194,7 @@ describe('parcel recovery and throughput', () => {
       'https://srl.test',
       [{ file: payload, kind: 'theme', displayName: 'large' }],
       undefined,
-      { fetcher: delayed },
+      { fetcher: delayed, compression: false },
     )
     const received = await readParcel('https://srl.test', outgoing.ticket, undefined, {
       fetcher: delayed,

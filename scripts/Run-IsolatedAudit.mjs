@@ -14,10 +14,18 @@ export const AUDIT_SUITES = {
   'official-apps': 'scripts/OfficialAppLifecycleAudit.mjs',
   appearance: 'scripts/AppearanceScopeAudit.mjs',
   'detail-layout': 'scripts/ResourceDetailLayoutAudit.mjs',
+  'world-book': 'scripts/WorldBookBrowserAudit.mjs',
+  'storage-settings': 'scripts/ResourceRecoveryAudit.mjs',
   stress: 'scripts/BrowserStressAudit.mjs',
   assistant: 'scripts/ProductAssistantPetAudit.mjs',
   'api-config': 'scripts/ApiConfigurationAudit.mjs',
+  'tag-version': 'scripts/TagVersionPerformanceAudit.mjs',
+  'reader-scripts': 'scripts/ChatReaderScriptsAudit.mjs',
+  'reader-startup': 'scripts/ChatReaderStartupAudit.mjs',
+  'app-entry': 'scripts/AppEntryAudit.mjs',
+  'chat-script-transfer': 'scripts/ChatScriptTransferAudit.mjs',
   'assistant-workflows': 'scripts/ProductAssistantWorkflowAudit.mjs',
+  'tavern-live': 'scripts/TavernLiveTransferAudit.mjs',
 }
 
 export function parseAuditArguments(args) {
@@ -30,9 +38,7 @@ export function parseAuditArguments(args) {
     options[key] = args[index + 1]
   }
   if (!Object.hasOwn(AUDIT_SUITES, options.suite))
-    throw new Error(
-      '请选择 discord-handoff、discord-inbox、official-apps、appearance、detail-layout、stress、assistant、api-config 或 assistant-workflows',
-    )
+    throw new Error(`请选择 ${Object.keys(AUDIT_SUITES).join('、')}`)
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/u.test(options.run || ''))
     throw new Error('必须通过 --run 指定本次独立运行名称')
   const port = Number(options.port)
@@ -145,6 +151,7 @@ export async function runIsolatedAudit(options) {
       port: options.port,
       run: options.run,
       apiFixture: createAuditApiFixture(options.run),
+      bridgeUrl: options.suite === 'tavern-live' ? process.env.SRL_AUDIT_RELAY_URL : undefined,
     })
     phase = '下载清单与安装包 HTTP 预检'
     await runAuditCommand('scripts/Verify-OfficialAppDeployment.mjs', [preview.url])

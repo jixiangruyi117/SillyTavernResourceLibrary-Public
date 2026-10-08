@@ -159,7 +159,13 @@ describe('Feature App visual contract', () => {
     expect(monitor).toContain('bottom: var(--bottom-notice-offset);')
     expect(activity).toContain('var(--activity-bottom, var(--bottom-notice-offset))')
     expect(activity).toContain('bottom: var(--activity-offset);')
-    expect(activity).toContain('- var(--activity-offset) - 4rem - var(--safe-top, 0px)')
+    // The task panel was intentionally centered in 34aea7e3; the bottom trigger stays flush.
+    const panel = activity.match(/\.activity-center__panel\s*\{([^}]+)\}/u)?.[1] ?? ''
+    expect(panel).toContain('position: fixed;')
+    expect(panel).toContain('top: 50%;')
+    expect(panel).toContain('max-height: min(84dvh, 672px);')
+    expect(panel).toContain('overflow: auto;')
+    expect(panel).toContain('transform: translate(-50%, -50%);')
   })
 
   it('keeps the resizable Workshop inspector out of canvas layout', () => {

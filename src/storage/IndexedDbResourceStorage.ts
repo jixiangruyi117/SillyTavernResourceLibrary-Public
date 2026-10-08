@@ -1,5 +1,8 @@
 import {
+  getMissingPngThumbnailRepairStatus,
+  repairMissingPngCharacterCardThumbnails,
   repairThumbnailAssets,
+  type MissingPngThumbnailRepairStatus,
   type ResourceThumbnailMaintenanceContext,
   yieldMainThread,
 } from './ResourceThumbnailMaintenance'
@@ -32,6 +35,7 @@ import {
 } from '../types/Vault'
 
 import type {
+  ResourceListSummaryFilter,
   ResourceStorageAdapter,
   ResourceMetadataPatch,
   ResourceVersionMatchFingerprintCache,
@@ -40,6 +44,10 @@ import type {
 import { IndexedDbAssetStore } from './IndexedDbAssetStore'
 
 import { readNativeResourceObject } from './NativeResourceFileMirror'
+import { isAndroidNativeAppDatabaseActive, runAndroidNativeRead } from './AndroidNativeDexieCore'
+import { decodeAppDatabaseValue, encodeAppDatabaseKey } from './AndroidAppDatabaseMigration'
+import { nativeAppDatabase } from './NativeAppDatabaseBridge'
+import { readResourceMetadata, readResourceSource } from './ResourceReadSource'
 
 import {
   cloneResourceForStorage,
@@ -59,6 +67,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
   private readonly vault?: VaultService
   private readonly assets: IndexedDbAssetStore
   private thumbnailMigrationPromise?: Promise<number>
+  private missingPngThumbnailRepairPromise?: Promise<number>
 
   constructor(
     database: AppDatabase,
@@ -94,6 +103,23 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
 
   repairThumbnailAssets(): Promise<number> {
     return repairThumbnailAssets(this.thumbnailContext())
+  }
+
+  getMissingPngThumbnailRepairStatus(): Promise<MissingPngThumbnailRepairStatus> {
+    return getMissingPngThumbnailRepairStatus(this.thumbnailContext())
+  }
+
+  repairMissingPngCharacterCardThumbnails(options?: { restart?: boolean }): Promise<number> {
+    if (this.missingPngThumbnailRepairPromise) return this.missingPngThumbnailRepairPromise
+    const operation = repairMissingPngCharacterCardThumbnails(this.thumbnailContext(), options)
+    this.missingPngThumbnailRepairPromise = operation
+    void operation
+      .finally(() => {
+        if (this.missingPngThumbnailRepairPromise === operation)
+          this.missingPngThumbnailRepairPromise = undefined
+      })
+      .catch(() => undefined)
+    return operation
   }
 
   private async prepareResourceForStorage(resource: Resource): Promise<Resource> {
@@ -154,10 +180,24 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     return resources
   }
 
-  async listResourceListSummaries(): Promise<ResourceListSummary[]> {
+  async listResourceListSummaries(
+    filter?: ResourceListSummaryFilter,
+  ): Promise<ResourceListSummary[]> {
     await this.repairResourceListSummaryIndex()
     const table = this.database.resourceListSummaries
-    const ids = await table.toCollection().primaryKeys()
+    const ids = filter?.ids
+      ? Array.from(new Set(filter.ids)).sort()
+      : filter?.types && !this.vault?.isEnabled()
+        ? filter.types.length
+          ? (
+              await table
+                .where('type')
+                .anyOf([...filter.types])
+                .primaryKeys()
+            ).sort()
+          : []
+        : await table.toCollection().primaryKeys()
+    const types = filter?.types ? new Set(filter.types) : undefined
     const resources: ResourceListSummary[] = []
     for (let start = 0; start < ids.length; start += SUMMARY_READ_BATCH_SIZE) {
       const stored = (
@@ -168,34 +208,56 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
           this.vault ? this.vault.decodeResourceSummary(resource) : (resource as ResourceSummary),
         ),
       )
-      resources.push(...decoded.map(toResourceListSummary))
+      resources.push(
+        ...decoded
+          .filter((resource) => !types || types.has(resource.type))
+          .map(toResourceListSummary),
+      )
       if (start + SUMMARY_READ_BATCH_SIZE < ids.length) await yieldMainThread()
     }
     resources.sort((left, right) => right.updatedAt - left.updatedAt)
     return resources
   }
 
+  async getResourceListSummary(id: string): Promise<ResourceListSummary | undefined> {
+    const stored = await this.database.resourceListSummaries.get(id)
+    if (!stored) return undefined
+    const summary = this.vault
+      ? await this.vault.decodeResourceSummary(stored)
+      : (stored as ResourceSummary)
+    return toResourceListSummary(summary)
+  }
+
   async listRecentCharacterCardSummaries(limit = 100): Promise<ResourceListSummary[]> {
     const requested = Math.min(200, Math.max(1, Math.round(limit)))
-    const stored = await this.database.resourceListSummaries
-      .orderBy('updatedAt')
-      .reverse()
-      .limit(requested)
-      .toArray()
-    const candidates = this.vault?.isEnabled()
-      ? stored
-      : stored.filter(
-          (resource) => 'type' in resource && resource.type === RESOURCE_TYPE.CHARACTER_CARD,
-        )
-    const decoded = await Promise.all(
-      candidates.map((resource) =>
-        this.vault ? this.vault.decodeResourceSummary(resource) : (resource as ResourceSummary),
-      ),
-    )
-    return decoded
-      .filter((resource) => resource.type === RESOURCE_TYPE.CHARACTER_CARD)
-      .slice(0, requested)
-      .map(toResourceListSummary)
+    const table = this.database.resourceListSummaries
+    if (!this.vault?.isEnabled()) {
+      const stored = await table
+        .orderBy('updatedAt')
+        .reverse()
+        .filter((resource) => 'type' in resource && resource.type === RESOURCE_TYPE.CHARACTER_CARD)
+        .limit(requested)
+        .toArray()
+      return stored.map((resource) => toResourceListSummary(resource as ResourceSummary))
+    }
+
+    // Encrypted summaries hide their type. Scan recent keys in bounded batches until
+    // enough decoded cards are found; newer resources of other types do not consume the limit.
+    const ids = await table.orderBy('updatedAt').reverse().primaryKeys()
+    const cards: ResourceListSummary[] = []
+    const batchSize = Math.max(25, requested)
+    for (let offset = 0; offset < ids.length; offset += batchSize) {
+      const stored = await table.bulkGet(ids.slice(offset, offset + batchSize))
+      for (const resource of stored) {
+        if (!resource) continue
+        const decoded = await this.vault.decodeResourceSummary(resource)
+        if (decoded.type !== RESOURCE_TYPE.CHARACTER_CARD) continue
+        cards.push(toResourceListSummary(decoded))
+        if (cards.length === requested) return cards
+      }
+      if (offset + batchSize < ids.length) await yieldMainThread()
+    }
+    return cards
   }
 
   async listGalleryListSummaries(
@@ -260,6 +322,22 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         this.database.settings,
       ],
       async () => {
+        if (
+          !force &&
+          isAndroidNativeAppDatabaseActive() &&
+          (await this.database.settings.get(LIST_SUMMARY_INDEX_SETTING_ID))?.value === true
+        ) {
+          let equal: boolean | undefined
+          try {
+            equal = await Dexie.waitFor(
+              nativeAppDatabase.haveSameRecordKeys('resources', 'resourceListSummaries'),
+            )
+          } catch (error) {
+            // Old APKs keep the full, exact check below; damaged data must remain an error.
+            if ((error as { code?: string }).code !== 'UNIMPLEMENTED') throw error
+          }
+          if (equal === true) return
+        }
         const ids = await this.database.resources.toCollection().primaryKeys()
         const listed = await this.database.resourceListSummaries.toCollection().primaryKeys()
         const indexed = new Set(listed)
@@ -273,12 +351,11 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         // A completed migration marker is not evidence that the derived index is intact.
         // Rebuild from authoritative records atomically; failure never publishes a partial/empty list.
         for (const id of ids) {
-          const resource = await this.database.resources.get(id)
+          const resource = await readResourceMetadata(this.database, id)
           if (!resource) throw new Error('资源索引修复期间原始记录缺失')
-          const summary = this.toStoredSummary(resource)
-          const light = await Dexie.waitFor(this.createStoredListSummariesFromSummaries([summary]))
-          await this.database.resourceSummaries.put(summary)
-          await this.database.resourceListSummaries.bulkPut(light)
+          const light = await Dexie.waitFor(this.compactStoredSummary(resource))
+          await this.database.resourceSummaries.put(light)
+          await this.database.resourceListSummaries.put(light)
         }
         const validIds = new Set(ids)
         const staleIds = listed.filter((id) => !validIds.has(id))
@@ -312,11 +389,36 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     return this.decodeStoredResource(stored)
   }
 
-  async getSummary(id: string): Promise<ResourceSummary | undefined> {
-    const record = await this.database.resources.get(id)
-    if (!record) return undefined
-    const summary = this.toStoredSummary(record)
+  async getSummary(id: string, historical = false): Promise<ResourceSummary | undefined> {
+    const store = historical ? 'resourceVersions' : 'resources'
+    const summary = await this.database.transaction(
+      'r',
+      this.database[store],
+      async (transaction) => {
+        const record = await readResourceMetadata(this.database, id, store)
+        if (!record) return undefined
+        const summary = this.toStoredSummary(record)
+        if (isAndroidNativeAppDatabaseActive() && isEncryptedResourceSummary(summary)) {
+          // Only the encrypted metadata payload is needed; original/thumbnail ciphertext stays native.
+          return runAndroidNativeRead(transaction.idbtrans, async () => ({
+            ...summary,
+            payload: (await decodeAppDatabaseValue(
+              summary.payload,
+              store,
+              encodeAppDatabaseKey(id),
+              nativeAppDatabase,
+            )) as typeof summary.payload,
+          }))
+        }
+        return summary
+      },
+    )
+    if (!summary) return undefined
     return this.vault ? this.vault.decodeResourceSummary(summary) : (summary as ResourceSummary)
+  }
+
+  getReadSource(id: string) {
+    return readResourceSource(this.database, id, this.get.bind(this))
   }
 
   async findGalleryImage(
@@ -392,6 +494,26 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
+  async listVersionListSummariesForResources(ids: string[]): Promise<ResourceListSummary[]> {
+    if (!ids.length) return []
+    const keys = await this.database.resourceVersions
+      .where('versionGroupId')
+      .anyOf(ids)
+      .primaryKeys()
+    const summaries: ResourceListSummary[] = []
+    for (const id of keys) {
+      const record = await this.database.resourceVersionSummaries.get(id)
+      const version = record ?? (await this.database.resourceVersions.get(id))
+      if (!version) continue
+      const stored = record ?? this.toStoredSummary(version as StoredResource)
+      const summary = this.vault
+        ? await this.vault.decodeResourceSummary(stored)
+        : (stored as ResourceSummary)
+      summaries.push(toResourceListSummary(summary))
+    }
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
   async listVersionSummaries(): Promise<ResourceSummary[]> {
     await this.repairVersionSummaryIndex()
     const stored = await this.database.resourceVersionSummaries.toArray()
@@ -417,29 +539,29 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       this.database.resourceVersions,
       this.database.resourceVersionSummaries,
       async () => {
-        const [versions, summaries] = await Promise.all([
-          this.database.resourceVersions.toArray(),
-          this.database.resourceVersionSummaries.toArray(),
-        ])
-        const versionsById = new Map(versions.map((version) => [version.id, version]))
-        const summariesById = new Map(summaries.map((summary) => [summary.id, summary]))
-        const staleIds = summaries
-          .filter((summary) => !versionsById.has(summary.id))
-          .map((summary) => summary.id)
-        const repaired = versions
-          .filter((version) => {
-            const summary = summariesById.get(version.id)
-            return (
-              !summary ||
-              summary.contentHash !== version.contentHash ||
-              summary.versionGroupId !== version.versionGroupId ||
-              summary.updatedAt !== version.updatedAt
-            )
-          })
-          .map((version) => this.toStoredSummary(version))
-
+        const ids = await this.database.resourceVersions.toCollection().primaryKeys()
+        const existingIds = await this.database.resourceVersionSummaries
+          .toCollection()
+          .primaryKeys()
+        const authoritativeIds = new Set(ids)
+        const staleIds = existingIds.filter((id) => !authoritativeIds.has(id))
         if (staleIds.length) await this.database.resourceVersionSummaries.bulkDelete(staleIds)
-        if (repaired.length) await this.database.resourceVersionSummaries.bulkPut(repaired)
+        // Compare authoritative fields one version at a time. A scan must not retain every
+        // original attachment in an array (native reads otherwise materialize several GiB).
+        for (const id of ids) {
+          const version = await readResourceMetadata(this.database, id, 'resourceVersions')
+          if (!version) continue
+          const summary = await this.database.resourceVersionSummaries.get(id)
+          if (
+            !summary ||
+            summary.contentHash !== version.contentHash ||
+            summary.versionGroupId !== version.versionGroupId ||
+            summary.updatedAt !== version.updatedAt
+          )
+            await this.database.resourceVersionSummaries.put(
+              await Dexie.waitFor(this.compactStoredSummary(version, 'resourceVersions')),
+            )
+        }
       },
     )
   }
@@ -460,23 +582,22 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         this.database.settings,
       ],
       async () => {
-        const [resources, versions] = await Promise.all([
-          this.database.resources.toArray(),
-          this.database.resourceVersions.toArray(),
-        ])
-        const summaries = resources.map((resource) => this.toStoredSummary(resource))
-        const listSummaries = await this.createStoredListSummariesFromSummaries(summaries)
-        const versionSummaries = versions.map((resource) => this.toStoredSummary(resource))
-
         await Promise.all([
           this.database.resourceSummaries.clear(),
           this.database.resourceListSummaries.clear(),
           this.database.resourceVersionSummaries.clear(),
         ])
-        if (summaries.length) await this.database.resourceSummaries.bulkPut(summaries)
-        if (listSummaries.length) await this.database.resourceListSummaries.bulkPut(listSummaries)
-        if (versionSummaries.length) {
-          await this.database.resourceVersionSummaries.bulkPut(versionSummaries)
+        for (const store of ['resources', 'resourceVersions'] as const) {
+          const ids = await this.database[store].toCollection().primaryKeys()
+          for (const id of ids) {
+            const record = await readResourceMetadata(this.database, id, store)
+            if (!record) throw new Error('摘要精简期间原始记录缺失，未提交修改')
+            const light = await Dexie.waitFor(this.compactStoredSummary(record, store))
+            if (store === 'resources') {
+              await this.database.resourceSummaries.put(light)
+              await this.database.resourceListSummaries.put(light)
+            } else await this.database.resourceVersionSummaries.put(light)
+          }
         }
         await this.database.settings.put({
           id: LIST_SUMMARY_INDEX_SETTING_ID,
@@ -542,7 +663,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       this.database.resourceVersionSummaries,
       async () => {
         await this.database.resourceVersions.put(stored)
-        await this.database.resourceVersionSummaries.put(this.toStoredSummary(stored))
+        await this.database.resourceVersionSummaries.put(
+          await Dexie.waitFor(this.compactStoredSummary(stored)),
+        )
       },
     )
   }
@@ -569,7 +692,9 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       this.database.resourceVersionSummaries,
       async () => {
         await this.database.resourceVersions.put(updated)
-        await this.database.resourceVersionSummaries.put(this.toStoredSummary(updated))
+        await this.database.resourceVersionSummaries.put(
+          await Dexie.waitFor(this.compactStoredSummary(updated)),
+        )
       },
     )
   }
@@ -619,11 +744,8 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
         this.database.resourceListSummaries,
       ],
       async () => {
-        const stored = await this.database.resourceSummaries.get(id)
-        if (!stored) throw new Error('资源摘要不存在，未修改资源')
-        const current = this.vault
-          ? await Dexie.waitFor(this.vault.decodeResourceSummary(stored))
-          : (stored as ResourceSummary)
+        const current = await Dexie.waitFor(this.getSummary(id))
+        if (!current) throw new Error('资源不存在，未修改资源')
         if (
           expectedPersonalDocument !== undefined &&
           JSON.stringify(current.metadata.personalDocument ?? null) !== expectedPersonalDocument
@@ -648,7 +770,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
           await Dexie.waitFor(this.createStoredListSummariesFromSummaries([encoded]))
         )[0]!
         if (!(await this.database.resources.update(id, encoded))) throw new Error('资源已经不存在')
-        await this.database.resourceSummaries.put(encoded)
+        await this.database.resourceSummaries.put(light)
         await this.database.resourceListSummaries.put(light)
         return summary
       },
@@ -795,6 +917,32 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
     }
   }
 
+  private async compactStoredSummary(
+    resource: StoredResource,
+    store: 'resources' | 'resourceVersions' = 'resources',
+  ): Promise<StoredResourceSummary> {
+    let summary = this.toStoredSummary(resource)
+    if (
+      isAndroidNativeAppDatabaseActive() &&
+      isEncryptedResourceSummary(summary) &&
+      !(summary.payload.data instanceof Blob)
+    ) {
+      const payload = summary.payload
+      summary = {
+        ...summary,
+        payload: (await runAndroidNativeRead(Dexie.currentTransaction!.idbtrans, () =>
+          decodeAppDatabaseValue(
+            payload,
+            store,
+            encodeAppDatabaseKey(resource.id),
+            nativeAppDatabase,
+          ),
+        )) as typeof summary.payload,
+      }
+    }
+    return (await this.createStoredListSummariesFromSummaries([summary]))[0]!
+  }
+
   private toStoredSummary(resource: StoredResource): StoredResourceSummary {
     if (isNativeBackedResource(resource)) {
       const { nativeOriginal: _nativeOriginal, ...summary } = resource
@@ -841,7 +989,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
           }
         }
 
-        for (const summary of summaries) {
+        for (const summary of listSummaries) {
           const existing = await this.database.resourceSummaries.get(summary.id)
           if (
             existing?.contentHash === summary.contentHash &&
@@ -877,6 +1025,7 @@ export class IndexedDbResourceStorage implements ResourceStorageAdapter {
       database: this.database,
       assets: this.assets,
       vault: this.vault,
+      loadResource: (id) => this.get(id),
       toStoredSummary: this.toStoredSummary.bind(this),
       createStoredListSummariesFromSummaries:
         this.createStoredListSummariesFromSummaries.bind(this),

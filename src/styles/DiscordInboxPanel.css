@@ -196,9 +196,33 @@
 }
 
 .discord-inbox__auto-bindings {
-  margin-top: 10px;
-  border-top: 1px solid var(--color-line);
-  padding-top: 10px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  background: var(--color-surface-raised);
+}
+
+.discord-inbox--review {
+  padding: 0;
+}
+
+.discord-inbox__auto-bindings > header {
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.discord-inbox__review-count {
+  color: var(--color-ink-soft);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.discord-inbox__auto-bindings > p {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--color-surface);
 }
 
 .discord-inbox__auto-bindings > header > div,
@@ -257,6 +281,20 @@
   max-height: 16rem;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.discord-inbox__review-title[data-auto-binding-target],
+.discord-inbox__review-message[data-auto-binding-target] {
+  scroll-margin-block: 30vh;
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+  outline-offset: 3px;
+}
+
+.discord-inbox__auto-binding-review mark {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-warning, #f4c95d) 55%, transparent);
+  color: inherit;
+  font-weight: 750;
 }
 
 .discord-inbox ul {

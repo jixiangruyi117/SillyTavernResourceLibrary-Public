@@ -8,6 +8,7 @@ import { previewBudget } from '../core/PreviewBudget'
 const nativePreviewMocks = vi.hoisted(() => ({
   available: vi.fn(() => false),
   download: vi.fn(),
+  prepare: vi.fn(async (_urls: string[], _signal: AbortSignal): Promise<void> => undefined),
 }))
 const vendorMocks = vi.hoisted(() => ({
   load: vi.fn(async () => ({ jquery: '/* jquery */' })),
@@ -30,6 +31,7 @@ const vendorMocks = vi.hoisted(() => ({
 vi.mock('../services/NativePreviewAsset', () => ({
   isNativePreviewAssetAvailable: nativePreviewMocks.available,
   downloadNativePreviewAsset: nativePreviewMocks.download,
+  prepareNativePreviewAssets: nativePreviewMocks.prepare,
 }))
 vi.mock('../utils/PreviewVendorLibs', () => ({
   loadPreviewVendorLibs: vendorMocks.load,
@@ -84,6 +86,7 @@ describe('RichContentPreview', () => {
     localStorage.clear()
     nativePreviewMocks.available.mockReturnValue(false)
     nativePreviewMocks.download.mockReset()
+    nativePreviewMocks.prepare.mockReset().mockResolvedValue(undefined)
     vendorMocks.load.mockClear()
     vendorMocks.merge.mockClear()
     vi.unstubAllGlobals()
@@ -354,23 +357,8 @@ describe('RichContentPreview', () => {
     expect(wrapper.find('.rich-content-preview__loading').exists()).toBe(false)
   })
 
-  it('Android 原生缓存预热不会阻塞原始外链预览', async () => {
+  it('Android 只登记当前预览素材，由 WebView 按需读取且不创建后台重复下载', async () => {
     nativePreviewMocks.available.mockReturnValue(true)
-    let resolveDownload:
-      | ((result: {
-          resourceUrl: string
-          resolvedUrl: string
-          contentType: string
-          size: number
-          cached: boolean
-        }) => void)
-      | undefined
-    nativePreviewMocks.download.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveDownload = resolve
-        }),
-    )
     const wrapper = mount(RichContentPreview, {
       props: {
         source: '<img src="https://files.catbox.moe/cover.png">',
@@ -382,67 +370,62 @@ describe('RichContentPreview', () => {
         preloadResources: true,
       },
     })
-    await vi.waitFor(() => expect(nativePreviewMocks.download).toHaveBeenCalledOnce())
-
-    expect(wrapper.find('iframe').exists()).toBe(true)
+    await flushPromises()
+    expect(nativePreviewMocks.prepare).toHaveBeenCalledWith(
+      expect.arrayContaining(['https://files.catbox.moe/cover.png']),
+      expect.any(AbortSignal),
+    )
+    expect(nativePreviewMocks.download).not.toHaveBeenCalled()
     expect(readFrameDocument(wrapper)).toContain('https://files.catbox.moe/cover.png')
-
+    const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
+    await wrapper.find('iframe').trigger('load')
+    await flushPromises()
+    expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
+    const signal = nativePreviewMocks.prepare.mock.calls[0]![1]
     wrapper.unmount()
-    resolveDownload?.({
-      resourceUrl: 'https://app.example/cache/cover.png',
-      resolvedUrl: 'https://files.catbox.moe/cover.png',
-      contentType: 'image/png',
-      size: 5,
-      cached: false,
-    })
+    expect(signal.aborted).toBe(true)
   })
 
-  it('Android 普通外链在正式文档载入后命中缓存也不重启 iframe', async () => {
+  it('切换开场白释放旧素材会话，迟到登记不能覆盖新预览', async () => {
     nativePreviewMocks.available.mockReturnValue(true)
-    let resolveDownload:
-      | ((result: {
-          resourceUrl: string
-          resolvedUrl: string
-          contentType: string
-          size: number
-          cached: boolean
-        }) => void)
-      | undefined
-    nativePreviewMocks.download.mockImplementation(
+    let complete!: () => void
+    nativePreviewMocks.prepare.mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
-          resolveDownload = resolve
+        new Promise<void>((resolve) => {
+          complete = resolve
         }),
     )
     const wrapper = mount(RichContentPreview, {
       props: {
-        source: '<img src="https://files.catbox.moe/cover.png">',
-        title: '主开场',
-        immersive: true,
-        bare: true,
-        renderShell: 'content',
-        sourceKind: 'openingArchive',
+        source: '<img src="https://cdn.example/old.png">',
+        title: '旧开场',
         preloadResources: true,
       },
     })
-    await vi.waitFor(() => expect(nativePreviewMocks.download).toHaveBeenCalledOnce())
     await flushPromises()
+    const oldSignal = nativePreviewMocks.prepare.mock.calls[0]![1]
+    await wrapper.setProps({ source: '<img src="https://cdn.example/new.png">' })
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect(readFrameDocument(wrapper)).toContain('https://cdn.example/new.png')
+    complete()
+    await flushPromises()
+    expect(readFrameDocument(wrapper)).not.toContain('https://cdn.example/old.png')
+  })
 
-    const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
-    const initialDocument = readFrameDocument(wrapper)
-    await wrapper.find('iframe').trigger('load')
-
-    resolveDownload?.({
-      resourceUrl: 'https://app.example/cache/cover.png',
-      resolvedUrl: 'https://files.catbox.moe/cover.png',
-      contentType: 'image/png',
-      size: 5,
-      cached: false,
+  it('旧 APK 不支持素材登记时继续显示外链，不阻塞预览', async () => {
+    nativePreviewMocks.available.mockReturnValue(true)
+    nativePreviewMocks.prepare.mockRejectedValue(new Error('not implemented'))
+    const wrapper = mount(RichContentPreview, {
+      props: {
+        source: '<img src="https://cdn.example/a.png">',
+        title: '开场',
+        preloadResources: true,
+      },
     })
     await flushPromises()
-
-    expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
-    expect(readFrameDocument(wrapper)).toBe(initialDocument)
+    expect(readFrameDocument(wrapper)).toContain('https://cdn.example/a.png')
+    expect(nativePreviewMocks.download).not.toHaveBeenCalled()
   })
 
   it('网页端切换开场白仍保持外链直显，不创建预下载请求', async () => {
@@ -526,76 +509,91 @@ describe('RichContentPreview', () => {
     )
   })
 
-  it('10 条重 opening 首屏只格式化 current，alternate 首访一次且回访命中 cache', async () => {
-    localStorage.setItem('srl.preview.allowScripts', 'true')
-    vi.stubGlobal('requestIdleCallback', undefined)
-    const performanceEvents: Array<{
-      formatterKind?: string
-      greetingIndex?: number
-      stage: string
-    }> = []
-    ;(
-      window as Window & {
-        __SRL_PREVIEW_PERFORMANCE_AUDIT__?: (event: (typeof performanceEvents)[number]) => void
-      }
-    ).__SRL_PREVIEW_PERFORMANCE_AUDIT__ = (event) => performanceEvents.push(event)
-    const greetings = Array.from(
-      { length: 10 },
-      (_, index) =>
-        `\`\`\`html\n<html><body><main data-opening="${index}">开场 ${index}</main></body></html>\n\`\`\``,
-    )
-    const wrapper = mount(RichContentPreview, {
-      props: {
-        source: greetings[1],
-        title: '重 opening',
-        greetingContents: greetings,
-        greetingIndex: 1,
-        runtimeScripts: [{ id: 'heavy', name: 'heavy', content: 'void 0', source: 'character' }],
-        sourceKind: 'openingArchive',
-        renderShell: 'content',
-      },
-    })
-    await flushPromises()
-
-    expect(performanceEvents.filter((event) => event.stage === 'formatter')).toEqual([
-      expect.objectContaining({ formatterKind: 'current', greetingIndex: 1 }),
-    ])
-
-    let swipeId = 1
-    const transitionSwipe = vi.fn(async (target: number) => {
-      swipeId = target
-      return true
-    })
-    const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
-    Object.defineProperty(initialFrame, 'contentWindow', {
-      configurable: true,
-      value: {
-        postMessage: vi.fn(),
-        __SRL_RENDER_COMPAT_HOST__: {
-          events: { CHARACTER_MESSAGE_RENDERED: 'character_message_rendered' },
-          transitionSwipe,
-          emit: vi.fn(async () => undefined),
-          context: () => ({ chat: [{ swipe_id: swipeId }] }),
+  it.each([false, true])(
+    '10 条重 opening 首屏只格式化 current，alternate 首访一次且回访命中 cache（原生：%s）',
+    async (native) => {
+      nativePreviewMocks.available.mockReturnValue(native)
+      localStorage.setItem('srl.preview.allowScripts', 'true')
+      vi.stubGlobal('requestIdleCallback', undefined)
+      const performanceEvents: Array<{
+        formatterKind?: string
+        greetingIndex?: number
+        stage: string
+      }> = []
+      ;(
+        window as Window & {
+          __SRL_PREVIEW_PERFORMANCE_AUDIT__?: (event: (typeof performanceEvents)[number]) => void
+        }
+      ).__SRL_PREVIEW_PERFORMANCE_AUDIT__ = (event) => performanceEvents.push(event)
+      const greetings = Array.from(
+        { length: 10 },
+        (_, index) =>
+          `\`\`\`html\n<html><body><main data-opening="${index}">开场 ${index}</main><img src="https://cdn.example/opening-${index}.png"></body></html>\n\`\`\``,
+      )
+      const wrapper = mount(RichContentPreview, {
+        props: {
+          source: greetings[1],
+          title: '重 opening',
+          preloadResources: native,
+          greetingContents: greetings,
+          greetingIndex: 1,
+          runtimeScripts: [{ id: 'heavy', name: 'heavy', content: 'void 0', source: 'character' }],
+          sourceKind: 'openingArchive',
+          renderShell: 'content',
         },
-      },
-    })
-    initialFrame.dispatchEvent(new Event('load'))
-
-    for (const target of [2, 1, 2]) {
-      await wrapper.setProps({ source: greetings[target], greetingIndex: target })
+      })
       await flushPromises()
-      await flushPromises()
-    }
 
-    const formatterEvents = performanceEvents.filter((event) => event.stage === 'formatter')
-    expect(formatterEvents.filter((event) => event.greetingIndex === 1)).toHaveLength(1)
-    expect(formatterEvents.filter((event) => event.greetingIndex === 2)).toHaveLength(1)
-    expect(formatterEvents.filter((event) => ![1, 2].includes(event.greetingIndex ?? -1))).toEqual(
-      [],
-    )
-    expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
-    expect(transitionSwipe).toHaveBeenCalledTimes(3)
-  })
+      expect(performanceEvents.filter((event) => event.stage === 'formatter')).toEqual([
+        expect.objectContaining({ formatterKind: 'current', greetingIndex: 1 }),
+      ])
+
+      let swipeId = 1
+      const transitionSwipe = vi.fn(async (target: number) => {
+        swipeId = target
+        return true
+      })
+      const initialFrame = wrapper.find<HTMLIFrameElement>('iframe').element
+      Object.defineProperty(initialFrame, 'contentWindow', {
+        configurable: true,
+        value: {
+          postMessage: vi.fn(),
+          __SRL_RENDER_COMPAT_HOST__: {
+            events: { CHARACTER_MESSAGE_RENDERED: 'character_message_rendered' },
+            transitionSwipe,
+            emit: vi.fn(async () => undefined),
+            context: () => ({ chat: [{ swipe_id: swipeId }] }),
+          },
+        },
+      })
+      initialFrame.dispatchEvent(new Event('load'))
+
+      for (const target of [2, 1, 2]) {
+        await wrapper.setProps({ source: greetings[target], greetingIndex: target })
+        await flushPromises()
+        await flushPromises()
+      }
+
+      const formatterEvents = performanceEvents.filter((event) => event.stage === 'formatter')
+      expect(formatterEvents.filter((event) => event.greetingIndex === 1)).toHaveLength(1)
+      expect(formatterEvents.filter((event) => event.greetingIndex === 2)).toHaveLength(1)
+      expect(
+        formatterEvents.filter((event) => ![1, 2].includes(event.greetingIndex ?? -1)),
+      ).toEqual([])
+      expect(wrapper.find<HTMLIFrameElement>('iframe').element).toBe(initialFrame)
+      expect(transitionSwipe).toHaveBeenCalledTimes(3)
+      if (native) {
+        expect(nativePreviewMocks.prepare).toHaveBeenCalledTimes(4)
+        expect(nativePreviewMocks.prepare.mock.calls.at(-1)![0]).toContain(
+          'https://cdn.example/opening-2.png',
+        )
+        expect(
+          nativePreviewMocks.prepare.mock.calls.slice(0, -1).every((call) => call[1].aborted),
+        ).toBe(true)
+        expect(nativePreviewMocks.download).not.toHaveBeenCalled()
+      }
+    },
+  )
 
   it('formatAsDisplayedMessage literal fixture 保留全部登记 opening 的同步格式化结果', async () => {
     localStorage.setItem('srl.preview.allowScripts', 'true')

@@ -64,6 +64,20 @@ export async function backfillCardFingerprints(
   storage: ResourceStorageAdapter,
   checkpoint = () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
 ): Promise<number> {
+  return (await loadVersionRecognitionSnapshot(storage, checkpoint)).backfilled
+}
+
+export interface VersionRecognitionSnapshot {
+  resources: ResourceSummary[]
+  versions: ResourceSummary[]
+  backfilled: number
+}
+
+/** One operation-scoped snapshot shared by legacy repair and version recognition. */
+export async function loadVersionRecognitionSnapshot(
+  storage: ResourceStorageAdapter,
+  checkpoint = () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+): Promise<VersionRecognitionSnapshot> {
   await checkpoint()
   const [summaries, versionSummaries] = await Promise.all([
     storage.listSummaries(),
@@ -79,12 +93,14 @@ export async function backfillCardFingerprints(
       summary.metadata.cardFingerprintVersion === CHARACTER_CARD_FINGERPRINT_VERSION
     )
       continue
-    const fullResource = await storage.get(summary.id)
-    const fingerprints = await computeCardFingerprints(fullResource?.metadata ?? summary.metadata)
+    const metadata = summary.metadata.card
+      ? summary.metadata
+      : ((await storage.get(summary.id))?.metadata ?? summary.metadata)
+    const fingerprints = await computeCardFingerprints(metadata)
     if (!fingerprints) continue
     const changes = {
       metadata: {
-        ...summary.metadata,
+        ...metadata,
         cardContentHash: fingerprints.full,
         cardCoreHash: fingerprints.core,
         cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
@@ -102,12 +118,14 @@ export async function backfillCardFingerprints(
       summary.metadata.cardFingerprintVersion === CHARACTER_CARD_FINGERPRINT_VERSION
     )
       continue
-    const fullVersion = await storage.getVersion?.(summary.id)
-    const fingerprints = await computeCardFingerprints(fullVersion?.metadata ?? summary.metadata)
+    const metadata = summary.metadata.card
+      ? summary.metadata
+      : ((await storage.getVersion?.(summary.id))?.metadata ?? summary.metadata)
+    const fingerprints = await computeCardFingerprints(metadata)
     if (!fingerprints) continue
     const changes = {
       metadata: {
-        ...summary.metadata,
+        ...metadata,
         cardContentHash: fingerprints.full,
         cardCoreHash: fingerprints.core,
         cardFingerprintVersion: CHARACTER_CARD_FINGERPRINT_VERSION,
@@ -121,22 +139,20 @@ export async function backfillCardFingerprints(
   for (const version of versionSummaries) {
     if (++processed % 32 === 0) await checkpoint()
     if (!version.versionGroupId) continue
-    versionsByOwner.set(version.versionGroupId, [
-      ...(versionsByOwner.get(version.versionGroupId) ?? []),
-      version,
-    ])
+    const bucket = versionsByOwner.get(version.versionGroupId)
+    if (bucket) bucket.push(version)
+    else versionsByOwner.set(version.versionGroupId, [version])
   }
   for (const resource of summaries) {
     if (++processed % 32 === 0) await checkpoint()
-    const versionCount = countResourceLogicalVersions([
-      resource,
-      ...(versionsByOwner.get(resource.id) ?? []),
-    ])
+    const versions = versionsByOwner.get(resource.id)
+    const versionCount = versions ? countResourceLogicalVersions([resource, ...versions]) : 1
     if (resource.versionCount !== versionCount) {
       await storage.update(resource.id, { versionCount })
+      resource.versionCount = versionCount
     }
   }
-  return backfilled
+  return { resources: summaries, versions: versionSummaries, backfilled }
 }
 
 export type VersionImportRequest = [

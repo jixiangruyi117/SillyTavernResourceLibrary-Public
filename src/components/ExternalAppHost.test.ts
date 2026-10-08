@@ -4,27 +4,262 @@ import { nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import { SRL_BACK_REQUEST_EVENT } from '../composables/UseBackStack'
 
-const { getExternalApp, requireCustomTool, getData } = vi.hoisted(() => ({
+const {
+  getExternalApp,
+  getExternalAppSummary,
+  requireCustomTool,
+  getData,
+  hasPermission,
+  hasPersistentPermission,
+  readChat,
+} = vi.hoisted(() => ({
   getExternalApp: vi.fn(),
+  getExternalAppSummary: vi.fn(async () => getExternalApp.mock.results.at(-1)?.value),
   requireCustomTool: vi.fn(),
   getData: vi.fn(),
+  hasPermission: vi.fn(),
+  hasPersistentPermission: vi.fn(),
+  readChat: vi.fn(),
 }))
 
 vi.mock('../core/AppContainer', () => ({
   externalAppService: {
     get: getExternalApp,
+    getSummary: getExternalAppSummary,
     requireCustomTool,
     getData,
+    hasPermission,
+    hasPersistentPermission,
+    isBuiltinReader: (app: { id: string; runtimeHtml: string }) =>
+      app.id === 'com.srl.duleme' &&
+      app.runtimeHtml === '<!doctype html><html><body>reader</body></html>',
+    recordPermissionDecision: vi.fn(),
     recordLaunch: vi.fn(),
     recordHealthyLaunch: vi.fn(),
     recordRuntimeError: vi.fn(),
   },
-  externalAppSdkService: {},
+  externalAppSdkService: { readChat, releaseListSession: vi.fn() },
 }))
 
 import ExternalAppHost from './ExternalAppHost.vue'
 
 describe('ExternalAppHost', () => {
+  it('keeps an explicit return available when the built-in installation cannot load', async () => {
+    getExternalApp.mockResolvedValueOnce(undefined)
+    const wrapper = mount(ExternalAppHost, { props: { appId: 'com.srl.duleme', official: true } })
+    try {
+      expect(wrapper.find('[data-srl-feature-header]').exists()).toBe(false)
+      await flushPromises()
+      expect(wrapper.get('[data-srl-feature-header]').text()).toContain('读了么')
+      expect(wrapper.text()).toContain('读了么未能加载')
+      await wrapper.get('[aria-label="返回功能桌面"]').trigger('click')
+      expect(wrapper.emitted('back')).toHaveLength(1)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([true, false])(
+    'waits for APP initialization only for the built-in reader: %s',
+    async (official) => {
+      getExternalApp.mockResolvedValue({
+        id: 'com.srl.duleme',
+        enabled: true,
+        runtimeMode: 'trustedCompatible',
+        runtimeHtml: '<!doctype html><html><body>reader</body></html>',
+        manifest: { id: 'com.srl.duleme', name: '读了么', version: '0.1.17', immersive: true },
+      })
+      const port = {
+        postMessage: vi.fn(),
+        start: vi.fn(),
+        close: vi.fn(),
+        onmessage: undefined as ((event: MessageEvent) => void) | undefined,
+      }
+      vi.stubGlobal(
+        'MessageChannel',
+        class {
+          port1 = port
+          port2 = {}
+        },
+      )
+      const container = document.createElement('div')
+      document.body.append(container)
+      const wrapper = mount(ExternalAppHost, {
+        props: { appId: 'com.srl.duleme', official },
+        attachTo: container,
+      })
+      try {
+        await flushPromises()
+        const frame = document.body.querySelector('iframe') as HTMLIFrameElement
+        const send = vi.spyOn(frame.contentWindow!, 'postMessage').mockImplementation(() => {})
+        frame.dispatchEvent(new Event('load'))
+        frame.dispatchEvent(new Event('load'))
+        await flushPromises()
+        const connected = send.mock.calls.find(([data]) => data.type === 'srl:connect')![0]
+        const workspace = document.body.querySelector('.external-app-host__workspace')!
+        expect(workspace.classList.contains('external-app-host__workspace--starting')).toBe(
+          official,
+        )
+        if (official) expect(document.body.textContent).toContain('正在打开读了么')
+        const request = async (sequence: number, method: string, payload: unknown) => {
+          port.onmessage!(
+            new MessageEvent('message', {
+              data: {
+                type: 'srl:request',
+                nonce: connected.nonce,
+                id: String(sequence),
+                sequence,
+                method,
+                payload,
+              },
+            }),
+          )
+          await flushPromises()
+        }
+        if (official) {
+          await request(1, 'ui.readerNavigation', {
+            page: 'reader',
+            colors: { paper: '#191e20', ink: '#eeeeee' },
+          })
+          expect(workspace.classList.contains('external-app-host__workspace--starting')).toBe(true)
+          expect((workspace as HTMLElement).style.getPropertyValue('--reader-paper')).toBe('')
+        }
+        await request(2, 'ui.loading', { label: '' })
+        expect(workspace.classList.contains('external-app-host__workspace--starting')).toBe(false)
+        if (official) {
+          expect((workspace as HTMLElement).style.getPropertyValue('--reader-paper')).toBe(
+            '#191e20',
+          )
+          expect(workspace.querySelector('.feature-app-header')).toBeNull()
+        }
+      } finally {
+        wrapper.unmount()
+        container.remove()
+        vi.unstubAllGlobals()
+      }
+    },
+  )
+
+  it.each([
+    { official: true, id: 'com.srl.duleme', remote: false, prompts: false, ordinaryRead: true },
+    { official: false, id: 'com.srl.duleme', remote: false, prompts: true, ordinaryRead: true },
+    {
+      official: true,
+      id: 'com.srl.duleme',
+      remote: false,
+      prompts: true,
+      ordinaryRead: true,
+      forged: true,
+    },
+    { official: true, id: 'com.srl.duleme', remote: true, prompts: false },
+    { official: true, id: 'com.srl.duleme', remote: false, prompts: false },
+    { official: false, id: 'com.srl.duleme', remote: true, prompts: true },
+    { official: true, id: 'com.example.reader', remote: true, prompts: true },
+    { official: true, id: 'com.srl.duleme', remote: true, prompts: false, undeclared: true },
+  ])(
+    'uses the remote setting only for the built-in reader: %j',
+    async ({ official, id, remote, prompts, undeclared, ordinaryRead, forged }) => {
+      hasPermission
+        .mockReset()
+        .mockImplementation(
+          async (_id, permission) => !(undeclared && permission === 'network.https'),
+        )
+      hasPersistentPermission
+        .mockReset()
+        .mockImplementation(
+          async (_id, permission) => !ordinaryRead && permission !== 'network.https',
+        )
+      readChat.mockReset().mockResolvedValue({ messages: [] })
+      getExternalApp.mockResolvedValue({
+        id,
+        enabled: true,
+        runtimeMode: 'trustedCompatible',
+        runtimeHtml: forged
+          ? '<html>same ID, different source</html>'
+          : '<!doctype html><html><body>reader</body></html>',
+        manifest: { id, name: '读了么', version: '0.1.17' },
+      })
+      const port = {
+        postMessage: vi.fn(),
+        start: vi.fn(),
+        close: vi.fn(),
+        onmessage: undefined as ((event: MessageEvent) => void) | undefined,
+      }
+      vi.stubGlobal(
+        'MessageChannel',
+        class {
+          port1 = port
+          port2 = {}
+        },
+      )
+      const originalModal = Object.getOwnPropertyDescriptor(
+        HTMLDialogElement.prototype,
+        'showModal',
+      )
+      Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+        configurable: true,
+        value(this: HTMLDialogElement) {
+          this.open = true
+        },
+      })
+      const container = document.createElement('div')
+      document.body.append(container)
+      const wrapper = mount(ExternalAppHost, {
+        props: { appId: id, official },
+        attachTo: container,
+      })
+      try {
+        await flushPromises()
+        const iframe = wrapper.get('iframe').element as HTMLIFrameElement
+        const connect = vi.spyOn(iframe.contentWindow!, 'postMessage').mockImplementation(() => {})
+        // First load seeds the isolated document; the second connects the actual APP.
+        await wrapper.get('iframe').trigger('load')
+        await wrapper.get('iframe').trigger('load')
+        const message = connect.mock.calls.find(([value]) => value.type === 'srl:connect')![0]
+        port.onmessage!(
+          new MessageEvent('message', {
+            data: {
+              type: 'srl:request',
+              nonce: message.nonce,
+              sequence: 1,
+              id: 'remote-read',
+              method: 'chat.read',
+              payload: { id: 'chat', remote },
+            },
+          }),
+        )
+        await flushPromises()
+        const dialog = document.body.querySelector('.external-app-permission')
+        expect(Boolean(dialog)).toBe(prompts)
+        if (prompts) {
+          expect(readChat).not.toHaveBeenCalled()
+          expect(dialog!.textContent).toContain(ordinaryRead ? '定位资源库' : '远程')
+          ;(dialog!.querySelector('button') as HTMLButtonElement).click()
+          await flushPromises()
+        } else if (undeclared) {
+          expect(readChat).not.toHaveBeenCalled()
+          expect(port.postMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'remote-read', ok: false }),
+          )
+        } else {
+          expect(readChat).toHaveBeenCalledExactlyOnceWith(id, { id: 'chat', remote })
+          expect(port.postMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'remote-read', ok: true }),
+          )
+        }
+        expect(
+          hasPermission.mock.calls.some(([, permission]) => permission === 'network.https'),
+        ).toBe(remote)
+      } finally {
+        wrapper.unmount()
+        container.remove()
+        if (originalModal)
+          Object.defineProperty(HTMLDialogElement.prototype, 'showModal', originalModal)
+        else Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+        vi.unstubAllGlobals()
+      }
+    },
+  )
   it('invokes registered tools over the same isolated runtime, narrows SDK permissions and rechecks the installed fingerprint after completion', async () => {
     const descriptor = {
       id: 'com.example.tools/note',
@@ -84,6 +319,7 @@ describe('ExternalAppHost', () => {
       await flushPromises()
       send({ type: 'srl:tools-ready', names: ['note'] })
       const call = port.postMessage.mock.calls.find(([data]) => data.type === 'srl:tool-call')![0]
+      const fullReads = getExternalApp.mock.calls.length
       send({
         type: 'srl:request',
         id: 'sdk',
@@ -96,8 +332,24 @@ describe('ExternalAppHost', () => {
         expect.objectContaining({ id: 'sdk', ok: false, error: expect.stringContaining('超出') }),
       )
       expect(getData).not.toHaveBeenCalled()
+      expect(getExternalApp).toHaveBeenCalledTimes(fullReads)
+      expect(getExternalAppSummary).toHaveBeenCalledWith(descriptor.appId)
       send({ type: 'srl:tool-result', id: call.id, ok: true, result: '{"blocked":true}' })
       await expect(pending).resolves.toEqual({ blocked: true })
+      getExternalAppSummary.mockResolvedValueOnce({ id: descriptor.appId, enabled: false })
+      send({
+        type: 'srl:request',
+        id: 'disabled',
+        sequence: 2,
+        method: 'storage.get',
+        payload: { key: 'private' },
+      })
+      await flushPromises()
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'disabled', ok: false, error: 'APP 已被禁用' }),
+      )
+      expect(getData).not.toHaveBeenCalled()
+      expect(getExternalApp).toHaveBeenCalledTimes(fullReads)
       expect(requireCustomTool).toHaveBeenLastCalledWith(descriptor.id, 'current')
       expect(wrapper.get('iframe').attributes('sandbox')).toBe('allow-scripts')
       expect(wrapper.get('[data-srl-feature-header]').classes()).toContain(
@@ -220,6 +472,19 @@ describe('ExternalAppHost', () => {
         await flushPromises()
       }
       await navigate('chats', 1)
+      hostPort.onmessage!(
+        new MessageEvent('message', {
+          data: {
+            type: 'srl:request',
+            nonce,
+            sequence: 2,
+            id: 'ready',
+            method: 'ui.loading',
+            payload: { label: '' },
+          },
+        }),
+      )
+      await flushPromises()
       expect((workspace as HTMLElement).style.getPropertyValue('--color-canvas')).toBe('#202622')
       expect((workspace as HTMLElement).style.getPropertyValue('--color-ink')).toBe('#d0d3c6')
       expect((workspace as HTMLElement).style.getPropertyValue('--color-line')).toBe('')
@@ -233,25 +498,25 @@ describe('ExternalAppHost', () => {
         action: 'back',
       })
       expect(wrapper.emitted('back')).toBeUndefined()
-      await navigate('reader', 2)
+      await navigate('reader', 3)
       expect(workspace.querySelector('[data-srl-feature-header]')).toBeNull()
       expect(workspace.getAttribute('data-reader-page')).toBe('reader')
       const detail = { handled: false }
       window.dispatchEvent(new CustomEvent(SRL_BACK_REQUEST_EVENT, { detail }))
       expect(detail.handled).toBe(true)
       expect(document.body.classList.contains('external-app-fullscreen')).toBe(true)
-      await navigate('roles', 3)
+      await navigate('roles', 4)
       hostPort.onmessage!(
         new MessageEvent('message', {
-          data: { type: 'srl:request', nonce, sequence: 4, id: '4', method: 'ui.exitFullscreen' },
+          data: { type: 'srl:request', nonce, sequence: 5, id: '5', method: 'ui.exitFullscreen' },
         }),
       )
       await flushPromises()
       expect(wrapper.emitted('back')).toHaveLength(1)
       await wrapper.setProps({ official: false })
-      await navigate('reader', 5)
+      await navigate('reader', 6)
       expect(hostPort.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ id: '5', ok: false }),
+        expect.objectContaining({ id: '6', ok: false }),
       )
     } finally {
       wrapper.unmount()

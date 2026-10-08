@@ -1,8 +1,10 @@
+/* global fetch, Headers */
 import { createServer } from 'node:http'
 import { createReadStream } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { extname, relative, resolve, sep } from 'node:path'
 import { URL } from 'node:url'
+import { Buffer } from 'node:buffer'
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -18,7 +20,20 @@ const mime = {
   '.srlapp': 'application/octet-stream',
 }
 
-export async function startAuditPreview({ directory, nextDirectory, port, run, apiFixture }) {
+export async function startAuditPreview({
+  directory,
+  nextDirectory,
+  port,
+  run,
+  apiFixture,
+  bridgeUrl,
+}) {
+  const bridge = bridgeUrl ? new URL(bridgeUrl) : undefined
+  if (
+    bridge &&
+    (bridge.protocol !== 'http:' || bridge.hostname !== '127.0.0.1' || bridge.pathname !== '/')
+  )
+    throw new Error('真实中继审计只允许独立的本机 HTTP Worker')
   let root = await realpath(directory)
   const nextRoot = nextDirectory ? await realpath(nextDirectory) : undefined
   let networkUnavailable = false
@@ -29,6 +44,35 @@ export async function startAuditPreview({ directory, nextDirectory, port, run, a
     }
     try {
       const path = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname)
+      if (bridge && path.startsWith('/api/bridge/')) {
+        const chunks = []
+        let size = 0
+        for await (const chunk of request) {
+          size += chunk.length
+          if (size > 512 * 1024) throw new Error('audit relay request too large')
+          chunks.push(chunk)
+        }
+        const upstream = await fetch(new URL(path, bridge), {
+          method: request.method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(request.headers.origin ? { Origin: request.headers.origin } : {}),
+          },
+          ...(['GET', 'HEAD'].includes(request.method) ? {} : { body: Buffer.concat(chunks) }),
+        })
+        // Node fetch decodes the upstream body. Do not forward its compressed wire metadata.
+        const headers = new Headers(upstream.headers)
+        for (const name of [
+          'content-encoding',
+          'content-length',
+          'transfer-encoding',
+          'connection',
+        ])
+          headers.delete(name)
+        response.writeHead(upstream.status, Object.fromEntries(headers))
+        response.end(new Uint8Array(await upstream.arrayBuffer()))
+        return
+      }
       // Reproduce the existing Worker relaunch endpoint for upgrade audits only.
       if (apiFixture && nextRoot && path === '/api/relaunch' && request.method === 'GET') {
         const html = await readFile(resolve(root, 'index.html'), 'utf8')

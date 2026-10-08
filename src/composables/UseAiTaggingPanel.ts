@@ -11,6 +11,9 @@ import type { AiTaggingDraft, AiTaggingUndoRecord } from '../services/AiTaggingD
 import type { AiTaggingRuleTemplate } from '../services/AiTaggingDraftService'
 import {
   AI_TAGGING_DEFAULT_BATCH_SIZE,
+  AI_TAGGING_DEFAULT_CONCURRENCY,
+  AI_TAGGING_MAX_CONCURRENCY,
+  normalizeAiTaggingConcurrency,
   AI_TAGGING_RESOURCE_CHAR_BUDGET,
   AI_TAGGING_MAX_SYSTEM_PROMPT,
   AI_TAGGING_TAXONOMY_TEMPLATES,
@@ -20,6 +23,7 @@ import {
   type AiTaggingSuggestion,
 } from '../services/AiTaggingService'
 import type { MainApiConfig, MainApiProfile } from '../services/MainApiService'
+import { mainApiCancellationNotice } from '../services/MainApiTextTransport'
 import {
   getResourceCategoryIds,
   RESOURCE_TYPE_LABELS,
@@ -71,6 +75,7 @@ export function useAiTaggingPanel(
   const tagQuery = ref('')
 
   const batchSize = ref(AI_TAGGING_DEFAULT_BATCH_SIZE)
+  const concurrency = ref(AI_TAGGING_DEFAULT_CONCURRENCY)
   const batchSizeError = computed(() =>
     Number.isSafeInteger(batchSize.value) && batchSize.value > 0
       ? ''
@@ -120,6 +125,23 @@ export function useAiTaggingPanel(
   const failures = ref<AiTaggingFailure[]>([])
 
   const reviewItems = ref<ReviewItem[]>([])
+  const reviewPage = ref(1)
+  const reviewPageSize = 20
+  const reviewPageCount = computed(() =>
+    Math.max(1, Math.ceil(reviewItems.value.length / reviewPageSize)),
+  )
+  const pageReviewItems = computed(() =>
+    reviewItems.value.slice(
+      (reviewPage.value - 1) * reviewPageSize,
+      reviewPage.value * reviewPageSize,
+    ),
+  )
+  watch(
+    () => reviewItems.value.length,
+    () => {
+      reviewPage.value = Math.min(reviewPage.value, reviewPageCount.value)
+    },
+  )
 
   const progressCompleted = ref(0)
 
@@ -350,7 +372,7 @@ export function useAiTaggingPanel(
   }
 
   function resourceName(resourceId: string): string {
-    return props.resources.find((resource) => resource.id === resourceId)?.name ?? '资源已不存在'
+    return resourceIndex.value.get(resourceId)?.name ?? '资源已不存在'
   }
 
   function draftTime(value: number): string {
@@ -400,8 +422,11 @@ export function useAiTaggingPanel(
     }
   }
 
+  const resourceIndex = computed(
+    () => new Map(props.resources.map((resource) => [resource.id, resource])),
+  )
   function reviewItemsFromSuggestions(suggestions: AiTaggingSuggestion[]): ReviewItem[] {
-    const resourceById = new Map(props.resources.map((resource) => [resource.id, resource]))
+    const resourceById = resourceIndex.value
     return suggestions.flatMap((suggestion) => {
       const resource = resourceById.get(suggestion.resourceId)
       return resource
@@ -419,6 +444,7 @@ export function useAiTaggingPanel(
   }
 
   async function runRecognition(resourceIds: string[], preserveSuccesses: boolean): Promise<void> {
+    if (stage.value === 'running') return
     if (systemPromptError.value || batchSizeError.value) {
       message.value = systemPromptError.value || batchSizeError.value
       return
@@ -429,6 +455,7 @@ export function useAiTaggingPanel(
     }
     message.value = '正在读取首批资源并准备上下文…'
     if (!preserveSuccesses) {
+      reviewPage.value = 1
       failures.value = []
       reviewItems.value = []
       usageText.value = ''
@@ -439,20 +466,42 @@ export function useAiTaggingPanel(
     progressBatchCount.value = Math.ceil(resourceIds.length / batchSize.value)
     progressResourceNames.value = []
     stopRequested.value = false
-    recognitionController = new AbortController()
+    const controller = new AbortController()
+    recognitionController = controller
+    const isCurrent = () => recognitionController === controller && !controller.signal.aborted
+    const targetIds = new Set(resourceIds)
+    if (preserveSuccesses)
+      failures.value = failures.value.filter(
+        (failure) => !failure.resourceIds.some((id) => targetIds.has(id)),
+      )
     stage.value = 'running'
     try {
       const result = await aiTaggingService.recognize({
         resourceIds,
         batchSize: batchSize.value,
+        concurrency: concurrency.value,
         customPrompt: customPrompt.value,
         systemPrompt: systemPrompt.value,
         taxonomyTemplateId: taxonomyTemplateId.value,
         mergeAliases: mergeAliases.value,
         apiOverride: configOverride(),
-        shouldContinue: () => !stopRequested.value,
-        signal: recognitionController.signal,
+        shouldContinue: isCurrent,
+        signal: controller.signal,
+        onBatchResult: (batch) => {
+          if (!isCurrent()) return
+          mergeReviewItems(
+            batch.suggestions,
+            new Set(batch.suggestions.map((item) => item.resourceId)),
+          )
+          failures.value = [...failures.value, ...batch.failures].sort(
+            (left, right) => left.batch - right.batch,
+          )
+          usageText.value = `${batch.usage.totalTokens.toLocaleString()} Token · ${batch.usage.source === 'provider' ? '供应商统计' : '估算'}`
+          if (reviewItems.value.length || failures.value.length)
+            aiTaggingDraftService.saveDraft({ ...buildDraft(), stage: 'review' })
+        },
         onProgress: (progress) => {
+          if (!isCurrent()) return
           progressCompleted.value = progress.completed
           progressTotal.value = progress.total
           progressBatch.value = progress.batch
@@ -461,10 +510,10 @@ export function useAiTaggingPanel(
           message.value =
             progress.phase === 'request'
               ? `正在识别第 ${progress.batch}/${progress.batchCount} 批，等待 API 返回。`
-              : `已处理第 ${progress.batch}/${progress.batchCount} 批，正在整理结果。`
+              : `已处理 ${progress.completed}/${progress.total} 项，继续识别其余资源。`
         },
       })
-      const targetIds = new Set(resourceIds)
+      if (!isCurrent()) return
       if (preserveSuccesses) {
         failures.value = [
           ...failures.value.filter(
@@ -490,10 +539,11 @@ export function useAiTaggingPanel(
       stage.value = 'review'
       persistDraft()
     } catch (error) {
+      if (!isCurrent()) return
       message.value = error instanceof Error ? error.message : 'AI 标签识别失败'
       stage.value = reviewItems.value.length || failures.value.length ? 'review' : 'select'
     } finally {
-      recognitionController = undefined
+      if (recognitionController === controller) recognitionController = undefined
     }
   }
 
@@ -507,8 +557,12 @@ export function useAiTaggingPanel(
 
   function requestStop(): void {
     stopRequested.value = true
-    recognitionController?.abort()
-    message.value = '正在取消当前 API 请求；已完成批次的结果会继续保留。'
+    const controller = recognitionController
+    recognitionController = undefined
+    controller?.abort()
+    stage.value = 'review'
+    message.value = `已停止识别，保留 ${reviewItems.value.length} 项已完成结果。${mainApiCancellationNotice()}`
+    persistDraft()
   }
 
   function setAllAccepted(accepted: boolean): void {
@@ -587,6 +641,7 @@ export function useAiTaggingPanel(
       tagQuery: tagQuery.value,
       selectedIds: Array.from(selectedIds.value),
       batchSize: batchSize.value,
+      concurrency: concurrency.value,
       customPrompt: customPrompt.value,
       ...(systemPrompt.value !== undefined ? { systemPrompt: systemPrompt.value } : {}),
       taxonomyTemplateId: taxonomyTemplateId.value,
@@ -619,6 +674,7 @@ export function useAiTaggingPanel(
       tagState.value !== 'all' ||
       tagQuery.value.length > 0 ||
       batchSize.value !== AI_TAGGING_DEFAULT_BATCH_SIZE ||
+      concurrency.value !== AI_TAGGING_DEFAULT_CONCURRENCY ||
       customPrompt.value !== DEFAULT_CUSTOM_PROMPT ||
       systemPrompt.value !== undefined ||
       taxonomyTemplateId.value !== 'free' ||
@@ -652,6 +708,7 @@ export function useAiTaggingPanel(
     tagQuery.value = draft.tagQuery
     selectedIds.value = new Set(draft.selectedIds.filter((id) => resourceById.has(id)))
     batchSize.value = draft.batchSize
+    concurrency.value = normalizeAiTaggingConcurrency(draft.concurrency)
     customPrompt.value = draft.customPrompt
     systemPrompt.value = draft.systemPrompt
     taxonomyTemplateId.value = AI_TAGGING_TAXONOMY_TEMPLATES.some(
@@ -705,6 +762,7 @@ export function useAiTaggingPanel(
     tagQuery.value = ''
     selectedIds.value = new Set(props.initialSelectedIds ?? [])
     batchSize.value = AI_TAGGING_DEFAULT_BATCH_SIZE
+    concurrency.value = AI_TAGGING_DEFAULT_CONCURRENCY
     customPrompt.value = DEFAULT_CUSTOM_PROMPT
     systemPrompt.value = undefined
     taxonomyTemplateId.value = 'free'
@@ -797,6 +855,9 @@ export function useAiTaggingPanel(
   })
 
   onBeforeUnmount(() => {
+    const controller = recognitionController
+    recognitionController = undefined
+    controller?.abort()
     window.removeEventListener('keydown', handleKeydown)
     document.body.style.overflow = previousBodyOverflow
     void nextTick(() => triggerElement?.focus({ preventScroll: true }))
@@ -811,6 +872,7 @@ export function useAiTaggingPanel(
       tagQuery,
       selectedIds,
       batchSize,
+      concurrency,
       customPrompt,
       systemPrompt,
       taxonomyTemplateId,
@@ -898,6 +960,8 @@ export function useAiTaggingPanel(
     saveRuleTemplate,
     deleteRuleTemplate,
     batchSize,
+    concurrency,
+    AI_TAGGING_MAX_CONCURRENCY,
     taxonomyTemplateId,
     AI_TAGGING_TAXONOMY_TEMPLATES,
     activeTaxonomyTemplate,
@@ -927,6 +991,10 @@ export function useAiTaggingPanel(
     requestStop,
     setAllAccepted,
     reviewItems,
+    reviewPage,
+    reviewPageSize,
+    reviewPageCount,
+    pageReviewItems,
     removeTag,
     addDraftTag,
     failures,

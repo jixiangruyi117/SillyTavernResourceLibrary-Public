@@ -633,3 +633,20 @@ describe('RestoreService', () => {
     ).rejects.toThrow('暂不支持备份版本 99')
   })
 })
+
+it('remaps an attached script to a deduplicated local script when restoring a chat', async () => {
+  const script = await createResource('script-archive', null, '{"scripts":[{"content":"code"}]}')
+  script.type = RESOURCE_TYPE.SCRIPT
+  const chat = await createResource('chat-archive', null, '{"mes":"正文","is_user":false}')
+  chat.type = RESOURCE_TYPE.CHAT
+  chat.metadata = { chatReadingScriptId: script.id }
+  const localScript = { ...script, id: 'script-local' }
+  const storage = new MemoryArchiveStorage()
+  storage.resources = [localScript]
+  const service = new RestoreService(storage)
+  const prepared = await service.prepare(await createBackup([chat, script], []), [localScript], [])
+  await service.restore(prepared)
+  expect(
+    storage.resources.find((r) => r.type === RESOURCE_TYPE.CHAT)?.metadata.chatReadingScriptId,
+  ).toBe(localScript.id)
+})

@@ -65,6 +65,9 @@ export class TavernHttpRelayPort {
   private acknowledgements: string[] = []
   private readonly delivered = new Set<string>()
   private retrying = 0
+  private processingPoll = false
+  private readonly chunkAcknowledgements: unknown[] = []
+  private ackFlush: Promise<void> | null = null
 
   constructor(
     relayBase: string,
@@ -80,7 +83,15 @@ export class TavernHttpRelayPort {
 
   postMessage(message: unknown): Promise<void> {
     if (this.closed) return Promise.reject(new Error('设备码中继已经关闭'))
+    // The receive handler has stored/validated the chunk. Network ACKs are
+    // flushed in a bounded window before the next poll or control message.
+    if (this.processingPoll && (message as { type?: string } | null)?.type === 'file-chunk-ack') {
+      this.chunkAcknowledgements.push(message)
+      return Promise.resolve()
+    }
     const task = this.sendChain.then(async () => {
+      if (this.chunkAcknowledgements.length || this.ackFlush)
+        await this.flushChunkAcknowledgements()
       await this.request('messages', {
         code: this.session.code,
         token: this.session.token,
@@ -94,6 +105,21 @@ export class TavernHttpRelayPort {
     return task
   }
 
+  private flushChunkAcknowledgements(): Promise<void> {
+    if (this.ackFlush) return this.ackFlush
+    const run = async (): Promise<void> => {
+      while (this.chunkAcknowledgements.length && !this.closed) {
+        const batch = this.chunkAcknowledgements.splice(0, 6)
+        await Promise.all(batch.map((message) => this.postFileChunk(message)))
+      }
+    }
+    const task = run().finally(() => {
+      this.ackFlush = null
+    })
+    this.ackFlush = task
+    return task
+  }
+
   /**
    * 文件块已有 index、ACK 和发送端窗口控制；不应再被控制消息队列串行化。
    * file-start/file-end 仍通过 postMessage 保持严格顺序。
@@ -104,6 +130,10 @@ export class TavernHttpRelayPort {
       code: this.session.code,
       token: this.session.token,
       message: encodeRelayPayload(message),
+      ...((message as { type?: string } | null)?.type === 'file-chunk-ack' &&
+      this.acknowledgements.length
+        ? { acknowledgements: [...this.acknowledgements] }
+        : {}),
       ...(this.session.reliableDelivery ? { messageId: crypto.randomUUID() } : {}),
     })
       .then(() => undefined)
@@ -117,6 +147,7 @@ export class TavernHttpRelayPort {
     if (this.closed) return
     this.closed = true
     this.abort.abort()
+    this.chunkAcknowledgements.length = 0
     void this.request('close', { code: this.session.code, token: this.session.token }, true).catch(
       () => {},
     )
@@ -134,17 +165,23 @@ export class TavernHttpRelayPort {
         if (result?.closed) throw new Error('设备码中继已关闭')
         if (this.closed) return
         this.acknowledgements = []
-        for (const [index, message] of (result?.messages ?? []).entries()) {
-          const id = result?.deliveryIds?.[index]
-          if (!id || !this.delivered.has(id))
-            await this.onmessage?.({ data: decodeRelayPayload(message) })
-          if (id) {
-            this.delivered.add(id)
-            this.acknowledgements.push(id)
-            if (this.delivered.size > 4096)
-              this.delivered.delete(this.delivered.values().next().value!)
+        this.processingPoll = true
+        try {
+          for (const [index, message] of (result?.messages ?? []).entries()) {
+            const id = result?.deliveryIds?.[index]
+            if (!id || !this.delivered.has(id))
+              await this.onmessage?.({ data: decodeRelayPayload(message) })
+            if (id) {
+              this.delivered.add(id)
+              this.acknowledgements.push(id)
+              if (this.delivered.size > 4096)
+                this.delivered.delete(this.delivered.values().next().value!)
+            }
           }
+        } finally {
+          this.processingPoll = false
         }
+        await this.flushChunkAcknowledgements()
       } catch (error) {
         if (!this.closed) this.onerror?.(error)
         this.closed = true

@@ -47,6 +47,7 @@ export function useCharacterCardContentWorkbench(
     edits: CharacterCardContentEdit[]
     overriddenSections?: CharacterCardContentSection[]
     disabled?: boolean
+    standaloneSection?: 'worldBook' | 'regex'
   },
   emit: EmitFn<{
     'update:edits': [value: CharacterCardContentEdit[]]
@@ -62,7 +63,7 @@ export function useCharacterCardContentWorkbench(
     { id: 'regex', label: '正则' },
     { id: 'helperScript', label: '酒馆助手脚本' },
   ]
-  const tab = ref<WorkbenchTab>('greeting')
+  const tab = ref<WorkbenchTab>(props.standaloneSection ?? 'greeting')
   const isEditorOpen = ref(false)
   const editKey = ref('')
   const editLabel = ref('')
@@ -159,7 +160,12 @@ export function useCharacterCardContentWorkbench(
             key,
             label: String(value.scriptName ?? value.script_name ?? '') || `规则 ${index + 1}`,
             value,
-            note: String(value.findRegex ?? value.find_regex ?? ''),
+            note: [
+              props.standaloneSection && value.scope,
+              String(value.findRegex ?? value.find_regex ?? ''),
+            ]
+              .filter(Boolean)
+              .join(' · '),
           },
         ]
       })
@@ -361,7 +367,7 @@ export function useCharacterCardContentWorkbench(
           label: input.label,
           ...(before === undefined ? {} : { before: clone(before) }),
           ...(after === undefined ? {} : { after: clone(after) }),
-          migrateToVersions: trackMigration.value,
+          migrateToVersions: !props.standaloneSection && trackMigration.value,
           updatedAt: Date.now(),
         },
       ]
@@ -382,7 +388,11 @@ export function useCharacterCardContentWorkbench(
     if (!(await leaveDraft())) return
     editKey.value = row?.key ?? ''
     const value = row?.value
-    const fallback = defaultValue(tab.value, () => nextWorldBookUid(data.value))
+    const fallback = defaultValue(tab.value, () =>
+      props.standaloneSection
+        ? Math.max(nextWorldBookUid(data.value), nextWorldBookUid(readData(props.card)))
+        : nextWorldBookUid(data.value),
+    )
     const record = isRecord(value) ? clone(value) : isRecord(fallback) ? fallback : {}
     editStructured.value = record
     editLabel.value =
@@ -535,8 +545,8 @@ export function useCharacterCardContentWorkbench(
   async function deleteEntry(row: Row): Promise<void> {
     if (
       !(await confirmAction({
-        title: '删除卡内条目',
-        message: `从当前角色卡移除“${row.label}”？原始文件保留，应用后可撤销。`,
+        title: props.standaloneSection ? '删除资源条目' : '删除卡内条目',
+        message: `从当前${props.standaloneSection ? '资源' : '角色卡'}移除“${row.label}”？原始文件保留，应用后可撤销。`,
         confirmLabel: '删除此条',
         danger: true,
       }))
@@ -562,7 +572,7 @@ export function useCharacterCardContentWorkbench(
           .map((row) => row.label)
           .join(
             '、',
-          )}${targets.length > 6 ? '等' : ''}\n仅移出当前角色卡，原始文件保留；可撤销本次操作。`,
+          )}${targets.length > 6 ? '等' : ''}\n仅移出当前${props.standaloneSection ? '资源' : '角色卡'}，原始文件保留；可撤销本次操作。`,
         confirmLabel: '删除所选',
         danger: true,
       }))
@@ -597,6 +607,8 @@ export function useCharacterCardContentWorkbench(
 
   function openImportPicker(): void {
     if (props.disabled || isImporting.value) return
+    // Return to the list without discarding the current entry draft.
+    isEditorOpen.value = false
     importError.value = ''
     importCandidates.value = []
     importQuery.value = ''

@@ -112,6 +112,19 @@ public class NativeLibraryPlugin extends Plugin {
     public void getStorageInfo(PluginCall call) {
         runIo(call, () -> {
             File root = libraryRoot();
+            JSObject result = new JSObject();
+            result.put("storageVersion", hasLegacyEntries(new File(root, "current")) || hasLegacyEntries(new File(root, "versions")) ? 1 : 4);
+            result.put("path", root.getAbsolutePath());
+            result.put("recoveryMetadataVersion", 1);
+            result.put("supportsRetiredTranslationModelCleanup", true);
+            result.put("currentCount", countEntries(new File(root, "current")));
+            result.put("versionCount", countEntries(new File(root, "versions")));
+            result.put("currentManifestHash", manifestHash(new File(root, "current")));
+            result.put("versionManifestHash", manifestHash(new File(root, "versions")));
+            if (Boolean.FALSE.equals(call.getBoolean("includeUsage", true))) {
+                call.resolve(result);
+                return;
+            }
             File appData = getContext().getDataDir();
             File externalData = getContext().getExternalFilesDir(null);
             File cache = getContext().getCacheDir();
@@ -120,14 +133,6 @@ public class NativeLibraryPlugin extends Plugin {
             long externalDataBytes = externalData == null ? 0L : directoryBytes(externalData);
             long appCacheBytes = directoryBytes(cache);
             long codeCacheBytes = directoryBytes(codeCache);
-            JSObject result = new JSObject();
-            result.put("storageVersion", hasLegacyEntries(new File(root, "current")) || hasLegacyEntries(new File(root, "versions")) ? 1 : 4);
-            result.put("path", root.getAbsolutePath());
-            result.put("recoveryMetadataVersion", 1);
-            result.put("currentCount", countEntries(new File(root, "current")));
-            result.put("versionCount", countEntries(new File(root, "versions")));
-            result.put("currentManifestHash", manifestHash(new File(root, "current")));
-            result.put("versionManifestHash", manifestHash(new File(root, "versions")));
             result.put("objectCount", countObjectFiles(new File(root, "objects")));
             result.put("objectBytes", countObjectBytes(new File(root, "objects")));
             result.put("appDataBytes", appDataBytes);
@@ -145,6 +150,63 @@ public class NativeLibraryPlugin extends Plugin {
             result.put("cacheBytes", appCacheBytes + codeCacheBytes);
             result.put("appCacheBytes", appCacheBytes);
             result.put("codeCacheBytes", codeCacheBytes);
+            // Full SQL/directory diagnostics are manual; ordinary status refreshes keep their existing cost.
+            if (Boolean.TRUE.equals(call.getBoolean("includeDetails", false))) {
+                File files = getContext().getFilesDir();
+                long filesBytes = directoryBytes(files);
+                long databaseBytes = directoryBytes(getContext().getDatabasePath(NativeAppDatabase.DATABASE_NAME).getParentFile());
+                long preferencesBytes = directoryBytes(new File(appData, "shared_prefs"));
+                long noBackupBytes = directoryBytes(getContext().getNoBackupFilesDir());
+                JSObject internal = new JSObject();
+                internal.put("filesBytes", filesBytes);
+                internal.put("databaseBytes", databaseBytes);
+                internal.put("preferencesBytes", preferencesBytes);
+                internal.put("noBackupBytes", noBackupBytes);
+                // WorkManager owns a separate database in Android's no-backup directory.
+                JSObject noBackup = new JSObject();
+                long workBytes = 0L;
+                for (String suffix : new String[] {"", "-wal", "-shm"}) {
+                    long bytes = new File(getContext().getNoBackupFilesDir(), "androidx.work.workdb" + suffix).length();
+                    noBackup.put(suffix.isEmpty() ? "databaseBytes" : suffix.equals("-wal") ? "walBytes" : "shmBytes", bytes);
+                    workBytes += bytes;
+                }
+                noBackup.put("otherBytes", Math.max(0L, noBackupBytes - workBytes));
+                org.json.JSONArray otherEntries = new org.json.JSONArray();
+                File[] otherChildren = getContext().getNoBackupFilesDir().listFiles();
+                if (otherChildren != null) for (File child : otherChildren) {
+                    if (child.getName().equals("androidx.work.workdb") || child.getName().equals("androidx.work.workdb-wal")
+                        || child.getName().equals("androidx.work.workdb-shm") || otherEntries.length() >= 64) continue;
+                    String name = child.getName();
+                    // Keep diagnostics local and omit opaque identifiers or arbitrary user filenames.
+                    if (!name.matches("[A-Za-z0-9_.-]{1,80}") || name.matches("[A-Za-z0-9_-]{24,}"))
+                        name = "未分类项" + otherEntries.length();
+                    otherEntries.put(new JSONObject().put("name", name).put("bytes", directoryBytes(child))
+                        .put("directory", child.isDirectory()));
+                }
+                noBackup.put("otherEntries", otherEntries);
+                internal.put("noBackupBreakdown", noBackup);
+                internal.put("otherBytes", Math.max(0L, appDataBytes - filesBytes - databaseBytes - preferencesBytes
+                    - noBackupBytes - webView.totalBytes() - appCacheBytes - codeCacheBytes));
+                // These are subsets of filesBytes, not additional storage.
+                JSObject fileGroups = new JSObject();
+                long knownFileBytes = 0L;
+                for (String name : new String[] {"srl-app-data", "official-apps", "srl-shared-intake", "srl-cloud-jobs",
+                    "srl-export-jobs", "srl-archive-jobs", "srl-archive-tasks", "srl-character-card-parser"}) {
+                    long bytes = directoryBytes(new File(files, name));
+                    fileGroups.put(name, bytes); knownFileBytes += bytes;
+                }
+                fileGroups.put("other", Math.max(0L, filesBytes - knownFileBytes));
+                internal.put("blobFilesBytes", directoryBytes(new File(files, "srl-app-data/blobs")));
+                internal.put("pendingBlobFilesBytes", directoryBytes(new File(files, "srl-app-data/pending")));
+                internal.put("fileGroups", fileGroups);
+                result.put("internalBreakdown", internal);
+                try {
+                    JSONObject database = NativeAppDatabase.storageUsage(getContext().getDatabasePath(NativeAppDatabase.DATABASE_NAME));
+                    if (database != null) result.put("nativeDatabase", database);
+                } catch (Exception unavailable) {
+                    result.put("nativeDatabaseUnavailable", true);
+                }
+            }
             result.put("libraryBytes", directoryBytes(root));
             result.put("restoreTemporaryBytes", directoryBytes(new File(root, ".restore-pending"))
                 + directoryBytes(new File(getContext().getFilesDir(), "srl-archive-jobs")));
@@ -562,13 +624,22 @@ public class NativeLibraryPlugin extends Plugin {
      * Android 明确定义 cache/code_cache 为可丢弃缓存。手动触发时清空其内容，但保留目录本身；
      * 不会触及 app_webview、IndexedDB、原件目录或 external files。用户应在没有活跃上传、下载
      * 或导入任务时执行，避免中断仅存在缓存目录中的临时传输文件。
+     * 显式 retiredTranslationModels 范围仅删除已停用的 ML Kit 翻译模型，不清理上述缓存。
      */
     @PluginMethod
     public void clearTemporaryCaches(PluginCall call) {
         runIo(call, () -> {
-            File cache = getContext().getCacheDir();
-            File codeCache = getContext().getCodeCacheDir();
-            long clearedBytes = clearDirectoryContents(cache) + clearDirectoryContents(codeCache);
+            String cleanupScope = call.getString("scope");
+            long clearedBytes;
+            if ("retiredTranslationModels".equals(cleanupScope)) {
+                clearedBytes = clearRetiredTranslationModels(getContext().getNoBackupFilesDir());
+            } else if (cleanupScope == null) {
+                File cache = getContext().getCacheDir();
+                File codeCache = getContext().getCodeCacheDir();
+                clearedBytes = clearDirectoryContents(cache) + clearDirectoryContents(codeCache);
+            } else {
+                throw new IllegalArgumentException("未知清理范围，未删除文件");
+            }
             JSObject result = new JSObject();
             result.put("clearedBytes", clearedBytes);
             call.resolve(result);
@@ -1102,7 +1173,28 @@ public class NativeLibraryPlugin extends Plugin {
         return clearedBytes;
     }
 
-    private long deleteRecursivelyCountBytes(File file) {
+    static long clearRetiredTranslationModels(File noBackupDirectory) throws Exception {
+        File parent = noBackupDirectory.getCanonicalFile();
+        File models = new File(parent, "com.google.mlkit.translate.models");
+        if (!models.exists()) return 0L;
+        // Validate the whole fixed target before deleting anything; never follow links outside it.
+        validateCleanupTree(models);
+        long clearedBytes = deleteRecursivelyCountBytes(models);
+        if (models.exists()) throw new java.io.IOException("旧翻译模型未完全删除，请重新检查剩余占用");
+        return clearedBytes;
+    }
+
+    private static void validateCleanupTree(File file) throws Exception {
+        if (!file.getAbsoluteFile().equals(file.getCanonicalFile())) {
+            throw new java.io.IOException("旧翻译模型目录包含链接，未删除文件");
+        }
+        if (!file.isDirectory()) return;
+        File[] children = file.listFiles();
+        if (children == null) throw new java.io.IOException("无法检查旧翻译模型目录，未删除文件");
+        for (File child : children) validateCleanupTree(child);
+    }
+
+    private static long deleteRecursivelyCountBytes(File file) {
         long clearedBytes = 0L;
         File[] children = file.listFiles();
         if (children != null) {

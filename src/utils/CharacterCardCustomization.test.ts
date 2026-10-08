@@ -34,6 +34,37 @@ function resource(overrides: Partial<Resource> = {}): Resource {
 }
 
 describe('CharacterCardCustomization', () => {
+  it.each([
+    { name: '原角色', description: '原设定', future: 'keep' },
+    {
+      spec: 'chara_card_v2',
+      name: '原角色',
+      data: { name: '原角色', description: '原设定', future: 'keep' },
+    },
+    { spec: 'chara_card_v3', data: { name: '原角色', description: '原设定', future: 'keep' } },
+  ])(
+    'materializes a saved rename without content edits and keeps the original card intact: $spec',
+    async (card) => {
+      const original = JSON.stringify(card)
+      const source = resource({
+        name: '新角色',
+        metadata: { card },
+        originalBlob: new Blob([original]),
+      })
+      const modified = await createModifiedCharacterResource(source, [])
+      const output = JSON.parse(await modified.originalBlob.text())
+      expect(output.data ?? output).toMatchObject({
+        name: '新角色',
+        description: '原设定',
+        future: 'keep',
+      })
+      if ('name' in card) expect(output.name).toBe('新角色')
+      expect(JSON.stringify(card)).toBe(original)
+      expect(await source.originalBlob.text()).toBe(original)
+      expect(modified.metadata.card).toEqual(output)
+      expect(modified.contentHash).not.toBe(source.contentHash)
+    },
+  )
   it('refuses a modified export that would silently drop a conflicting content edit', async () => {
     const card = { data: { character_book: { entries: [{ uid: 1, content: '作者新版' }] } } }
     const edit: CharacterCardContentEdit = {

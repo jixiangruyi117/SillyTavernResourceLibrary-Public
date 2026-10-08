@@ -30,6 +30,24 @@ public class ShareReceiverPlugin extends Plugin {
         if (plugin != null) plugin.notifyListeners("ready", new JSObject());
     }
 
+    static void notifyAutoBindingsCommitted(org.json.JSONArray bindings) {
+        org.json.JSONArray committed = new org.json.JSONArray();
+        for (int index = 0; index < bindings.length(); index++) {
+            JSONObject binding = bindings.optJSONObject(index);
+            if (binding != null && !binding.optString("sourceId").isEmpty()
+                && !binding.optString("resourceId").isEmpty()) committed.put(binding);
+        }
+        // Foreground bindings already publish their own app notice/source update.
+        if (committed.length() == 0) return;
+        ShareReceiverPlugin plugin;
+        synchronized (LISTENER_LOCK) { plugin = activePlugin.get(); }
+        if (plugin != null) try {
+            plugin.notifyListeners("autoBindingsCommitted", new JSObject().put("bindings", committed), true);
+        } catch (RuntimeException ignored) {
+            // A detached WebView must not prevent the OS notification or fail an import.
+        }
+    }
+
     static void notifyDiscordDownloadFailed(String token, String workId, boolean cloud) {
         ShareReceiverPlugin plugin;
         synchronized (LISTENER_LOCK) { plugin = activePlugin.get(); }
@@ -94,16 +112,35 @@ public class ShareReceiverPlugin extends Plugin {
     public void stageCloudResource(PluginCall call) {
         NativeExecutors.ioLimited().execute(() -> {
             try {
-                String token = stageCloudResource(getContext(), call.getString("id", ""), call.getString("libraryId", ""), call.getString("workerUrl", ""), call.getString("url", ""));
+                String token = stageCloudResource(getContext(), call.getString("id", ""), call.getString("libraryId", ""), call.getString("workerUrl", ""), call.getString("url", ""), call.getBoolean("automaticAutoBinding", false), call.getString("autoReceiveWindow", ""));
                 call.resolve(new JSObject().put("token", token));
             } catch (Exception error) { call.reject("无法接收云端资源下载任务：" + error.getMessage(), error); }
         });
     }
 
     static String stageCloudResource(android.content.Context context, String id, String libraryId, String worker, String url) throws Exception {
+        return stageCloudResource(context, id, libraryId, worker, url, false, "");
+    }
+
+    static void setCloudAutoBindingIntent(JSONObject metadata, boolean automaticAutoBinding,
+                                          String autoReceiveWindow) throws Exception {
+        if (automaticAutoBinding) {
+            if (!metadata.optBoolean("cloudAutoBindingOptOut", false)
+                && !metadata.optBoolean("cloudAutoBindingPending", false)) {
+                metadata.put("cloudAutoBindingPending", true).put("cloudAutoReceiveWindow", autoReceiveWindow);
+            }
+            return;
+        }
+        metadata.put("cloudAutoBindingOptOut", true).put("cloudAutoBindingPending", false);
+        metadata.remove("cloudAutoReceiveWindow");
+    }
+
+    static String stageCloudResource(android.content.Context context, String id, String libraryId, String worker, String url, boolean automaticAutoBinding, String autoReceiveWindow) throws Exception {
                 String token = "discord-url-" + id;
                 if (!NativeDiscordDownloadWorker.validToken(token) || !libraryId.matches("[A-Za-z0-9_-]{8,100}"))
                     throw new IllegalArgumentException("云端资源任务身份无效");
+                if (automaticAutoBinding && !autoReceiveWindow.matches("[0-9]{1,13}"))
+                    throw new IllegalArgumentException("自动收件周期无效");
                 java.net.URI origin = new java.net.URI(worker);
                 if (!"https".equals(origin.getScheme()) || origin.getHost() == null || origin.getUserInfo() != null
                     || origin.getRawQuery() != null || origin.getFragment() != null)
@@ -116,6 +153,9 @@ public class ShareReceiverPlugin extends Plugin {
                     File ready = new File(folder, NativeShareImportService.stagedToken(token, 0) + ".json");
                     if (ready.isFile()) {
                         assertCloudTarget(NativeShareImportService.readMetadata(ready), libraryId, worker);
+                        JSONObject staged = NativeShareImportService.readMetadata(ready);
+                        setCloudAutoBindingIntent(staged, automaticAutoBinding, autoReceiveWindow);
+                        NativeShareImportService.writeMetadata(folder, NativeShareImportService.stagedToken(token, 0), staged);
                         if (!recoverCloudReceipt(folder, token, libraryId, worker))
                             throw new java.io.IOException("已下载附件暂存不完整，请检查文件后重试");
                         return token;
@@ -134,6 +174,7 @@ public class ShareReceiverPlugin extends Plugin {
                             .put("type", "application/octet-stream").put("createdAt", System.currentTimeMillis())
                             .put("cloudLibraryId", libraryId).put("cloudWorkerUrl", worker);
                     }
+                    setCloudAutoBindingIntent(metadata, automaticAutoBinding, autoReceiveWindow);
                     NativeShareImportService.writeMetadata(folder, token, metadata);
                     NativeDiscordDownloadWorker.enqueue(context, token);
                 }
@@ -196,6 +237,16 @@ public class ShareReceiverPlugin extends Plugin {
             call.resolve();
         } catch (Exception error) { call.reject("收件结果通知未能显示"); }
     }
+    @PluginMethod public void notifyCloudInboxAutoBinding(PluginCall call) {
+        try {
+            NativeDiscordInboxService.notifyAutoBindings(getContext(), new org.json.JSONArray().put(
+                new JSONObject().put("sourceTitle", call.getString("sourceTitle", ""))
+                    .put("resourceName", call.getString("resourceName", ""))
+                    .put("sourceId", call.getString("sourceId", ""))
+                    .put("resourceId", call.getString("resourceId", ""))), false);
+            call.resolve();
+        } catch (Exception error) { call.reject("自动绑定通知未能显示"); }
+    }
     static void notifyCloudInboxReady(boolean running) {
         ShareReceiverPlugin plugin;
         synchronized (LISTENER_LOCK) { plugin = activePlugin.get(); }
@@ -222,7 +273,11 @@ public class ShareReceiverPlugin extends Plugin {
                     File partial = new File(folder, staged + ".part");
                     result.put("transferredBytes", partial.isFile() ? partial.length() : payload.isFile() ? payload.length() : 0);
                     JSONObject nativeImport = metadata.optJSONObject("nativeImportOutcome");
-                    if (nativeImport != null) result.put("nativeImportOutcome", new JSObject(nativeImport.toString()));
+                    if (nativeImport != null) {
+                        JSObject outcome = new JSObject(nativeImport.toString());
+                        outcome.put("automaticBindingPending", metadata.optBoolean("cloudAutoBindingPending", false));
+                        result.put("nativeImportOutcome", outcome);
+                    }
                     if (recoverCloudReceipt(folder, token, call.getString("libraryId", ""), call.getString("workerUrl", ""))) {
                         String importState = nativeImport == null ? "" : nativeImport.optString("state");
                         if (!"imported".equals(importState) && !"duplicate_file".equals(importState)
@@ -243,15 +298,25 @@ public class ShareReceiverPlugin extends Plugin {
 
     // Recover process death after a verified staging commit but before its download receipt was flushed.
     static boolean recoverCloudReceipt(File folder, String token, String libraryId, String worker) throws Exception {
+        return recoverCloudReceipt(folder, token, libraryId, worker, NativeShareImportService::readMetadata);
+    }
+
+    static boolean recoverCloudReceipt(
+        File folder,
+        String token,
+        String libraryId,
+        String worker,
+        NativeShareImportService.MetadataReader metadataReader
+    ) throws Exception {
         if (!NativeDiscordDownloadWorker.validToken(token)) throw new IllegalArgumentException("云端任务身份无效");
         String staged = NativeShareImportService.stagedToken(token, 0);
-        if (!NativeShareImportService.isCommitted(folder, staged)) return false;
-        JSONObject metadata = NativeShareImportService.readMetadata(new File(folder, staged + ".json"));
+        if (!NativeShareImportService.isCommitted(folder, staged, metadataReader)) return false;
+        JSONObject metadata = metadataReader.read(new File(folder, staged + ".json"));
         assertCloudTarget(metadata, libraryId, worker);
         if (!token.equals(metadata.optString("discordSourceToken")))
             throw new IllegalArgumentException("下载附件身份不匹配");
         File source = new File(folder, token + ".json");
-        if (source.isFile() && NativeShareImportService.readMetadata(source).optBoolean("downloadCancelled")) return false;
+        if (source.isFile() && metadataReader.read(source).optBoolean("downloadCancelled")) return false;
         if (!new File(folder, token + ".done").isFile()) NativeDiscordDownloadWorker.publishReceipt(folder, token);
         return true;
     }

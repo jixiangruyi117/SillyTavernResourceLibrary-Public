@@ -213,16 +213,63 @@
   min-width: 0;
 }
 
-.resource-detail-sheet--content-editor .resource-detail__content {
-  grid-column: 1 / -1;
+.resource-detail-overlay--content-editor {
+  padding: 0;
+  align-items: stretch;
+  animation: none;
+}
+.resource-detail-overlay .resource-detail-sheet--content-editor {
+  width: 100%;
+  height: var(--visual-viewport-height);
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.resource-detail-sheet--content-editor .resource-detail__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: max(0.25rem, var(--safe-top)) max(var(--mobile-gutter), var(--safe-right)) 0.25rem
+    max(var(--mobile-gutter), var(--safe-left));
+}
+.resource-detail-sheet--content-editor .resource-detail__header > div {
+  min-width: 0;
 }
 .resource-detail-sheet--content-editor .resource-detail__header h2 {
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 1rem;
 }
-.resource-detail-sheet--content-editor .resource-detail__actions .button--primary {
+.resource-detail-sheet--content-editor .resource-detail__editor-save {
+  min-height: 2.125rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.875rem;
   background: var(--color-accent);
   color: var(--color-on-accent, #fff);
   box-shadow: none;
+}
+.resource-detail-sheet--content-editor .resource-detail__layout {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 0;
+  padding: 0.25rem max(var(--mobile-gutter), var(--safe-right)) max(0.5rem, var(--safe-bottom))
+    max(var(--mobile-gutter), var(--safe-left));
+}
+.resource-detail-sheet--content-editor .resource-detail__tab-panel--content {
+  padding-block: 0;
+}
+.resource-detail-sheet--content-editor .character-record {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.resource-detail-sheet--content-editor .character-record .card-content-workbench {
+  margin-block: 0;
 }
 
 .resource-detail__organize-heading {
@@ -1881,7 +1928,6 @@ body.greeting-preview-open .notice {
   font-size: 0.6875rem;
 }
 
-.character-asset-detail > .embedded-world-list__keys,
 .character-asset-detail > .embedded-helper-list__buttons {
   margin-top: 0.875rem;
 }

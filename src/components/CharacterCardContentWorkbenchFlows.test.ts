@@ -99,7 +99,7 @@ describe('targeted card content audit', () => {
     try {
       await tab(w, '世界书')
       await w.get('.card-content-workbench__list button').trigger('click')
-      await w.get('.card-content-workbench__actions .is-text').trigger('click')
+      await w.get('.card-content-workbench__back').trigger('click')
       await w.setProps({
         edits: [
           {
@@ -146,7 +146,7 @@ describe('targeted card content audit', () => {
       await tab(w, '世界书')
       await w.get('.card-content-workbench__actions .is-primary').trigger('click')
       await w.get('input[maxlength="120"]').setValue('还没写正文')
-      await w.get('.card-content-workbench__actions .is-text').trigger('click')
+      await w.get('.card-content-workbench__back').trigger('click')
       expect(await (w.vm as unknown as { prepareSave: () => Promise<boolean> }).prepareSave()).toBe(
         false,
       )
@@ -326,7 +326,7 @@ describe('targeted card content audit', () => {
       await tab(w, '世界书')
       await w.get('.card-content-workbench__list button').trigger('click')
       await w.get('textarea:not(.is-keys)').setValue('unfinished')
-      await w.get('.card-content-workbench__actions .is-text').trigger('click')
+      await w.get('.card-content-workbench__back').trigger('click')
       await w.get('.card-content-workbench__list button').trigger('click')
       expect(w.get<HTMLTextAreaElement>('textarea:not(.is-keys)').element.value).toBe('unfinished')
     } finally {

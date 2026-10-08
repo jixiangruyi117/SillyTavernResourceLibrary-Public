@@ -16,7 +16,13 @@ describe('BridgeCompression', () => {
   it('JSON 类资源可压缩，角色卡 PNG 不重复压缩', () => {
     expect(isCompressibleKind('worldBook')).toBe(true)
     expect(isCompressibleKind('scriptGlobal')).toBe(true)
+    expect(isCompressibleKind('chat')).toBe(true)
     expect(isCompressibleKind('character')).toBe(false)
+  })
+
+  it('stops expansion at the declared raw byte budget', async () => {
+    const packed = await gzipBlob(new Blob(['x'.repeat(100000)]))
+    await expect(gunzipBlob(packed, 1000)).rejects.toThrow('超过声明大小')
   })
 
   it('gzip 往返无损，且对重复性 JSON 有实际压缩率', async () => {

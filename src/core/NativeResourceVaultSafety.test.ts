@@ -35,6 +35,7 @@ describe('native startup and incomplete vault migration', () => {
     nativeFiles.clear.mockResolvedValue(undefined)
     await syncNativeResourceFiles()
     expect(nativeFiles.info).toHaveBeenCalledOnce()
+    expect(nativeFiles.info).toHaveBeenCalledWith(false)
     expect(nativeFiles.clear).not.toHaveBeenCalled()
     expect(nativeFiles.mirror).not.toHaveBeenCalled()
   })

@@ -5,8 +5,12 @@ import OfficialAppManager from './OfficialAppManager.vue'
 
 const service = vi.hoisted(() => ({
   list: vi.fn(),
+  installedSnapshot: [],
+  loadInstalled: () => service.list(),
+  checkInstalledStatus: vi.fn(),
   availableUpdates: vi.fn(),
   install: vi.fn(),
+  installMany: vi.fn(),
   clearAppData: vi.fn(),
   uninstall: vi.fn(),
 }))
@@ -17,6 +21,7 @@ beforeEach(() => {
   service.list.mockResolvedValue([])
   service.availableUpdates.mockResolvedValue({})
   service.install.mockResolvedValue(undefined)
+  service.installMany.mockImplementation(async (ids: string[]) => ids.map((id) => ({ id })))
   service.clearAppData.mockResolvedValue(undefined)
   localStorage.clear()
   HTMLDialogElement.prototype.showModal = function () {
@@ -43,6 +48,18 @@ it('opens APP guidance in a centered modal from the question-mark control', asyn
   await help.querySelector<HTMLButtonElement>('button')!.click()
   expect(help.open).toBe(false)
 })
+it('checks local integrity only from the explicit status action and reports the affected APP', async () => {
+  await flushPromises()
+  expect(service.checkInstalledStatus).not.toHaveBeenCalled()
+  service.checkInstalledStatus.mockResolvedValue([{ id: 'chatReader', ready: false }])
+  await wrapper
+    .findAll('button')
+    .find((button) => button.text() === '检查 APP 状态')!
+    .trigger('click')
+  await flushPromises()
+  expect(service.checkInstalledStatus).toHaveBeenCalledOnce()
+  expect(wrapper.text()).toContain('需要修复：读了么')
+})
 async function openCleanup() {
   await flushPromises()
   const row = wrapper.findAll('li').find((row) => row.text().includes('前端了么'))!
@@ -59,6 +76,80 @@ function remountManager() {
   wrapper.unmount()
   wrapper = mount(OfficialAppManager, { attachTo: document.body })
 }
+it('selects several updates, shows per-APP progress, and refreshes the catalog once after the batch', async () => {
+  service.list.mockResolvedValue([
+    { id: 'draw', files: [] },
+    { id: 'stitch', files: [] },
+  ])
+  const update = {
+    currentVersion: '1',
+    latestVersion: '2',
+    latestShellVersion: 'test-shell',
+    requiresHostUpdate: false,
+  }
+  service.availableUpdates.mockResolvedValue({
+    draw: update,
+    stitch: { ...update, requiresHostUpdate: true },
+  })
+  remountManager()
+  await flushPromises()
+  document.querySelector<HTMLButtonElement>('.official-app-manager__updates-footer button')!.click()
+  await flushPromises()
+  await wrapper.get('[aria-label="选择更新抽了么"]').setValue(true)
+  await wrapper.get('[aria-label="选择更新缝了么"]').setValue(true)
+  let finish!: (result: unknown) => void
+  service.installMany.mockImplementation((ids, report) => {
+    report({ id: ids[0], stage: 'downloading', downloadedBytes: 1024, totalBytes: 2048 })
+    report({ id: ids[1], stage: 'checking' })
+    return new Promise((resolve) => {
+      finish = resolve
+    })
+  })
+  service.availableUpdates.mockClear()
+  await wrapper.get('.official-app-manager__batch-update').trigger('click')
+  expect(service.installMany).toHaveBeenCalledWith(['draw', 'stitch'], expect.any(Function))
+  expect(wrapper.text()).toContain('正在下载')
+  expect(wrapper.text()).toContain('正在校验')
+  expect(wrapper.get('[aria-label="选择更新缝了么"]').attributes('disabled')).toBeDefined()
+  expect(service.availableUpdates).not.toHaveBeenCalled()
+  service.availableUpdates.mockResolvedValue({ stitch: update })
+  finish([{ id: 'draw' }, { id: 'stitch', error: new Error('网络中断') }])
+  await flushPromises()
+  expect(service.availableUpdates).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).toContain('完成 1 个，失败 1 个')
+  expect(wrapper.text()).toContain('网络中断')
+  expect(wrapper.findAll('.official-app-manager__update-dot')).toHaveLength(1)
+})
+it('announces batch completion only after the updated list has finished refreshing', async () => {
+  service.list.mockResolvedValue([{ id: 'draw', files: [] }])
+  service.availableUpdates.mockResolvedValueOnce({
+    draw: {
+      currentVersion: '1',
+      latestVersion: '2',
+      latestShellVersion: 'test-shell',
+      requiresHostUpdate: false,
+    },
+  })
+  let finishCheck!: (updates: object) => void
+  service.availableUpdates.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishCheck = resolve
+      }),
+  )
+  remountManager()
+  await flushPromises()
+  document.querySelector<HTMLButtonElement>('.official-app-manager__updates-footer button')!.click()
+  await flushPromises()
+  await wrapper.get('.official-app-manager__batch-update').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('更新成功')
+  expect(wrapper.text()).not.toContain('更新结束')
+  finishCheck({})
+  await flushPromises()
+  expect(wrapper.text()).toContain('更新结束：完成 1 个')
+  expect(wrapper.findAll('.official-app-manager__update-dot')).toHaveLength(0)
+})
 it('announces installed APP updates in a centered modal and leaves a red dot after skipping', async () => {
   service.list.mockResolvedValue([
     {

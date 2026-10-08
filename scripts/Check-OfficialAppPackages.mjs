@@ -114,6 +114,11 @@ for (const [id, download] of Object.entries(catalog.apps)) {
   assert.equal(download.assetMode, manifest.assetMode)
   assert.ok(manifest.hostFiles?.length, `${id}: missing shared Vue runtime requirements`)
   assert.deepEqual(download.hostFiles, manifest.hostFiles)
+  for (const file of manifest.files.filter((file) => file.bundled))
+    assert.ok(
+      manifest.hostFiles.some((host) => host.path === file.path),
+      `${id}: shared product services must use shell owners`,
+    )
   for (const file of manifest.hostFiles) {
     const hostFile = shellFiles.get(file.path)
     const packedFile = manifest.files.find((packed) => packed.path === file.path)
@@ -161,7 +166,7 @@ const retainedRoot = resolve('public/official-apps')
 let retainedPackages = 0
 let needsLegacyWorkbenchCover = false
 for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
-  assert.ok(build.isDirectory() && /^srl(?:-public)?-\d+\.\d+\.\d+-v\d+$/u.test(build.name))
+  assert.ok(build.isDirectory() && /^srl-(?:public-)?\d+\.\d+\.\d+-v\d+$/u.test(build.name))
   const catalogPath = `official-apps/${build.name}/catalog.json`
   const sourceCatalog = readFileSync(resolve('public', catalogPath))
   assert.deepEqual(read(catalogPath), sourceCatalog, `Retained catalog changed: ${build.name}`)
@@ -187,6 +192,20 @@ for (const build of readdirSync(retainedRoot, { withFileTypes: true })) {
     assert.equal(manifest.shellVersion, build.name)
     assert.equal(manifest.id, id)
     assert.equal(manifest.entry, download.entry)
+    const retainedApi = manifest.hostApiVersion ?? 1
+    assert.ok(inventory.compatibleHostApiVersions.includes(retainedApi))
+    const retainedCompatibility = json(`official-apps/api-${retainedApi}/catalog.json`)
+    assert.equal(retainedCompatibility.schemaVersion, 1)
+    assert.equal(retainedCompatibility.hostApiVersion, retainedApi)
+    assert.ok(
+      retainedCompatibility.apps[id]?.some(
+        (candidate) =>
+          candidate.url === download.url &&
+          candidate.sha256 === download.sha256 &&
+          candidate.hostApiVersion === retainedApi,
+      ),
+      `${build.name}/${id}: original API compatibility catalog is missing the retained package`,
+    )
     assert.equal(Object.keys(archive).length, manifest.files.length + 1)
     for (const file of manifest.files) {
       const packed = archive[file.path.slice(1)]

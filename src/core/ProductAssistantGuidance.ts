@@ -27,7 +27,7 @@ export const ASSISTANT_GUIDES: readonly AssistantGuide[] = [
     steps: [
       {
         target: 'data-protection-open',
-        text: '在资源库页面点“数据保护”展开面板，可查看本地保险库、回收站和存储状态。',
+        text: '在资源库页面点“数据保护”展开面板，可查看本地保险库、回收站和存储状态。Android APK 的原生资源库尚未就绪时，可在面板中重启并重试迁移；重试会从保留的 IndexedDB 副本重新复制，需要额外设备空间。迁移完成后可查看旧副本记录数，并主动校验后清理旧副本；当前原生主库保留。',
       },
     ],
   },
@@ -57,7 +57,7 @@ export const ASSISTANT_GUIDES: readonly AssistantGuide[] = [
     steps: [
       {
         target: 'discord-github-tutorial-content',
-        text: '已打开“连接设置 → GitHub 仓库部署”教程。Fork 后续更新的步骤在教程末尾；使用 Update branch，不要点 Discard commits。',
+        text: '已打开“连接设置 → GitHub 仓库部署”教程。后续同步 Fork 更新的步骤在教程末尾；使用 Update branch，不要点 Discard commits。',
       },
     ],
   },

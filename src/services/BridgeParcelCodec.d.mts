@@ -12,6 +12,7 @@ export function createParcel(
   progress?: (message: string) => void,
   options?: {
     signal?: AbortSignal
+    compression?: boolean
     fetcher?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
   },
 ): Promise<{ ticket: string; expiresAt: number }>

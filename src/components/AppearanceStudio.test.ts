@@ -2,6 +2,17 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
+// SRL-PUBLIC-SYNC: BEGIN PUBLIC-ONLY id=appearance-official-runtime-test-mock
+vi.mock('../core/OfficialAppRuntime', () => ({
+  ensurePreinstalledOfficialApps: async () => undefined,
+  acquireOfficialAppUse: async () => () => {},
+  officialAppService: { list: async () => [{ id: 'imageAlbum' }, { id: 'assistant' }] },
+  loadOfficialApp: async (id: string) => {
+    if (id === 'assistant') return (await import('./ProductAssistant.vue')).default
+    throw new Error(`Unexpected test APP: ${id}`)
+  },
+}))
+// SRL-PUBLIC-SYNC: END PUBLIC-ONLY id=appearance-official-runtime-test-mock
 // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-assistant-component-test-mock
 vi.mock('./ProductAssistant.vue', () => ({
   default: {
@@ -48,7 +59,7 @@ describe('AppearanceStudio cabinet layout', () => {
   })
 
   // SRL-PUBLIC-SYNC: BEGIN REPLACE id=appearance-scope-availability-test
-  it('offers every local feature app as an editable scope', async () => {
+  it('offers every feature app and separates installed APPs from dormant scopes', async () => {
     const wrapper = mount(AppearanceStudio, {
       props: { theme: 'light', layoutMode: 'grid', uiFontScale: 'standard', customCss: '' },
     })
@@ -60,8 +71,8 @@ describe('AppearanceStudio cabinet layout', () => {
     expect(wrapper.text()).toContain('user才是老大')
     await flushPromises()
     expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('生图相册')
-    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).toContain('AI 生图')
-    expect(wrapper.find('[aria-label="未安装 APP 的样式"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="未安装 APP 的样式"]').text()).toContain('AI 生图')
+    expect(wrapper.get('[aria-label="选择要装修的界面"]').text()).not.toContain('AI 生图')
   })
   // SRL-PUBLIC-SYNC: END REPLACE id=appearance-scope-availability-test
 
@@ -262,9 +273,10 @@ describe('AppearanceStudio AI CSS owner', () => {
       appInstallation: {
         availableRegions: expect.arrayContaining([
           expect.objectContaining({ value: 'app:imageAlbum' }),
+        ]),
+        unavailableRegions: expect.arrayContaining([
           expect.objectContaining({ value: 'app:imageGeneration' }),
         ]),
-        unavailableRegions: [],
       },
     })
     // SRL-PUBLIC-SYNC: END REPLACE id=appearance-assistant-app-availability-test

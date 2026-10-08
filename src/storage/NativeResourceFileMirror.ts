@@ -9,7 +9,10 @@ import type { NativeVersionMatchReference, ParsedResource } from '../types/Impor
 type NativeResourceScope = 'current' | 'versions'
 
 interface NativeLibraryPlugin {
-  getStorageInfo(): Promise<NativeResourceStorageInfo>
+  getStorageInfo(options?: {
+    includeDetails?: boolean
+    includeUsage?: boolean
+  }): Promise<NativeResourceStorageInfo>
   inspectRecoveryObject(options: {
     contentHash: string
     size: number
@@ -38,7 +41,9 @@ interface NativeLibraryPlugin {
   remove(options: { scope: NativeResourceScope; id: string }): Promise<void>
   removeMany(options: { records: Array<{ scope: NativeResourceScope; id: string }> }): Promise<void>
   clear(): Promise<void>
-  clearTemporaryCaches(): Promise<{ clearedBytes: number }>
+  clearTemporaryCaches(options?: {
+    scope: 'retiredTranslationModels'
+  }): Promise<{ clearedBytes: number }>
   getObjectPath(options: {
     contentHash: string
     size: number
@@ -117,9 +122,40 @@ export interface NativeResourceStorageInfo {
   appCacheBytes?: number
   /** Android code cache directory; a disposable subset of cacheBytes. */
   codeCacheBytes?: number
+  supportsRetiredTranslationModelCleanup?: boolean
   libraryBytes?: number
   restoreTemporaryBytes?: number
   writeTemporaryBytes?: number
+  /** Disjoint internal directory totals; fileGroups are subsets of filesBytes. */
+  internalBreakdown?: {
+    filesBytes: number
+    databaseBytes: number
+    preferencesBytes: number
+    noBackupBytes: number
+    otherBytes: number
+    fileGroups: Record<string, number>
+    blobFilesBytes: number
+    pendingBlobFilesBytes: number
+    noBackupBreakdown?: {
+      databaseBytes: number
+      walBytes: number
+      shmBytes: number
+      otherBytes: number
+      otherEntries?: Array<{ name: string; bytes: number; directory: boolean }>
+    }
+  }
+  nativeDatabase?: {
+    fileBytes: number
+    walBytes: number
+    shmBytes: number
+    pageBytes: number
+    freePageBytes: number
+    uniqueReferencedBlobBytes: number
+    pendingBlobCount: number
+    pendingExpectedBytes: number
+    stores: Array<{ store: string; records: number; jsonBytes: number; blobReferenceBytes: number }>
+  }
+  nativeDatabaseUnavailable?: boolean
 }
 
 export interface NativeRecoveryMetadata {
@@ -270,15 +306,33 @@ export async function clearNativeResourceFiles(): Promise<void> {
   await nativeLibrary.clear()
 }
 
-export async function clearNativeTemporaryCaches(): Promise<number> {
+export async function clearNativeTemporaryCaches(options?: {
+  scope: 'retiredTranslationModels'
+}): Promise<number> {
   if (!isAndroidNative()) return 0
-  const result = await nativeLibrary.clearTemporaryCaches()
+  const result = await (options
+    ? nativeLibrary.clearTemporaryCaches(options)
+    : nativeLibrary.clearTemporaryCaches())
   return result.clearedBytes
 }
 
-export async function getNativeResourceStorageInfo(): Promise<NativeResourceStorageInfo | null> {
+export function getNativeResourceStorageInfo(
+  includeUsage: false,
+): Promise<Pick<
+  NativeResourceStorageInfo,
+  'storageVersion' | 'currentCount' | 'versionCount' | 'currentManifestHash' | 'versionManifestHash'
+> | null>
+export function getNativeResourceStorageInfo(
+  options?: true | { includeDetails: boolean },
+): Promise<NativeResourceStorageInfo | null>
+export async function getNativeResourceStorageInfo(
+  options: boolean | { includeDetails: boolean } = true,
+): Promise<NativeResourceStorageInfo | null> {
   if (!isAndroidNative()) return null
-  return nativeLibrary.getStorageInfo()
+  if (options === false) return nativeLibrary.getStorageInfo({ includeUsage: false })
+  return typeof options === 'object' && options.includeDetails
+    ? nativeLibrary.getStorageInfo({ includeDetails: true })
+    : nativeLibrary.getStorageInfo()
 }
 
 export async function listNativeRecoveryCandidates(

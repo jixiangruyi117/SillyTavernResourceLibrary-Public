@@ -6,6 +6,7 @@ const runtime = vi.hoisted(() => ({
   list: vi.fn(),
   pending: vi.fn(),
   repair: vi.fn(async () => 0),
+  unbound: vi.fn(async (resources: unknown[]) => resources),
 }))
 vi.mock('../core/AppContainer', () => ({
   resourceService: { listResourceListSummaries: runtime.list },
@@ -15,6 +16,7 @@ vi.mock('../core/CommunitySourceRuntime', () => ({
     listPendingSources: runtime.pending,
     bindSource: runtime.bind,
     repairInvalidResourceBindings: runtime.repair,
+    listUnboundResources: runtime.unbound,
   },
 }))
 import DiscordPendingSources from './DiscordPendingSources.vue'
@@ -33,6 +35,7 @@ beforeEach(() => {
   runtime.list.mockResolvedValue([])
   runtime.pending.mockResolvedValue([pendingSource])
   runtime.repair.mockResolvedValue(0)
+  runtime.unbound.mockImplementation(async (resources) => resources)
 })
 it('updates binding candidates after a committed library refresh without rereading sources', async () => {
   const wrapper = mount(DiscordPendingSources)
@@ -88,6 +91,71 @@ it('late initial reads cannot replace a newer accepted resource list', async () 
       .find((button) => button.text() === '选择其他资源')!
       .trigger('click')
     expect(wrapper.get('[role="option"]').text()).toContain('新资源')
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it('puts unbound name and author matches first and marks the matching reason', async () => {
+  runtime.pending.mockResolvedValue([
+    {
+      source: { ...pendingSource.source, title: '角色甲的发布帖' },
+      messages: [
+        {
+          id: 'starter',
+          content: '作者：dc作者乙',
+          authorName: '楼主',
+          attachments: [],
+          embeds: [],
+        },
+      ],
+    },
+  ])
+  runtime.list.mockResolvedValue([
+    {
+      id: 'other',
+      name: '其他角色',
+      fileName: 'other.png',
+      tags: [],
+      type: 'characterCard',
+      metadata: {},
+    },
+    {
+      id: 'author-match',
+      name: '作者卡',
+      fileName: 'author.png',
+      tags: [],
+      type: 'characterCard',
+      metadata: { creator: '作者乙' },
+    },
+    {
+      id: 'name-match',
+      name: '角色甲',
+      fileName: 'name.png',
+      tags: [],
+      type: 'characterCard',
+      metadata: { creator: '作者乙' },
+    },
+  ])
+  const wrapper = mount(DiscordPendingSources)
+  try {
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === '选择其他资源')!
+      .trigger('click')
+    await flushPromises()
+    const options = wrapper.findAll('[role="option"]')
+    expect(options.map((option) => option.get('strong').text())).toEqual([
+      '角色甲',
+      '作者卡',
+      '其他角色',
+    ])
+    expect(
+      options[0]?.findAll('.resource-picker__match-badge').map((badge) => badge.text()),
+    ).toEqual(['作', '名'])
+    expect(options[1]?.find('.resource-picker__match-badge').text()).toBe('作')
+    expect(runtime.unbound).toHaveBeenCalledOnce()
   } finally {
     wrapper.unmount()
   }
